@@ -35,7 +35,7 @@ void test_case_mesh_open_01(void **state) {
 bool test_steps_mesh_open_01(void) {
 		bool result = false;
 		meshlink_handle_t *mesh = NULL;
-		const char *confbase = "open_conf";
+		const char *confbase = "open_conf.1";
 
     mesh = meshlink_open(confbase, "foo", "chat", DEV_CLASS_STATIONARY);
 		if (!mesh) {
@@ -45,6 +45,7 @@ bool test_steps_mesh_open_01(void) {
 			result = true;
 		}
 		assert(mesh != NULL);
+		meshlink_destroy("open_conf.1");
     return result;
 }
 
@@ -67,7 +68,7 @@ bool test_steps_mesh_open_02(void) {
 		} else {
 			result = false;
 		}
-
+		meshlink_destroy("open_conf.2");
     return result;
 }
 
@@ -80,7 +81,7 @@ void test_case_mesh_open_03(void **state) {
 /* Test Steps for meshlink_open Test Case # 3*/
 bool test_steps_mesh_open_03(void) {
 		bool result = false;
-		const char *confbase = "open_conf";
+		const char *confbase = "open_conf.3";
 		const char *name = NULL;
 		meshlink_handle_t *mesh = meshlink_open(".chat", name, "chat", DEV_CLASS_STATIONARY);
 		assert(mesh == NULL);
@@ -90,6 +91,7 @@ bool test_steps_mesh_open_03(void) {
 		} else {
 			result = false;
 		}
+		meshlink_destroy("open_conf.3");
     return result;
 }
 
@@ -104,7 +106,7 @@ bool test_steps_mesh_open_04(void) {
 		bool result = false;
 		meshlink_handle_t *mesh = NULL;
 
-    mesh = meshlink_open("open_conf", "foo", NULL, DEV_CLASS_STATIONARY);
+    mesh = meshlink_open("open_conf.4", "foo", NULL, DEV_CLASS_STATIONARY);
 		assert(mesh == NULL);
 		if (!mesh) {
 			fprintf(stderr, "meshlink_open status 4: %s\n", meshlink_strerror(meshlink_errno));
@@ -112,6 +114,7 @@ bool test_steps_mesh_open_04(void) {
 		} else {
 			result = false;
 		}
+		meshlink_destroy("open_conf.4");
     return result;
 }
 
@@ -126,7 +129,7 @@ bool test_steps_mesh_open_05(void) {
 		bool result = false;
 		meshlink_handle_t *mesh = NULL;
 
-    mesh = meshlink_open("open_conf", "foo", "chat", -1);
+    mesh = meshlink_open("open_conf.5", "foo", "chat", -1);
 		assert(mesh == NULL);
 		if (!mesh) {
 			fprintf(stderr, "meshlink_open status 5: %s\n", meshlink_strerror(meshlink_errno));
@@ -134,6 +137,7 @@ bool test_steps_mesh_open_05(void) {
 		} else {
 			result = false;
 		}	
+		meshlink_destroy("open_conf.5");
     return result;
 }
 

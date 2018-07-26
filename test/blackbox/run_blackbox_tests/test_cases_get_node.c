@@ -37,7 +37,7 @@ bool test_steps_mesh_get_node_01(void) {
   meshlink_handle_t *mesh = NULL;
 	meshlink_node_t *get_node = NULL;
 	int pmtu;
-	mesh = meshlink_open("pmtu_conf", "foo", "chat", DEV_CLASS_STATIONARY);
+	mesh = meshlink_open("node_conf.1", "foo", "chat", DEV_CLASS_STATIONARY);
 	assert(mesh != NULL);
 	if(!mesh) {
 		fprintf(stderr, "meshlink_open status2: %s\n", meshlink_strerror(meshlink_errno));
@@ -59,6 +59,7 @@ bool test_steps_mesh_get_node_01(void) {
 
 	meshlink_stop(mesh);
 	meshlink_close(mesh);
+	meshlink_destroy("node_conf.1");
   return result;
 }
 
@@ -74,7 +75,7 @@ bool test_steps_mesh_get_node_02(void) {
   meshlink_handle_t *mesh = NULL;
 	meshlink_node_t *get_node = NULL;
 	int pmtu;
-	mesh = meshlink_open("pmtu_conf", "foo", "chat", DEV_CLASS_STATIONARY);
+	mesh = meshlink_open("node_conf.2", "foo", "chat", DEV_CLASS_STATIONARY);
 	assert(mesh != NULL);
 	if(!mesh) {
 		fprintf(stderr, "meshlink_open status2: %s\n", meshlink_strerror(meshlink_errno));
@@ -96,6 +97,7 @@ bool test_steps_mesh_get_node_02(void) {
 
 	meshlink_stop(mesh);
 	meshlink_close(mesh);
+	meshlink_destroy("node_conf.2");
   return result;
 }
 
@@ -111,7 +113,7 @@ bool test_steps_mesh_get_node_03(void) {
   meshlink_handle_t *mesh = NULL;
 	meshlink_node_t *get_node = NULL;
 
-	mesh = meshlink_open("pmtu_conf", "foo", "chat", DEV_CLASS_STATIONARY);
+	mesh = meshlink_open("node_conf.3", "foo", "chat", DEV_CLASS_STATIONARY);
 	assert(mesh != NULL);
 	if(!mesh) {
 		fprintf(stderr, "meshlink_open status2: %s\n", meshlink_strerror(meshlink_errno));
@@ -133,6 +135,7 @@ bool test_steps_mesh_get_node_03(void) {
 
 	meshlink_stop(mesh);
 	meshlink_close(mesh);
+	meshlink_destroy("node_conf.3");
   return result;
 }
 
@@ -149,7 +152,7 @@ bool test_steps_mesh_get_node_04(void) {
 	meshlink_node_t *get_node = NULL;
 	const char *unknown_name;
 
-	mesh = meshlink_open("pmtu_conf", "foo", "chat", DEV_CLASS_STATIONARY);
+	mesh = meshlink_open("node_conf.4", "foo", "chat", DEV_CLASS_STATIONARY);
 	assert(mesh != NULL);
 	if(!mesh) {
 		fprintf(stderr, "meshlink_open status2: %s\n", meshlink_strerror(meshlink_errno));
@@ -171,5 +174,6 @@ bool test_steps_mesh_get_node_04(void) {
 
 	meshlink_stop(mesh);
 	meshlink_close(mesh);
+	meshlink_destroy("node_conf.4");
   return result;
 }

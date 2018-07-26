@@ -35,7 +35,7 @@ void test_case_mesh_get_address_01(void **state) {
 bool test_steps_mesh_get_address_01(void) {
 	bool result = false;
 
-  meshlink_handle_t *mesh = meshlink_open("pmtu_conf", "foo", "chat", DEV_CLASS_STATIONARY);
+  meshlink_handle_t *mesh = meshlink_open("getex_conf.1", "foo", "chat", DEV_CLASS_STATIONARY);
 	assert(mesh != NULL);
 	if(!mesh) {
 		fprintf(stderr, "meshlink_open status2: %s\n", meshlink_strerror(meshlink_errno));
@@ -64,6 +64,7 @@ bool test_steps_mesh_get_address_01(void) {
 	free(addr);
 	meshlink_stop(mesh);
 	meshlink_close(mesh);
+	meshlink_destroy("getex_conf.1");
   return result;
 }
 
@@ -77,7 +78,7 @@ void test_case_mesh_get_address_02(void **state) {
 bool test_steps_mesh_get_address_02(void) {
 	bool result = false;
 
-  meshlink_handle_t *mesh = meshlink_open("pmtu_conf", "foo", "chat", DEV_CLASS_STATIONARY);
+  meshlink_handle_t *mesh = meshlink_open("getex_conf.2", "foo", "chat", DEV_CLASS_STATIONARY);
 	assert(mesh != NULL);
 	if(!mesh) {
 		fprintf(stderr, "meshlink_open status2: %s\n", meshlink_strerror(meshlink_errno));
@@ -105,6 +106,7 @@ bool test_steps_mesh_get_address_02(void) {
 	free(ext);
 	meshlink_stop(mesh);
 	meshlink_close(mesh);
+	meshlink_destroy("getex_conf.2");
   return result;
 }
 

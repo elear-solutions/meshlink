@@ -36,7 +36,7 @@ bool test_steps_mesh_close_01(void) {
 		bool result = false;
 		meshlink_handle_t *mesh = NULL;
 
-    mesh = meshlink_open("start_conf", "foo", "chat", DEV_CLASS_STATIONARY);
+    mesh = meshlink_open("stop_conf.1", "foo", "chat", DEV_CLASS_STATIONARY);
 		assert(mesh != NULL);
 		result = meshlink_start(mesh);
 		if (!result) {
@@ -47,6 +47,7 @@ bool test_steps_mesh_close_01(void) {
 		}
 		assert(result != false);
 		meshlink_close(mesh);
+		meshlink_destroy("stop_conf.1");	
     return result;
 }
 
@@ -61,7 +62,7 @@ bool test_steps_mesh_stop_01(void) {
 		bool result = false;
 		meshlink_handle_t *mesh = NULL;
 
-    mesh = meshlink_open("start_conf", "foo", "chat", DEV_CLASS_STATIONARY);
+    mesh = meshlink_open("stop_conf.2", "foo", "chat", DEV_CLASS_STATIONARY);
 		assert(mesh != NULL);
 		result = meshlink_start(mesh);
 		if (!result) {
@@ -72,6 +73,7 @@ bool test_steps_mesh_stop_01(void) {
 		}
 		assert(result != false);
 		meshlink_stop(mesh);
+		meshlink_destroy("stop_conf.2");	
     return result;
 }
 

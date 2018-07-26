@@ -37,7 +37,7 @@ bool test_steps_mesh_pmtu_01(void) {
   meshlink_handle_t *mesh = NULL;
 	meshlink_node_t *dest_node = NULL;
 	int pmtu;
-	mesh = meshlink_open("pmtu_conf", "foo", "chat", DEV_CLASS_STATIONARY);
+	mesh = meshlink_open("pmtu_conf.1", "foo", "chat", DEV_CLASS_STATIONARY);
 	assert(mesh != NULL);
 	if(!mesh) {
 		fprintf(stderr, "meshlink_open status1: %s\n", meshlink_strerror(meshlink_errno));
@@ -65,6 +65,7 @@ bool test_steps_mesh_pmtu_01(void) {
 
 	meshlink_stop(mesh);
 	meshlink_close(mesh);
+	meshlink_destroy("pmtu_conf.1");
   return result;
 }
 
@@ -80,7 +81,7 @@ bool test_steps_mesh_pmtu_02(void) {
   meshlink_handle_t *mesh = NULL;
 	meshlink_node_t *dest_node = NULL;
 	int pmtu;
-	mesh = meshlink_open("pmtu_conf", "foo", "chat", DEV_CLASS_STATIONARY);
+	mesh = meshlink_open("pmtu_conf.2", "foo", "chat", DEV_CLASS_STATIONARY);
 	assert(mesh != NULL);
 	if(!mesh) {
 		fprintf(stderr, "meshlink_open status2: %s\n", meshlink_strerror(meshlink_errno));
@@ -107,6 +108,7 @@ bool test_steps_mesh_pmtu_02(void) {
 
 	meshlink_stop(mesh);
 	meshlink_close(mesh);
+	meshlink_destroy("pmtu_conf.2");
   return result;
 }
 
@@ -122,7 +124,7 @@ bool test_steps_mesh_pmtu_03(void) {
   meshlink_handle_t *mesh = NULL;
 	meshlink_node_t *dest_node = NULL;
 	int pmtu;
-	mesh = meshlink_open("pmtu_conf", "foo", "chat", DEV_CLASS_STATIONARY);
+	mesh = meshlink_open("pmtu_conf.3", "foo", "chat", DEV_CLASS_STATIONARY);
 	assert(mesh != NULL);
 	if(!mesh) {
 		fprintf(stderr, "meshlink_open status2: %s\n", meshlink_strerror(meshlink_errno));
@@ -149,6 +151,7 @@ bool test_steps_mesh_pmtu_03(void) {
 
 	meshlink_stop(mesh);
 	meshlink_close(mesh);
+	meshlink_destroy("pmtu_conf.3");
   return result;
 }
 

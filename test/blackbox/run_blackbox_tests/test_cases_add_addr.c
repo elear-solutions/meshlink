@@ -35,7 +35,7 @@ void test_case_mesh_add_address_01(void **state) {
 bool test_steps_mesh_add_address_01(void) {
 	bool result = false;
 
-  meshlink_handle_t *mesh1 = meshlink_open("pmtu_conf", "foo", "chat", DEV_CLASS_STATIONARY);
+  meshlink_handle_t *mesh1 = meshlink_open("add_conf.1", "foo", "chat", DEV_CLASS_STATIONARY);
 	assert(mesh1 != NULL);
 	if(!mesh1) {
 		fprintf(stderr, "meshlink_open status2: %s\n", meshlink_strerror(meshlink_errno));
@@ -75,6 +75,7 @@ sleep(2);
 	meshlink_stop(mesh2);
 	meshlink_close(mesh1);
 	meshlink_close(mesh2);	
+	meshlink_destroy("add_conf.1");
   return result;
 }
 
@@ -88,7 +89,7 @@ void test_case_mesh_add_address_02(void **state) {
 bool test_steps_mesh_add_address_02(void) {
 	bool result = false;
 
-  meshlink_handle_t *mesh = meshlink_open("pmtu_conf", "foo", "chat", DEV_CLASS_STATIONARY);
+  meshlink_handle_t *mesh = meshlink_open("add_conf.2", "foo", "chat", DEV_CLASS_STATIONARY);
 	assert(mesh != NULL);
 	if(!mesh) {
 		fprintf(stderr, "meshlink_open status2: %s\n", meshlink_strerror(meshlink_errno));
@@ -109,6 +110,7 @@ bool test_steps_mesh_add_address_02(void) {
 
 	meshlink_stop(mesh);
 	meshlink_close(mesh);
+	meshlink_destroy("add_conf.2");
   return result;
 }
 
@@ -122,7 +124,7 @@ void test_case_mesh_add_address_03(void **state) {
 bool test_steps_mesh_add_address_03(void) {
 	bool result = false;
 
-  meshlink_handle_t *mesh = meshlink_open("pmtu_conf", "foo", "chat", DEV_CLASS_STATIONARY);
+  meshlink_handle_t *mesh = meshlink_open("add_conf.3", "foo", "chat", DEV_CLASS_STATIONARY);
 	assert(mesh != NULL);
 	if(!mesh) {
 		fprintf(stderr, "meshlink_open status2: %s\n", meshlink_strerror(meshlink_errno));
@@ -143,6 +145,7 @@ bool test_steps_mesh_add_address_03(void) {
 
 	meshlink_stop(mesh);
 	meshlink_close(mesh);
+	meshlink_destroy("add_conf.3");
   return result;
 }
 

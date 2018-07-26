@@ -35,6 +35,10 @@
 #include "test_cases_get_ex_addr.h"
 #include "test_cases_add_ex_addr.h"
 #include "test_cases_get_port.h"
+#include "test_cases_blacklist.h"
+#include "test_cases_default_blacklist.h"
+#include "test_cases_whitelist.h"
+#include "test_cases_channel_open.h"
 #include "test_cases_destroy.h"
 #include "test_cases_get_all_nodes.h"
 #include "test_cases_get_fingerprint.h"
@@ -44,6 +48,7 @@
 #include "test_cases_verify.h"
 #include "test_cases_invite.h"
 #include "test_cases_export.h"
+#include "test_cases_discovery.h"
 #include "../common/containers.h"
 #include "../common/common_handlers.h"
 
@@ -365,6 +370,78 @@ static black_box_state_t test_mesh_get_port_02_state = {
     /* test_result (defaulted to) = */ false
 };
 
+/* State structure for meshlink_blacklist Test Case #1 */
+static black_box_state_t test_mesh_blacklist_01_state = {
+    /* test_case_name = */ "test_case_mesh_blacklist_01",
+    /* node_names = */ NULL,
+    /* num_nodes = */ 0,
+    /* test_result (defaulted to) = */ false
+};
+
+/* State structure for meshlink_blacklist Test Case #2 */
+static black_box_state_t test_mesh_blacklist_02_state = {
+    /* test_case_name = */ "test_case_mesh_blacklist_02",
+    /* node_names = */ NULL,
+    /* num_nodes = */ 0,
+    /* test_result (defaulted to) = */ false
+};
+
+/* State structure for meshlink_blacklist Test Case #3 */
+static black_box_state_t test_mesh_blacklist_03_state = {
+    /* test_case_name = */ "test_case_mesh_blacklist_03",
+    /* node_names = */ NULL,
+    /* num_nodes = */ 0,
+    /* test_result (defaulted to) = */ false
+};
+
+/* State structure for meshlink_whitelist Test Case #1 */
+static black_box_state_t test_mesh_whitelist_01_state = {
+    /* test_case_name = */ "test_case_mesh_whitelist_01",
+    /* node_names = */ NULL,
+    /* num_nodes = */ 0,
+    /* test_result (defaulted to) = */ false
+};
+
+/* State structure for meshlink_whitelist Test Case #2 */
+static black_box_state_t test_mesh_whitelist_02_state = {
+    /* test_case_name = */ "test_case_mesh_whitelist_02",
+    /* node_names = */ NULL,
+    /* num_nodes = */ 0,
+    /* test_result (defaulted to) = */ false
+};
+
+/* State structure for meshlink_whitelist Test Case #3 */
+static black_box_state_t test_mesh_whitelist_03_state = {
+    /* test_case_name = */ "test_case_mesh_whitelist_03",
+    /* node_names = */ NULL,
+    /* num_nodes = */ 0,
+    /* test_result (defaulted to) = */ false
+};
+
+/* State structure for meshlink_default_blacklist Test Case #1 */
+static black_box_state_t test_mesh_default_blacklist_01_state = {
+    /* test_case_name = */ "test_case_mesh_default_blacklist_01",
+    /* node_names = */ NULL,
+    /* num_nodes = */ 0,
+    /* test_result (defaulted to) = */ false
+};
+
+/* State structure for meshlink_default_blacklist Test Case #2 */
+static black_box_state_t test_mesh_default_blacklist_02_state = {
+    /* test_case_name = */ "test_case_mesh_default_blacklist_02",
+    /* node_names = */ NULL,
+    /* num_nodes = */ 0,
+    /* test_result (defaulted to) = */ false
+};
+
+/* State structure for meshlink_channel_open Test Case #1 */
+static black_box_state_t test_mesh_channel_open_01_state = {
+    /* test_case_name = */ "test_case_mesh_channel_open_01",
+    /* node_names = */ NULL,
+    /* num_nodes = */ 0,
+    /* test_result (defaulted to) = */ false
+};
+
 static char *test_destroy_nodes[] = { "nut" };
 static black_box_state_t test_case_meshlink_destroy_01_state = {
     /* test_case_name = */ "test_case_meshlink_destroy_01",
@@ -400,8 +477,6 @@ static black_box_state_t test_case_meshlink_destroy_05_state = {
     /* num_nodes = */ 0,
     /* test_result (defaulted to) = */ false
 };
-
-
 
 /* State structure for Meta-connections Test Case #1 */
 static black_box_state_t test_case_set_rec_cb_01_state = {
@@ -740,6 +815,31 @@ static black_box_state_t test_case_export_04_state = {
     /* test_result (defaulted to) = */ false
 };
 
+/* State structure for Meta-connections Test Case #1 */
+static char *test_discovery_1_nodes[] = { "relay", "peer" };
+static black_box_state_t test_case_discovery_01_state = {
+    /* test_case_name = */ "test_case_discovery_01",
+    /* node_names = */ test_discovery_1_nodes,
+    /* num_nodes = */ 2,
+    /* test_result (defaulted to) = */ false
+};
+
+/* State structure for Meta-connections Test Case #2 */
+static char *test_discovery_2_nodes[] = { "relay", "peer" };
+static black_box_state_t test_case_discovery_02_state = {
+    /* test_case_name = */ "test_case_discovery_02",
+    /* node_names = */ test_discovery_2_nodes,
+    /* num_nodes = */ 2,
+    /* test_result (defaulted to) = */ false
+};
+
+/* State structure for Meta-connections Test Case #3 */
+static black_box_state_t test_case_discovery_03_state = {
+    /* test_case_name = */ "test_case_meta_conn_03",
+    /* node_names = */ NULL,
+    /* num_nodes = */ 0,
+    /* test_result (defaulted to) = */ false
+};
 
 int black_box_group0_setup(void **state) {
     char *nodes[] = { "peer", "relay" };
@@ -862,8 +962,35 @@ int main(int argc, char *argv[]) {
 				cmocka_unit_test_prestate_setup_teardown(test_case_mesh_get_port_02, NULL, NULL,
             (void *)&test_mesh_get_port_02_state)
 		};
-    const struct CMUnitTest blackbox_destroy_tests[] = {
-        cmocka_unit_test_prestate_setup_teardown(test_case_meshlink_destroy_01, NULL, NULL,
+		const struct CMUnitTest blackbox_blacklist_tests[] = {
+				cmocka_unit_test_prestate_setup_teardown(test_case_mesh_blacklist_01, NULL, NULL,
+            (void *)&test_mesh_blacklist_01_state),
+				cmocka_unit_test_prestate_setup_teardown(test_case_mesh_blacklist_02, NULL, NULL,
+            (void *)&test_mesh_blacklist_02_state),
+				cmocka_unit_test_prestate_setup_teardown(test_case_mesh_blacklist_03, NULL, NULL,
+            (void *)&test_mesh_blacklist_03_state)
+		};
+		const struct CMUnitTest blackbox_whitelist_tests[] = {
+				cmocka_unit_test_prestate_setup_teardown(test_case_mesh_whitelist_01, NULL, NULL,
+            (void *)&test_mesh_whitelist_01_state),
+				cmocka_unit_test_prestate_setup_teardown(test_case_mesh_whitelist_02, NULL, NULL,
+            (void *)&test_mesh_whitelist_02_state),
+				cmocka_unit_test_prestate_setup_teardown(test_case_mesh_whitelist_03, NULL, NULL,
+            (void *)&test_mesh_whitelist_03_state)
+		};
+		const struct CMUnitTest blackbox_default_blacklist_tests[] = {
+				cmocka_unit_test_prestate_setup_teardown(test_case_mesh_default_blacklist_01, NULL, NULL,
+            (void *)&test_mesh_default_blacklist_01_state),
+				cmocka_unit_test_prestate_setup_teardown(test_case_mesh_default_blacklist_02, NULL, NULL,
+            (void *)&test_mesh_default_blacklist_02_state)
+		};
+		const struct CMUnitTest blackbox_channel_open_tests[] = {
+				cmocka_unit_test_prestate_setup_teardown(test_case_mesh_channel_open_01, NULL, NULL,
+            (void *)&test_mesh_channel_open_01_state)
+		};
+  /*  con
+  /*  const struct CMUnitTest blackbox_destroy_tests[] = {
+			 cmocka_unit_test_prestate_setup_teardown(test_case_meshlink_destroy_01, NULL, NULL,
             (void *)&test_case_meshlink_destroy_01_state),
         cmocka_unit_test_prestate_setup_teardown(test_case_meshlink_destroy_02, NULL, NULL,
             (void *)&test_case_meshlink_destroy_02_state),
@@ -987,12 +1114,21 @@ int main(int argc, char *argv[]) {
             (void *)&test_case_export_02_state),
         cmocka_unit_test_prestate_setup_teardown(test_case_export_03, NULL, NULL,
             (void *)&test_case_export_03_state),
-        cmocka_unit_test_prestate_setup_teardown(test_case_export_04, NULL, NULL,
-            (void *)&test_case_export_04_state)
+       	cmocka_unit_test_prestate_setup_teardown(test_case_export_04, NULL, NULL,
+            (void *)&test_case_export_04_state)	
     };
     int num_tests_export = sizeof(blackbox_export_tests) / sizeof(blackbox_export_tests[0]);
 
-    int num0_tests = sizeof(blackbox_group0_tests) / sizeof(blackbox_group0_tests[0]);
+  	const struct CMUnitTest blackbox_discovery_tests[] = {
+        cmocka_unit_test_prestate_setup_teardown(test_case_discovery_01, setup_test, teardown_test,
+            (void *)&test_case_discovery_01_state),
+        cmocka_unit_test_prestate_setup_teardown(test_case_discovery_02, setup_test, teardown_test,
+            (void *)&test_case_discovery_02_state),
+        cmocka_unit_test_prestate_setup_teardown(test_case_discovery_03, NULL, NULL,
+           (void *)&test_case_discovery_03_state)
+    };	*/
+
+   int num0_tests = sizeof(blackbox_group0_tests) / sizeof(blackbox_group0_tests[0]);
     int num1_tests = sizeof(blackbox_open_tests) / sizeof(blackbox_open_tests[0]);
     int num2_tests = sizeof(blackbox_start_tests) / sizeof(blackbox_start_tests[0]);
     int num3_tests = sizeof(blackbox_stop_close_tests) / sizeof(blackbox_stop_close_tests[0]);
@@ -1004,10 +1140,15 @@ int main(int argc, char *argv[]) {
     int num9_tests = sizeof(blackbox_get_ex_addr_tests) / sizeof(blackbox_get_ex_addr_tests[0]);
     int num10_tests = sizeof(blackbox_add_ex_addr_tests) / sizeof(blackbox_add_ex_addr_tests[0]);
     int num11_tests = sizeof(blackbox_get_port_tests) / sizeof(blackbox_get_port_tests[0]);
+    int num12_tests = sizeof(blackbox_blacklist_tests) / sizeof(blackbox_blacklist_tests[0]);
+    int num13_tests = sizeof(blackbox_whitelist_tests) / sizeof(blackbox_whitelist_tests[0]);
+    int num14_tests = sizeof(blackbox_default_blacklist_tests) / sizeof(blackbox_default_blacklist_tests[0]);
+    //int num15_tests = sizeof(blackbox_discovery_tests) / sizeof(blackbox_discovery_tests[0]);
+    int num16_tests = sizeof(blackbox_channel_open_tests) / sizeof(blackbox_channel_open_tests[0]);
 
-		int num_tests = num0_tests + num1_tests + num2_tests + num3_tests + num4_tests + num5_tests + num6_tests + num7_tests + num8_tests + num9_tests + num10_tests + num11_tests + num_tests_destroy + num_tests_receive + num_tests_get_fp + num_tests_get_all + num_tests_sign + num_tests_verify + num_tests_set_port + num_tests_invite + num_tests_export;
+		int num_tests = num0_tests + num1_tests + num2_tests + num3_tests + num4_tests + num5_tests + num6_tests + num7_tests + num8_tests + num9_tests + num10_tests + num11_tests + num12_tests + num13_tests + num14_tests /*+ num15_tests + num_tests_destroy + num_tests_receive + num_tests_get_fp + num_tests_get_all + num_tests_sign + num_tests_verify + num_tests_set_port + num_tests_invite + num_tests_export*/;
 
-    int failed_tests = 0, group0failed = 0, group1failed = 0, group2failed = 0, group3failed = 0, group4failed = 0, group5failed = 0, group6failed = 0, group7failed = 0, group8failed = 0, group9failed = 0, group10failed = 0, group11failed = 0, group12failed = 0, group13failed = 0, group14failed = 0, group15failed = 0, group16failed = 0, group17failed = 0, group18failed = 0, group19failed = 0, group20failed = 0;
+    int failed_tests = 0, group0failed = 0, group1failed = 0, group2failed = 0, group3failed = 0, group4failed = 0, group5failed = 0, group6failed = 0, group7failed = 0, group8failed = 0, group9failed = 0, group10failed = 0, group11failed = 0, group12failed = 0, group13failed = 0, group14failed = 0, group15failed = 0, group16failed = 0, group17failed = 0, group18failed = 0, group19failed = 0, group20failed = 0, group21failed = 0, group22failed = 0, group23failed = 0, group24failed = 0;
 
 
     /* Set configuration */
@@ -1030,7 +1171,7 @@ int main(int argc, char *argv[]) {
 		group9failed = cmocka_run_group_tests(blackbox_get_ex_addr_tests, NULL, NULL);
 		group10failed = cmocka_run_group_tests(blackbox_add_ex_addr_tests, NULL, NULL);
 		group11failed = cmocka_run_group_tests(blackbox_get_port_tests, NULL, NULL);
-		group12failed = cmocka_run_group_tests(blackbox_destroy_tests, NULL, NULL);
+		/*group12failed = cmocka_run_group_tests(blackbox_destroy_tests, NULL, NULL);
 		group13failed = cmocka_run_group_tests(blackbox_receive_tests, NULL, NULL);
 		group14failed = cmocka_run_group_tests(blackbox_get_fingerprint_tests, NULL, NULL);
 		group15failed = cmocka_run_group_tests(blackbox_get_all_nodes, NULL, NULL);
@@ -1038,9 +1179,14 @@ int main(int argc, char *argv[]) {
 		group17failed = cmocka_run_group_tests(blackbox_verify_tests, NULL, NULL);
 		group18failed = cmocka_run_group_tests(blackbox_set_port_tests, NULL, NULL);
 		group19failed = cmocka_run_group_tests(blackbox_invite_tests, NULL, NULL);
-		group20failed = cmocka_run_group_tests(blackbox_export_tests, NULL, NULL);
+		group20failed = cmocka_run_group_tests(blackbox_export_tests, NULL, NULL);*/
+		group21failed = cmocka_run_group_tests(blackbox_blacklist_tests, NULL, NULL);
+		group22failed = cmocka_run_group_tests(blackbox_whitelist_tests, NULL, NULL);
+		group23failed = cmocka_run_group_tests(blackbox_default_blacklist_tests, NULL, NULL);
+		group24failed = cmocka_run_group_tests(blackbox_channel_open_tests, NULL, NULL);
 
-		failed_tests = group1failed + group2failed + group3failed + group4failed + group5failed + group6failed + group7failed + group8failed + group9failed + group10failed + group11failed + group12failed + group13failed +group14failed + group15failed + group16failed + group17failed + group18failed + group19failed + group20failed;
+		//int discfailed = cmocka_run_group_tests(blackbox_discovery_tests, black_box_group0_setup, black_box_group0_teardown);
+		failed_tests = group0failed + group1failed + group2failed + group3failed + group4failed + group5failed + group6failed + group7failed + group8failed + group9failed + group10failed + group11failed + group12failed + group13failed +group14failed + group15failed + group16failed + group17failed + group18failed + group19failed + group20failed + group21failed + group22failed + group23failed + group24failed /*+discfailed*/;
 
 
     printf("[ PASSED ] %d test(s).\n", num_tests - failed_tests);

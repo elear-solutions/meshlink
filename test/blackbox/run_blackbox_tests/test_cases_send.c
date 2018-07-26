@@ -54,7 +54,7 @@ bool test_steps_mesh_send_01(void) {
 	data = buf;
 	len = sizeof(buf);
 
-	mesh = meshlink_open("send_conf", "foo", "chat", DEV_CLASS_STATIONARY);
+	mesh = meshlink_open("send_conf.1", "foo", "chat", DEV_CLASS_STATIONARY);
 	assert(mesh != NULL);
 
 	meshlink_set_receive_cb(mesh, receive);
@@ -82,6 +82,7 @@ bool test_steps_mesh_send_01(void) {
 
 	meshlink_close(mesh);
 	meshlink_stop(mesh);
+	meshlink_destroy("send_conf.1");
   return result;
 }
 
@@ -103,7 +104,7 @@ bool test_steps_mesh_send_02(void) {
 	data = buf;
 	len = sizeof(buf);
 
-	mesh = meshlink_open("send_conf", "foo", "chat", DEV_CLASS_STATIONARY);
+	mesh = meshlink_open("send_conf.2", "foo", "chat", DEV_CLASS_STATIONARY);
 	assert(mesh != NULL);
 	if(!mesh) {
 		fprintf(stderr, "meshlink_open status: %s\n", meshlink_strerror(meshlink_errno));
@@ -137,7 +138,7 @@ bool test_steps_mesh_send_02(void) {
 
 	meshlink_close(mesh);
 	meshlink_stop(mesh);
-
+	meshlink_destroy("send_conf.2");
   return result;
 }
 
@@ -159,7 +160,7 @@ bool test_steps_mesh_send_03(void) {
 	data = buf;
 	len = sizeof(buf);
 
-	mesh = meshlink_open("send_conf", "foo", "chat", DEV_CLASS_STATIONARY);
+	mesh = meshlink_open("send_conf.3", "foo", "chat", DEV_CLASS_STATIONARY);
 	assert(mesh != NULL);
 	if(!mesh) {
 		fprintf(stderr, "meshlink_open status: %s\n", meshlink_strerror(meshlink_errno));
@@ -192,6 +193,7 @@ bool test_steps_mesh_send_03(void) {
 
 	meshlink_stop(mesh);
 	meshlink_close(mesh);
+	meshlink_destroy("send_conf.3");
   return result;
 }
 
@@ -218,7 +220,7 @@ bool test_steps_mesh_send_04(void) {
 	char *data = NULL;
 	size_t len;
 
-	mesh = meshlink_open("send_conf", "foo", "chat", DEV_CLASS_STATIONARY);
+	mesh = meshlink_open("send_conf.4", "foo", "chat", DEV_CLASS_STATIONARY);
 	assert(mesh != NULL);
 	if(!mesh) {
 		fprintf(stderr, "meshlink_open status: %s\n", meshlink_strerror(meshlink_errno));
@@ -252,6 +254,7 @@ bool test_steps_mesh_send_04(void) {
 
 	meshlink_stop(mesh);
 	meshlink_close(mesh);
+	meshlink_destroy("send_conf.4");
   return result;
 }
 
@@ -278,7 +281,7 @@ bool test_steps_mesh_send_05(void) {
 	char *data = NULL;
 	size_t len;
 
-	mesh = meshlink_open("send_conf", "foo", "chat", DEV_CLASS_STATIONARY);
+	mesh = meshlink_open("send_conf.5", "foo", "chat", DEV_CLASS_STATIONARY);
 	assert(mesh != NULL);
 	if(!mesh) {
 		fprintf(stderr, "meshlink_open status: %s\n", meshlink_strerror(meshlink_errno));
@@ -311,6 +314,7 @@ bool test_steps_mesh_send_05(void) {
 
 	meshlink_stop(mesh);
 	meshlink_close(mesh);
+	meshlink_destroy("send_conf.5");
   return result;
 }
 
@@ -332,7 +336,7 @@ bool test_steps_mesh_send_06(void) {
 	data = buf;
 	len = sizeof(buf);
 
-	mesh = meshlink_open("send_conf", "foo", "chat", DEV_CLASS_STATIONARY);
+	mesh = meshlink_open("send_conf.6", "foo", "chat", DEV_CLASS_STATIONARY);
 	assert(mesh != NULL);
 	if(!mesh) {
 		fprintf(stderr, "meshlink_open status: %s\n", meshlink_strerror(meshlink_errno));
@@ -365,6 +369,7 @@ bool test_steps_mesh_send_06(void) {
 
 	meshlink_stop(mesh);
 	meshlink_close(mesh);
+	meshlink_destroy("send_conf.6");
   return result;
 }
 

@@ -36,7 +36,7 @@ bool test_steps_mesh_get_port_01(void) {
 	bool result = false;
 	int port = 0;
 
-  meshlink_handle_t *mesh = meshlink_open("pmtu_conf", "foo", "chat", DEV_CLASS_STATIONARY);
+  meshlink_handle_t *mesh = meshlink_open("port_conf.1", "foo", "chat", DEV_CLASS_STATIONARY);
 	assert(mesh != NULL);
 	if(!mesh) {
 		fprintf(stderr, "meshlink_open status2: %s\n", meshlink_strerror(meshlink_errno));
@@ -59,6 +59,7 @@ bool test_steps_mesh_get_port_01(void) {
 
 	meshlink_stop(mesh);
 	meshlink_close(mesh);
+	meshlink_destroy("port_conf.1");
   return result;
 }
 
@@ -73,7 +74,7 @@ bool test_steps_mesh_get_port_02(void) {
 	bool result = false;
 	int port = 0;
 
-  meshlink_handle_t *mesh = meshlink_open("pmtu_conf", "foo", "chat", DEV_CLASS_STATIONARY);
+  meshlink_handle_t *mesh = meshlink_open("port_conf.2", "foo", "chat", DEV_CLASS_STATIONARY);
 	assert(mesh != NULL);
 	if(!mesh) {
 		fprintf(stderr, "meshlink_open status2: %s\n", meshlink_strerror(meshlink_errno));
@@ -95,5 +96,6 @@ bool test_steps_mesh_get_port_02(void) {
 
 	meshlink_stop(mesh);
 	meshlink_close(mesh);
+	meshlink_destroy("port_conf.2");
   return result;
 }
