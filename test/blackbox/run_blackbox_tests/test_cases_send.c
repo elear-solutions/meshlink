@@ -1,32 +1,114 @@
-/*
-    test_cases_send.c -- Execution of specific meshlink black box test cases
-    Copyright (C) 2017  Guus Sliepen <guus@meshlink.io>
-                        Manav Kumar Mehta <manavkumarm@yahoo.com>
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License along
-    with this program; if not, write to the Free Software Foundation, Inc.,
-    51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
-*/
+/*===================================================================================*/
+/*************************************************************************************/
+/**
+ * @file      test_cases_send.c -- Execution of specific meshlink black box test cases
+ * @see
+ * @author    Sri Harsha K, sriharsha@elear.solutions
+ * @copyright 2017  Guus Sliepen <guus@meshlink.io>
+ *                  Manav Kumar Mehta <manavkumarm@yahoo.com>
+ * @license   To any person (the "Recipient") obtaining a copy of this software and
+ *            associated documentation files (the "Software"):\n
+ *            All information contained in or disclosed by this software is
+ *            confidential and proprietary information of Elear Solutions Tech
+ *            Private Limited and all rights therein are expressly reserved.
+ *            By accepting this material the recipient agrees that this material and
+ *            the information contained therein is held in confidence and in trust
+ *            and will NOT be used, copied, modified, merged, published, distributed,
+ *            sublicensed, reproduced in whole or in part, nor its contents revealed
+ *            in any manner to others without the express written permission of
+ *            Elear Solutions Tech Private Limited.
+ */
+/*************************************************************************************/
+/*===================================================================================*/
 #include "execute_tests.h"
 #include "test_cases_send.h"
 #include "../common/containers.h"
 #include "../common/test_step.h"
 #include "../common/common_handlers.h"
+#include <stdlib.h>
+#include <stdarg.h>
+#include <setjmp.h>
+#include <cmocka.h>
 #include <assert.h>
 #include <string.h>
 
+/*************************************************************************************
+ *                          LOCAL MACROS                                             *
+ *************************************************************************************/
+
+/*************************************************************************************
+ *                          LOCAL PROTOTYPES                                         *
+ *************************************************************************************/
+static void test_case_mesh_send_01(void **state);
+static bool test_steps_mesh_send_01(void);
+static void test_case_mesh_send_02(void **state);
+static bool test_steps_mesh_send_02(void);
+static void test_case_mesh_send_03(void **state);
+static bool test_steps_mesh_send_03(void);
+static void test_case_mesh_send_04(void **state);
+static bool test_steps_mesh_send_04(void);
+static void test_case_mesh_send_05(void **state);
+static bool test_steps_mesh_send_05(void);
+static void test_case_mesh_send_06(void **state);
+static bool test_steps_mesh_send_06(void);
+
+/*************************************************************************************
+ *                          PRIVATE FUNCTIONS                                        *
+ *************************************************************************************/
+/* State structure for meshlink_send Test Case #1 */
+static black_box_state_t test_mesh_send_01_state = {
+    /* test_case_name = */ "test_case_mesh_send_01",
+    /* node_names = */ NULL,
+    /* num_nodes = */ 0,
+    /* test_result (defaulted to) = */ false
+};
+
+/* State structure for meshlink_send Test Case #2 */
+static black_box_state_t test_mesh_send_02_state = {
+    /* test_case_name = */ "test_case_mesh_send_02",
+    /* node_names = */ NULL,
+    /* num_nodes = */ 0,
+    /* test_result (defaulted to) = */ false
+};
+
+/* State structure for meshlink_send Test Case #3 */
+static black_box_state_t test_mesh_send_03_state = {
+    /* test_case_name = */ "test_case_mesh_send_03",
+    /* node_names = */ NULL,
+    /* num_nodes = */ 0,
+    /* test_result (defaulted to) = */ false
+};
+
+/* State structure for meshlink_send Test Case #4 */
+static black_box_state_t test_mesh_send_04_state = {
+    /* test_case_name = */ "test_case_mesh_send_04",
+    /* node_names = */ NULL,
+    /* num_nodes = */ 0,
+    /* test_result (defaulted to) = */ false
+};
+
+/* State structure for meshlink_send Test Case #5 */
+static black_box_state_t test_mesh_send_05_state = {
+    /* test_case_name = */ "test_case_mesh_send_05",
+    /* node_names = */ NULL,
+    /* num_nodes = */ 0,
+    /* test_result (defaulted to) = */ false
+};
+
+/* State structure for meshlink_send Test Case #6 */
+static black_box_state_t test_mesh_send_06_state = {
+    /* test_case_name = */ "test_case_mesh_send_06",
+    /* node_names = */ NULL,
+    /* num_nodes = */ 0,
+    /* test_result (defaulted to) = */ false
+};
+
+/*************************************************************************************
+ *                          PRIVATE FUNCTIONS                                        *
+ *************************************************************************************/
+
 /* Execute meshlink_send Test Case # 1 */
-void test_case_mesh_send_01(void **state) {
+static void test_case_mesh_send_01(void **state) {
     execute_test(test_steps_mesh_send_01, state);
     return;
 }
@@ -43,7 +125,7 @@ static void receive(meshlink_handle_t *mesh, meshlink_node_t *dest_node, const v
 }
 
 /* Test Steps for meshlink_send Test Case # 1*/
-bool test_steps_mesh_send_01(void) {
+static bool test_steps_mesh_send_01(void) {
 	bool result = false;
   meshlink_handle_t *mesh = NULL;
 	meshlink_node_t *dest_node = NULL;
@@ -87,13 +169,13 @@ bool test_steps_mesh_send_01(void) {
 }
 
 /* Execute meshlink_send Test Case # 2 */
-void test_case_mesh_send_02(void **state) {
+static void test_case_mesh_send_02(void **state) {
     execute_test(test_steps_mesh_send_02, state);
     return;
 }
 
 /* Test Steps for meshlink_send Test Case # 2*/
-bool test_steps_mesh_send_02(void) {
+static bool test_steps_mesh_send_02(void) {
 	bool result = false;
   meshlink_handle_t *mesh = NULL;
 	meshlink_node_t *dest_node = NULL;
@@ -130,7 +212,7 @@ bool test_steps_mesh_send_02(void) {
 	assert(result != true	);
 	if(!result) {
 		fprintf(stderr, "meshlink_send status: %s\n", meshlink_strerror(meshlink_errno));
-		return true;
+		result = true;
 	} else {
 		fprintf(stderr, "data %s sent to %s node\n", data, dest_node->name);
 		result = false;
@@ -143,13 +225,13 @@ bool test_steps_mesh_send_02(void) {
 }
 
 /* Execute meshlink_send Test Case # 3 */
-void test_case_mesh_send_03(void **state) {
+static void test_case_mesh_send_03(void **state) {
     execute_test(test_steps_mesh_send_03, state);
     return;
 }
 
 /* Test Steps for meshlink_send Test Case # 3*/
-bool test_steps_mesh_send_03(void) {
+static bool test_steps_mesh_send_03(void) {
 	bool result = false;
   meshlink_handle_t *mesh = NULL;
 	meshlink_node_t *dest_node = NULL;
@@ -185,7 +267,7 @@ bool test_steps_mesh_send_03(void) {
 	assert(result != true);
 	if(!result) {
 		fprintf(stderr, "meshlink_send status3: %s\n", meshlink_strerror(meshlink_errno));
-		return true;
+		result = true;
 	} else {
 		fprintf(stderr, "data %s sent to %s node\n", data, dest_node->name);
 		result = false;
@@ -198,7 +280,7 @@ bool test_steps_mesh_send_03(void) {
 }
 
 /* Execute meshlink_send Test Case # 4 */
-void test_case_mesh_send_04(void **state) {
+static void test_case_mesh_send_04(void **state) {
     execute_test(test_steps_mesh_send_04, state);
     return;
 }
@@ -213,7 +295,7 @@ static void receive4(meshlink_handle_t *mesh, meshlink_node_t *dest_node, const 
 	fprintf(stderr, "%s says: %s\n", dest_node->name, msg);
 }
 /* Test Steps for meshlink_send Test Case # 4*/
-bool test_steps_mesh_send_04(void) {
+static bool test_steps_mesh_send_04(void) {
 	bool result = false;
   meshlink_handle_t *mesh = NULL;
 	meshlink_node_t *dest_node = NULL;
@@ -259,7 +341,7 @@ bool test_steps_mesh_send_04(void) {
 }
 
 /* Execute meshlink_send Test Case # 5 */
-void test_case_mesh_send_05(void **state) {
+static void test_case_mesh_send_05(void **state) {
     execute_test(test_steps_mesh_send_05, state);
     return;
 }
@@ -274,7 +356,7 @@ static void receive5(meshlink_handle_t *mesh, meshlink_node_t *dest_node, const 
 	fprintf(stderr, "%s says: %s\n", dest_node->name, msg);
 }
 /* Test Steps for meshlink_send Test Case # 5*/
-bool test_steps_mesh_send_05(void) {
+static bool test_steps_mesh_send_05(void) {
 	bool result = false;
   meshlink_handle_t *mesh = NULL;
 	meshlink_node_t *dest_node = NULL;
@@ -319,13 +401,13 @@ bool test_steps_mesh_send_05(void) {
 }
 
 /* Execute meshlink_send Test Case # 6 */
-void test_case_mesh_send_06(void **state) {
+static void test_case_mesh_send_06(void **state) {
     execute_test(test_steps_mesh_send_06, state);
     return;
 }
 
 /* Test Steps for meshlink_send Test Case # 6*/
-bool test_steps_mesh_send_06(void) {
+static bool test_steps_mesh_send_06(void) {
 	bool result = false;
   meshlink_handle_t *mesh = NULL;
 	meshlink_node_t *dest_node = NULL;
@@ -361,7 +443,7 @@ bool test_steps_mesh_send_06(void) {
 	assert(result != true);
 	if(!result) {
 		fprintf(stderr, "meshlink_send status6: %s\n", meshlink_strerror(meshlink_errno));
-		return true;
+		result = true;
 	} else {
 		fprintf(stderr, "data %s sent to %s node\n", data, dest_node->name);
 		result = false;
@@ -373,3 +455,26 @@ bool test_steps_mesh_send_06(void) {
   return result;
 }
 
+/*************************************************************************************
+ *                          PUBLIC FUNCTIONS                                         *
+ *************************************************************************************/
+int test_meshlink_send(void) {
+		const struct CMUnitTest blackbox_send_tests[] = {
+				cmocka_unit_test_prestate_setup_teardown(test_case_mesh_send_01, NULL, NULL,
+            (void *)&test_mesh_send_01_state),
+				cmocka_unit_test_prestate_setup_teardown(test_case_mesh_send_02, NULL, NULL,
+            (void *)&test_mesh_send_02_state),
+				cmocka_unit_test_prestate_setup_teardown(test_case_mesh_send_03, NULL, NULL,
+            (void *)&test_mesh_send_03_state),
+				cmocka_unit_test_prestate_setup_teardown(test_case_mesh_send_04, NULL, NULL,
+            (void *)&test_mesh_send_04_state),
+				cmocka_unit_test_prestate_setup_teardown(test_case_mesh_send_05, NULL, NULL,
+            (void *)&test_mesh_send_05_state),
+				cmocka_unit_test_prestate_setup_teardown(test_case_mesh_send_06, NULL, NULL,
+            (void *)&test_mesh_send_06_state)
+		};
+
+  total_tests += sizeof(blackbox_send_tests) / sizeof(blackbox_send_tests[0]);
+
+  return cmocka_run_group_tests(blackbox_send_tests, NULL, NULL);
+}

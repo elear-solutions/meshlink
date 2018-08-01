@@ -1,30 +1,81 @@
-/*
-    test_cases_blacklist.c -- Execution of specific meshlink black box test cases
-    Copyright (C) 2017  Guus Sliepen <guus@meshlink.io>
-                        Manav Kumar Mehta <manavkumarm@yahoo.com>
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License along
-    with this program; if not, write to the Free Software Foundation, Inc.,
-    51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
-*/
+/*===================================================================================*/
+/*************************************************************************************/
+/**
+ * @file      test_cases_add_addr.c -- Execution of specific meshlink black box test cases
+ * @see
+ * @author    Sri Harsha K, sriharsha@elear.solutions
+ * @copyright 2017  Guus Sliepen <guus@meshlink.io>
+ *                  Manav Kumar Mehta <manavkumarm@yahoo.com>
+ * @license   To any person (the "Recipient") obtaining a copy of this software and
+ *            associated documentation files (the "Software"):\n
+ *            All information contained in or disclosed by this software is
+ *            confidential and proprietary information of Elear Solutions Tech
+ *            Private Limited and all rights therein are expressly reserved.
+ *            By accepting this material the recipient agrees that this material and
+ *            the information contained therein is held in confidence and in trust
+ *            and will NOT be used, copied, modified, merged, published, distributed,
+ *            sublicensed, reproduced in whole or in part, nor its contents revealed
+ *            in any manner to others without the express written permission of
+ *            Elear Solutions Tech Private Limited.
+ */
+/*************************************************************************************/
+/*===================================================================================*/
 #include "execute_tests.h"
 #include "test_cases_blacklist.h"
 #include "../common/containers.h"
 #include "../common/test_step.h"
 #include "../common/common_handlers.h"
+#include <stdlib.h>
+#include <stdarg.h>
+#include <setjmp.h>
+#include <cmocka.h>
 #include <assert.h>
 #include <string.h>
 
+/*************************************************************************************
+ *                          LOCAL MACROS                                             *
+ *************************************************************************************/
+
+/*************************************************************************************
+ *                          LOCAL PROTOTYPES                                         *
+ *************************************************************************************/
+static void test_case_mesh_blacklist_01(void **state);
+static bool test_steps_mesh_blacklist_01(void);
+static void test_case_mesh_blacklist_02(void **state);
+static bool test_steps_mesh_blacklist_02(void);
+static void test_case_mesh_blacklist_03(void **state);
+static bool test_steps_mesh_blacklist_03(void);
+
+/*************************************************************************************
+ *                          LOCAL VARIABLES                                          *
+ *************************************************************************************/
+/* State structure for meshlink_blacklist Test Case #1 */
+static black_box_state_t test_mesh_blacklist_01_state = {
+    /* test_case_name = */ "test_case_mesh_blacklist_01",
+    /* node_names = */ NULL,
+    /* num_nodes = */ 0,
+    /* test_result (defaulted to) = */ false
+};
+
+/* State structure for meshlink_blacklist Test Case #2 */
+static black_box_state_t test_mesh_blacklist_02_state = {
+    /* test_case_name = */ "test_case_mesh_blacklist_02",
+    /* node_names = */ NULL,
+    /* num_nodes = */ 0,
+    /* test_result (defaulted to) = */ false
+};
+
+/* State structure for meshlink_blacklist Test Case #3 */
+static black_box_state_t test_mesh_blacklist_03_state = {
+    /* test_case_name = */ "test_case_mesh_blacklist_03",
+    /* node_names = */ NULL,
+    /* num_nodes = */ 0,
+    /* test_result (defaulted to) = */ false
+};
+
+/*************************************************************************************
+ *                          PRIVATE FUNCTIONS                                        *
+ *************************************************************************************/
 /* Execute meshlink_blacklist Test Case # 1*/
 void test_case_mesh_blacklist_01(void **state) {
 	 execute_test(test_steps_mesh_blacklist_01, state);
@@ -42,9 +93,9 @@ static void receive(meshlink_handle_t *mesh, meshlink_node_t *src, const void *d
 	fprintf(stderr, "%s says: %s\n", src->name, msg);
 }
 
-volatile bool bar_reachable = false;
+static volatile bool bar_reachable = false;
 
-void status_cb(meshlink_handle_t *mesh, meshlink_node_t *node, bool reachable) {
+static void status_cb(meshlink_handle_t *mesh, meshlink_node_t *node, bool reachable) {
 	if(!strcmp(node->name, "bar"))
 		bar_reachable = reachable;
 }
@@ -65,12 +116,14 @@ bool test_steps_mesh_blacklist_01(void) {
 	meshlink_destroy("blacklist_conf.1");
 	meshlink_destroy("blacklist_conf.2");
 	meshlink_handle_t *mesh1 = meshlink_open("blacklist_conf.1", "foo", "blacklist", DEV_CLASS_BACKBONE);
+	assert(mesh1 != NULL);
 	if(!mesh1) {
 		fprintf(stderr, "Could not initialize configuration for foo\n");
 		return false;
 	}
 
 	meshlink_handle_t *mesh2 = meshlink_open("blacklist_conf.2", "bar", "blacklist", DEV_CLASS_BACKBONE);
+	assert(mesh2 != NULL);	
 	if(!mesh2) {
 		fprintf(stderr, "Could not initialize configuration for bar\n");
 		return false;
@@ -90,6 +143,7 @@ bool test_steps_mesh_blacklist_01(void) {
 	meshlink_add_address(mesh2, "localhost");
 
 	char *data = meshlink_export(mesh1);
+	assert(data != NULL);
 	if(!data) {
 		fprintf(stderr, "Foo could not export its configuration\n");
 		return false;
@@ -103,6 +157,7 @@ bool test_steps_mesh_blacklist_01(void) {
 	free(data);
 
 	data = meshlink_export(mesh2);
+	assert(data != NULL);
 	if(!data) {
 		fprintf(stderr, "Bar could not export its configuration\n");
 		return false;
@@ -135,11 +190,13 @@ bool test_steps_mesh_blacklist_01(void) {
 
 	sleep(2);
 	meshlink_node_t *bar = meshlink_get_node(mesh1, "bar");
+	assert(bar != NULL);
 	if(!bar) {
 		fprintf(stderr, "Bar did not know about node bar\n");
 		return false;
 	}
 	meshlink_node_t *foo = meshlink_get_node(mesh2, "foo");
+	assert(foo != NULL);
 	if(!foo) {
 		fprintf(stderr, "Bar did not know about node bar\n");
 		return false;
@@ -198,15 +255,17 @@ bool test_steps_mesh_blacklist_02(void) {
 	size_t len = sizeof(buf);
 	size_t leng = sizeof(buffer);
 	// Open two new meshlink instance.
-	meshlink_destroy("blacklist_conf.1");
-	meshlink_destroy("blacklist_conf.2");
-	meshlink_handle_t *mesh1 = meshlink_open("blacklist_conf.1", "foo", "blacklist", DEV_CLASS_BACKBONE);
+	meshlink_destroy("blacklist_conf.3");
+	meshlink_destroy("blacklist_conf.4");
+	meshlink_handle_t *mesh1 = meshlink_open("blacklist_conf.3", "foo", "blacklist", DEV_CLASS_BACKBONE);
+	assert(mesh1 != NULL);
 	if(!mesh1) {
 		fprintf(stderr, "Could not initialize configuration for foo\n");
 		return false;
 	}
 
-	meshlink_handle_t *mesh2 = meshlink_open("blacklist_conf.2", "bar", "blacklist", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *mesh2 = meshlink_open("blacklist_conf.4", "bar", "blacklist", DEV_CLASS_BACKBONE);
+	assert(mesh2 != NULL);
 	if(!mesh2) {
 		fprintf(stderr, "Could not initialize configuration for bar\n");
 		return false;
@@ -226,6 +285,7 @@ bool test_steps_mesh_blacklist_02(void) {
 	meshlink_add_address(mesh2, "localhost");
 
 	char *data = meshlink_export(mesh1);
+	assert(data != NULL);
 	if(!data) {
 		fprintf(stderr, "Foo could not export its configuration\n");
 		return false;
@@ -239,6 +299,7 @@ bool test_steps_mesh_blacklist_02(void) {
 	free(data);
 
 	data = meshlink_export(mesh2);
+	assert(data != NULL);
 	if(!data) {
 		fprintf(stderr, "Bar could not export its configuration\n");
 		return false;
@@ -271,11 +332,13 @@ bool test_steps_mesh_blacklist_02(void) {
 
 	sleep(2);
 	meshlink_node_t *bar = meshlink_get_node(mesh1, "bar");
+	assert(bar != NULL);
 	if(!bar) {
 		fprintf(stderr, "Bar did not know about node bar\n");
 		return false;
 	}
 	meshlink_node_t *foo = meshlink_get_node(mesh2, "foo");
+	assert(foo != NULL);
 	if(!foo) {
 		fprintf(stderr, "Bar did not know about node bar\n");
 		return false;
@@ -310,8 +373,8 @@ bool test_steps_mesh_blacklist_02(void) {
 	meshlink_stop(mesh1);
 	meshlink_close(mesh2);
 	meshlink_close(mesh1);
-	meshlink_destroy("blacklist_conf.1");
-	meshlink_destroy("blacklist_conf.2");
+	meshlink_destroy("blacklist_conf.3");
+	meshlink_destroy("blacklist_conf.4");
 	return result;
 }
 
@@ -333,15 +396,17 @@ bool test_steps_mesh_blacklist_03(void) {
 	size_t len = sizeof(buf);
 	size_t leng = sizeof(buffer);
 	// Open two new meshlink instance.
-	meshlink_destroy("blacklist_conf.1");
-	meshlink_destroy("blacklist_conf.2");
-	meshlink_handle_t *mesh1 = meshlink_open("blacklist_conf.1", "foo", "blacklist", DEV_CLASS_BACKBONE);
+	meshlink_destroy("blacklist_conf.5");
+	meshlink_destroy("blacklist_conf.6");
+	meshlink_handle_t *mesh1 = meshlink_open("blacklist_conf.5", "foo", "blacklist", DEV_CLASS_BACKBONE);
+	assert(mesh1 != NULL);
 	if(!mesh1) {
 		fprintf(stderr, "Could not initialize configuration for foo\n");
 		return false;
 	}
 
-	meshlink_handle_t *mesh2 = meshlink_open("blacklist_conf.2", "bar", "blacklist", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *mesh2 = meshlink_open("blacklist_conf.6", "bar", "blacklist", DEV_CLASS_BACKBONE);
+	assert(mesh2 != NULL);
 	if(!mesh2) {
 		fprintf(stderr, "Could not initialize configuration for bar\n");
 		return false;
@@ -361,6 +426,7 @@ bool test_steps_mesh_blacklist_03(void) {
 	meshlink_add_address(mesh2, "localhost");
 
 	char *data = meshlink_export(mesh1);
+	assert(data != NULL);
 	if(!data) {
 		fprintf(stderr, "Foo could not export its configuration\n");
 		return false;
@@ -374,6 +440,7 @@ bool test_steps_mesh_blacklist_03(void) {
 	free(data);
 
 	data = meshlink_export(mesh2);
+	assert(data != NULL);
 	if(!data) {
 		fprintf(stderr, "Bar could not export its configuration\n");
 		return false;
@@ -406,11 +473,13 @@ bool test_steps_mesh_blacklist_03(void) {
 
 	sleep(2);
 	meshlink_node_t *bar = meshlink_get_node(mesh1, "bar");
+	assert(bar != NULL);
 	if(!bar) {
 		fprintf(stderr, "Bar did not know about node bar\n");
 		return false;
 	}
 	meshlink_node_t *foo = meshlink_get_node(mesh2, "foo");
+	assert(foo != NULL);
 	if(!foo) {
 		fprintf(stderr, "Bar did not know about node bar\n");
 		return false;
@@ -445,7 +514,24 @@ bool test_steps_mesh_blacklist_03(void) {
 	meshlink_stop(mesh1);
 	meshlink_close(mesh2);
 	meshlink_close(mesh1);
-	meshlink_destroy("blacklist_conf.1");
-	meshlink_destroy("blacklist_conf.2");
+	meshlink_destroy("blacklist_conf.5");
+	meshlink_destroy("blacklist_conf.6");
 	return result;
 }
+
+/*************************************************************************************
+ *                          PUBLIC FUNCTIONS                                         *
+ *************************************************************************************/
+int test_meshlink_blacklist(void) {
+	const struct CMUnitTest blackbox_blacklist_tests[] = {
+		cmocka_unit_test_prestate_setup_teardown(test_case_mesh_blacklist_01, NULL, NULL,
+          (void *)&test_mesh_blacklist_01_state),
+		cmocka_unit_test_prestate_setup_teardown(test_case_mesh_blacklist_02, NULL, NULL,
+          (void *)&test_mesh_blacklist_02_state)
+	};
+
+  total_tests += sizeof(blackbox_blacklist_tests) / sizeof(blackbox_blacklist_tests[0]);
+
+  return cmocka_run_group_tests(blackbox_blacklist_tests, NULL, NULL);
+}
+
