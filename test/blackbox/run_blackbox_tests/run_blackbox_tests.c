@@ -142,11 +142,13 @@ int main(int argc, char *argv[]) {
     eth_if_name = argv[CMD_LINE_ARG_ETH_IF_NAME];
 		choose_arch = argv[CMD_LINE_ARG_CHOOSE_ARCH];
 
-		//group0failed = cmocka_run_group_tests(blackbox_group0_tests, NULL, NULL);
+		group0failed = cmocka_run_group_tests(blackbox_group0_tests, NULL, NULL);
 		failed_tests += test_meshlink_open();
 		failed_tests += test_meshlink_start();
 		failed_tests += test_meshlink_stop_close();
 		failed_tests += test_meshlink_send();
+		failed_tests += test_meshlink_channel_send();
+		failed_tests += test_meshlink_channel_shutdown();
 		failed_tests += test_meshlink_pmtu();
 		failed_tests += test_meshlink_get_self();
 		failed_tests += test_meshlink_get_node();
@@ -158,10 +160,8 @@ int main(int argc, char *argv[]) {
 		failed_tests += test_meshlink_whitelist();
 		failed_tests += test_meshlink_default_blacklist();
 		failed_tests += test_meshlink_channel_open();
-		failed_tests += test_meshlink_channel_shutdown();
 		failed_tests += test_meshlink_channel_close();
-		failed_tests += test_meshlink_channel_send();
-    printf("[ PASSED ] %d test(s).\n", total_tests);
+    printf("[ PASSED ] %d test(s).\n", total_tests - failed_tests);
     printf("[ FAILED ] %d test(s).\n", failed_tests);
 
     return failed_tests;

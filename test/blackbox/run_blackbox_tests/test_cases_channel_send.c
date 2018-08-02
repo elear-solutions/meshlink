@@ -130,17 +130,18 @@ static void foo_receive_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel,
 	(void)mesh;
 	(void)channel;
 
-	fprintf(stderr, "foo_receive_cb %zu: \n", len);
-	//fwrite(data, 1, len, stdout);
-
+	printf("foo_receive_cb %zu: ", len);
+	fwrite(data, 1, len, stdout);
+	printf("\n");
 	if(len == 5 && !memcmp(data, "Hello", 5)) {
 		bar_responded = true;
 	}
 }
 
 static void bar_receive_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, const void *data, size_t len) {
-	fprintf(stderr, "bar_receive_cb %zu: \n", len);
-	//fwrite(data, 1, len, stdout);
+	printf("bar_receive_cb %zu: ", len);
+	fwrite(data, 1, len, stdout);
+	printf("\n");
 	// Echo the data back.
 	meshlink_channel_send(mesh, channel, data, len);
 }
@@ -151,16 +152,18 @@ static bool reject_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, uint
 	(void)port;
 	(void)data;
 	(void)len;
-
+	printf("reject_cb: (from %s on port %u) ", channel->node->name, (unsigned int)port);
 	return false;
 }
 
 static bool accept_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, uint16_t port, const void *data, size_t len) {
-	fprintf(stderr, "accept_cb: (from %s on port %u) \n", channel->node->name, (unsigned int)port);
+	printf("accept_cb: (from %s on port %u) ", channel->node->name, (unsigned int)port);
 
 	if(data) {
 		fwrite(data, 1, len, stdout);
 	}
+
+	printf("\n");
 
 	if(port != 7) {
 		return false;
@@ -320,14 +323,29 @@ static void test_case_mesh_channel_send_02(void **state) {
 	 execute_test(test_steps_mesh_channel_send_02, state);
    return;
 }
+
+static void foo_receive_cb1(meshlink_handle_t *mesh, meshlink_channel_t *channel, const void *data, size_t len) {
+	(void)mesh;
+	(void)channel;
+
+	printf("foo_receive_cb %zu: ", len);
+	fwrite(data, 1, len, stdout);
+	printf("\n");
+	if(len == 0) {
+		bar_responded = true;
+	}
+}
+
 static void poll_cb1(meshlink_handle_t *mesh, meshlink_channel_t *channel, size_t len) {
 	(void)len;
+	ssize_t s;
 
 	meshlink_set_channel_poll_cb(mesh, channel, NULL);
 
-	if(meshlink_channel_send(mesh, channel, NULL, 0) != 0) {
+	if(s=(meshlink_channel_send(mesh, channel, NULL, 0)) != 0) {
 		fprintf(stderr, "Could not send whole message\n");
 	}
+	printf("s=%li\n",s);
 }
 
 /* Test Steps for meshlink_channel_send Test Case # 2*/
@@ -429,8 +447,8 @@ static bool test_steps_mesh_channel_send_02(void) {
 		return false;
 	}
 
-	meshlink_channel_t *channel = meshlink_channel_open(mesh1, bar, 7, foo_receive_cb, NULL, 0);
-	meshlink_set_channel_poll_cb(mesh1, channel, poll_cb);
+	meshlink_channel_t *channel = meshlink_channel_open(mesh1, bar, 7, foo_receive_cb1, NULL, 0);
+	meshlink_set_channel_poll_cb(mesh1, channel, poll_cb1);
 
 	for(int i = 0; i < 20; i++) {
 		sleep(1);
@@ -574,7 +592,7 @@ static bool test_steps_mesh_channel_send_03(void) {
 	}
 
 	meshlink_channel_t *channel = meshlink_channel_open(mesh1, bar, 7, foo_receive_cb, NULL, 0);
-	meshlink_set_channel_poll_cb(mesh1, channel, poll_cb);
+	meshlink_set_channel_poll_cb(mesh1, channel, poll_cb2);
 
 	for(int i = 0; i < 20; i++) {
 		sleep(1);
@@ -718,7 +736,7 @@ static bool test_steps_mesh_channel_send_04(void) {
 	}
 
 	meshlink_channel_t *channel = meshlink_channel_open(mesh1, bar, 7, foo_receive_cb, NULL, 0);
-	meshlink_set_channel_poll_cb(mesh1, channel, poll_cb);
+	meshlink_set_channel_poll_cb(mesh1, channel, poll_cb3);
 
 	for(int i = 0; i < 20; i++) {
 		sleep(1);
@@ -862,7 +880,7 @@ static bool test_steps_mesh_channel_send_05(void) {
 	}
 
 	meshlink_channel_t *channel = meshlink_channel_open(mesh1, bar, 7, foo_receive_cb, NULL, 0);
-	meshlink_set_channel_poll_cb(mesh1, channel, poll_cb);
+	meshlink_set_channel_poll_cb(mesh1, channel, poll_cb4);
 
 	for(int i = 0; i < 20; i++) {
 		sleep(1);
@@ -901,7 +919,7 @@ static void poll_cb5(meshlink_handle_t *mesh, meshlink_channel_t *channel, size_
 
 	meshlink_set_channel_poll_cb(mesh, channel, NULL);
 
-	if(meshlink_channel_send(mesh, channel, "hello", 0) != 5) {
+	if(meshlink_channel_send(mesh, channel, "hello", 0) != 0) {
 		fprintf(stderr, "Could not send whole message\n");
 	}
 }
@@ -1006,7 +1024,7 @@ static bool test_steps_mesh_channel_send_06(void) {
 	}
 
 	meshlink_channel_t *channel = meshlink_channel_open(mesh1, bar, 7, foo_receive_cb, NULL, 0);
-	meshlink_set_channel_poll_cb(mesh1, channel, poll_cb);
+	meshlink_set_channel_poll_cb(mesh1, channel, poll_cb5);
 
 	for(int i = 0; i < 20; i++) {
 		sleep(1);
