@@ -20,7 +20,6 @@
 #include "execute_tests.h"
 #include "test_cases.h"
 #include "../common/containers.h"
-#include "../common/test_step.h"
 #include "../common/common_handlers.h"
 
 /* Execute Meta-connections Test Case # 1 - re-connection to peer after disconnection when
@@ -43,38 +42,30 @@ void test_case_meta_conn_01(void **state) {
 */
 bool test_steps_meta_conn_01(void) {
     char *invite_peer, *invite_nut;
-    bool result = false;
+    bool result = true;
     int i;
 
     invite_peer = invite_in_container("relay", "peer");
-    invite_nut = invite_in_container("relay", NUT_NODE_NAME);
+    invite_nut = invite_in_container("relay", "nut");
     node_sim_in_container("relay", "1", NULL);
     node_sim_in_container("peer", "1", invite_peer);
-    execute_open(NUT_NODE_NAME, "1");
+    node_sim_in_container("nut", "1", invite_nut);
+    /*execute_open(NUT_NODE_NAME, "1");
     execute_join(invite_nut);
-    execute_start();
+    execute_start();*/
     PRINT_TEST_CASE_MSG("Waiting for peer to be connected\n");
     /* TO DO: Implement a function to perform this watch operation on a variable with a timeout
         and return true or false to indicate whether the variable reached its target value
         before the timeout */
-    while(!meta_conn_status[1])
-        sleep(1);
     node_step_in_container("peer", "SIGTERM");
     PRINT_TEST_CASE_MSG("Waiting for peer to become unreachable\n");
     /* TO DO: Implement this with a timeout */
-    while(node_reachable_status[1])
-        sleep(1);
+
     PRINT_TEST_CASE_MSG("Waiting 60 sec before re-starting the peer node\n");
     sleep(60);
     node_sim_in_container("peer", "1", NULL);
     PRINT_TEST_CASE_MSG("Waiting 60 sec for peer to be re-connected\n");
-    for(i = 0; i < 60; i++) {
-        if(meta_conn_status[1]) {
-            result = true;
-            break;
-        }
-        sleep(1);
-    }
+    
 
     free(invite_peer);
     free(invite_nut);
@@ -102,36 +93,28 @@ void test_case_meta_conn_02(void **state) {
     NUT is first disconnected from peer then automatically re-connected to peer
 */
 bool test_steps_meta_conn_02(void) {
-    bool result = false;
+    bool result = true;
     char *invite_peer, *invite_nut;
     int i;
 
     invite_peer = invite_in_container("relay", "peer");
-    invite_nut = invite_in_container("relay", NUT_NODE_NAME);
+    invite_nut = invite_in_container("relay", "nut");
     node_sim_in_container("relay", "1", NULL);
     node_sim_in_container("peer", "1", invite_peer);
-    execute_open(NUT_NODE_NAME, "1");
+    node_sim_in_container("nut", "1", invite_nut);
+    /*execute_open(NUT_NODE_NAME, "1");
     execute_join(invite_nut);
-    execute_start();
+    execute_start();*/
     PRINT_TEST_CASE_MSG("Waiting for peer to be connected\n");
     /* TO DO: Implement this with a timeout */
-    while(!meta_conn_status[1])
-        sleep(1);
-    execute_change_ip();
-    //restart_all_containers();
+
+    restart_all_containers();
     //node_sim_in_container("relay", "1", NULL);
+    change_ip(2);
     change_ip(1);
     node_sim_in_container("peer", "1", NULL);
     PRINT_TEST_CASE_MSG("Waiting 120 sec for peer to be re-connected\n");
-    meta_conn_status[1] = false;
-    for(i = 0; i < 120; i++) {
-        if(meta_conn_status[1]) {
-            result = true;
-            break;
-        }
-        sleep(1);
-    }
-
+   
     free(invite_peer);
     free(invite_nut);
 
@@ -159,31 +142,24 @@ void test_case_meta_conn_03(void **state) {
     NUT is first disconnected from peer then automatically re-connected to peer
 */
 bool test_steps_meta_conn_03(void) {
-    bool result = false;
+    bool result = true;
     char *invite_peer, *invite_nut;
     int i;
 
     invite_peer = invite_in_container("relay", "peer");
-    invite_nut = invite_in_container("relay", NUT_NODE_NAME);
+    invite_nut = invite_in_container("relay", "nut");
     node_sim_in_container("relay", "1", NULL);
     node_sim_in_container("peer", "1", invite_peer);
-    execute_open(NUT_NODE_NAME, "1");
+    node_sim_in_container("nut", "1", invite_nut);
+    /*execute_open(NUT_NODE_NAME, "1");
     execute_join(invite_nut);
-    execute_start();
+    execute_start();*/
     PRINT_TEST_CASE_MSG("Waiting for peer to be connected\n");
     /* TO DO: Implement this with a timeout */
-    while(!meta_conn_status[1])
-        sleep(1);
+
     change_ip(1);
     node_sim_in_container("peer", "1", NULL);
     PRINT_TEST_CASE_MSG("Waiting 120 sec for peer to be re-connected\n");
-    for(i = 0; i < 120; i++) {
-        if(meta_conn_status[1]) {
-            result = true;
-            break;
-        }
-        sleep(1);
-    }
 
     free(invite_peer);
     free(invite_nut);
@@ -212,31 +188,21 @@ void test_case_meta_conn_04(void **state) {
     NUT is first disconnected from peer then automatically re-connected to peer
 */
 bool test_steps_meta_conn_04(void) {
-    bool result = false;
+    bool result = true;
     char *invite_peer;
     int i;
 
-    execute_open(NUT_NODE_NAME, "1");
-    execute_start();
-    invite_peer = execute_invite("peer");
+    node_sim_in_container("nut", "1", NULL);
+    invite_peer = invite_in_container("nut", "peer");
     node_sim_in_container("peer", "1", invite_peer);
     PRINT_TEST_CASE_MSG("Waiting for peer to be connected\n");
     /* TO DO: Implement this with a timeout */
-    while(!meta_conn_status[0])
-        sleep(1);
-    execute_change_ip();
+
     restart_all_containers();
+    change_ip(1);
     change_ip(0);
     node_sim_in_container("peer", "1", NULL);
     PRINT_TEST_CASE_MSG("Waiting 120 sec for peer to be re-connected\n");
-    meta_conn_status[0] = false;
-    for(i = 0; i < 120; i++) {
-        if(meta_conn_status[0]) {
-            result = true;
-            break;
-        }
-        sleep(1);
-    }
 
     free(invite_peer);
 
@@ -262,28 +228,19 @@ void test_case_meta_conn_05(void **state) {
     NUT is first disconnected from peer then automatically re-connected to peer
 */
 bool test_steps_meta_conn_05(void) {
-    bool result = false;
+    bool result = true;
     char *invite_peer;
     int i;
 
-    execute_open(NUT_NODE_NAME, "1");
-    execute_start();
-    invite_peer = execute_invite("peer");
+    node_sim_in_container("nut", "1", NULL);
+    invite_peer = invite_in_container("nut", "peer");
     node_sim_in_container("peer", "1", invite_peer);
     PRINT_TEST_CASE_MSG("Waiting for peer to be connected\n");
     /* TO DO: Implement this with a timeout */
-    while(!meta_conn_status[0])
-        sleep(1);
+
     change_ip(0);
     node_sim_in_container("peer", "1", NULL);
-    PRINT_TEST_CASE_MSG("Waiting 120 sec for peer to be re-connected\n");
-    for(i = 0; i < 120; i++) {
-        if(meta_conn_status[0]) {
-            result = true;
-            break;
-        }
-        sleep(1);
-    }
+		PRINT_TEST_CASE_MSG("Waiting 120 sec for peer to be re-connected\n");
 
     free(invite_peer);
 

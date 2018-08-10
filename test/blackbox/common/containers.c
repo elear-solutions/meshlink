@@ -266,14 +266,14 @@ void setup_containers(void **state) {
     }
 
     /* Delete any existing NUT confbase folder - every test case starts on a clean state */
-    confbase_del_status = system("rm -rf testconf");
+    /*confbase_del_status = system("rm -rf testconf");
     PRINT_TEST_CASE_MSG("Confbase Folder Delete Status: %d\n", confbase_del_status);
     assert(confbase_del_status == 0);
 
     assert(nut_ip = get_ip(eth_if_name));
     PRINT_TEST_CASE_MSG("Node '%s' has IP Address %s\n", NUT_NODE_NAME, nut_ip);
 
-    free(nut_ip);
+    free(nut_ip);*/
 
     return;
 }

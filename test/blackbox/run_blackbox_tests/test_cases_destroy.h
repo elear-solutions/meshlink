@@ -1,5 +1,5 @@
 /*
-    test_cases.h -- Declarations for Individual Test Case implementation functions
+    test_cases_destroy.h -- Declarations for Individual Test Case implementation functions
     Copyright (C) 2017  Guus Sliepen <guus@meshlink.io>
                         Manav Kumar Mehta <manavkumarm@yahoo.com>
 

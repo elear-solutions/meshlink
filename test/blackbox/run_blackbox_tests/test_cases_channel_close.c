@@ -1,25 +1,22 @@
-/*===================================================================================*/
-/*************************************************************************************/
-/**
- * @file      test_cases_add_addr.c -- Execution of specific meshlink black box test cases
- * @see
- * @author    Sri Harsha K, sriharsha@elear.solutions
- * @copyright 2017  Guus Sliepen <guus@meshlink.io>
- *                  Manav Kumar Mehta <manavkumarm@yahoo.com>
- * @license   To any person (the "Recipient") obtaining a copy of this software and
- *            associated documentation files (the "Software"):\n
- *            All information contained in or disclosed by this software is
- *            confidential and proprietary information of Elear Solutions Tech
- *            Private Limited and all rights therein are expressly reserved.
- *            By accepting this material the recipient agrees that this material and
- *            the information contained therein is held in confidence and in trust
- *            and will NOT be used, copied, modified, merged, published, distributed,
- *            sublicensed, reproduced in whole or in part, nor its contents revealed
- *            in any manner to others without the express written permission of
- *            Elear Solutions Tech Private Limited.
- */
-/*************************************************************************************/
-/*===================================================================================*/
+/*
+    test_cases_channel_close.c -- Implementation of Black Box Test Execution for meshlink
+    Copyright (C) 2017  Guus Sliepen <guus@meshlink.io>
+                        Manav Kumar Mehta <manavkumarm@yahoo.com>
+
+    This program is free software; you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation; either version 2 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License along
+    with this program; if not, write to the Free Software Foundation, Inc.,
+    51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+*/
 #include "execute_tests.h"
 #include "test_cases_channel_close.h"
 #include "../common/containers.h"
@@ -32,13 +29,6 @@
 #include <assert.h>
 #include <string.h>
 
-/*************************************************************************************
- *                          LOCAL MACROS                                             *
- *************************************************************************************/
-
-/*************************************************************************************
- *                          LOCAL PROTOTYPES                                         *
- *************************************************************************************/
 static void test_case_mesh_channel_close_01(void **state);
 static bool test_steps_mesh_channel_close_01(void);
 static void test_case_mesh_channel_close_02(void **state);
@@ -46,9 +36,6 @@ static bool test_steps_mesh_channel_close_02(void);
 static void test_case_mesh_channel_close_03(void **state);
 static bool test_steps_mesh_channel_close_03(void);
 
-/*************************************************************************************
- *                          PRIVATE FUNCTIONS                                        *
- *************************************************************************************/
 /* State structure for meshlink_channel_close Test Case #1 */
 static black_box_state_t test_mesh_channel_close_01_state = {
     /* test_case_name = */ "test_case_mesh_channel_close_01",
@@ -73,9 +60,6 @@ static black_box_state_t test_mesh_channel_close_03_state = {
     /* test_result (defaulted to) = */ false
 };
 
-/*************************************************************************************
- *                          PRIVATE FUNCTIONS                                        *
- *************************************************************************************/
 /* Execute meshlink_channel_close Test Case # 1*/
 static void test_case_mesh_channel_close_01(void **state) {
 	 execute_test(test_steps_mesh_channel_close_01, state);
@@ -412,9 +396,6 @@ static bool test_steps_mesh_channel_close_03(void) {
 	return true;
 }
 
-/*************************************************************************************
- *                          PUBLIC FUNCTIONS                                         *
- *************************************************************************************/
 int test_meshlink_channel_close(void) {
 		const struct CMUnitTest blackbox_channel_close_tests[] = {
 				cmocka_unit_test_prestate_setup_teardown(test_case_mesh_channel_close_01, NULL, NULL,
