@@ -1,0 +1,24 @@
+A stripped-down version of the Avahi service discovery suite
+containing only the common and core components
+
+
+TO BUILD FROM GIT:
+
+autoreconf          # first time
+./configure
+make
+
+requires: libtool, pkgconfig, autoconf, automake
+
+
+TO BUILD THE API DOCUMENTATION:
+
+make doxygen-doc
+
+requires: doxygen
+
+
+CONFIGURE SWITCHES:
+
+--enable-tests
+build some test programs, including those for 'make check'.
