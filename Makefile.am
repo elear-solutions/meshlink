@@ -2,11 +2,19 @@
 
 AUTOMAKE_OPTIONS = gnu
 
-SUBDIRS =  catta src doc test examples
+if CATTA
+MAYBE_CATTA = catta
+endif
+
+SUBDIRS = $(MAYBE_CATTA) src doc test examples
+
+DIST_SUBDIRS = $(SUBDIRS)
 
 ACLOCAL_AMFLAGS = -I m4 
 
-EXTRA_DIST = README.android
+EXTRA_DIST = \
+	COPYING.README \
+	README.android
 
 ChangeLog:
 	git log > ChangeLog

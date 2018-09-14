@@ -3,7 +3,7 @@
 
 /*
     meshlink.h -- MeshLink API
-    Copyright (C) 2014, 2017 Guus Sliepen <guus@meshlink.io>
+    Copyright (C) 2014-2018 Guus Sliepen <guus@meshlink.io>
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -63,6 +63,7 @@ typedef enum {
 	MESHLINK_ESTORAGE, ///< MeshLink coud not load or write data from/to disk
 	MESHLINK_ENETWORK, ///< MeshLink encountered a network error
 	MESHLINK_EPEER, ///< A peer caused an error
+	MESHLINK_ENOTSUP, ///< The operation is not supported in the current configuration of MeshLink
 } meshlink_errno_t;
 
 /// Device class
@@ -403,6 +404,25 @@ extern bool meshlink_sign(meshlink_handle_t *mesh, const void *data, size_t len,
  */
 extern bool meshlink_verify(meshlink_handle_t *mesh, meshlink_node_t *source, const void *data, size_t len, const void *signature, size_t siglen);
 
+/// Set the canonical Address for a node.
+/** This function sets the canonical Address for a node.
+ *  This address is stored permanently until it is changed by another call to this function,
+ *  unlike other addresses associated with a node,
+ *  such as those added with meshlink_hint_address() or addresses discovered at runtime.
+ *
+ *  If a canonical Address is set for the local node,
+ *  it will be used for the hostname part of generated invitation URLs.
+ *
+ *  @param mesh         A handle which represents an instance of MeshLink.
+ *  @param node         A pointer to a meshlink_node_t describing the node.
+ *  @param address      A nul-terminated C string containing the address, which can be either in numeric format or a hostname.
+ *  @param port         A nul-terminated C string containing the port, which can be either in numeric or symbolic format.
+ *                      If it is NULL, the listening port's number will be used.
+ *
+ *  @return             This function returns true if the address was added, false otherwise.
+ */
+extern bool meshlink_set_canonical_address(meshlink_handle_t *mesh, meshlink_node_t *node, const char *address, const char *port);
+
 /// Add an Address for the local node.
 /** This function adds an Address for the local node, which will be used for invitation URLs.
  *
@@ -435,6 +455,31 @@ extern bool meshlink_add_address(meshlink_handle_t *mesh, const char *address);
  *                      After meshlink_get_external_address() returns, the application is free to overwrite or free this string.
  */
 extern char *meshlink_get_external_address(meshlink_handle_t *mesh);
+
+/// Try to discover the external address for the local node.
+/** This function performs tries to discover the local node's external address
+ *  by contacting the meshlink.io server. If a reverse lookup of the address works,
+ *  the FQDN associated with the address will be returned.
+ *
+ *  Please note that this is function only returns a single address,
+ *  even if the local node might have more than one external address.
+ *  In that case, there is no control over which address will be selected.
+ *  Also note that if you have a dynamic IP address, or are behind carrier-grade NAT,
+ *  there is no guarantee that the external address will be valid for an extended period of time.
+ *
+ *  This function is blocking. It can take several seconds before it returns.
+ *  There is no guarantee it will be able to resolve the external address.
+ *  Failures might be because by temporary network outages.
+ *
+ *  @param mesh         A handle which represents an instance of MeshLink.
+ *  @param family       The address family to check, for example AF_INET or AF_INET6. If AF_UNSPEC is given,
+ *                      this might return the external address for any working address family.
+ *
+ *  @return             This function returns a pointer to a C string containing the discovered external address,
+ *                      or NULL if there was an error looking up the address.
+ *                      After meshlink_get_external_address() returns, the application is free to overwrite or free this string.
+ */
+extern char *meshlink_get_external_address_for_family(meshlink_handle_t *mesh, int address_family);
 
 /// Try to discover the external address for the local node, and add it to its list of addresses.
 /** This function is equivalent to:
@@ -475,6 +520,16 @@ extern int meshlink_get_port(meshlink_handle_t *mesh);
  */
 
 extern bool meshlink_set_port(meshlink_handle_t *mesh, int port);
+
+/// Set the timeout for invitations.
+/** This function sets the timeout for invitations.
+ *  Note that timeouts are only checked at the time a node tries to join using an invitation.
+ *  The default timeout for invitations is 1 week.
+ *
+ *  @param mesh         A handle which represents an instance of MeshLink.
+ *  @param timeout      The timeout for invitations in seconds.
+ */
+extern void meshlink_set_invitation_timeout(meshlink_handle_t *mesh, int timeout);
 
 /// Invite another node into the mesh.
 /** This function generates an invitation that can be used by another node to join the same mesh as the local node.

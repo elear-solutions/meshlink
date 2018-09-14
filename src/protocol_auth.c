@@ -151,7 +151,7 @@ bool send_id(meshlink_handle_t *mesh, connection_t *c) {
 			return false;
 		}
 
-	return send_request(mesh, c, "%d %s %d.%d", ID, mesh->self->connection->name, mesh->self->connection->protocol_major, minor);
+	return send_request(mesh, c, "%d %s %d.%d %s", ID, mesh->self->connection->name, mesh->self->connection->protocol_major, minor, mesh->appname);
 }
 
 static bool finalize_invitation(meshlink_handle_t *mesh, connection_t *c, const void *data, uint16_t len) {
@@ -239,6 +239,24 @@ static bool receive_invitation_sptps(void *handle, uint8_t type, const void *dat
 
 	if(!f) {
 		logger(mesh, MESHLINK_ERROR, "Error trying to open invitation %s\n", cookie);
+		unlink(usedname);
+		return false;
+	}
+
+	// Check the timestamp
+	struct stat st;
+
+	if(fstat(fileno(f), &st)) {
+		logger(mesh, MESHLINK_ERROR, "Could not stat invitation file %s\n", usedname);
+		fclose(f);
+		unlink(usedname);
+		return false;
+	}
+
+	if(time(NULL) > st.st_mtime + mesh->invitation_timeout) {
+		logger(mesh, MESHLINK_ERROR, "Peer %s tried to use an outdated invitation file %s\n", c->name, usedname);
+		fclose(f);
+		unlink(usedname);
 		return false;
 	}
 

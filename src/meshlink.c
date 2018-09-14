@@ -1,6 +1,6 @@
 /*
     meshlink.c -- Implementation of the MeshLink API.
-    Copyright (C) 2014, 2017 Guus Sliepen <guus@meshlink.io>
+    Copyright (C) 2014-2018 Guus Sliepen <guus@meshlink.io>
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -56,64 +56,13 @@ meshlink_log_level_t global_log_level;
 //TODO: this can go away completely
 const var_t variables[] = {
 	/* Server configuration */
-	{"AddressFamily", VAR_SERVER},
-	{"AutoConnect", VAR_SERVER | VAR_SAFE},
-	{"BindToAddress", VAR_SERVER | VAR_MULTIPLE},
-	{"BindToInterface", VAR_SERVER},
-	{"Broadcast", VAR_SERVER | VAR_SAFE},
 	{"ConnectTo", VAR_SERVER | VAR_MULTIPLE | VAR_SAFE},
-	{"DecrementTTL", VAR_SERVER},
-	{"Device", VAR_SERVER},
-	{"DeviceType", VAR_SERVER},
-	{"DirectOnly", VAR_SERVER},
-	{"ECDSAPrivateKeyFile", VAR_SERVER},
-	{"ExperimentalProtocol", VAR_SERVER},
-	{"Forwarding", VAR_SERVER},
-	{"GraphDumpFile", VAR_SERVER | VAR_OBSOLETE},
-	{"Hostnames", VAR_SERVER},
-	{"IffOneQueue", VAR_SERVER},
-	{"Interface", VAR_SERVER},
-	{"KeyExpire", VAR_SERVER},
-	{"ListenAddress", VAR_SERVER | VAR_MULTIPLE},
-	{"LocalDiscovery", VAR_SERVER},
-	{"MACExpire", VAR_SERVER},
-	{"MaxConnectionBurst", VAR_SERVER},
-	{"MaxOutputBufferSize", VAR_SERVER},
-	{"MaxTimeout", VAR_SERVER},
-	{"Mode", VAR_SERVER | VAR_SAFE},
 	{"Name", VAR_SERVER},
-	{"PingInterval", VAR_SERVER},
-	{"PingTimeout", VAR_SERVER},
-	{"PriorityInheritance", VAR_SERVER},
-	{"PrivateKey", VAR_SERVER | VAR_OBSOLETE},
-	{"PrivateKeyFile", VAR_SERVER},
-	{"ProcessPriority", VAR_SERVER},
-	{"Proxy", VAR_SERVER},
-	{"ReplayWindow", VAR_SERVER},
-	{"ScriptsExtension", VAR_SERVER},
-	{"ScriptsInterpreter", VAR_SERVER},
-	{"StrictSubnets", VAR_SERVER},
-	{"TunnelServer", VAR_SERVER},
-	{"VDEGroup", VAR_SERVER},
-	{"VDEPort", VAR_SERVER},
 	/* Host configuration */
+	{"CanonicalAddress", VAR_HOST},
 	{"Address", VAR_HOST | VAR_MULTIPLE},
-	{"Cipher", VAR_SERVER | VAR_HOST},
-	{"ClampMSS", VAR_SERVER | VAR_HOST},
-	{"Compression", VAR_SERVER | VAR_HOST},
-	{"Digest", VAR_SERVER | VAR_HOST},
 	{"ECDSAPublicKey", VAR_HOST},
-	{"ECDSAPublicKeyFile", VAR_SERVER | VAR_HOST},
-	{"IndirectData", VAR_SERVER | VAR_HOST},
-	{"MACLength", VAR_SERVER | VAR_HOST},
-	{"PMTU", VAR_SERVER | VAR_HOST},
-	{"PMTUDiscovery", VAR_SERVER | VAR_HOST},
 	{"Port", VAR_HOST},
-	{"PublicKey", VAR_HOST | VAR_OBSOLETE},
-	{"PublicKeyFile", VAR_SERVER | VAR_HOST | VAR_OBSOLETE},
-	{"Subnet", VAR_HOST | VAR_MULTIPLE | VAR_SAFE},
-	{"TCPOnly", VAR_SERVER | VAR_HOST},
-	{"Weight", VAR_HOST | VAR_SAFE},
 	{NULL, 0}
 };
 
@@ -148,6 +97,7 @@ static int rstrip(char *value) {
 
 static void scan_for_hostname(const char *filename, char **hostname, char **port) {
 	char line[4096];
+	bool canonical = false;
 
 	if(!filename || (*hostname && *port)) {
 		return;
@@ -177,6 +127,7 @@ static void scan_for_hostname(const char *filename, char **hostname, char **port
 			q += 1 + strspn(q + 1, "\t ");
 		}
 
+		// q is now pointing to the hostname
 		*p = 0;
 		p = q + strcspn(q, "\t ");
 
@@ -186,11 +137,25 @@ static void scan_for_hostname(const char *filename, char **hostname, char **port
 
 		p += strspn(p, "\t ");
 		p[strcspn(p, "\t ")] = 0;
+		// p is now pointing to the port, if present
 
 		if(!*port && !strcasecmp(line, "Port")) {
 			*port = xstrdup(q);
-		} else if(!*hostname && !strcasecmp(line, "Address")) {
+		} else if(!canonical && !*hostname && !strcasecmp(line, "Address")) {
+			// Check that the hostname is a symbolic name (it's not a numeric IPv4 or IPv6 address)
+			if(!q[strspn(q, "0123456789.")] || strchr(q, ':')) {
+				continue;
+			}
+
 			*hostname = xstrdup(q);
+
+			if(*p) {
+				free(*port);
+				*port = xstrdup(p);
+			}
+		} else if(!strcasecmp(line, "CanonicalAddress")) {
+			*hostname = xstrdup(q);
+			canonical = true;
 
 			if(*p) {
 				free(*port);
@@ -198,7 +163,7 @@ static void scan_for_hostname(const char *filename, char **hostname, char **port
 			}
 		}
 
-		if(*hostname && *port) {
+		if(canonical && *hostname && *port) {
 			break;
 		}
 	}
@@ -207,8 +172,32 @@ static void scan_for_hostname(const char *filename, char **hostname, char **port
 }
 
 static bool is_valid_hostname(const char *hostname) {
+	if(!*hostname) {
+		return false;
+	}
+
 	for(const char *p = hostname; *p; p++) {
 		if(!(isalnum(*p) || *p == '-' || *p == '.' || *p == ':')) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+static bool is_valid_port(const char *port) {
+	if(!*port) {
+		return false;
+	}
+
+	if(isdigit(*port)) {
+		char *end;
+		unsigned long int result = strtoul(port, &end, 10);
+		return result && result < 65536 && !*end;
+	}
+
+	for(const char *p = port; *p; p++) {
+		if(!(isalnum(*p) || *p == '-')) {
 			return false;
 		}
 	}
@@ -228,16 +217,66 @@ static void set_timeout(int sock, int timeout) {
 	setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 }
 
+// Find out what local address a socket would use if we connect to the given address.
+// We do this using connect() on a UDP socket, so the kernel has to resolve the address
+// of both endpoints, but this will actually not send any UDP packet.
+static bool getlocaladdrname(char *destaddr, char *host, socklen_t hostlen) {
+	struct addrinfo *rai = NULL;
+	const struct addrinfo hint = {
+		.ai_family = AF_UNSPEC,
+		.ai_socktype = SOCK_DGRAM,
+		.ai_protocol = IPPROTO_UDP,
+	};
+
+	if(getaddrinfo(destaddr, "80", &hint, &rai) || !rai) {
+		return false;
+	}
+
+	int sock = socket(rai->ai_family, rai->ai_socktype, rai->ai_protocol);
+
+	if(sock == -1) {
+		freeaddrinfo(rai);
+		return false;
+	}
+
+	if(connect(sock, rai->ai_addr, rai->ai_addrlen) && !sockwouldblock(errno)) {
+		freeaddrinfo(rai);
+		return false;
+	}
+
+	freeaddrinfo(rai);
+
+	struct sockaddr_storage sn;
+	socklen_t sl = sizeof(sn);
+
+	if(getsockname(sock, (struct sockaddr *)&sn, &sl)) {
+		return false;
+	}
+
+	if(getnameinfo((struct sockaddr *)&sn, sl, host, hostlen, NULL, 0, NI_NUMERICHOST | NI_NUMERICSERV)) {
+		return false;
+	}
+
+	return true;
+}
+
 char *meshlink_get_external_address(meshlink_handle_t *mesh) {
+	return meshlink_get_external_address_for_family(mesh, AF_UNSPEC);
+}
+
+char *meshlink_get_external_address_for_family(meshlink_handle_t *mesh, int family) {
 	char *hostname = NULL;
 
 	logger(mesh, MESHLINK_DEBUG, "Trying to discover externally visible hostname...\n");
 	struct addrinfo *ai = str2addrinfo("meshlink.io", "80", SOCK_STREAM);
-	struct addrinfo *aip = ai;
 	static const char request[] = "GET http://www.meshlink.io/host.cgi HTTP/1.0\r\n\r\n";
 	char line[256];
 
-	while(aip) {
+	for(struct addrinfo *aip = ai; aip; aip = aip->ai_next) {
+		if(family != AF_UNSPEC && aip->ai_family != family) {
+			continue;
+		}
+
 		int s = socket(aip->ai_family, aip->ai_socktype, aip->ai_protocol);
 
 		if(s >= 0) {
@@ -273,9 +312,6 @@ char *meshlink_get_external_address(meshlink_handle_t *mesh) {
 				break;
 			}
 		}
-
-		aip = aip->ai_next;
-		continue;
 	}
 
 	if(ai) {
@@ -288,6 +324,22 @@ char *meshlink_get_external_address(meshlink_handle_t *mesh) {
 		hostname = NULL;
 	}
 
+	// If there is no hostname, determine the address used for an outgoing connection.
+	if(!hostname) {
+		char localaddr[NI_MAXHOST];
+		bool success = false;
+
+		if(family == AF_INET) {
+			success = getlocaladdrname("93.184.216.34", localaddr, sizeof(localaddr));
+		} else if(family == AF_INET6) {
+			success = getlocaladdrname("2606:2800:220:1:248:1893:25c8:1946", localaddr, sizeof(localaddr));
+		}
+
+		if(success) {
+			hostname = xstrdup(localaddr);
+		}
+	}
+
 	if(!hostname) {
 		meshlink_errno = MESHLINK_ERESOLV;
 	}
@@ -295,55 +347,67 @@ char *meshlink_get_external_address(meshlink_handle_t *mesh) {
 	return hostname;
 }
 
+// This gets the hostname part for use in invitation URLs
 static char *get_my_hostname(meshlink_handle_t *mesh) {
-	char *hostname = NULL;
+	char *hostname[2] = {NULL};
 	char *port = NULL;
 	char *hostport = NULL;
 	char *name = mesh->self->name;
 	char filename[PATH_MAX] = "";
-	FILE *f;
 
 	// Use first Address statement in own host config file
 	snprintf(filename, sizeof(filename), "%s" SLASH "hosts" SLASH "%s", mesh->confbase, name);
-	scan_for_hostname(filename, &hostname, &port);
+	scan_for_hostname(filename, &hostname[0], &port);
 
-	if(hostname) {
+	if(hostname[0]) {
 		goto done;
 	}
 
-	hostname = meshlink_get_external_address(mesh);
+	hostname[0] = meshlink_get_external_address_for_family(mesh, AF_INET);
+	hostname[1] = meshlink_get_external_address_for_family(mesh, AF_INET6);
 
-	if(!hostname) {
+	if(!hostname[0] && !hostname[1]) {
 		return NULL;
 	}
 
-	f = fopen(filename, "a");
+	if(hostname[0] && hostname[1] && !strcmp(hostname[0], hostname[1])) {
+		free(hostname[1]);
+		hostname[1] = NULL;
+	}
 
-	if(f) {
-		fprintf(f, "\nAddress = %s\n", hostname);
-		fclose(f);
-	} else {
-		logger(mesh, MESHLINK_DEBUG, "Could not append Address to %s: %s\n", filename, strerror(errno));
+	port = xstrdup(mesh->myport);
+
+	for(int i = 0; i < 2; i++) {
+		if(hostname[i]) {
+			char *tmphostport;
+			xasprintf(&tmphostport, "%s %s", hostname[i], port);
+			append_config_file(mesh, mesh->self->name, "Address", tmphostport);
+			free(tmphostport);
+		}
 	}
 
 done:
 
-	if(port) {
-		if(strchr(hostname, ':')) {
-			xasprintf(&hostport, "[%s]:%s", hostname, port);
-		} else {
-			xasprintf(&hostport, "%s:%s", hostname, port);
+	for(int i = 0; i < 2; i++) {
+		if(!hostname[i]) {
+			continue;
 		}
-	} else {
-		if(strchr(hostname, ':')) {
-			xasprintf(&hostport, "[%s]", hostname);
-		} else {
-			hostport = xstrdup(hostname);
-		}
+
+		char *newhostport;
+		xasprintf(&newhostport, (strchr(hostname[i], ':') ? "%s%s[%s]" : "%s%s%s"), hostport ? hostport : "", hostport ? "," : "", hostname[i]);
+		free(hostname[i]);
+		free(hostport);
+		hostport = newhostport;
 	}
 
-	free(hostname);
-	free(port);
+	if(port) {
+		char *newhostport;
+		xasprintf(&newhostport, "%s:%s", hostport, port);
+		free(port);
+		free(hostport);
+		hostport = newhostport;
+	}
+
 	return hostport;
 }
 
@@ -470,6 +534,31 @@ int check_port(meshlink_handle_t *mesh) {
 	return 0;
 }
 
+static void deltree(const char *dirname) {
+	DIR *d = opendir(dirname);
+
+	if(d) {
+		struct dirent *ent;
+
+		while((ent = readdir(d))) {
+			if(ent->d_name[0] == '.') {
+				continue;
+			}
+
+			char filename[PATH_MAX];
+			snprintf(filename, sizeof(filename), "%s" SLASH "%s", dirname, ent->d_name);
+
+			if(unlink(filename)) {
+				deltree(filename);
+			}
+		}
+
+		closedir(d);
+	}
+
+	rmdir(dirname);
+}
+
 static bool finalize_join(meshlink_handle_t *mesh) {
 	char *name = xstrdup(get_value(mesh->data, "Name"));
 
@@ -495,6 +584,19 @@ static bool finalize_join(meshlink_handle_t *mesh) {
 
 	fprintf(f, "Name = %s\n", name);
 
+	// Wipe all old host config files and invitations
+	snprintf(filename, sizeof(filename), "%s" SLASH "hosts", mesh->confbase);
+	deltree(filename);
+
+	if(mkdir(filename, 0777) && errno != EEXIST) {
+		logger(mesh, MESHLINK_DEBUG, "Could not create directory %s: %s\n", filename, strerror(errno));
+		return false;
+	}
+
+	snprintf(filename, sizeof(filename), "%s" SLASH "invitations", mesh->confbase);
+	deltree(filename);
+
+	// Create a new host config file for ourself
 	snprintf(filename, sizeof(filename), "%s" SLASH "hosts" SLASH "%s", mesh->confbase, name);
 	FILE *fh = fopen(filename, "w");
 
@@ -537,7 +639,7 @@ static bool finalize_join(meshlink_handle_t *mesh) {
 			continue;
 		}
 
-		// Check the list of known variables //TODO: most variables will not be available in meshlink, only name and key will be absolutely necessary
+		// Check the list of known variables
 		bool found = false;
 		int i;
 
@@ -626,8 +728,10 @@ static bool finalize_join(meshlink_handle_t *mesh) {
 	sptps_send_record(&(mesh->sptps), 1, b64key, strlen(b64key));
 	free(b64key);
 
+	free(mesh->name);
 	free(mesh->self->name);
 	free(mesh->self->connection->name);
+	mesh->name = xstrdup(name);
 	mesh->self->name = xstrdup(name);
 	mesh->self->connection->name = name;
 
@@ -791,7 +895,7 @@ static bool ecdsa_keygen(meshlink_handle_t *mesh) {
 		logger(mesh, MESHLINK_DEBUG, "Done.\n");
 	}
 
-	if (snprintf(privname, sizeof(privname), "%s" SLASH "ecdsa_key.priv", mesh->confbase) >= PATH_MAX) {
+	if(snprintf(privname, sizeof(privname), "%s" SLASH "ecdsa_key.priv", mesh->confbase) >= PATH_MAX) {
 		logger(mesh, MESHLINK_DEBUG, "Filename too long: %s" SLASH "ecdsa_key.priv\n", mesh->confbase);
 		meshlink_errno = MESHLINK_ESTORAGE;
 		return false;
@@ -856,49 +960,6 @@ static struct timeval idle(event_loop_t *loop, void *data) {
 	return tmin;
 }
 
-// Find out what local address a socket would use if we connect to the given address.
-// We do this using connect() on a UDP socket, so the kernel has to resolve the address
-// of both endpoints, but this will actually not send any UDP packet.
-static bool getlocaladdrname(char *destaddr, char *host, socklen_t hostlen) {
-	struct addrinfo *rai = NULL;
-	const struct addrinfo hint = {
-		.ai_family = AF_UNSPEC,
-		.ai_socktype = SOCK_DGRAM,
-		.ai_protocol = IPPROTO_UDP,
-	};
-
-	if(getaddrinfo(destaddr, "80", &hint, &rai) || !rai) {
-		return false;
-	}
-
-	int sock = socket(rai->ai_family, rai->ai_socktype, rai->ai_protocol);
-
-	if(sock == -1) {
-		freeaddrinfo(rai);
-		return false;
-	}
-
-	if(connect(sock, rai->ai_addr, rai->ai_addrlen) && !sockwouldblock(errno)) {
-		freeaddrinfo(rai);
-		return false;
-	}
-
-	freeaddrinfo(rai);
-
-	struct sockaddr_storage sn;
-	socklen_t sl = sizeof(sn);
-
-	if(getsockname(sock, (struct sockaddr *)&sn, &sl)) {
-		return false;
-	}
-
-	if(getnameinfo((struct sockaddr *)&sn, sl, host, hostlen, NULL, 0, NI_NUMERICHOST | NI_NUMERICSERV)) {
-		return false;
-	}
-
-	return true;
-}
-
 // Get our local address(es) by simulating connecting to an Internet host.
 static void add_local_addresses(meshlink_handle_t *mesh) {
 	char host[NI_MAXHOST];
@@ -960,7 +1021,7 @@ static bool meshlink_setup(meshlink_handle_t *mesh) {
 		return false;
 	}
 
-	if (check_port(mesh) == 0) {
+	if(check_port(mesh) == 0) {
 		meshlink_errno = MESHLINK_ENETWORK;
 		unlink(filename);
 		return false;
@@ -983,6 +1044,12 @@ meshlink_handle_t *meshlink_open(const char *confbase, const char *name, const c
 
 	if(!appname || !*appname) {
 		logger(NULL, MESHLINK_ERROR, "No appname given!\n");
+		meshlink_errno = MESHLINK_EINVAL;
+		return NULL;
+	}
+
+	if(strchr(appname, ' ')) {
+		logger(NULL, MESHLINK_ERROR, "Invalid appname given!\n");
 		meshlink_errno = MESHLINK_EINVAL;
 		return NULL;
 	}
@@ -1011,6 +1078,8 @@ meshlink_handle_t *meshlink_open(const char *confbase, const char *name, const c
 	mesh->confbase = xstrdup(confbase);
 	mesh->appname = xstrdup(appname);
 	mesh->devclass = devclass;
+	mesh->discovery = true;
+	mesh->invitation_timeout = 604800; // 1 week
 
 	if(usingname) {
 		mesh->name = xstrdup(name);
@@ -1139,15 +1208,18 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 		logger(mesh, MESHLINK_DEBUG, "Could not start thread: %s\n", strerror(errno));
 		memset(&mesh->thread, 0, sizeof(mesh)->thread);
 		meshlink_errno = MESHLINK_EINTERNAL;
+		event_loop_stop(&mesh->loop);
 		pthread_mutex_unlock(&(mesh->mesh_mutex));
 		return false;
 	}
 
 	mesh->threadstarted = true;
 
+#if HAVE_CATTA
 	if(mesh->discovery) {
 		discovery_start(mesh);
 	}
+#endif
 
 	pthread_mutex_unlock(&(mesh->mesh_mutex));
 	return true;
@@ -1162,27 +1234,39 @@ void meshlink_stop(meshlink_handle_t *mesh) {
 	pthread_mutex_lock(&(mesh->mesh_mutex));
 	logger(mesh, MESHLINK_DEBUG, "meshlink_stop called\n");
 
+#if HAVE_CATTA
 	// Stop discovery
 	if(mesh->discovery) {
 		discovery_stop(mesh);
 	}
+#endif
 
 	// Shut down the main thread
 	event_loop_stop(&mesh->loop);
 
 	// Send ourselves a UDP packet to kick the event loop
-	listen_socket_t *s = &mesh->listen_socket[0];
+	for(int i = 0; i < mesh->listen_sockets; i++) {
+		sockaddr_t sa;
+		socklen_t salen = sizeof(sa.sa);
 
-	if(sendto(s->udp.fd, "", 1, MSG_NOSIGNAL, &s->sa.sa, SALEN(s->sa.sa)) == -1) {
-		logger(mesh, MESHLINK_ERROR, "Could not send a UDP packet to ourself");
+		if(getsockname(mesh->listen_socket[i].udp.fd, &sa.sa, &salen) == -1) {
+			logger(mesh, MESHLINK_ERROR, "System call `%s' failed: %s", "getsockname", sockstrerror(sockerrno));
+			continue;
+		}
+
+		if(sendto(mesh->listen_socket[i].udp.fd, "", 1, MSG_NOSIGNAL, &sa.sa, salen) == -1) {
+			logger(mesh, MESHLINK_ERROR, "Could not send a UDP packet to ourself: %s", sockstrerror(sockerrno));
+		}
 	}
 
-	// Wait for the main thread to finish
-	pthread_mutex_unlock(&(mesh->mesh_mutex));
-	pthread_join(mesh->thread, NULL);
-	pthread_mutex_lock(&(mesh->mesh_mutex));
+	if(mesh->threadstarted) {
+		// Wait for the main thread to finish
+		pthread_mutex_unlock(&(mesh->mesh_mutex));
+		pthread_join(mesh->thread, NULL);
+		pthread_mutex_lock(&(mesh->mesh_mutex));
 
-	mesh->threadstarted = false;
+		mesh->threadstarted = false;
+	}
 
 	// Close all metaconnections
 	if(mesh->connections) {
@@ -1196,9 +1280,8 @@ void meshlink_stop(meshlink_handle_t *mesh) {
 
 	if(mesh->outgoings) {
 		list_delete_list(mesh->outgoings);
+		mesh->outgoings = NULL;
 	}
-
-	mesh->outgoings = NULL;
 
 	pthread_mutex_unlock(&(mesh->mesh_mutex));
 }
@@ -1242,32 +1325,6 @@ void meshlink_close(meshlink_handle_t *mesh) {
 	memset(mesh, 0, sizeof(*mesh));
 
 	free(mesh);
-}
-
-static void deltree(const char *dirname) {
-	DIR *d = opendir(dirname);
-
-	if(d) {
-		struct dirent *ent;
-
-		while((ent = readdir(d))) {
-			if(ent->d_name[0] == '.') {
-				continue;
-			}
-
-			char filename[PATH_MAX];
-			snprintf(filename, sizeof(filename), "%s" SLASH "%s", dirname, ent->d_name);
-
-			if(unlink(filename)) {
-				deltree(filename);
-			}
-		}
-
-		closedir(d);
-	}
-
-	rmdir(dirname);
-	return;
 }
 
 bool meshlink_destroy(const char *confbase) {
@@ -1586,7 +1643,8 @@ static bool refresh_invitation_key(meshlink_handle_t *mesh) {
 
 		char invname[PATH_MAX];
 		struct stat st;
-		if (snprintf(invname, sizeof(invname), "%s" SLASH "%s", filename, ent->d_name) >= PATH_MAX) {
+
+		if(snprintf(invname, sizeof(invname), "%s" SLASH "%s", filename, ent->d_name) >= PATH_MAX) {
 			logger(mesh, MESHLINK_DEBUG, "Filename too long: %s" SLASH "%s", filename, ent->d_name);
 			continue;
 		}
@@ -1676,8 +1734,8 @@ static bool refresh_invitation_key(meshlink_handle_t *mesh) {
 	return mesh->invitation_key;
 }
 
-bool meshlink_add_address(meshlink_handle_t *mesh, const char *address) {
-	if(!mesh || !address) {
+bool meshlink_set_canonical_address(meshlink_handle_t *mesh, meshlink_node_t *node, const char *address, const char *port) {
+	if(!mesh || !node || !address) {
 		meshlink_errno = MESHLINK_EINVAL;
 		return false;
 	}
@@ -1688,13 +1746,30 @@ bool meshlink_add_address(meshlink_handle_t *mesh, const char *address) {
 		return false;
 	}
 
-	bool rval = false;
+	if(port && !is_valid_port(port)) {
+		logger(mesh, MESHLINK_DEBUG, "Invalid character in port: %s\n", address);
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	char *canonical_address;
+
+	if(port) {
+		xasprintf(&canonical_address, "%s %s", address, port);
+	} else {
+		canonical_address = xstrdup(address);
+	}
 
 	pthread_mutex_lock(&(mesh->mesh_mutex));
-	rval = append_config_file(mesh, mesh->self->name, "Address", address);
+	bool rval = modify_config_file(mesh, node->name, "CanonicalAddress", canonical_address, 1);
 	pthread_mutex_unlock(&(mesh->mesh_mutex));
 
+	free(canonical_address);
 	return rval;
+}
+
+bool meshlink_add_address(meshlink_handle_t *mesh, const char *address) {
+	return meshlink_set_canonical_address(mesh, (meshlink_node_t *)mesh->self, address, NULL);
 }
 
 bool meshlink_add_external_address(meshlink_handle_t *mesh) {
@@ -1780,6 +1855,10 @@ done:
 	pthread_mutex_unlock(&(mesh->mesh_mutex));
 
 	return rval;
+}
+
+void meshlink_set_invitation_timeout(meshlink_handle_t *mesh, int timeout) {
+	mesh->invitation_timeout = timeout;
 }
 
 char *meshlink_invite(meshlink_handle_t *mesh, const char *name) {
@@ -1875,8 +1954,6 @@ char *meshlink_invite(meshlink_handle_t *mesh, const char *name) {
 
 	// Fill in the details.
 	fprintf(f, "Name = %s\n", name);
-	//if(netname)
-	//      fprintf(f, "NetName = %s\n", netname);
 	fprintf(f, "ConnectTo = %s\n", mesh->self->name);
 
 	// Copy Broadcast and Mode
@@ -1930,6 +2007,14 @@ bool meshlink_join(meshlink_handle_t *mesh, const char *invitation) {
 
 	pthread_mutex_lock(&(mesh->mesh_mutex));
 
+	//Before doing meshlink_join make sure we are not connected to another mesh
+	if(mesh->threadstarted) {
+		logger(mesh, MESHLINK_DEBUG, "Already connected to a mesh\n");
+		meshlink_errno = MESHLINK_EINVAL;
+		pthread_mutex_unlock(&(mesh->mesh_mutex));
+		return false;
+	}
+
 	//TODO: think of a better name for this variable, or of a different way to tokenize the invitation URL.
 	char copy[strlen(invitation) + 1];
 	strcpy(copy, invitation);
@@ -1949,32 +2034,13 @@ bool meshlink_join(meshlink_handle_t *mesh, const char *invitation) {
 	}
 
 	char *address = copy;
-	char *port = NULL;
-
-	if(*address == '[') {
-		address++;
-		char *bracket = strchr(address, ']');
-
-		if(!bracket) {
-			goto invalid;
-		}
-
-		*bracket = 0;
-
-		if(bracket[1] == ':') {
-			port = bracket + 2;
-		}
-	} else {
-		port = strchr(address, ':');
-
-		if(port) {
-			*port++ = 0;
-		}
-	}
+	char *port = strrchr(address, ':');
 
 	if(!port) {
 		goto invalid;
 	}
+
+	*port++ = 0;
 
 	if(!b64decode(slash, mesh->hash, 18) || !b64decode(slash + 24, mesh->cookie, 18)) {
 		goto invalid;
@@ -1990,43 +2056,73 @@ bool meshlink_join(meshlink_handle_t *mesh, const char *invitation) {
 	}
 
 	char *b64key = ecdsa_get_base64_public_key(key);
+	char *comma;
+	mesh->sock = -1;
 
-	//Before doing meshlink_join make sure we are not connected to another mesh
-	if(mesh->threadstarted) {
-		goto invalid;
+	while(address && *address) {
+		// We allow commas in the address part to support multiple addresses in one invitation URL.
+		comma = strchr(address, ',');
+
+		if(comma) {
+			*comma++ = 0;
+		}
+
+		// IPv6 address are enclosed in brackets, per RFC 3986
+		if(*address == '[') {
+			address++;
+			char *bracket = strchr(address, ']');
+
+			if(!bracket) {
+				goto invalid;
+			}
+
+			*bracket++ = 0;
+
+			if(comma && bracket != comma) {
+				goto invalid;
+			}
+		}
+
+		// Connect to the meshlink daemon mentioned in the URL.
+		struct addrinfo *ai = str2addrinfo(address, port, SOCK_STREAM);
+
+		if(ai) {
+			for(struct addrinfo *aip = ai; aip; aip = aip->ai_next) {
+				mesh->sock = socket(aip->ai_family, aip->ai_socktype, aip->ai_protocol);
+
+				if(mesh->sock == -1) {
+					logger(mesh, MESHLINK_DEBUG, "Could not open socket: %s\n", strerror(errno));
+					meshlink_errno = MESHLINK_ENETWORK;
+					continue;
+				}
+
+				set_timeout(mesh->sock, 5000);
+
+				if(connect(mesh->sock, aip->ai_addr, aip->ai_addrlen)) {
+					logger(mesh, MESHLINK_DEBUG, "Could not connect to %s port %s: %s\n", address, port, strerror(errno));
+					meshlink_errno = MESHLINK_ENETWORK;
+					closesocket(mesh->sock);
+					mesh->sock = -1;
+					continue;
+				}
+			}
+
+			freeaddrinfo(ai);
+		} else {
+			meshlink_errno = MESHLINK_ERESOLV;
+		}
+
+		if(mesh->sock != -1 || !comma) {
+			break;
+		}
+
+		address = comma;
 	}
 
-	// Connect to the meshlink daemon mentioned in the URL.
-	struct addrinfo *ai = str2addrinfo(address, port, SOCK_STREAM);
-
-	if(!ai) {
-		meshlink_errno = MESHLINK_ERESOLV;
-		pthread_mutex_unlock(&(mesh->mesh_mutex));
+	if(mesh->sock == -1) {
+		pthread_mutex_unlock(&mesh->mesh_mutex);
 		return false;
 	}
-
-	mesh->sock = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-
-	if(mesh->sock <= 0) {
-		logger(mesh, MESHLINK_DEBUG, "Could not open socket: %s\n", strerror(errno));
-		freeaddrinfo(ai);
-		meshlink_errno = MESHLINK_ENETWORK;
-		pthread_mutex_unlock(&(mesh->mesh_mutex));
-		return false;
-	}
-
-	set_timeout(mesh->sock, 5000);
-
-	if(connect(mesh->sock, ai->ai_addr, ai->ai_addrlen)) {
-		logger(mesh, MESHLINK_DEBUG, "Could not connect to %s port %s: %s\n", address, port, strerror(errno));
-		closesocket(mesh->sock);
-		freeaddrinfo(ai);
-		meshlink_errno = MESHLINK_ENETWORK;
-		pthread_mutex_unlock(&(mesh->mesh_mutex));
-		return false;
-	}
-
-	freeaddrinfo(ai);
 
 	logger(mesh, MESHLINK_DEBUG, "Connected to %s port %s...\n", address, port);
 
@@ -2034,7 +2130,7 @@ bool meshlink_join(meshlink_handle_t *mesh, const char *invitation) {
 
 	mesh->blen = 0;
 
-	if(!sendline(mesh->sock, "0 ?%s %d.%d", b64key, PROT_MAJOR, 1)) {
+	if(!sendline(mesh->sock, "0 ?%s %d.%d %s", b64key, PROT_MAJOR, 1, mesh->appname)) {
 		logger(mesh, MESHLINK_DEBUG, "Error sending request to %s port %s: %s\n", address, port, strerror(errno));
 		closesocket(mesh->sock);
 		meshlink_errno = MESHLINK_ENETWORK;
@@ -2133,7 +2229,7 @@ bool meshlink_join(meshlink_handle_t *mesh, const char *invitation) {
 	return true;
 
 invalid:
-	logger(mesh, MESHLINK_DEBUG, "Invalid invitation URL or you are already connected to a Mesh ?\n");
+	logger(mesh, MESHLINK_DEBUG, "Invalid invitation URL\n");
 	meshlink_errno = MESHLINK_EINVAL;
 	pthread_mutex_unlock(&(mesh->mesh_mutex));
 	return false;
@@ -2382,6 +2478,11 @@ static void channel_accept(struct utcp_connection *utcp_connection, uint16_t por
 
 static ssize_t channel_send(struct utcp *utcp, const void *data, size_t len) {
 	node_t *n = utcp->priv;
+
+	if(n->status.destroyed) {
+		return -1;
+	}
+
 	meshlink_handle_t *mesh = n->mesh;
 	return meshlink_send(mesh, (meshlink_node_t *)n, data, len) ? (ssize_t)len : -1;
 }
@@ -2556,6 +2657,7 @@ void update_node_status(meshlink_handle_t *mesh, node_t *n) {
 }
 
 void meshlink_enable_discovery(meshlink_handle_t *mesh, bool enable) {
+#if HAVE_CATTA
 	if(!mesh) {
 		meshlink_errno = MESHLINK_EINVAL;
 		return;
@@ -2579,6 +2681,11 @@ void meshlink_enable_discovery(meshlink_handle_t *mesh, bool enable) {
 
 end:
 	pthread_mutex_unlock(&mesh->mesh_mutex);
+#else
+	(void)mesh;
+	(void)enable;
+	meshlink_errno = MESHLINK_ENOTSUP;
+#endif
 }
 
 static void __attribute__((constructor)) meshlink_init(void) {

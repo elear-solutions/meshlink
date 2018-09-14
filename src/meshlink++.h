@@ -174,13 +174,26 @@ public:
 	 */
 
 	/// This function is called whenever another node sends data to the local node.
-	virtual void receive(node *source, const void *data, size_t length) { /* do nothing */ (void)source; (void)data; (void) length; }
+	virtual void receive(node *source, const void *data, size_t length) {
+		/* do nothing */
+		(void)source;
+		(void)data;
+		(void) length;
+	}
 
 	/// This functions is called  whenever another node's status changed.
-	virtual void node_status(node *peer, bool reachable)                { /* do nothing */ (void)peer; (void)reachable; }
+	virtual void node_status(node *peer, bool reachable)                {
+		/* do nothing */
+		(void)peer;
+		(void)reachable;
+	}
 
 	/// This functions is called whenever MeshLink has some information to log.
-	virtual void log(log_level_t level, const char *message)            { /* do nothing */ (void)level; (void)message; }
+	virtual void log(log_level_t level, const char *message)            {
+		/* do nothing */
+		(void)level;
+		(void)message;
+	}
 
 	/// This functions is called whenever another node attemps to open a channel to the local node.
 	/**
@@ -203,7 +216,10 @@ public:
 	 */
 	virtual bool channel_accept(channel *channel, uint16_t port, const void *data, size_t len) {
 		/* by default reject all channels */
-		(void)channel; (void)port; (void)data; (void)len;
+		(void)channel;
+		(void)port;
+		(void)data;
+		(void)len;
 		return false;
 	}
 
@@ -218,7 +234,12 @@ public:
 	 *  @param data         A pointer to a buffer containing data sent by the source.
 	 *  @param len          The length of the data.
 	 */
-	virtual void channel_receive(channel *channel, const void *data, size_t len) { /* do nothing */ (void)channel; (void)data; (void)len; }
+	virtual void channel_receive(channel *channel, const void *data, size_t len) {
+		/* do nothing */
+		(void)channel;
+		(void)data;
+		(void)len;
+	}
 
 	/// This function is called by Meshlink when data can be send on a channel.
 	/**
@@ -230,7 +251,11 @@ public:
 	 *  @param channel      A handle for the channel.
 	 *  @param len          The maximum length of data that is guaranteed to be accepted by a call to channel_send().
 	 */
-	virtual void channel_poll(channel *channel, size_t len) { /* do nothing */ (void)channel; (void)len; }
+	virtual void channel_poll(channel *channel, size_t len) {
+		/* do nothing */
+		(void)channel;
+		(void)len;
+	}
 
 	/// Start MeshLink.
 	/** This function causes MeshLink to open network sockets, make outgoing connections, and
@@ -335,6 +360,42 @@ public:
 		return meshlink_verify(handle, source, data, len, signature, siglen);
 	}
 
+	/// Set the canonical Address for a node.
+	/** This function sets the canonical Address for a node.
+	 *  This address is stored permanently until it is changed by another call to this function,
+	 *  unlike other addresses associated with a node,
+	 *  such as those added with meshlink_hint_address() or addresses discovered at runtime.
+	 *
+	 *  If a canonical Address is set for the local node,
+	 *  it will be used for the hostname part of generated invitation URLs.
+	 *
+	 *  @param node         A pointer to a meshlink_node_t describing the node.
+	 *  @param address      A nul-terminated C string containing the address, which can be either in numeric format or a hostname.
+	 *  @param port         A nul-terminated C string containing the port, which can be either in numeric or symbolic format.
+	 *                      If it is NULL, the listening port's number will be used.
+	 *
+	 *  @return             This function returns true if the address was added, false otherwise.
+	 */
+	bool set_canonical_address(node *node, const char *address, const char *port = NULL) {
+		return meshlink_set_canonical_address(handle, node, address, port);
+	}
+
+	/// Set the canonical Address for the local node.
+	/** This function sets the canonical Address for the local node.
+	 *  This address is stored permanently until it is changed by another call to this function,
+	 *  unlike other addresses associated with a node,
+	 *  such as those added with meshlink_hint_address() or addresses discovered at runtime.
+	 *
+	 *  @param address      A nul-terminated C string containing the address, which can be either in numeric format or a hostname.
+	 *  @param port         A nul-terminated C string containing the port, which can be either in numeric or symbolic format.
+	 *                      If it is NULL, the listening port's number will be used.
+	 *
+	 *  @return             This function returns true if the address was added, false otherwise.
+	 */
+	bool set_canonical_address(const char *address, const char *port = NULL) {
+		return meshlink_set_canonical_address(handle, get_self(), address, port);
+	}
+
 	/// Add an Address for the local node.
 	/** This function adds an Address for the local node, which will be used for invitation URLs.
 	 *
@@ -360,12 +421,15 @@ public:
 	 *  There is no guarantee it will be able to resolve the external address.
 	 *  Failures might be because by temporary network outages.
 	 *
+	 *  @param family       The address family to check, for example AF_INET or AF_INET6. If AF_UNSPEC is given,
+	 *                      this might return the external address for any working address family.
+	 *
 	 *  @return             This function returns a pointer to a C string containing the discovered external address,
 	 *                      or NULL if there was an error looking up the address.
 	 *                      After get_external_address() returns, the application is free to overwrite or free this string.
 	 */
-	bool get_external_address() {
-		return meshlink_get_external_address(handle);
+	bool get_external_address(int family = AF_UNSPEC) {
+		return meshlink_get_external_address_for_family(handle, family);
 	}
 
 	/// Try to discover the external address for the local node, and add it to its list of addresses.
@@ -408,6 +472,16 @@ public:
 	 */
 	bool set_port(int port) {
 		return meshlink_set_port(handle, port);
+	}
+
+	/// Set the timeout for invitations.
+	/** This function sets the timeout for invitations.
+	 *  The timeout is retroactively applied to all outstanding invitations.
+	 *
+	 *  @param timeout      The timeout for invitations in seconds.
+	 */
+	void set_invitation_timeout(int timeout) {
+		meshlink_set_invitation_timeout(handle, timeout);
 	}
 
 	/// Invite another node into the mesh.
@@ -575,7 +649,7 @@ public:
 private:
 	// non-copyable:
 	mesh(const mesh &) /* TODO: C++11: = delete */;
-	void operator=(const mesh &) /* TODO: C++11: = delete */ ;
+	void operator=(const mesh &) /* TODO: C++11: = delete */;
 
 	/// static callback trampolines:
 	static void receive_trampoline(meshlink_handle_t *handle, meshlink_node_t *source, const void *data, size_t length) {
