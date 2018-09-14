@@ -10,8 +10,8 @@ Makefile.in
 !.gitignore
 !.gitmodules
 !.astylerc
-core
-core.*
+!core
+!core.*
 /config.*
 /autom4te.cache
 /aclocal.m4
