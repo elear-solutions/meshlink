@@ -465,9 +465,7 @@ void change_ip(int node) {
 int create_bridge(char* bridgeName) {
 		char command[100] = "brctl addbr ";
 		strcat(command, bridgeName);
-		if(!system(command)) {
-			return -1;
-		}
+		system(command);
 		PRINT_TEST_CASE_MSG("%s bridge created\n", bridgeName);
 		return 0;
 }
@@ -482,13 +480,9 @@ void add_interface(char* bridgeName, char* interfaceName) {
 		strcat(command, bridgeName);
 		strcat(command, " ");
 		strcat(command, interfaceName);
-		if(!system(command)) {
-			return;
-		}
+		system(command);
 		strcat(cmd, bridgeName);
-		if(!system(cmd)) {
-			return;
-		}
+		system(cmd);
 		PRINT_TEST_CASE_MSG("Added interface for %s\n", bridgeName);
 		return;
 }
@@ -501,19 +495,13 @@ void add_veth_pair(char* vethName1, char* vethName2) {
 		strcat(command, vethName1);
 		strcat(command, " type veth peer name ");
 		strcat(command, vethName2);
-		if(!system(command)) {
-			return;
-		}
+		system(command);
 		strcat(upCommand1, vethName1);
 		strcat(upCommand1, " up");
-		if(!system(upCommand1)) {
-			return;
-		}
+		system(upCommand1);
 		strcat(upCommand2, vethName2);
 		strcat(upCommand2, " up");
-		if(!system(upCommand2)) {
-			return;
-		}
+		system(upCommand2);
 		PRINT_TEST_CASE_MSG("Added veth pairs %s and %s\n", vethName1, vethName2);
 		return;
 }
@@ -524,9 +512,8 @@ void bring_if_up(char* bridgeName) {
 		char dhcommand[300] = "dhclient ";
 		strcat(command, bridgeName);
 		strcat(command, " up");
-		if(!system(command)) {
-			return;
-		}
+		system(command);
+		sleep(2);
 		PRINT_TEST_CASE_MSG("Interface brought up for %s created\n", bridgeName);
 		return;
 }
@@ -550,43 +537,40 @@ void replaceAll(char *str, const char *oldWord, const char *newWord) {
 
 /* Switches the bridge for a given container */
 void switch_bridge(char *containerName, char * currentBridge, char *newBridge) {
-  char command[100] = "lxc-stop -n ";
-  char command_start[100] = "lxc-start -n ";
-  PRINT_TEST_CASE_MSG("Switching %s container to %s\n",containerName, newBridge);
-  strcat(command,containerName);
-  strcat(command_start,containerName);
-  if(!system(command)) {
-		return;
-	}
+ 	  char command[100] = "lxc-stop -n ";
+    char command_start[100] = "lxc-start -n ";
+    PRINT_TEST_CASE_MSG("Switching %s container to %s\n",containerName, newBridge);
+    strcat(command,containerName);
+    strcat(command_start,containerName);
+    system(command);
+	  sleep(2);
+    FILE * fPtr;
+    FILE * fTemp;
+    char path[300] = "/var/lib/lxc/";
+    strcat(path,containerName);
+    strcat(path,"/config");
 
-  FILE * fPtr;
-  FILE * fTemp;
-  char path[300] = "/var/lib/lxc/";
-  strcat(path,containerName);
-  strcat(path,"/config");
+    char buffer[BUFFER_SIZE];
+    /*  Open all required files */
+    fPtr  = fopen(path, "r");
+    fTemp = fopen("replace.tmp", "w");
+    if (fPtr == NULL || fTemp == NULL) {
+      PRINT_TEST_CASE_MSG("\nUnable to open file.\n");
+      PRINT_TEST_CASE_MSG("Please check whether file exists and you have read/write privilege.\n");
+      exit(EXIT_SUCCESS);
+    }
 
-  char buffer[BUFFER_SIZE];
-  /*  Open all required files */
-  fPtr  = fopen(path, "r");
-  fTemp = fopen("replace.tmp", "w");
-  if (fPtr == NULL || fTemp == NULL) {
-    PRINT_TEST_CASE_MSG("\nUnable to open file.\n");
-    PRINT_TEST_CASE_MSG("Please check whether file exists and you have read/write privilege.\n");
-    exit(EXIT_SUCCESS);
-  }
-
-  while ((fgets(buffer, BUFFER_SIZE, fPtr)) != NULL) {
-    replaceAll(buffer, currentBridge, newBridge);
-    fputs(buffer, fTemp);
-  }
-  fclose(fPtr);
-  fclose(fTemp);
-  remove(path);
-  rename("replace.tmp", path);
-  PRINT_TEST_CASE_MSG("Switching procedure done successfully\n");
-  if(!system(command_start)) {
-		return;
-	}
+    while ((fgets(buffer, BUFFER_SIZE, fPtr)) != NULL) {
+      replaceAll(buffer, currentBridge, newBridge);
+      fputs(buffer, fTemp);
+    }
+    fclose(fPtr);
+    fclose(fTemp);
+    remove(path);
+    rename("replace.tmp", path);
+    PRINT_TEST_CASE_MSG("Switching procedure done successfully\n");
+    system(command_start);
+	  sleep(2);
 }
 
 /* Bring the interface down for the bridge created */
@@ -594,9 +578,7 @@ void bring_if_down(char* bridgeName) {
 		char command[300] = "ip link set dev ";
 		strcat(command, bridgeName);
 		strcat(command, " down");
-		if(!system(command)) {
-			return;
-		}
+		system(command);
 		PRINT_TEST_CASE_MSG("Interface brought down for %s created\n", bridgeName);
 		return;
 }
@@ -606,9 +588,7 @@ void del_interface(char* bridgeName, char* interfaceName) {
 		char command[300] = "brctl delif ";
 		strcat(command, bridgeName);
 		strcat(command, interfaceName);
-		if(!system(command)) {
-			return;
-		}
+		system(command);
 		PRINT_TEST_CASE_MSG("Deleted interface for %s\n", bridgeName);
 		return;
 }
@@ -618,9 +598,7 @@ int delete_bridge(char* bridgeName) {
 		bring_if_down(bridgeName);
 		char command[300] = "brctl delbr ";
 		strcat(command, bridgeName);
-		if(!system(command)) {
-			return -1;
-		}	
+		system(command);
 		PRINT_TEST_CASE_MSG("%s bridge deleted\n", bridgeName);
 		sleep(2);
 		return 0;
@@ -638,9 +616,7 @@ int create_container_on_bridge(char* containerName, char* bridgeName, char* ifNa
 		strcat(command, containerName);
 		strcat(command, cmd);
 		strcat(command, choose_arch);
-		if(!system(command)) {
-			return -1;
-		}
+		system(command);
 		sleep(3);
 		assert(fPtr = fopen(path, "a+"));
     fprintf(fPtr, "lxc.net.0.name = eth0\n");
@@ -652,10 +628,8 @@ int create_container_on_bridge(char* containerName, char* bridgeName, char* ifNa
     fprintf(fPtr, "lxc.net.1.hwaddr = 00:16:3e:ab:xx:xx\n");
     fclose(fPtr);
 		strcat(start, containerName);
-		if(!system(start)) {
-			return -1;
-		}
-		sleep(5);
+		system(start);
+		sleep(3);
 		PRINT_TEST_CASE_MSG("Created %s on %s with interface name %s\n", containerName, bridgeName, ifName); 
 		return 0;
 }
@@ -665,41 +639,32 @@ void config_dnsmasq(char* containerName, char* ifName, char* listenAddress, char
 		char command[500] = "echo \"apt-get install dnsmasq iptables -y\" | lxc-attach -n ";
 		strcat(command, containerName);
 		strcat(command, " --");
-		if(!system(command)) {
-			return;
-		}
+		system(command);
+		sleep(5);
 		char com1[300] = "echo \"echo \"interface=eth1\" >> /etc/dnsmasq.conf\" | lxc-attach -n ";
 		strcat(com1, containerName);
 		strcat(com1, " --");
-		printf("%s\n", com1);
-		if(!system(com1)) {
-			return;
-		}
+		system(com1);
+		sleep(5);
 		char com2[300] = "echo \"echo \"bind-interfaces\" >> /etc/dnsmasq.conf\" | lxc-attach -n ";
 		strcat(com2, containerName);
 		strcat(com2, " --");
-		printf("%s\n", com2);
-		if(!system(com2)) {
-			return;
-		}
+		system(com2);
+		sleep(5);
 		char com3[300] = "echo \"echo \"listen-address=";
 		strcat(com3, listenAddress);
 		strcat(com3, "\" >> /etc/dnsmasq.conf\" | lxc-attach -n ");
 		strcat(com3, containerName);
 		strcat(com3, " --");
-		printf("%s\n", com3);
-		if(!system(com3)) {
-			return;
-		}
+		system(com3);
+		sleep(5);
 		char com4[300] = "echo \"echo \"dhcp-range=";
 		strcat(com4, dhcpRange);
 		strcat(com4, "\" >> /etc/dnsmasq.conf\" | lxc-attach -n ");
 		strcat(com4, containerName);
 		strcat(com4, " --");
-		printf("%s\n", com4);
-		if(!system(com4)) {
-			return;
-		}
+		system(com4);
+		sleep(5);
 		char cmd[300] = "echo \"ifconfig ";
 		strcat(cmd, ifName);
 		strcat(cmd, " ");
@@ -707,15 +672,13 @@ void config_dnsmasq(char* containerName, char* ifName, char* listenAddress, char
 		strcat(cmd, " netmask 255.255.255.0 up\" | lxc-attach -n ");
 		strcat(cmd, containerName);
 		strcat(cmd, " --");
-		if(!system(cmd)) {
-			return;
-		}
+		system(cmd);
+		sleep(2	);
 		char com[500] = "echo \"service dnsmasq restart >> /dev/null\" | lxc-attach -n ";
 		strcat(com, containerName);
 		strcat(com, " --");
-		if(!system(com)) {
-			return;
-		}
+		system(com);
+		sleep(2);
 		PRINT_TEST_CASE_MSG("Configured dnsmasq in %s with interface name %s, listen-address = %s, dhcp-range = %s\n", containerName, ifName, listenAddress, dhcpRange);
 		return;
 }
@@ -735,9 +698,8 @@ void config_nat(char* containerName, char* listenAddress) {
 		strcat(comd, "/24 -j MASQUERADE\" | lxc-attach -n ");
 		strcat(comd, containerName);
 		strcat(comd, " --");
-		if(!system(comd)) {
-			return;
-		}
+		system(comd);
+		sleep(2);
 		PRINT_TEST_CASE_MSG("Configured NAT on %s\n", containerName);
 		return;
 }
@@ -759,15 +721,11 @@ void destroy_nat_layer(char* containerName, char* bridgeName) {
 		delete_bridge(bridgeName);
 		char command[100] = "lxc-stop -n ";
 		strcat(command, containerName);
-		if(!system(command)) {
-			return;
-		}
+		system(command);
 		char destroy[100] = "lxc-destroy -n ";
 		strcat(destroy, containerName);
 		strcat(destroy, " -s");
-		if(!system(destroy)) {
-			return;
-		}
+		system(destroy);
 		PRINT_TEST_CASE_MSG("NAT layer destroyed with %s\n", containerName);
 		return;
 }
