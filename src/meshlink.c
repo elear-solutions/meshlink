@@ -527,13 +527,12 @@ static bool finalize_join(meshlink_handle_t *mesh) {
 
 		// Is it a Name?
 		if(!strcasecmp(l, "Name")) {
-      if(strcmp(value, name)) {
+			if(strcmp(value, name)) {
 				break;
 			} else {
 				continue;
 			}
-		}
-		else if(!strcasecmp(l, "NetName")) {
+		} else if(!strcasecmp(l, "NetName")) {
 			continue;
 		}
 

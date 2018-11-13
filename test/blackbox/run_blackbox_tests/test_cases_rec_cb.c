@@ -68,9 +68,11 @@ static void rec_cb(meshlink_handle_t *mesh, meshlink_node_t *source, const void 
 	assert(len);
 
 	pthread_mutex_lock(&lock);
+
 	if(len == 5 && !memcmp(data, "test", 5)) {
 		received = true;
 	}
+
 	pthread_mutex_unlock(&lock);
 }
 
@@ -182,7 +184,7 @@ static bool test_set_rec_cb_03(void) {
 
 	meshlink_close(mesh_handle);
 	meshlink_destroy("set_receive_cb_conf");
-  return true;
+	return true;
 }
 
 int test_meshlink_set_receive_cb(void) {

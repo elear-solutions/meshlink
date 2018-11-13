@@ -144,6 +144,7 @@ AC_CONFIG_FILES([Makefile \
 		test/blackbox/test_case_meta_conn_03/Makefile \
 		test/blackbox/test_case_meta_conn_04/Makefile \
 		test/blackbox/test_case_meta_conn_05/Makefile \
+		test/blackbox/test_case_node_cluster_01/Makefile \
 		examples/Makefile])
 
 AC_OUTPUT

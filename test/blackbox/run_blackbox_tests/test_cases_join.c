@@ -61,7 +61,7 @@ static bool join_status;
 
 /* status callback */
 static void status_callback(meshlink_handle_t *mesh, meshlink_node_t *source, bool reach) {
-  (void)mesh;
+	(void)mesh;
 
 	if(!strcmp(source->name, "relay")) {
 		join_status = reach;
@@ -99,9 +99,9 @@ static bool test_meshlink_join_01(void) {
 	meshlink_set_node_status_cb(mesh1, status_callback);
 
 	// Inviting nut
-  meshlink_start(mesh2);
-  char *invitation = meshlink_invite(mesh2, "nut");
-  assert(invitation);
+	meshlink_start(mesh2);
+	char *invitation = meshlink_invite(mesh2, "nut");
+	assert(invitation);
 
 	// Joining Node-Under-Test with relay
 	bool ret = meshlink_join(mesh1, invitation);

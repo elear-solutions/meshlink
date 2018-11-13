@@ -80,7 +80,7 @@ int main(int argc, char *argv[]) {
 
 	int failed_tests = 0;
 
-	failed_tests += test_meta_conn();
+	/*failed_tests += test_meta_conn();
 	failed_tests += test_meshlink_set_status_cb();
 	failed_tests += test_meshlink_join();
 	failed_tests += test_meshlink_set_channel_poll_cb();
@@ -118,7 +118,8 @@ int main(int argc, char *argv[]) {
 	failed_tests += test_meshlink_whitelist();
 	failed_tests += test_meshlink_default_blacklist();
 	failed_tests += test_meshlink_channel_open();
-	failed_tests += test_meshlink_channel_close();
+	failed_tests += test_meshlink_channel_close();*/
+	failed_tests += test_case_nodes_cluster();
 
 	printf("[ PASSED ] %d test(s).\n", total_tests - failed_tests);
 	printf("[ FAILED ] %d test(s).\n", failed_tests);

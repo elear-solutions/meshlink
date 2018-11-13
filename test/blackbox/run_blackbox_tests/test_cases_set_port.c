@@ -92,7 +92,7 @@ static bool test_set_port_01(void) {
 
 	meshlink_close(mesh_handle);
 	meshlink_destroy("setportconf");
-  return true;
+	return true;
 }
 
 /* Execute meshlink_set_port Test Case # 2 - Invalid case*/

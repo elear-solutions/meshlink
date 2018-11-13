@@ -137,7 +137,7 @@ static bool test_invite_03(void) {
 
 	meshlink_close(mesh_handle);
 	meshlink_destroy("inviteconf");
-  return true;
+	return true;
 }
 
 /* Execute invite Test Case # 4 - Functionality test*/

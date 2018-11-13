@@ -60,6 +60,7 @@ static void status_cb(meshlink_handle_t *mesh, meshlink_node_t *source, bool rea
 	} else {
 		fprintf(stderr, "[ %s ] node not reachable\n", source->name) ;
 	}
+
 	status = reach;
 }
 

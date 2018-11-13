@@ -239,7 +239,7 @@ static bool test_import_04(void) {
 	// Importing NUT with garbage string as exported data argument
 	bool imp1 = meshlink_import(mesh1, "1/2/3");
 	bool imp2 = meshlink_import(mesh2, exp1);
-  assert_int_equal((!imp1) && imp2, true);
+	assert_int_equal((!imp1) && imp2, true);
 
 	meshlink_close(mesh1);
 	meshlink_close(mesh2);
