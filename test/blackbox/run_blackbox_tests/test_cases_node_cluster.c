@@ -34,7 +34,7 @@
 #define PEER  "peer"
 #define RELAY "relay"
 #define NUT   "nut"
-#define TOTAL_NODES 100
+#define TOTAL_NODES 1000
 
 #define NAME_SIZE 50
 #define str_int_concat(var_name, str, num) assert(snprintf(var_name, sizeof(var_name), "%s_%d", str, num) >= 0)
@@ -50,9 +50,17 @@ static black_box_state_t test_case_01_state = {
 	.num_nodes = 2,
 };
 
+static char *append_invitation(char *inv_buff, char *inv) {
+	inv_buff = realloc(inv_buff, (inv_buff ? strlen(inv_buff) : 0) + strlen(inv) + 2);
+	assert(inv_buff);
+	strcat(inv_buff, " ");
+	strcat(inv_buff, inv);
+	return inv_buff;
+}
+
 static void launch_node_in_container_event(const char *container_name, const char *node, int device_class,
                 const char *invite_url, int clientId, const char *import) {
-	char node_sim_command[200];
+	char node_sim_command[1000];
 
 	assert(snprintf(node_sim_command, sizeof(node_sim_command),
 	                "LD_LIBRARY_PATH=/home/ubuntu/test/.libs /home/ubuntu/test/node_sim_%s %s %d %d %s %s "
@@ -66,7 +74,7 @@ static void launch_node_in_container_event(const char *container_name, const cha
 }
 
 static char *invite_node_in_container(const char *container_name, const char *inviter, const char *invitee) {
-	char invite_command[200];
+	char invite_command[DAEMON_ARGV_LEN];
 	char *invite_url;
 
 	assert(snprintf(invite_command, sizeof(invite_command),
@@ -77,35 +85,58 @@ static char *invite_node_in_container(const char *container_name, const char *in
 	return invite_url;
 }
 
-static int peers_joined;
-static int relay_merged;
-static bool *joined;
+static bool *peers_joined;
+static char *relay_invitaions;
+static char *event_handler_export;
+static bool test_case_1_result;
+static int total_relays = 0;
 /* Callback function for handling channel connection test cases mesh events */
-static void node_conn_cb(mesh_event_payload_t payload) {
-	int num = *((int *)payload.payload);
+static bool node_conn_cb(mesh_event_payload_t payload) {
+	int num;
 	int i, total;
+	static int total_peers;
+	static int relay_peers;
 
 	switch(payload.mesh_event) {
-	case NODE_JOINED            :
-		if(payload.client_id != 3000) {
-			if(joined[num] == false) {
-				joined[num] = true;
+	case NODE_JOINED1            :
 
-				for(i = 0, total = 0; i < TOTAL_NODES; i = i + 1) {
-					if(joined[i]) {
-						total = total + 1;
-					} else {
-					  // DEBUG: Print all the peer nodes which didn't join
-						fprintf(stderr, "%3d ", i);
-					}
+		// Peer nodes that had made meta-connection with it's invited relay_n node
+
+		if(peers_joined[payload.client_id] == false) {
+			peers_joined[payload.client_id] = true;
+
+			for(i = 0, total = 0; i < TOTAL_NODES; i = i + 1) {
+				if(peers_joined[i]) {
+					total = total + 1;
+				} else {
+					// DEBUG: Print all the peer nodes which didn't join
+					fprintf(stderr, "%3d ", i);
 				}
-				peers_joined = total;
-				// DEBUG: Print the peer node which joined
-				fprintf(stderr, "\npeer_%d JOINED - %d\n", num, peers_joined);
 			}
-		} else {
-			relay_merged = relay_merged + 1;
-			fprintf(stderr, "Total nodes = %d, relays = %d\n", peers_joined, relay_merged);
+
+			total_peers = total;
+			// DEBUG: Print the peer node which joined
+			fprintf(stderr, "\npeer_%d JOINED - %d\n", payload.client_id, total_peers);
+
+			/* main relay node which merges discrete relay_n nodes is deployed
+			once peer nodes joined with it's relay_n node equals ROTAL_NODES */
+			if(total_peers == TOTAL_NODES) {
+				launch_node_in_container_event(RELAY, RELAY, DEV_CLASS_BACKBONE, relay_invitaions, 3000, event_handler_export);
+				return true;
+			}
+		}
+
+		break;
+
+	case NODE_JOINED2           :
+
+		// Peer nodes that are reachable from main relay node for at least once.
+
+		relay_peers = relay_peers + 1;
+
+		if(relay_peers == TOTAL_NODES) {
+			test_case_1_result = true;
+			return true;
 		}
 
 		break;
@@ -113,6 +144,8 @@ static void node_conn_cb(mesh_event_payload_t payload) {
 	default                     :
 		PRINT_TEST_CASE_MSG("Undefined event occurred : %d\n", payload.mesh_event);
 	}
+
+	return false;
 }
 
 /* Execute Test Case # 1 - */
@@ -130,78 +163,64 @@ static void test_case_01(void **state) {
 static bool test_steps_01(void) {
 	char peer_name[NAME_SIZE];
 	char relay_name[NAME_SIZE];
-	int nodes = TOTAL_NODES, n, relay_nodes;
-	char *invitations[nodes], *relay_invitaions[nodes / 50];
+	int  peer_no, relay_no;
+	char *invitations[TOTAL_NODES];
+	char *invitation_ptr;
 
 	/* Create a buffer which stores the meta-connection status of the peer nodes
-      TODO: Replace bool array with a small array of int and perform bitwise operation
-            for storing node status */
-	joined = calloc(nodes, sizeof(*joined));
-	assert(joined);
+	TODO: Replace bool array with a small array of int and perform bitwise operation
+	    for storing node status */
+	peers_joined = calloc(TOTAL_NODES, sizeof(*peers_joined));
+	assert(peers_joined);
 
-	char *event_handler_export = mesh_event_sock_create(eth_if_name);
+	event_handler_export = mesh_event_sock_create(eth_if_name);
 
 	/* Generating Invitations for peer nodes and to a relay node which merges all
-      the relay_n nodes at the end to make the cluster */
-	for(n = 0, relay_nodes = 0; n < nodes; n += 1) {
-		if((n % 50) == 0) {
-			str_int_concat(relay_name, "relay", relay_nodes);
-			relay_invitaions[relay_nodes] = invite_node_in_container(RELAY, relay_name, RELAY);
-			relay_nodes = relay_nodes + 1;
+	the relay_n nodes at the end to make the cluster */
+	for(peer_no = 0; peer_no < TOTAL_NODES; peer_no = peer_no + 1) {
+		if((peer_no % 50) == 0) {
+			relay_no = peer_no / 50;
+			str_int_concat(relay_name, "relay", relay_no);
+			invitation_ptr = invite_node_in_container(RELAY, relay_name, RELAY);
+			relay_invitaions = append_invitation(relay_invitaions, invitation_ptr);
+			free(invitation_ptr);
 		}
 
-		str_int_concat(peer_name, "peer", n);
+		str_int_concat(peer_name, "peer", peer_no);
+		invitations[peer_no] = invite_node_in_container(RELAY, relay_name, peer_name);
 
-		invitations[n] = invite_node_in_container(RELAY, relay_name, peer_name);
-		assert(invitations[n]);
-		PRINT_TEST_CASE_MSG("node %s invited with invitation %s\n", peer_name, invitations[n]);
+		PRINT_TEST_CASE_MSG("node %s invited with invitation %s\n", peer_name, invitations[peer_no]);
 	}
+
+	/*for(relay_no = 0; relay_no < TOTAL_NODES / 50; relay_no = relay_no + 1) {
+	str_int_concat(relay_name, "relay", relay_no);
+	        launch_node_in_container_event(RELAY, relay_name, DEV_CLASS_BACKBONE, NULL, relay_no + TOTAL_NODES, event_handler_export);
+	}
+	launch_node_in_container_event(RELAY, RELAY, DEV_CLASS_BACKBONE, relay_invitaions, 3000, event_handler_export);*/
 
 	/* Deploying each relay_n node along with it's 50 peer nodes */
-	for(n = 0, relay_nodes = 0; n < nodes; n = n + 1) {
-		if((n % 50) == 0) {
-			str_int_concat(relay_name, "relay", relay_nodes);
-			launch_node_in_container_event(RELAY, relay_name, DEV_CLASS_BACKBONE, NULL, relay_nodes, event_handler_export);
-			sleep(2);
-			relay_nodes = relay_nodes + 1;
+	for(peer_no = 0; peer_no < TOTAL_NODES; peer_no = peer_no + 1) {
+		if((peer_no % 50) == 0) {
+			relay_no = peer_no / 50;
+			str_int_concat(relay_name, "relay", relay_no);
+			launch_node_in_container_event(RELAY, relay_name, DEV_CLASS_BACKBONE, NULL, relay_no + TOTAL_NODES, event_handler_export);
+			sleep(1);
 		}
 
-		str_int_concat(peer_name, "peer", n);
-		launch_node_in_container_event(PEER, peer_name, DEV_CLASS_PORTABLE, invitations[n], n, event_handler_export);
+		str_int_concat(peer_name, "peer", peer_no);
+		launch_node_in_container_event(PEER, peer_name, DEV_CLASS_PORTABLE, invitations[peer_no], peer_no, event_handler_export);
 	}
 
-	/* Wait for all peers to be joined or formed a meta-connection with it's respective relay_n
-      using mesh event handling */
-	while(peers_joined < nodes) {
-		wait_for_event(node_conn_cb, 120);
-	}
+	wait_for_event(node_conn_cb, 600);
+	assert_int_equal(test_case_1_result, true);
 
-	/* Merge all the relay_n nodes with the main relay node to form the cluster of meshlink nodes */
-	for(relay_nodes = 0; relay_nodes < nodes / 50; relay_nodes = relay_nodes + 1) {
-		launch_node_in_container_event(RELAY, RELAY, DEV_CLASS_BACKBONE, relay_invitaions[relay_nodes], 3000, event_handler_export);
-		alarm(240);
-
-		while(relay_merged <= relay_nodes) {
-			wait_for_event(node_conn_cb, 120);
-		}
-
-		alarm(0);
-		node_step_in_container(RELAY, "SIGTERM");
-		sleep(1);
-	}
-
-	/* Relaunch the relay node's instance without any invitation */
-	launch_node_in_container_event(RELAY, RELAY, DEV_CLASS_BACKBONE, NULL, 3000, event_handler_export);
-
-	/** Node-under-test code for 1000 nodes**/
-	//invite_in_container(RELAY, NUT);
-
-
+	free(relay_invitaions);
+	free(peers_joined);
 	return true;
 }
 
 static int black_box_group_setup(void **state) {
-	const char *nodes[] = { "peer", "relay", "nut" };
+	const char *nodes[] = { "peer", "relay" };
 	int num_nodes = sizeof(nodes) / sizeof(nodes[0]);
 
 	printf("Creating Containers\n");

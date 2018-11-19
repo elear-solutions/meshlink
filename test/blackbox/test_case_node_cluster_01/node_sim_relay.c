@@ -23,6 +23,7 @@
 #include <string.h>
 #include <pthread.h>
 #include <assert.h>
+#include <signal.h>
 #include "../common/common_handlers.h"
 #include "../common/test_step.h"
 #include "../common/mesh_event_handler.h"
@@ -35,16 +36,32 @@
 
 static int client_id = -1;
 
-void logger_callback(meshlink_handle_t *mesh, meshlink_log_level_t level,
-                     const char *text) {
+static void logger_callback(meshlink_handle_t *mesh, meshlink_log_level_t level,
+                            const char *text) {
 	(void)mesh;
 	(void)level;
-	int node_num;
 
 	fprintf(stderr, "meshlink>> %s\n", text);
 
-	if((client_id == 3000) && (sscanf(text, "Connection with relay_%d activated", &node_num) == 1)) {
-		assert(mesh_event_sock_send(client_id, NODE_JOINED, &node_num, sizeof(node_num)));
+	/*int node_num;
+	static bool event_sent;
+	if(!event_sent && sscanf(text, "Connection with relay activated") == 1) {
+	        assert(mesh_event_sock_send(client_id, NODE_JOINED2, NULL, 0));
+	        fprintf(stderr, "EVENT_SENT %d\n", node_num);
+	        event_sent = true;
+	}*/
+}
+
+static void node_status_cb(meshlink_handle_t *mesh, meshlink_node_t *source, bool reach) {
+	(void)mesh;
+	int node_num;
+	static bool event_sent;
+
+	if(client_id == 3000 && !event_sent && reach) {
+		if(sscanf(source->name, "peer_%d", &node_num)) {
+			assert(mesh_event_sock_send(client_id, NODE_JOINED2, &node_num, sizeof(node_num)));
+			event_sent = true;
+		}
 	}
 }
 
@@ -60,7 +77,6 @@ int main(int argc, char *argv[]) {
 	}
 
 	// Run peer node instance
-
 	setup_signals();
 
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, logger_callback);
@@ -68,21 +84,26 @@ int main(int argc, char *argv[]) {
 	                                        "test", atoi(argv[CMD_LINE_ARG_DEVCLASS]));
 	assert(mesh);
 	meshlink_set_log_cb(mesh, MESHLINK_DEBUG, logger_callback);
-	//meshlink_set_node_status_cb(mesh, node_status_cb);
+	meshlink_set_node_status_cb(mesh, node_status_cb);
 
-	if(argv[CMD_LINE_ARG_INVITEURL]) {
+	if(argv[5]) {
 		int attempts;
 		bool joined_status;
+		int inv_no;
 
-		for(attempts = 0; attempts < 200; attempts = attempts + 1) {
-			joined_status = meshlink_join(mesh, argv[CMD_LINE_ARG_INVITEURL]);
+		for(inv_no = 5; argv[inv_no]; inv_no = inv_no + 1) {
+			fprintf(stderr, "INV_NO: %d\n", inv_no);
 
-			if(joined_status) {
-				break;
+			for(attempts = 0; attempts < 200; attempts = attempts + 1) {
+				joined_status = meshlink_join(mesh, argv[inv_no]);
+
+				if(joined_status) {
+					break;
+				}
 			}
-		}
 
-		assert(attempts < 200);
+			assert(attempts < 200);
+		}
 	}
 
 	assert(meshlink_start(mesh));

@@ -30,3 +30,4 @@ core.*
 ar-lib
 meshlink.layout
 *.cbp
+*.layout

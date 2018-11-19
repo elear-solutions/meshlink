@@ -359,7 +359,7 @@ void node_sim_in_container(const char *node, const char *device_class, const cha
 /* Run the node_sim_<nodename> program inside the 'node''s container with event handling capable*/
 void node_sim_in_container_event(const char *node, const char *device_class,
                                  const char *invite_url, const char *clientId, const char *import) {
-	char node_sim_command[200];
+	char node_sim_command[DAEMON_ARGV_LEN];
 
 	assert(snprintf(node_sim_command, sizeof(node_sim_command),
 	                "LD_LIBRARY_PATH=/home/ubuntu/test/.libs /home/ubuntu/test/node_sim_%s %s %s %s %s %s "
@@ -375,7 +375,7 @@ void node_sim_in_container_event(const char *node, const char *device_class,
 /* Run the node_step.sh script inside the 'node''s container to send the 'sig' signal to the
     node_sim program in the container */
 void node_step_in_container(const char *node, const char *sig) {
-	char node_step_command[200];
+	char node_step_command[DAEMON_ARGV_LEN];
 
 	assert(snprintf(node_step_command, sizeof(node_step_command),
 	                "/home/ubuntu/test/node_step.sh lt-node_sim_%s %s 1>&2 2> node_step.log",

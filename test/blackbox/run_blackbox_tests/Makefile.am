@@ -1,6 +1,6 @@
 check_PROGRAMS = run_blackbox_tests
 
-run_blackbox_tests_SOURCES = 					\
+run_blackbox_tests_SOURCES = 						\
 	run_blackbox_tests.c 									\
 	test_cases.c execute_tests.c  				\
 	../common/mesh_event_handler.c 				\
@@ -8,6 +8,7 @@ run_blackbox_tests_SOURCES = 					\
 	../common/tcpdump.c   								\
 	../common/common_handlers.c 					\
 	../common/test_step.c 								\
+	../../utils.c													\
 	test_cases_destroy.c 									\
 	test_cases_export.c 									\
 	test_cases_get_all_nodes.c 						\

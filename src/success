@@ -1,0 +1,754 @@
+net.c:60:			send_del_edge(mesh, mesh->everyone, c->edge);
+net.c:74:			e = lookup_edge(c->node, mesh->self);
+net.c:77:				send_del_edge(mesh, mesh->everyone, e);
+net.c:112:	for list_each(connection_t, c, mesh->connections) {
+net.c:115:			if(c->node->status.waitingforkey && c->node->last_req_key + mesh->pingtimeout <= mesh->loop.now.tv_sec) {
+net.c:120:		if(c->last_ping_time + mesh->pingtimeout <= mesh->loop.now.tv_sec) {
+net.c:123:					logger(mesh, MESHLINK_INFO, "%s didn't respond to PING in %ld seconds", c->name, (long)mesh->loop.now.tv_sec - c->last_ping_time);
+net.c:124:				} else if(c->last_ping_time + mesh->pinginterval <= mesh->loop.now.tv_sec) {
+net.c:142:	timeout_set(&mesh->loop, data, &(struct timeval) {
+net.c:143:		mesh->pingtimeout, rand() % 100000
+net.c:335:	if(mesh->contradicting_del_edge > 100 && mesh->contradicting_add_edge > 100) {
+net.c:336:		logger(mesh, MESHLINK_WARNING, "Possible node with same Name as us! Sleeping %d seconds.", mesh->sleeptime);
+net.c:337:		usleep(mesh->sleeptime * 1000000LL);
+net.c:338:		mesh->sleeptime *= 2;
+net.c:340:		if(mesh->sleeptime < 0) {
+net.c:341:			mesh->sleeptime = 3600;
+net.c:344:		mesh->sleeptime /= 2;
+net.c:346:		if(mesh->sleeptime < 10) {
+net.c:347:			mesh->sleeptime = 10;
+net.c:351:	mesh->contradicting_add_edge = 0;
+net.c:352:	mesh->contradicting_del_edge = 0;
+net.c:358:	if(mesh->nodes->count > 1) {
+net.c:362:		int retry_timeout = min(mesh->nodes->count * 5, 60);
+net.c:364:		logger(mesh, MESHLINK_DEBUG, "* devclass = %d", mesh->devclass);
+net.c:365:		logger(mesh, MESHLINK_DEBUG, "* nodes = %d", mesh->nodes->count);
+net.c:379:		for list_each(connection_t, c, mesh->connections) {
+net.c:386:		logger(mesh, MESHLINK_DEBUG, "* outgoings = %d", mesh->outgoings->count);
+net.c:390:		assert(mesh->devclass >= 0 && mesh->devclass <= _DEV_CLASS_MAX);
+net.c:392:		unsigned int min_connects = dev_class_traits[mesh->devclass].min_connects;
+net.c:393:		unsigned int max_connects = dev_class_traits[mesh->devclass].max_connects;
+net.c:404:			for splay_each(node_t, n, mesh->nodes) {
+net.c:407:				if(n != mesh->self && n->devclass <= mesh->devclass && !n->connection && (n->last_connect_try == 0 || (time(NULL) - n->last_connect_try) > retry_timeout)) {
+net.c:430:			for(unsigned int devclass = 0; devclass <= mesh->devclass; ++devclass) {
+net.c:431:				for list_each(connection_t, c, mesh->connections) {
+net.c:440:					for splay_each(node_t, n, mesh->nodes) {
+net.c:441:						if(n != mesh->self && n->devclass == devclass && !n->connection && (n->last_connect_try == 0 || (time(NULL) - n->last_connect_try) > retry_timeout)) {
+net.c:471:			for splay_each(node_t, n, mesh->nodes) {
+net.c:472:				if(n != mesh->self && n->devclass <= mesh->devclass && !n->status.reachable && (n->last_connect_try == 0 || (time(NULL) - n->last_connect_try) > retry_timeout)) {
+net.c:496:			for list_each(outgoing_t, outgoing, mesh->outgoings) {
+net.c:508:				list_insert_tail(mesh->outgoings, outgoing);
+net.c:521:			for(unsigned int devclass = 0; devclass <= mesh->devclass; ++devclass) {
+net.c:522:				for list_each(connection_t, c, mesh->connections) {
+net.c:531:					for list_each(connection_t, c, mesh->connections) {
+net.c:558:			for list_each(connection_t, c, mesh->connections) {
+net.c:581:			list_delete(mesh->outgoings, disconnect_from->connection->outgoing);
+net.c:592:	timeout_set(&mesh->loop, data, &(struct timeval) {
+net.c:606:	for list_each(outgoing_t, outgoing, mesh->outgoings) {
+net.c:610:			timeout_set(&mesh->loop, &outgoing->ev, &(struct timeval) {
+net.c:616:	for list_each(connection_t, c, mesh->connections) {
+net.c:623:	timeout_set(&mesh->loop, &mesh->pingtimer, &(struct timeval) {
+net.c:632:	timeout_add(&mesh->loop, &mesh->pingtimer, timeout_handler, &mesh->pingtimer, &(struct timeval) {
+net.c:633:		mesh->pingtimeout, rand() % 100000
+net.c:635:	timeout_add(&mesh->loop, &mesh->periodictimer, periodic_handler, &mesh->periodictimer, &(struct timeval) {
+net.c:640:	mesh->datafromapp.signum = 0;
+net.c:641:	signal_add(&(mesh->loop), &(mesh->datafromapp), (signal_cb_t)meshlink_send_from_queue, mesh, mesh->datafromapp.signum);
+net.c:643:	if(!event_loop_run(&(mesh->loop), &(mesh->mesh_mutex))) {
+net.c:648:	timeout_del(&mesh->loop, &mesh->periodictimer);
+net.c:649:	timeout_del(&mesh->loop, &mesh->pingtimer);
+protocol_auth.c:45:	switch(mesh->proxytype) {
+protocol_auth.c:63:		char s4req[9 + (mesh->proxyuser ? strlen(mesh->proxyuser) : 0)];
+protocol_auth.c:69:		if(mesh->proxyuser) {
+protocol_auth.c:70:			memcpy(s4req + 8, mesh->proxyuser, strlen(mesh->proxyuser));
+protocol_auth.c:82:		if(mesh->proxypass) {
+protocol_auth.c:83:			len += 3 + strlen(mesh->proxyuser) + strlen(mesh->proxypass);
+protocol_auth.c:91:		if(mesh->proxypass) {
+protocol_auth.c:94:			s5req[i++] = strlen(mesh->proxyuser);
+protocol_auth.c:95:			memcpy(s5req + i, mesh->proxyuser, strlen(mesh->proxyuser));
+protocol_auth.c:96:			i += strlen(mesh->proxyuser);
+protocol_auth.c:97:			s5req[i++] = strlen(mesh->proxypass);
+protocol_auth.c:98:			memcpy(s5req + i, mesh->proxypass, strlen(mesh->proxypass));
+protocol_auth.c:99:			i += strlen(mesh->proxypass);
+protocol_auth.c:147:	int minor = mesh->self->connection->protocol_minor;
+protocol_auth.c:149:	if(mesh->proxytype && c->outgoing)
+protocol_auth.c:154:	return send_request(mesh, c, "%d %s %d.%d", ID, mesh->self->connection->name, mesh->self->connection->protocol_major, minor);
+protocol_auth.c:167:	snprintf(filename, sizeof(filename), "%s" SLASH "hosts" SLASH "%s", mesh->confbase, c->name);
+protocol_auth.c:212:	char *fingerprint = ecdsa_get_base64_public_key(mesh->invitation_key);
+protocol_auth.c:223:	snprintf(filename, sizeof(filename), "%s" SLASH "invitations" SLASH "%s", mesh->confbase, cookie);
+protocol_auth.c:224:	snprintf(usedname, sizeof(usedname), "%s" SLASH "invitations" SLASH "%s.used", mesh->confbase, cookie);
+protocol_auth.c:302:		if(!mesh->invitation_key) {
+protocol_auth.c:315:		char *mykey = ecdsa_get_base64_public_key(mesh->invitation_key);
+protocol_auth.c:330:		return sptps_start(&c->sptps, c, false, false, mesh->invitation_key, c->ecdsa, meshlink_invitation_label, sizeof(meshlink_invitation_label), send_meta_sptps, receive_invitation_sptps);
+protocol_auth.c:357:	if(c->protocol_major != mesh->self->connection->protocol_major) {
+protocol_auth.c:396:	char label[sizeof(meshlink_tcp_label) + strlen(mesh->self->name) + strlen(c->name) + 2];
+protocol_auth.c:399:		snprintf(label, sizeof(label), "%s %s %s", meshlink_tcp_label, mesh->self->name, c->name);
+protocol_auth.c:401:		snprintf(label, sizeof(label), "%s %s %s", meshlink_tcp_label, c->name, mesh->self->name);
+protocol_auth.c:404:	return sptps_start(&c->sptps, c, c->outgoing, false, mesh->self->connection->ecdsa, c->ecdsa, label, sizeof(label) - 1, send_meta_sptps, receive_meta_sptps);
+protocol_auth.c:411:	if(mesh->self->options & OPTION_PMTU_DISCOVERY) {
+protocol_auth.c:415:	return send_request(mesh, c, "%d %s %d %x", ACK, mesh->myport, mesh->devclass, (c->options & 0xffffff) | (PROT_MINOR << 24));
+protocol_auth.c:421:	for splay_each(node_t, n, mesh->nodes) {
+protocol_auth.c:505:	c->edge->from = mesh->self;
+protocol_auth.c:518:	send_add_edge(mesh, mesh->everyone, c->edge);
+net_socket.c:80:	for(int i = 0; i < mesh->listen_sockets && mesh->listen_socket[i].bindto; i++) {
+net_socket.c:81:		if(mesh->listen_socket[i].sa.sa.sa_family != c->address.sa.sa_family) {
+net_socket.c:96:	sockaddr_t sa = mesh->listen_socket[s].sa;
+net_socket.c:217:	if(mesh->self->options & OPTION_PMTU_DISCOVERY) {
+net_socket.c:224:	if(mesh->self->options & OPTION_PMTU_DISCOVERY) {
+net_socket.c:235:	if(mesh->self->options & OPTION_PMTU_DISCOVERY) {
+net_socket.c:242:	if(mesh->self->options & OPTION_PMTU_DISCOVERY) {
+net_socket.c:271:	if(outgoing->timeout > mesh->maxtimeout) {
+net_socket.c:272:		outgoing->timeout = mesh->maxtimeout;
+net_socket.c:275:	timeout_add(&mesh->loop, &outgoing->ev, retry_outgoing_handler, outgoing, &(struct timeval) {
+net_socket.c:285:	c->last_ping_time = mesh->loop.now.tv_sec;
+net_socket.c:315:		io_set(&mesh->loop, &c->io, IO_READ);
+net_socket.c:456:	if(!mesh->proxytype) {
+net_socket.c:460:		proxyai = str2addrinfo(mesh->proxyhost, mesh->proxyport, SOCK_STREAM);
+net_socket.c:468:		logger(mesh, MESHLINK_INFO, "Using proxy at %s port %s", mesh->proxyhost, mesh->proxyport);
+net_socket.c:499:	if(!mesh->proxytype) {
+net_socket.c:517:	c->outcompression = mesh->self->connection->outcompression;
+net_socket.c:518:	c->last_ping_time = mesh->loop.now.tv_sec;
+net_socket.c:522:	io_add(&mesh->loop, &c->io, handle_meta_io, c, c->socket, IO_READ | IO_WRITE);
+net_socket.c:529:	timeout_del(&mesh->loop, &outgoing->ev);
+net_socket.c:606:		if(mesh->loop.now.tv_sec - samehost_burst_time > samehost_burst) {
+net_socket.c:609:			samehost_burst -= mesh->loop.now.tv_sec - samehost_burst_time;
+net_socket.c:612:		samehost_burst_time = mesh->loop.now.tv_sec;
+net_socket.c:628:	if(mesh->loop.now.tv_sec - connection_burst_time > connection_burst) {
+net_socket.c:631:		connection_burst -= mesh->loop.now.tv_sec - connection_burst_time;
+net_socket.c:634:	connection_burst_time = mesh->loop.now.tv_sec;
+net_socket.c:647:	c->outcompression = mesh->self->connection->outcompression;
+net_socket.c:651:	c->last_ping_time = mesh->loop.now.tv_sec;
+net_socket.c:657:	io_add(&mesh->loop, &c->io, handle_meta_io, c, c->socket, IO_READ);
+net_socket.c:670:	timeout_del(&mesh->loop, &outgoing->ev);
+net_socket.c:694:	if(!mesh->outgoings) {
+net_socket.c:695:		mesh->outgoings = list_alloc((list_action_t)free_outgoing);
+net_socket.c:697:		for list_each(outgoing_t, outgoing, mesh->outgoings) {
+net_socket.c:705:	for(config_t *cfg = lookup_config(mesh->config, "ConnectTo"); cfg; cfg = lookup_config_next(mesh->config, cfg)) {
+net_socket.c:719:		for list_each(outgoing_t, outgoing, mesh->outgoings) {
+net_socket.c:731:			list_insert_tail(mesh->outgoings, outgoing);
+net_socket.c:738:	for list_each(connection_t, c, mesh->connections) {
+net_socket.c:748:	for list_each(outgoing_t, outgoing, mesh->outgoings)
+net_socket.c:750:			list_delete_node(mesh->outgoings, node);
+discovery.c:38:	assert(mesh->catta_server != NULL);
+discovery.c:39:	assert(mesh->catta_poll != NULL);
+discovery.c:41:	pthread_mutex_lock(&(mesh->mesh_mutex));
+discovery.c:57:		logger(mesh, MESHLINK_ERROR, "Catta Entry group failure: %s\n", catta_strerror(catta_server_errno(mesh->catta_server)));
+discovery.c:58:		catta_simple_poll_quit(mesh->catta_poll);
+discovery.c:66:	pthread_mutex_unlock(&(mesh->mesh_mutex));
+discovery.c:75:	assert(mesh->name != NULL);
+discovery.c:76:	assert(mesh->myport != NULL);
+discovery.c:77:	assert(mesh->catta_server != NULL);
+discovery.c:78:	assert(mesh->catta_poll != NULL);
+discovery.c:79:	assert(mesh->catta_servicetype != NULL);
+discovery.c:80:	assert(mesh->self != NULL);
+discovery.c:82:	pthread_mutex_lock(&(mesh->mesh_mutex));
+discovery.c:87:	if(!mesh->catta_group) {
+discovery.c:88:		if(!(mesh->catta_group = catta_s_entry_group_new(mesh->catta_server, discovery_entry_group_callback, mesh))) {
+discovery.c:89:			logger(mesh, MESHLINK_ERROR, "catta_entry_group_new() failed: %s\n", catta_strerror(catta_server_errno(mesh->catta_server)));
+discovery.c:95:	size_t txt_name_len = sizeof(MESHLINK_MDNS_NAME_KEY) + 1 + strlen(mesh->name) + 1;
+discovery.c:103:	snprintf(txt_name, txt_name_len, "%s=%s", MESHLINK_MDNS_NAME_KEY, mesh->name);
+discovery.c:106:	snprintf(txt_fingerprint, sizeof(txt_fingerprint), "%s=%s", MESHLINK_MDNS_FINGERPRINT_KEY, meshlink_get_fingerprint(mesh, (meshlink_node_t *)mesh->self));
+discovery.c:111:	if((ret = catta_server_add_service(mesh->catta_server, mesh->catta_group, CATTA_IF_UNSPEC, CATTA_PROTO_UNSPEC, 0, meshlink_get_fingerprint(mesh, (meshlink_node_t *)mesh->self), mesh->catta_servicetype, NULL, NULL, atoi(mesh->myport), txt_name, txt_fingerprint, NULL)) < 0) {
+discovery.c:117:	if((ret = catta_s_entry_group_commit(mesh->catta_group)) < 0) {
+discovery.c:125:	catta_simple_poll_quit(mesh->catta_poll);
+discovery.c:133:	pthread_mutex_unlock(&(mesh->mesh_mutex));
+discovery.c:143:	pthread_mutex_lock(&(mesh->mesh_mutex));
+discovery.c:149:		if(!mesh->catta_group) {
+discovery.c:157:		assert(mesh->catta_server != NULL);
+discovery.c:158:		assert(mesh->catta_poll != NULL);
+discovery.c:165:		int result = catta_server_set_host_name(mesh->catta_server, hostname);
+discovery.c:169:			catta_simple_poll_quit(mesh->catta_poll);
+discovery.c:178:		if(mesh->catta_group) {
+discovery.c:179:			catta_s_entry_group_reset(mesh->catta_group);
+discovery.c:180:			mesh->catta_group = NULL;
+discovery.c:187:		assert(mesh->catta_server != NULL);
+discovery.c:188:		assert(mesh->catta_poll != NULL);
+discovery.c:191:		logger(mesh, MESHLINK_ERROR, "Catta server failure: %s\n", catta_strerror(catta_server_errno(mesh->catta_server)));
+discovery.c:192:		catta_simple_poll_quit(mesh->catta_poll);
+discovery.c:200:	pthread_mutex_unlock(&(mesh->mesh_mutex));
+discovery.c:211:	assert(mesh->catta_server != NULL);
+discovery.c:213:	pthread_mutex_lock(&(mesh->mesh_mutex));
+discovery.c:223:		logger(mesh, MESHLINK_WARNING, "(Resolver) Failed to resolve service '%s' of type '%s' in domain '%s': %s\n", name, type, domain, catta_strerror(catta_server_errno(mesh->catta_server)));
+discovery.c:319:	pthread_mutex_unlock(&(mesh->mesh_mutex));
+discovery.c:329:	assert(mesh->catta_server != NULL);
+discovery.c:330:	assert(mesh->catta_poll != NULL);
+discovery.c:332:	pthread_mutex_lock(&(mesh->mesh_mutex));
+discovery.c:337:		logger(mesh, MESHLINK_ERROR, "(Browser) %s\n", catta_strerror(catta_server_errno(mesh->catta_server)));
+discovery.c:338:		catta_simple_poll_quit(mesh->catta_poll);
+discovery.c:354:		if(!(catta_s_service_resolver_new(mesh->catta_server, interface_, protocol, name, type, domain, CATTA_PROTO_UNSPEC, 0, discovery_resolve_callback, mesh))) {
+discovery.c:355:			logger(mesh, MESHLINK_DEBUG, "Failed to resolve service '%s': %s\n", name, catta_strerror(catta_server_errno(mesh->catta_server)));
+discovery.c:377:	pthread_mutex_unlock(&(mesh->mesh_mutex));
+discovery.c:385:	assert(mesh->catta_poll != NULL);
+discovery.c:387:	catta_simple_poll_loop(mesh->catta_poll);
+discovery.c:423:	assert(mesh->catta_poll == NULL);
+discovery.c:424:	assert(mesh->catta_server == NULL);
+discovery.c:425:	assert(mesh->catta_browser == NULL);
+discovery.c:426:	assert(mesh->discovery_threadstarted == false);
+discovery.c:427:	assert(mesh->catta_servicetype == NULL);
+discovery.c:433:	size_t servicetype_strlen = sizeof(MESHLINK_MDNS_SERVICE_TYPE) + strlen(mesh->appname) + 1;
+discovery.c:434:	mesh->catta_servicetype = malloc(servicetype_strlen);
+discovery.c:436:	if(mesh->catta_servicetype == NULL) {
+discovery.c:441:	snprintf(mesh->catta_servicetype, servicetype_strlen, MESHLINK_MDNS_SERVICE_TYPE, mesh->appname);
+discovery.c:444:	if(!(mesh->catta_poll = catta_simple_poll_new())) {
+discovery.c:465:	mesh->catta_server = catta_server_new(catta_simple_poll_get(mesh->catta_poll), &config, discovery_server_callback, mesh, &error);
+discovery.c:471:	if(!mesh->catta_server) {
+discovery.c:477:	if(!(mesh->catta_browser = catta_s_service_browser_new(mesh->catta_server, CATTA_IF_UNSPEC, CATTA_PROTO_UNSPEC, mesh->catta_servicetype, NULL, 0, discovery_browse_callback, mesh))) {
+discovery.c:478:		logger(mesh, MESHLINK_ERROR, "Failed to create discovery service browser: %s\n", catta_strerror(catta_server_errno(mesh->catta_server)));
+discovery.c:483:	if(pthread_create(&mesh->discovery_thread, NULL, discovery_loop, mesh) != 0) {
+discovery.c:485:		memset(&mesh->discovery_thread, 0, sizeof(mesh)->discovery_thread);
+discovery.c:489:	mesh->discovery_threadstarted = true;
+discovery.c:495:	if(mesh->catta_browser != NULL) {
+discovery.c:496:		catta_s_service_browser_free(mesh->catta_browser);
+discovery.c:497:		mesh->catta_browser = NULL;
+discovery.c:500:	if(mesh->catta_server != NULL) {
+discovery.c:501:		catta_server_free(mesh->catta_server);
+discovery.c:502:		mesh->catta_server = NULL;
+discovery.c:505:	if(mesh->catta_poll != NULL) {
+discovery.c:506:		catta_simple_poll_free(mesh->catta_poll);
+discovery.c:507:		mesh->catta_poll = NULL;
+discovery.c:510:	if(mesh->catta_servicetype != NULL) {
+discovery.c:511:		free(mesh->catta_servicetype);
+discovery.c:512:		mesh->catta_servicetype = NULL;
+discovery.c:525:	if(mesh->catta_poll) {
+discovery.c:526:		catta_simple_poll_quit(mesh->catta_poll);
+discovery.c:530:	if(mesh->discovery_threadstarted == true) {
+discovery.c:531:		pthread_join(mesh->discovery_thread, NULL);
+discovery.c:532:		mesh->discovery_threadstarted = false;
+discovery.c:536:	if(mesh->catta_browser != NULL) {
+discovery.c:537:		catta_s_service_browser_free(mesh->catta_browser);
+discovery.c:538:		mesh->catta_browser = NULL;
+discovery.c:541:	if(mesh->catta_group) {
+discovery.c:542:		catta_s_entry_group_reset(mesh->catta_group);
+discovery.c:543:		catta_s_entry_group_free(mesh->catta_group);
+discovery.c:544:		mesh->catta_group = NULL;
+discovery.c:547:	if(mesh->catta_server != NULL) {
+discovery.c:548:		catta_server_free(mesh->catta_server);
+discovery.c:549:		mesh->catta_server = NULL;
+discovery.c:552:	if(mesh->catta_poll != NULL) {
+discovery.c:553:		catta_simple_poll_free(mesh->catta_poll);
+discovery.c:554:		mesh->catta_poll = NULL;
+discovery.c:557:	if(mesh->catta_servicetype != NULL) {
+discovery.c:558:		free(mesh->catta_servicetype);
+discovery.c:559:		mesh->catta_servicetype = NULL;
+graph.c:67:	for list_each(connection_t, c, mesh->connections) {
+graph.c:75:	for splay_each(node_t, n, mesh->nodes) {
+graph.c:81:	for splay_each(edge_t, e, mesh->edges) {
+graph.c:92:	for splay_each(edge_t, e, mesh->edges) {
+graph.c:113:			next = mesh->edges->head;
+graph.c:127:	for splay_each(node_t, n, mesh->nodes) {
+graph.c:133:	/* Begin with mesh->self */
+graph.c:135:	mesh->self->status.visited = true;
+graph.c:136:	mesh->self->status.indirect = false;
+graph.c:137:	mesh->self->nexthop = mesh->self;
+graph.c:138:	mesh->self->prevedge = NULL;
+graph.c:139:	mesh->self->via = mesh->self;
+graph.c:140:	mesh->self->distance = 0;
+graph.c:141:	list_insert_head(todo_list, mesh->self);
+graph.c:184:			e->to->nexthop = (n->nexthop == mesh->self) ? e->to : n->nexthop;
+graph.c:207:	for splay_each(node_t, n, mesh->nodes) {
+graph.c:210:			n->last_state_change = mesh->loop.now.tv_sec;
+graph.c:230:			timeout_del(&mesh->loop, &n->mtutimeout);
+meta.c:42:	io_set(&mesh->loop, &c->io, IO_READ | IO_WRITE);
+meta.c:57:		io_set(&mesh->loop, &c->io, IO_READ | IO_WRITE);
+meta.c:65:	for list_each(connection_t, c, mesh->connections)
+Binary file libmeshlink_la-net.o matches
+protocol_misc.c:73:	c->last_ping_time = mesh->loop.now.tv_sec;
+devtools.c:42:	pthread_mutex_lock(&(mesh->mesh_mutex));
+devtools.c:47:	result_size = mesh->edges->count / 2;
+devtools.c:60:		for splay_each(edge_t, e, mesh->edges) {
+devtools.c:91:	pthread_mutex_unlock(&(mesh->mesh_mutex));
+devtools.c:119:	pthread_mutex_lock(&(mesh->mesh_mutex));
+devtools.c:236:	pthread_mutex_unlock(&(mesh->mesh_mutex));
+devtools.c:249:	pthread_mutex_lock(&mesh->mesh_mutex);
+devtools.c:264:	if(internal == mesh->self) {
+devtools.c:280:	pthread_mutex_unlock(&mesh->mesh_mutex);
+edge.c:54:	mesh->edges = splay_alloc_tree((splay_compare_t) edge_weight_compare, NULL);
+edge.c:66:	if(mesh->edges) {
+edge.c:67:		splay_delete_tree(mesh->edges);
+edge.c:70:	mesh->edges = NULL;
+edge.c:86:	splay_insert(mesh->edges, e);
+edge.c:101:	splay_delete(mesh->edges, e);
+meshlink++.h:383:	 *    mesh->add_address(mesh->get_external_address());
+Binary file libmeshlink_la-discovery.o matches
+protocol_edge.c:102:		from->status.blacklisted = mesh->default_blacklist;
+protocol_edge.c:112:		to->status.blacklisted = mesh->default_blacklist;
+protocol_edge.c:130:			if(from == mesh->self) {
+protocol_edge.c:144:	} else if(from == mesh->self) {
+protocol_edge.c:147:		mesh->contradicting_add_edge++;
+protocol_edge.c:229:	if(e->from == mesh->self) {
+protocol_edge.c:232:		mesh->contradicting_del_edge++;
+protocol_edge.c:252:		e = lookup_edge(to, mesh->self);
+protocol_edge.c:255:			send_del_edge(mesh, mesh->everyone, e);
+Binary file libmeshlink_la-net_setup.o matches
+Binary file .libs/libmeshlink_la-net.o matches
+Binary file .libs/libmeshlink.so.0.0.0 matches
+Binary file .libs/libmeshlink_la-discovery.o matches
+Binary file .libs/libmeshlink_la-net_setup.o matches
+Binary file .libs/libmeshlink_la-connection.o matches
+Binary file .libs/libmeshlink_la-node.o matches
+Binary file .libs/libmeshlink.a matches
+Binary file libmeshlink_la-connection.o matches
+connection.c:32:	mesh->connections = list_alloc((list_action_t) free_connection);
+connection.c:33:	mesh->everyone = new_connection();
+connection.c:34:	mesh->everyone->name = xstrdup("mesh->everyone");
+connection.c:38:	if(mesh->connections) {
+connection.c:39:		list_delete_list(mesh->connections);
+connection.c:42:	free_connection(mesh->everyone);
+connection.c:44:	mesh->connections = NULL;
+connection.c:45:	mesh->everyone = NULL;
+connection.c:82:	list_insert_tail(mesh->connections, c);
+connection.c:86:	io_del(&mesh->loop, &c->io);
+connection.c:87:	list_delete(mesh->connections, c);
+route.c:60:	if(owner == mesh->self) {
+route.c:66:		if(mesh->log_level >= MESHLINK_DEBUG) {
+route.c:72:		if(mesh->receive_cb) {
+route.c:73:			mesh->receive_cb(mesh, (meshlink_node_t *)source, payload, len);
+route.c:85:	via = (owner->via == mesh->self) ? owner->nexthop : owner->via;
+protocol_key.c:35:	send_request(mesh, mesh->everyone, "%d %x %s", KEY_CHANGED, rand(), mesh->self->name);
+protocol_key.c:39:	for splay_each(node_t, n, mesh->nodes)
+protocol_key.c:79:	return send_request(mesh, to->nexthop->connection, "%d %s %s %d %s", REQ_KEY, mesh->self->name, to->name, REQ_KEY, buf);
+protocol_key.c:85:		send_request(mesh, to->nexthop->connection, "%d %s %s %d", REQ_KEY, mesh->self->name, to->name, REQ_PUBKEY);
+protocol_key.c:93:	char label[sizeof(meshlink_udp_label) + strlen(mesh->self->name) + strlen(to->name) + 2];
+protocol_key.c:94:	snprintf(label, sizeof(label), "%s %s %s", meshlink_udp_label, mesh->self->name, to->name);
+protocol_key.c:98:	to->last_req_key = mesh->loop.now.tv_sec;
+protocol_key.c:99:	to->incompression = mesh->self->incompression;
+protocol_key.c:100:	return sptps_start(&to->sptps, to, true, true, mesh->self->connection->ecdsa, to->ecdsa, label, sizeof(label) - 1, send_initial_sptps_data, receive_sptps_record);
+protocol_key.c:110:		char *pubkey = ecdsa_get_base64_public_key(mesh->self->connection->ecdsa);
+protocol_key.c:111:		send_request(mesh, from->nexthop->connection, "%d %s %s %d %s", REQ_KEY, mesh->self->name, from->name, ANS_PUBKEY, pubkey);
+protocol_key.c:137:			send_request(mesh, from->nexthop->connection, "%d %s %s %d", REQ_KEY, mesh->self->name, from->name, REQ_PUBKEY);
+protocol_key.c:144:			if(strcmp(mesh->self->name, from->name) < 0) {
+protocol_key.c:158:		char label[sizeof(meshlink_udp_label) + strlen(from->name) + strlen(mesh->self->name) + 2];
+protocol_key.c:159:		snprintf(label, sizeof(label), "%s %s %s", meshlink_udp_label, from->name, mesh->self->name);
+protocol_key.c:163:		from->last_req_key = mesh->loop.now.tv_sec;
+protocol_key.c:164:		sptps_start(&from->sptps, from, false, true, mesh->self->connection->ecdsa, from->ecdsa, label, sizeof(label) - 1, send_sptps_data, receive_sptps_record);
+protocol_key.c:227:	if(to == mesh->self) {                      /* Yes */
+protocol_key.c:293:	if(to != mesh->self) {
+conf.c:399:	snprintf(filename, PATH_MAX, "%s" SLASH "meshlink.conf", mesh->confbase);
+conf.c:401:	x = read_config_file(mesh->config, filename);
+conf.c:414:	snprintf(filename, PATH_MAX, "%s" SLASH "hosts" SLASH "%s", mesh->confbase, name);
+conf.c:423:	snprintf(filename, PATH_MAX, "%s" SLASH "hosts" SLASH "%s", mesh->confbase, name);
+conf.c:434:	snprintf(filename, sizeof(filename), "%s" SLASH "hosts" SLASH "%s", mesh->confbase, name);
+meshlink.c:302:	char *name = mesh->self->name;
+meshlink.c:307:	snprintf(filename, sizeof(filename), "%s" SLASH "hosts" SLASH "%s", mesh->confbase, name);
+meshlink.c:453:			snprintf(filename, sizeof(filename), "%s" SLASH "hosts" SLASH "%s", mesh->confbase, mesh->name);
+meshlink.c:472:	char *name = xstrdup(get_value(mesh->data, "Name"));
+meshlink.c:485:	snprintf(filename, sizeof(filename), "%s" SLASH "meshlink.conf", mesh->confbase);
+meshlink.c:496:	snprintf(filename, sizeof(filename), "%s" SLASH "hosts" SLASH "%s", mesh->confbase, name);
+meshlink.c:507:	const char *p = mesh->data;
+meshlink.c:578:		snprintf(filename, sizeof(filename), "%s" SLASH "hosts" SLASH "%s", mesh->confbase, value);
+meshlink.c:613:	char *b64key = ecdsa_get_base64_public_key(mesh->self->connection->ecdsa);
+meshlink.c:621:	fprintf(fh, "Port = %s\n", mesh->myport);
+meshlink.c:625:	sptps_send_record(&(mesh->sptps), 1, b64key, strlen(b64key));
+meshlink.c:628:	free(mesh->self->name);
+meshlink.c:629:	free(mesh->self->connection->name);
+meshlink.c:630:	mesh->self->name = xstrdup(name);
+meshlink.c:631:	mesh->self->connection->name = name;
+meshlink.c:633:	logger(mesh, MESHLINK_DEBUG, "Configuration stored in: %s\n", mesh->confbase);
+meshlink.c:645:		int result = send(mesh->sock, data, len, 0);
+meshlink.c:665:		return sptps_send_record(&(mesh->sptps), 0, mesh->cookie, sizeof(mesh)->cookie);
+meshlink.c:668:		mesh->data = xrealloc(mesh->data, mesh->thedatalen + len + 1);
+meshlink.c:669:		memcpy(mesh->data + mesh->thedatalen, msg, len);
+meshlink.c:670:		mesh->thedatalen += len;
+meshlink.c:671:		mesh->data[mesh->thedatalen] = 0;
+meshlink.c:675:		mesh->thedatalen = 0;
+meshlink.c:680:		shutdown(mesh->sock, SHUT_RDWR);
+meshlink.c:681:		mesh->success = true;
+meshlink.c:694:	if(!mesh->sock) {
+meshlink.c:698:	while(!(newline = memchr(mesh->buffer, '\n', mesh->blen))) {
+meshlink.c:699:		int result = recv(mesh->sock, mesh->buffer + mesh->blen, sizeof(mesh)->buffer - mesh->blen, 0);
+meshlink.c:707:		mesh->blen += result;
+meshlink.c:710:	if((size_t)(newline - mesh->buffer) >= len) {
+meshlink.c:714:	len = newline - mesh->buffer;
+meshlink.c:716:	memcpy(mesh->line, mesh->buffer, len);
+meshlink.c:717:	mesh->line[len] = 0;
+meshlink.c:718:	memmove(mesh->buffer, newline + 1, mesh->blen - len - 1);
+meshlink.c:719:	mesh->blen -= len + 1;
+meshlink.c:792:	snprintf(privname, sizeof(privname), "%s" SLASH "ecdsa_key.priv", mesh->confbase);
+meshlink.c:814:	snprintf(pubname, sizeof(pubname), "%s" SLASH "hosts" SLASH "%s", mesh->confbase, mesh->name);
+meshlink.c:837:	for splay_each(node_t, n, mesh->nodes) {
+meshlink.c:903:		snprintf(entry, sizeof(entry), "%s %s", host, mesh->myport);
+meshlink.c:904:		append_config_file(mesh, mesh->name, "Address", entry);
+meshlink.c:910:		snprintf(entry, sizeof(entry), "%s %s", host, mesh->myport);
+meshlink.c:911:		append_config_file(mesh, mesh->name, "Address", entry);
+meshlink.c:916:	if(mkdir(mesh->confbase, 0777) && errno != EEXIST) {
+meshlink.c:917:		logger(mesh, MESHLINK_DEBUG, "Could not create directory %s: %s\n", mesh->confbase, strerror(errno));
+meshlink.c:923:	snprintf(filename, sizeof(filename), "%s" SLASH "hosts", mesh->confbase);
+meshlink.c:931:	snprintf(filename, sizeof(filename), "%s" SLASH "meshlink.conf", mesh->confbase);
+meshlink.c:947:	fprintf(f, "Name = %s\n", mesh->name);
+meshlink.c:999:	mesh->confbase = xstrdup(confbase);
+meshlink.c:1000:	mesh->appname = xstrdup(appname);
+meshlink.c:1001:	mesh->devclass = devclass;
+meshlink.c:1004:		mesh->name = xstrdup(name);
+meshlink.c:1011:	pthread_mutex_init(&(mesh->mesh_mutex), &attr);
+meshlink.c:1013:	mesh->threadstarted = false;
+meshlink.c:1014:	event_loop_init(&mesh->loop);
+meshlink.c:1015:	mesh->loop.data = mesh;
+meshlink.c:1017:	meshlink_queue_init(&mesh->outpacketqueue);
+meshlink.c:1041:	init_configuration(&mesh->config);
+meshlink.c:1067:	idle_set(&mesh->loop, idle, mesh);
+meshlink.c:1076:	pthread_mutex_lock(&(mesh->mesh_mutex));
+meshlink.c:1084:	pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1096:	pthread_mutex_lock(&(mesh->mesh_mutex));
+meshlink.c:1098:	if(mesh->threadstarted) {
+meshlink.c:1100:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1104:	if(mesh->listen_socket[0].tcp.fd < 0) {
+meshlink.c:1110:	mesh->thedatalen = 0;
+meshlink.c:1115:	if(!mesh->name) {
+meshlink.c:1118:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1124:	event_loop_start(&mesh->loop);
+meshlink.c:1126:	if(pthread_create(&mesh->thread, NULL, meshlink_main_loop, mesh) != 0) {
+meshlink.c:1128:		memset(&mesh->thread, 0, sizeof(mesh)->thread);
+meshlink.c:1130:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1134:	mesh->threadstarted = true;
+meshlink.c:1136:	if(mesh->discovery) {
+meshlink.c:1140:	pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1150:	pthread_mutex_lock(&(mesh->mesh_mutex));
+meshlink.c:1154:	if(mesh->discovery) {
+meshlink.c:1159:	event_loop_stop(&mesh->loop);
+meshlink.c:1162:	listen_socket_t *s = &mesh->listen_socket[0];
+meshlink.c:1169:	pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1170:	pthread_join(mesh->thread, NULL);
+meshlink.c:1171:	pthread_mutex_lock(&(mesh->mesh_mutex));
+meshlink.c:1173:	mesh->threadstarted = false;
+meshlink.c:1176:	if(mesh->connections) {
+meshlink.c:1177:		for(list_node_t *node = mesh->connections->head, *next; node; node = next) {
+meshlink.c:1185:	if(mesh->outgoings) {
+meshlink.c:1186:		list_delete_list(mesh->outgoings);
+meshlink.c:1189:	mesh->outgoings = NULL;
+meshlink.c:1191:	pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1195:	if(!mesh || !mesh->confbase) {
+meshlink.c:1204:	pthread_mutex_lock(&(mesh->mesh_mutex));
+meshlink.c:1212:	exit_configuration(&mesh->config);
+meshlink.c:1213:	event_loop_exit(&mesh->loop);
+meshlink.c:1217:	if(mesh->confbase) {
+meshlink.c:1223:	ecdsa_free(mesh->invitation_key);
+meshlink.c:1225:	free(mesh->name);
+meshlink.c:1226:	free(mesh->appname);
+meshlink.c:1227:	free(mesh->confbase);
+meshlink.c:1228:	pthread_mutex_destroy(&(mesh->mesh_mutex));
+meshlink.c:1292:	pthread_mutex_lock(&(mesh->mesh_mutex));
+meshlink.c:1293:	mesh->receive_cb = cb;
+meshlink.c:1294:	pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1303:	pthread_mutex_lock(&(mesh->mesh_mutex));
+meshlink.c:1304:	mesh->node_status_cb = cb;
+meshlink.c:1305:	pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1310:		pthread_mutex_lock(&(mesh->mesh_mutex));
+meshlink.c:1311:		mesh->log_cb = cb;
+meshlink.c:1312:		mesh->log_level = cb ? level : 0;
+meshlink.c:1313:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1355:	strncpy((char *)hdr->source, mesh->self->name, (sizeof(hdr)->source) - 1);
+meshlink.c:1360:	if(!meshlink_queue_push(&mesh->outpacketqueue, packet)) {
+meshlink.c:1367:	signal_trigger(&(mesh->loop), &(mesh->datafromapp));
+meshlink.c:1374:	vpn_packet_t *packet = meshlink_queue_pop(&mesh->outpacketqueue);
+meshlink.c:1380:	mesh->self->in_packets++;
+meshlink.c:1381:	mesh->self->in_bytes += packet->len;
+meshlink.c:1382:	route(mesh, mesh->self, packet);
+meshlink.c:1391:	pthread_mutex_lock(&(mesh->mesh_mutex));
+meshlink.c:1396:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1400:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1403:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1414:	pthread_mutex_lock(&(mesh->mesh_mutex));
+meshlink.c:1420:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1430:	pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1440:	return (meshlink_node_t *)mesh->self;
+meshlink.c:1451:	pthread_mutex_lock(&(mesh->mesh_mutex));
+meshlink.c:1453:	pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1465:	//lock mesh->nodes
+meshlink.c:1466:	pthread_mutex_lock(&(mesh->mesh_mutex));
+meshlink.c:1468:	*nmemb = mesh->nodes->count;
+meshlink.c:1474:		for splay_each(node_t, n, mesh->nodes) {
+meshlink.c:1483:	pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1499:	pthread_mutex_lock(&(mesh->mesh_mutex));
+meshlink.c:1501:	if(!ecdsa_sign(mesh->self->connection->ecdsa, data, len, signature)) {
+meshlink.c:1503:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1508:	pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1523:	pthread_mutex_lock(&(mesh->mesh_mutex));
+meshlink.c:1537:	pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1544:	pthread_mutex_lock(&(mesh->mesh_mutex));
+meshlink.c:1546:	snprintf(filename, sizeof(filename), "%s" SLASH "invitations", mesh->confbase);
+meshlink.c:1551:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1561:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1580:			if(mesh->invitation_key && deadline < st.st_mtime) {
+meshlink.c:1595:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1601:	snprintf(filename, sizeof(filename), "%s" SLASH "invitations" SLASH "ecdsa_key.priv", mesh->confbase);
+meshlink.c:1607:		if(mesh->invitation_key) {
+meshlink.c:1608:			ecdsa_free(mesh->invitation_key);
+meshlink.c:1609:			mesh->invitation_key = NULL;
+meshlink.c:1613:	if(mesh->invitation_key) {
+meshlink.c:1614:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1625:			pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1629:		mesh->invitation_key = ecdsa_generate();
+meshlink.c:1631:		if(!mesh->invitation_key) {
+meshlink.c:1634:			pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1643:			pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1648:		ecdsa_write_pem_private_key(mesh->invitation_key, f);
+meshlink.c:1651:		mesh->invitation_key = ecdsa_read_pem_private_key(f);
+meshlink.c:1654:		if(!mesh->invitation_key) {
+meshlink.c:1660:	pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1661:	return mesh->invitation_key;
+meshlink.c:1678:	pthread_mutex_lock(&(mesh->mesh_mutex));
+meshlink.c:1679:	rval = append_config_file(mesh, mesh->self->name, "Address", address);
+meshlink.c:1680:	pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1699:	pthread_mutex_lock(&(mesh->mesh_mutex));
+meshlink.c:1700:	rval = append_config_file(mesh, mesh->self->name, "Address", address);
+meshlink.c:1701:	pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1713:	if(!mesh->myport) {
+meshlink.c:1718:	return atoi(mesh->myport);
+meshlink.c:1722:	if(!mesh || port < 0 || port >= 65536 || mesh->threadstarted) {
+meshlink.c:1727:	if(mesh->myport && port == atoi(mesh->myport)) {
+meshlink.c:1738:	pthread_mutex_lock(&(mesh->mesh_mutex));
+meshlink.c:1740:	if(mesh->threadstarted) {
+meshlink.c:1746:	exit_configuration(&mesh->config);
+meshlink.c:1752:	modify_config_file(mesh, mesh->name, "Port", portstr, true);
+meshlink.c:1754:	init_configuration(&mesh->config);
+meshlink.c:1765:	pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1776:	pthread_mutex_lock(&(mesh->mesh_mutex));
+meshlink.c:1782:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1788:	snprintf(filename, sizeof(filename), "%s" SLASH "hosts" SLASH "%s", mesh->confbase, name);
+meshlink.c:1793:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1801:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1811:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1817:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1824:	char *fingerprint = ecdsa_get_base64_public_key(mesh->invitation_key);
+meshlink.c:1845:	snprintf(filename, sizeof(filename), "%s" SLASH "invitations" SLASH "%s", mesh->confbase, cookiehash);
+meshlink.c:1851:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1865:	fprintf(f, "ConnectTo = %s\n", mesh->self->name);
+meshlink.c:1868:	snprintf(filename, sizeof(filename), "%s" SLASH "meshlink.conf", mesh->confbase);
+meshlink.c:1890:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1895:	fprintf(f, "Name = %s\n", mesh->self->name);
+meshlink.c:1897:	snprintf(filename, sizeof(filename), "%s" SLASH "hosts" SLASH "%s", mesh->confbase, mesh->self->name);
+meshlink.c:1906:	pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1916:	pthread_mutex_lock(&(mesh->mesh_mutex));
+meshlink.c:1964:	if(!b64decode(slash, mesh->hash, 18) || !b64decode(slash + 24, mesh->cookie, 18)) {
+meshlink.c:1973:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1980:	if(mesh->threadstarted) {
+meshlink.c:1989:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:1993:	mesh->sock = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+meshlink.c:1995:	if(mesh->sock <= 0) {
+meshlink.c:1999:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:2003:	set_timeout(mesh->sock, 5000);
+meshlink.c:2005:	if(connect(mesh->sock, ai->ai_addr, ai->ai_addrlen)) {
+meshlink.c:2007:		closesocket(mesh->sock);
+meshlink.c:2010:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:2020:	mesh->blen = 0;
+meshlink.c:2022:	if(!sendline(mesh->sock, "0 ?%s %d.%d", b64key, PROT_MAJOR, 1)) {
+meshlink.c:2024:		closesocket(mesh->sock);
+meshlink.c:2026:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:2035:	if(!recvline(mesh, sizeof(mesh)->line) || sscanf(mesh->line, "%d %s %d.%d", &code, hisname, &hismajor, &hisminor) < 3 || code != 0 || hismajor != PROT_MAJOR || !check_id(hisname) || !recvline(mesh, sizeof(mesh)->line) || !rstrip(mesh->line) || sscanf(mesh->line, "%d ", &code) != 1 || code != ACK || strlen(mesh->line) < 3) {
+meshlink.c:2037:		closesocket(mesh->sock);
+meshlink.c:2039:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:2044:	char *fingerprint = mesh->line + 2;
+meshlink.c:2048:		logger(mesh, MESHLINK_DEBUG, "Could not create hash\n%s\n", mesh->line + 2);
+meshlink.c:2050:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:2054:	if(memcmp(hishash, mesh->hash, 18)) {
+meshlink.c:2055:		logger(mesh, MESHLINK_DEBUG, "Peer has an invalid key!\n%s\n", mesh->line + 2);
+meshlink.c:2057:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:2066:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:2071:	if(!sptps_start(&mesh->sptps, mesh, true, false, key, hiskey, meshlink_invitation_label, sizeof(meshlink_invitation_label), invitation_send, invitation_receive)) {
+meshlink.c:2073:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:2078:	if(!sptps_receive_data(&mesh->sptps, mesh->buffer, mesh->blen)) {
+meshlink.c:2080:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:2086:	while((len = recv(mesh->sock, mesh->line, sizeof(mesh)->line, 0))) {
+meshlink.c:2094:			pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:2098:		if(!sptps_receive_data(&mesh->sptps, mesh->line, len)) {
+meshlink.c:2100:			pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:2105:	sptps_stop(&mesh->sptps);
+meshlink.c:2108:	closesocket(mesh->sock);
+meshlink.c:2110:	if(!mesh->success) {
+meshlink.c:2113:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:2117:	pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:2123:	pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:2133:	pthread_mutex_lock(&(mesh->mesh_mutex));
+meshlink.c:2136:	snprintf(filename, sizeof(filename), "%s" SLASH "hosts" SLASH "%s", mesh->confbase, mesh->self->name);
+meshlink.c:2142:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:2150:	size_t len = fsize + 9 + strlen(mesh->self->name);
+meshlink.c:2152:	snprintf(buf, len, "Name = %s\n", mesh->self->name);
+meshlink.c:2159:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:2166:	pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:2176:	pthread_mutex_lock(&(mesh->mesh_mutex));
+meshlink.c:2181:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:2190:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:2202:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:2207:	snprintf(filename, sizeof(filename), "%s" SLASH "hosts" SLASH "%s", mesh->confbase, name);
+meshlink.c:2212:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:2219:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:2228:		pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:2237:	pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:2247:	pthread_mutex_lock(&(mesh->mesh_mutex));
+meshlink.c:2257:	pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:2267:	pthread_mutex_lock(&(mesh->mesh_mutex));
+meshlink.c:2274:	pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:2279:	mesh->default_blacklist = blacklist;
+meshlink.c:2291:	if((node_t *)node == mesh->self) {
+meshlink.c:2295:	pthread_mutex_lock(&(mesh->mesh_mutex));
+meshlink.c:2314:	pthread_mutex_unlock(&(mesh->mesh_mutex));
+meshlink.c:2322:	return mesh->channel_accept_cb;
+meshlink.c:2353:	if(!mesh->channel_accept_cb) {
+meshlink.c:2361:	if(mesh->channel_accept_cb(mesh, channel, port, NULL, 0)) {
+meshlink.c:2421:	pthread_mutex_lock(&mesh->mesh_mutex);
+meshlink.c:2422:	mesh->channel_accept_cb = cb;
+meshlink.c:2423:	mesh->receive_cb = channel_receive;
+meshlink.c:2425:	for splay_each(node_t, n, mesh->nodes) {
+meshlink.c:2426:		if(!n->utcp && n != mesh->self) {
+meshlink.c:2431:	pthread_mutex_unlock(&mesh->mesh_mutex);
+meshlink.c:2448:		mesh->receive_cb = channel_receive;
+meshlink.c:2513:	pthread_mutex_lock(&mesh->mesh_mutex);
+meshlink.c:2515:	pthread_mutex_unlock(&mesh->mesh_mutex);
+meshlink.c:2534:	if(n->status.reachable && mesh->channel_accept_cb && !n->utcp) {
+meshlink.c:2538:	if(mesh->node_status_cb) {
+meshlink.c:2539:		mesh->node_status_cb(mesh, (meshlink_node_t *)n, n->status.reachable);
+meshlink.c:2549:	pthread_mutex_lock(&mesh->mesh_mutex);
+meshlink.c:2551:	if(mesh->discovery == enable) {
+meshlink.c:2555:	if(mesh->threadstarted) {
+meshlink.c:2563:	mesh->discovery = enable;
+meshlink.c:2566:	pthread_mutex_unlock(&mesh->mesh_mutex);
+node.c:37:	mesh->nodes = splay_alloc_tree((splay_compare_t) node_compare, (splay_action_t) free_node);
+node.c:38:	mesh->node_udp_cache = hash_alloc(0x100, sizeof(sockaddr_t));
+node.c:42:	if(mesh->node_udp_cache) {
+node.c:43:		hash_free(mesh->node_udp_cache);
+node.c:46:	if(mesh->nodes) {
+node.c:47:		splay_delete_tree(mesh->nodes);
+node.c:50:	mesh->node_udp_cache = NULL;
+node.c:51:	mesh->nodes = NULL;
+node.c:90:	splay_insert(mesh->nodes, n);
+node.c:94:	timeout_del(&mesh->loop, &n->mtutimeout);
+node.c:100:	splay_delete(mesh->nodes, n);
+node.c:107:	result = splay_search(mesh->nodes, &n);
+node.c:113:	return hash_search(mesh->node_udp_cache, sa);
+node.c:117:	if(n == mesh->self) {
+node.c:118:		logger(mesh, MESHLINK_WARNING, "Trying to update UDP address of mesh->self!");
+node.c:122:	hash_insert(mesh->node_udp_cache, &n->address, NULL);
+node.c:128:		for(int i = 0; i < mesh->listen_sockets; i++) {
+node.c:129:			if(mesh->listen_socket[i].sa.sa.sa_family == sa->sa.sa_family) {
+node.c:135:		hash_insert(mesh->node_udp_cache, sa, n);
+node.c:139:		if(mesh->log_level >= MESHLINK_DEBUG) {
+net_setup.c:91:	snprintf(filename, PATH_MAX, "%s" SLASH "ecdsa_key.priv", mesh->confbase);
+net_setup.c:99:	mesh->self->connection->ecdsa = ecdsa_read_pem_private_key(fp);
+net_setup.c:102:	if(!mesh->self->connection->ecdsa) {
+net_setup.c:106:	return mesh->self->connection->ecdsa;
+net_setup.c:113:	if(mesh->invitation_key) {
+net_setup.c:114:		ecdsa_free(mesh->invitation_key);
+net_setup.c:115:		mesh->invitation_key = NULL;
+net_setup.c:118:	snprintf(filename, PATH_MAX, "%s" SLASH "invitations" SLASH "ecdsa_key.priv", mesh->confbase);
+net_setup.c:123:		mesh->invitation_key = ecdsa_read_pem_private_key(fp);
+net_setup.c:126:		if(!mesh->invitation_key) {
+net_setup.c:131:	return mesh->invitation_key;
+net_setup.c:199:	snprintf(dname, PATH_MAX, "%s" SLASH "hosts", mesh->confbase);
+net_setup.c:231:	get_config_string(lookup_config(mesh->config, "Name"), &name);
+net_setup.c:238:		logger(mesh, MESHLINK_ERROR, "Invalid name for mesh->self!");
+net_setup.c:247:	mesh->localdiscovery = true;
+net_setup.c:249:	mesh->maxtimeout = 900;
+net_setup.c:250:	mesh->self->options |= OPTION_PMTU_DISCOVERY;
+net_setup.c:261:	char *port = mesh->myport;
+net_setup.c:301:		for(int i = 0; i < mesh->listen_sockets; i++)
+net_setup.c:302:			if(!memcmp(&mesh->listen_socket[i].sa, aip->ai_addr, aip->ai_addrlen)) {
+net_setup.c:311:		if(mesh->listen_sockets >= MAXSOCKETS) {
+net_setup.c:329:		io_add(&mesh->loop, &mesh->listen_socket[mesh->listen_sockets].tcp, handle_new_meta_connection, &mesh->listen_socket[mesh->listen_sockets], tcp_fd, IO_READ);
+net_setup.c:330:		io_add(&mesh->loop, &mesh->listen_socket[mesh->listen_sockets].udp, handle_incoming_vpn_data, &mesh->listen_socket[mesh->listen_sockets], udp_fd, IO_READ);
+net_setup.c:332:		if(mesh->log_level >= MESHLINK_INFO) {
+net_setup.c:338:		mesh->listen_socket[mesh->listen_sockets].bindto = bindto;
+net_setup.c:339:		memcpy(&mesh->listen_socket[mesh->listen_sockets].sa, aip->ai_addr, aip->ai_addrlen);
+net_setup.c:340:		mesh->listen_sockets++;
+net_setup.c:349:  Configure node_t mesh->self and set up the local sockets (listen only)
+net_setup.c:360:	mesh->self = new_node();
+net_setup.c:361:	mesh->self->connection = new_connection();
+net_setup.c:362:	mesh->self->name = name;
+net_setup.c:363:	mesh->self->devclass = mesh->devclass;
+net_setup.c:364:	mesh->self->connection->name = xstrdup(name);
+net_setup.c:365:	read_host_config(mesh, mesh->config, name);
+net_setup.c:367:	if(!get_config_string(lookup_config(mesh->config, "Port"), &mesh->myport)) {
+net_setup.c:372:	mesh->self->connection->options = 0;
+net_setup.c:373:	mesh->self->connection->protocol_major = PROT_MAJOR;
+net_setup.c:374:	mesh->self->connection->protocol_minor = PROT_MINOR;
+net_setup.c:376:	mesh->self->options |= PROT_MINOR << 24;
+net_setup.c:382:	/* Ensure mesh->myport is numeric */
+net_setup.c:384:	if(!atoi(mesh->myport)) {
+net_setup.c:385:		struct addrinfo *ai = str2addrinfo("localhost", mesh->myport, SOCK_DGRAM);
+net_setup.c:392:		free(mesh->myport);
+net_setup.c:394:		sockaddr2str(&sa, NULL, &mesh->myport);
+net_setup.c:406:	mesh->self->incompression = 0;
+net_setup.c:407:	mesh->self->connection->outcompression = 0;
+net_setup.c:411:	mesh->self->nexthop = mesh->self;
+net_setup.c:412:	mesh->self->via = mesh->self;
+net_setup.c:413:	mesh->self->status.reachable = true;
+net_setup.c:414:	mesh->self->last_state_change = mesh->loop.now.tv_sec;
+net_setup.c:416:	node_write_devclass(mesh, mesh->self);
+net_setup.c:417:	node_add(mesh, mesh->self);
+net_setup.c:425:	mesh->listen_sockets = 0;
+net_setup.c:428:		if(strcmp(mesh->myport, "0")) {
+net_setup.c:429:			logger(mesh, MESHLINK_INFO, "Could not bind to port %s, asking OS to choose one for us", mesh->myport);
+net_setup.c:430:			free(mesh->myport);
+net_setup.c:431:			mesh->myport = strdup("0");
+net_setup.c:433:			if(!mesh->myport) {
+net_setup.c:445:	if(!mesh->listen_sockets) {
+net_setup.c:452:	mesh->last_config_check = mesh->loop.now.tv_sec;
+net_setup.c:466:	mesh->pinginterval = 60;
+net_setup.c:467:	mesh->pingtimeout = 5;
+net_setup.c:481:	if(mesh->connections) {
+net_setup.c:482:		for(list_node_t *node = mesh->connections->head, *next; node; node = next) {
+net_setup.c:490:	if(mesh->outgoings) {
+net_setup.c:491:		list_delete_list(mesh->outgoings);
+net_setup.c:494:	if(mesh->self && mesh->self->connection) {
+net_setup.c:495:		terminate_connection(mesh, mesh->self->connection, false);
+net_setup.c:496:		free_connection(mesh->self->connection);
+net_setup.c:499:	for(int i = 0; i < mesh->listen_sockets; i++) {
+net_setup.c:500:		io_del(&mesh->loop, &mesh->listen_socket[i].tcp);
+net_setup.c:501:		io_del(&mesh->loop, &mesh->listen_socket[i].udp);
+net_setup.c:502:		close(mesh->listen_socket[i].tcp.fd);
+net_setup.c:503:		close(mesh->listen_socket[i].udp.fd);
+net_setup.c:511:	if(mesh->myport) {
+net_setup.c:512:		free(mesh->myport);
+Binary file libmeshlink_la-node.o matches
+logger.c:29:		if(level < mesh->log_level || !mesh->log_cb) {
+logger.c:50:		mesh->log_cb(mesh, level, message);
+protocol.c:90:	if(c == mesh->everyone) {
+protocol.c:110:	if(c->outgoing && mesh->proxytype == PROXY_HTTP && c->allow_request == ID) {
+protocol.c:172:	for splay_each(past_request_t, p, mesh->past_request_tree) {
+protocol.c:173:		if(p->firstseen + mesh->pinginterval <= mesh->loop.now.tv_sec) {
+protocol.c:174:			splay_delete_node(mesh->past_request_tree, node), deleted++;
+protocol.c:185:		timeout_set(&mesh->loop, &mesh->past_request_timeout, &(struct timeval) {
+protocol.c:195:	if(splay_search(mesh->past_request_tree, &p)) {
+protocol.c:201:		new->firstseen = mesh->loop.now.tv_sec;
+protocol.c:202:		splay_insert(mesh->past_request_tree, new);
+protocol.c:203:		timeout_add(&mesh->loop, &mesh->past_request_timeout, age_past_requests, NULL, &(struct timeval) {
+protocol.c:211:	mesh->past_request_tree = splay_alloc_tree((splay_compare_t) past_request_compare, (splay_action_t) free_past_request);
+protocol.c:215:	if(mesh->past_request_tree) {
+protocol.c:216:		splay_delete_tree(mesh->past_request_tree);
+protocol.c:219:	mesh->past_request_tree = NULL;
+protocol.c:221:	timeout_del(&mesh->loop, &mesh->past_request_timeout);
+net_packet.c:77:			timeout = mesh->pinginterval;
+net_packet.c:106:		timeout = mesh->pinginterval;
+net_packet.c:109:		timeout = mesh->pingtimeout;
+net_packet.c:112:	for(int i = 0; i < 4 + mesh->localdiscovery; i++) {
+net_packet.c:146:	timeout_set(&mesh->loop, &n->mtutimeout, &(struct timeval) {
+net_packet.c:152:	timeout_add(&mesh->loop, &n->mtutimeout, send_mtu_probe_handler, n, &(struct timeval) {
+net_packet.c:155:	send_mtu_probe_handler(&mesh->loop, n);
+net_packet.c:250:		} else if(n->last_req_key + 10 < mesh->loop.now.tv_sec) {
+net_packet.c:314:		*sock = rand() % mesh->listen_sockets;
+net_packet.c:318:	if(mesh->listen_socket[*sock].sa.sa.sa_family != (*sa)->sa.sa_family) {
+net_packet.c:319:		for(int i = 0; i < mesh->listen_sockets; i++) {
+net_packet.c:320:			if(mesh->listen_socket[i].sa.sa.sa_family == (*sa)->sa.sa_family) {
+net_packet.c:345:	*sock = rand() % mesh->listen_sockets;
+net_packet.c:347:	if(mesh->listen_socket[*sock].sa.sa.sa_family == AF_INET6) {
+net_packet.c:348:		if(mesh->localdiscovery_address.sa.sa_family == AF_INET6) {
+net_packet.c:349:			mesh->localdiscovery_address.in6.sin6_port = n->prevedge->address.in.sin_port;
+net_packet.c:350:			*sa = &mesh->localdiscovery_address;
+net_packet.c:353:			broadcast_ipv6.in6.sin6_scope_id = mesh->listen_socket[*sock].sa.in6.sin6_scope_id;
+net_packet.c:357:		if(mesh->localdiscovery_address.sa.sa_family == AF_INET) {
+net_packet.c:358:			mesh->localdiscovery_address.in.sin_port = n->prevedge->address.in.sin_port;
+net_packet.c:359:			*sa = &mesh->localdiscovery_address;
+net_packet.c:382:	if(type >= SPTPS_HANDSHAKE || ((mesh->self->options | to->options) & OPTION_TCPONLY) || (type != PKT_PROBE && len > to->minmtu)) {
+net_packet.c:389:			to->incompression = mesh->self->incompression;
+net_packet.c:390:			return send_request(mesh, to->nexthop->connection, "%d %s %s %s -1 -1 -1 %d", ANS_KEY, mesh->self->name, to->name, buf, to->incompression);
+net_packet.c:392:			return send_request(mesh, to->nexthop->connection, "%d %s %s %d %s", REQ_KEY, mesh->self->name, to->name, REQ_SPTPS, buf);
+net_packet.c:407:	if(sendto(mesh->listen_socket[sock].udp.fd, data, len, 0, &sa->sa, SALEN(sa->sa)) < 0 && !sockwouldblock(sockerrno)) {
+net_packet.c:481:	if(n == mesh->self) {
+net_packet.c:506:	if(from != mesh->self) {
+net_packet.c:507:		send_packet(mesh, mesh->self, packet);
+net_packet.c:512:	for list_each(connection_t, c, mesh->connections)
+net_packet.c:523:	for splay_each(edge_t, e, mesh->edges) {
+net_packet.c:524:		if(!e->to->status.reachable || e->to == mesh->self) {
+net_packet.c:529:			if(last_hard_try == mesh->loop.now.tv_sec) {
+net_packet.c:545:		last_hard_try = mesh->loop.now.tv_sec;
+net_packet.c:548:	last_hard_try = mesh->loop.now.tv_sec;
+net_packet.c:584:		} else if(mesh->log_level >= MESHLINK_WARNING) {
+net_packet.c:599:	n->sock = ls - mesh->listen_socket;

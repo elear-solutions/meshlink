@@ -1,0 +1,8 @@
+node_sim_node
+node_sim_peer
+node_sim_relay
+node_sim_nut
+test
+*.o
+Makefile.in
+Makefile

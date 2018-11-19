@@ -20,6 +20,6 @@ prog_name=$1
 signal=$2
 
 # Find instance of running program and send the named signal to it
-pid=`/bin/pidof -s ${prog_name}`
+pid=`/bin/pidof ${prog_name}`
 kill -${signal} ${pid}
 exit $?
