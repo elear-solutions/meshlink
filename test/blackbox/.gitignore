@@ -1,10 +1,3 @@
-*.log
-*.o
-*.trs
-*conf*
-.deps
-.dirstamp
+gen_invite
 Makefile
 Makefile.in
-.libs
-gen_invite
