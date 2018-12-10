@@ -467,7 +467,11 @@ bool setup_network(meshlink_handle_t *mesh) {
 	init_edges(mesh);
 	init_requests(mesh);
 
-	mesh->pinginterval = 60;
+	if(mesh->devclass != DEV_CLASS_SLEEPY) {
+    mesh->pinginterval = 60;
+	} else {
+    mesh->pinginterval = SLEEPY_PING_INTERVAL;
+	}
 	mesh->pingtimeout = 5;
 	maxoutbufsize = 10 * MTU;
 

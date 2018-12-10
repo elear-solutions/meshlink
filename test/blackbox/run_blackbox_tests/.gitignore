@@ -4,8 +4,6 @@
 bin
 obj
 *.o
-.deps
-.libs
+run_blackbox_tests
 Makefile
 Makefile.in
-run_blackbox_tests

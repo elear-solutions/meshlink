@@ -2878,4 +2878,5 @@ dev_class_traits_t dev_class_traits[_DEV_CLASS_MAX + 1] = {
 	{ .min_connects = 3, .max_connects = 100, .edge_weight = 3 },   // DEV_CLASS_STATIONARY
 	{ .min_connects = 3, .max_connects = 3, .edge_weight = 6 },             // DEV_CLASS_PORTABLE
 	{ .min_connects = 1, .max_connects = 1, .edge_weight = 9 },             // DEV_CLASS_UNKNOWN
+	{ .min_connects = 1, .max_connects = 2, .edge_weight = 12 },    // DEV_CLASS_SLEEPY
 };

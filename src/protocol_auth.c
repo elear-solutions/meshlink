@@ -517,6 +517,11 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	c->allow_request = ALL;
 	c->status.active = true;
 
+	if(mesh->devclass == DEV_CLASS_SLEEPY || n->devclass == DEV_CLASS_SLEEPY) {
+    configure_sleepy_tcp(c);
+    /*TODO: Disable catta one we formed an active connection for sleepy device */
+	}
+
 	logger(mesh, MESHLINK_INFO, "Connection with %s activated", c->name);
 
 	/* Send him everything we know */

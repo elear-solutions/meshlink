@@ -30,7 +30,9 @@
 #include "protocol.h"
 #include "utils.h"
 #include "xalloc.h"
-
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 /* Needed on Mac OS/X */
 #ifndef SOL_TCP
 #define SOL_TCP IPPROTO_TCP
@@ -72,6 +74,31 @@ static void configure_tcp(connection_t *c) {
 	int lowdelay = IPTOS_LOWDELAY;
 	setsockopt(c->socket, IPPROTO_IP, IP_TOS, (void *)&lowdelay, sizeof(lowdelay));
 #endif
+
+}
+
+void configure_sleepy_tcp(connection_t *c) {
+  int optval;
+  socklen_t optlen = sizeof(optval);
+
+  if(getsockopt(c->socket, SOL_SOCKET, SO_KEEPALIVE, &optval, &optlen) < 0) {
+    logger(c->mesh, MESHLINK_ERROR, "System call getsockopt failed : %s", sockstrerror(sockerrno));
+  }
+
+  optval = SLEEPY_TCP_KEEPALIVE_TIME;
+  if(setsockopt(c->socket, SOL_TCP, TCP_KEEPIDLE, &optval, optlen) < 0) {
+    logger(c->mesh, MESHLINK_ERROR, "System call `%s' failed (to set TCP keepalive time): %s", "setsockopt", sockstrerror(sockerrno));
+  }
+
+  optval = SLEEPY_TCP_KEEPALIVE_INTERVAL;
+  if(setsockopt(c->socket, SOL_TCP, TCP_KEEPINTVL, &optval, optlen) < 0) {
+    logger(c->mesh, MESHLINK_ERROR, "System call `%s' failed (to set TCP keepalive interval): %s", "setsockopt", sockstrerror(sockerrno));
+  }
+
+  optval = SLEEPY_TCP_KEEPALIVE_PROBES;
+  if(setsockopt(c->socket, SOL_TCP, TCP_KEEPCNT, &optval, optlen) < 0) {
+    logger(c->mesh, MESHLINK_ERROR, "System call `%s' failed (to set TCP keepalive probes): %s", "setsockopt", sockstrerror(sockerrno));
+  }
 }
 
 static bool bind_to_address(meshlink_handle_t *mesh, connection_t *c) {

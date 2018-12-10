@@ -99,7 +99,11 @@ static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 	}
 
 	if(n->mtuprobes == 31) {
-		timeout = mesh->pinginterval;
+    if(n->devclass != DEV_CLASS_SLEEPY) {
+      timeout = mesh->pinginterval;
+    } else {
+      timeout = SLEEPY_PING_INTERVAL;
+    }
 		goto end;
 	} else if(n->mtuprobes == 32) {
 		timeout = mesh->pingtimeout;

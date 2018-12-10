@@ -35,6 +35,21 @@
 /* MAXBUFSIZE is the maximum size of a request: enough for a MAXSIZEd packet or a 8192 bits RSA key */
 #define MAXBUFSIZE ((MAXSIZE > 2048 ? MAXSIZE : 2048) + 128)
 
+/* SLEEPY_PING_INTERVAL is the ping interval timeout used in UDP pings and meta-connection pings */
+#define SLEEPY_PING_INTERVAL 240
+
+/* the interval between the last data packet sent and the first keepalive probe (TCP default = 7200 seconds)*/
+#define SLEEPY_TCP_KEEPALIVE_TIME 7200
+
+/* the interval between subsequential keepalive probes (TCP default = 75 seconds) */
+#define SLEEPY_TCP_KEEPALIVE_INTERVAL 75
+
+/* number of unacknowledged probes to send before considering the connection dead (TCP default = 9 probes) */
+#define SLEEPY_TCP_KEEPALIVE_PROBES 9
+
+/* maximum number of recently used stationary nodes stored in buffer */
+#define RECENT_STATIONARY_NODES_SIZE 5
+
 typedef struct vpn_packet_t {
 	struct {
 		unsigned int probe: 1;
@@ -114,6 +129,7 @@ extern bool read_ecdsa_private_key(struct meshlink_handle *mesh);
 extern void send_mtu_probe(struct meshlink_handle *mesh, struct node_t *);
 extern void handle_meta_connection_data(struct meshlink_handle *mesh, struct connection_t *);
 extern void retry(struct meshlink_handle *mesh);
+extern void configure_sleepy_tcp(struct connection_t *);
 
 #ifndef HAVE_MINGW
 #define closesocket(s) close(s)

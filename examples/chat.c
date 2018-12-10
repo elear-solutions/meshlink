@@ -215,6 +215,7 @@ int main(int argc, char *argv[]) {
 	const char *confbase = ".chat";
 	const char *nick = NULL;
 	char buf[1024];
+	dev_class_t device_class = DEV_CLASS_STATIONARY;
 
 	if(argc > 1) {
 		confbase = argv[1];
@@ -224,9 +225,13 @@ int main(int argc, char *argv[]) {
 		nick = argv[2];
 	}
 
-	meshlink_set_log_cb(NULL, MESHLINK_INFO, log_message);
+	if(argc > 3) {
+    device_class = atoi(argv[3]);
+	}
 
-	meshlink_handle_t *mesh = meshlink_open(confbase, nick, "chat", DEV_CLASS_STATIONARY);
+	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_message);
+
+	meshlink_handle_t *mesh = meshlink_open(confbase, nick, "chat", device_class);
 
 	if(!mesh) {
 		fprintf(stderr, "Could not open MeshLink: %s\n", meshlink_strerror(meshlink_errno));
@@ -235,13 +240,18 @@ int main(int argc, char *argv[]) {
 
 	meshlink_set_receive_cb(mesh, receive);
 	meshlink_set_node_status_cb(mesh, node_status);
-	meshlink_set_log_cb(mesh, MESHLINK_INFO, log_message);
+	meshlink_set_log_cb(mesh, MESHLINK_DEBUG, log_message);
+  meshlink_enable_discovery(mesh, false);
+
+if(argc > 4) {
+	bool ret = meshlink_join(mesh, argv[4]);
+	printf("Join return : %d\n", ret);
+}
 
 	if(!meshlink_start(mesh)) {
 		fprintf(stderr, "Could not start MeshLink: %s\n", meshlink_strerror(meshlink_errno));
 		return 1;
 	}
-
 	printf("Chat started.\nType /help for a list of commands.\n");
 
 	while(fgets(buf, sizeof(buf), stdin)) {

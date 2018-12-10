@@ -122,6 +122,13 @@ static void timeout_handler(event_loop_t *loop, void *data) {
 				if(c->status.pinged) {
 					logger(mesh, MESHLINK_INFO, "%s didn't respond to PING in %ld seconds", c->name, (long)mesh->loop.now.tv_sec - c->last_ping_time);
 				} else if(c->last_ping_time + mesh->pinginterval <= mesh->loop.now.tv_sec) {
+				  // Different PING interval for connections connected to Sleepy devices
+				  if(c->node->devclass == DEV_CLASS_SLEEPY) {
+            if(c->last_ping_time + SLEEPY_PING_INTERVAL <= mesh->loop.now.tv_sec) {
+              send_ping(mesh, c);
+            }
+            continue;
+				  }
 					send_ping(mesh, c);
 					continue;
 				} else {
@@ -395,6 +402,105 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 		logger(mesh, MESHLINK_DEBUG, "* min_connects = %d", min_connects);
 		logger(mesh, MESHLINK_DEBUG, "* max_connects = %d", max_connects);
 
+		/* If node itself's sleepy and already made a connection skip the handling else make one */
+    if(mesh->devclass == DEV_CLASS_SLEEPY) {
+      static node_t *recent_stationary_nodes[RECENT_STATIONARY_NODES_SIZE];
+      connection_t *sleepy_connect = NULL;
+
+      // Check whether if sleepy node has connection with stationary node only
+
+      for list_each(connection_t, c, mesh->connections) {
+        if(c->status.active && c->node && c->node->devclass == DEV_CLASS_STATIONARY) {
+          sleepy_connect = c;
+          break;
+        }
+      }
+
+      if(cur_connects > 1 && sleepy_connect) {
+        // We have connections along with stationary connection so we can disconnect them
+        for list_each(connection_t, c, mesh->connections) {
+					if(c->status.active && c->node && strcmp(c->node->name, sleepy_connect->node->name)) {
+            logger(mesh, MESHLINK_DEBUG, "Auto-disconnecting from %s node to stabilize the connection", c->name);
+            if(c->outgoing) {
+              list_delete(mesh->outgoings, c->outgoing);
+              c->outgoing = NULL;
+            }
+            terminate_connection(mesh, c, c->status.active);
+            cur_connects = cur_connects - 1;
+          }
+				}
+      }
+
+      if(cur_connects == 1 && sleepy_connect) {
+
+        /* Save the current stationary node if not saved into the recent_stationary_nodes buffer */
+
+        if(recent_stationary_nodes[0] != sleepy_connect->node) {
+          node_t *prev_node = sleepy_connect->node, *temp;
+          int i, lim = RECENT_STATIONARY_NODES_SIZE;
+          for(i = 0; i < lim; i++) {
+            if(recent_stationary_nodes[i] == NULL) {
+              break;
+            } else if(recent_stationary_nodes[i] == sleepy_connect->node) {
+              lim = i + 1;
+              break;
+            }
+          }
+          for(i = 0; i < lim; i++) {
+            temp = prev_node;
+            prev_node = recent_stationary_nodes[i];
+            recent_stationary_nodes[i] = temp;
+          }
+        }
+
+        if(mesh->outgoings->count > 1) {
+          for list_each(outgoing_t, outgoing, mesh->outgoings) {
+            if(strcmp(outgoing->name, sleepy_connect->name)) {
+              list_delete(mesh->outgoings, outgoing);
+            }
+          }
+        }
+        logger(mesh, MESHLINK_DEBUG, "-*-- autoconnect end ---");
+        timeout_set(&mesh->loop, data, &(struct timeval) {
+          timeout, rand() % 100000
+        });
+        return;
+      } else {
+        // TODO: Include Catta enable and disable
+        logger(mesh, MESHLINK_INFO, "Trying to connect to recently connected stationary nodes simultaneously");
+        for(int i = 0; i < RECENT_STATIONARY_NODES_SIZE; i++) {
+          if(recent_stationary_nodes[i] && !recent_stationary_nodes[i]->connection) {
+            recent_stationary_nodes[i]->last_connect_try = time(NULL);
+
+            /* check if there is already a connection attempt to this node */
+            outgoing_t *outgoing_found = NULL;
+
+            for list_each(outgoing_t, outgoing, mesh->outgoings) {
+              if(!strcmp(outgoing->name, recent_stationary_nodes[i]->name)) {
+                outgoing_found = outgoing;
+                break;
+              }
+            }
+            logger(mesh, MESHLINK_DEBUG, "Connecting to %s", recent_stationary_nodes[i]->name);
+            if(!outgoing_found) {
+              outgoing_found = xzalloc(sizeof(outgoing_t));
+              outgoing_found->mesh = mesh;
+              outgoing_found->name = xstrdup(recent_stationary_nodes[i]->name);
+              list_insert_tail(mesh->outgoings, outgoing_found);
+              setup_outgoing_connection(mesh, outgoing_found);
+            } else {
+              setup_outgoing_connection(mesh, outgoing_found);
+            }
+          }
+        }
+        for splay_each(node_t, n, mesh->nodes) {
+          if(n != mesh->self && n->devclass == DEV_CLASS_STATIONARY && !n->connection && (n->last_connect_try == 0 || (time(NULL) - n->last_connect_try) > retry_timeout)) {
+            connect_to = n;
+            break;
+          }
+        }
+      }
+	  }
 
 		// find the best one for initial connect
 
@@ -404,7 +510,7 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 			for splay_each(node_t, n, mesh->nodes) {
 				logger(mesh, MESHLINK_DEBUG, "* n->devclass = %d", n->devclass);
 
-				if(n != mesh->self && n->devclass <= mesh->devclass && !n->connection && (n->last_connect_try == 0 || (time(NULL) - n->last_connect_try) > retry_timeout)) {
+				if(n != mesh->self && n->devclass <= mesh->devclass && n->devclass != DEV_CLASS_SLEEPY && !n->connection && (n->last_connect_try == 0 || (time(NULL) - n->last_connect_try) > retry_timeout)) {
 					splay_insert(nodes, n);
 				}
 			}
@@ -429,7 +535,7 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 
 			for(unsigned int devclass = 0; devclass <= mesh->devclass; ++devclass) {
 				for list_each(connection_t, c, mesh->connections) {
-					if(c->status.active && c->node && c->node->devclass == devclass) {
+					if(c->status.active && c->node && c->node->devclass == devclass && c->node->devclass != DEV_CLASS_SLEEPY) {
 						connects += 1;
 					}
 				}
@@ -469,7 +575,7 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 			splay_tree_t *nodes = splay_alloc_tree(node_compare_devclass_asc_lsc_desc, NULL);
 
 			for splay_each(node_t, n, mesh->nodes) {
-				if(n != mesh->self && n->devclass <= mesh->devclass && !n->status.reachable && (n->last_connect_try == 0 || (time(NULL) - n->last_connect_try) > retry_timeout)) {
+				if(n != mesh->self && n->devclass <= mesh->devclass && n->devclass != DEV_CLASS_SLEEPY && !n->status.reachable && (n->last_connect_try == 0 || (time(NULL) - n->last_connect_try) > retry_timeout)) {
 					splay_insert(nodes, n);
 				}
 			}
@@ -520,7 +626,7 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 
 			for(unsigned int devclass = 0; devclass <= mesh->devclass; ++devclass) {
 				for list_each(connection_t, c, mesh->connections) {
-					if(c->status.active && c->node && c->node->devclass == devclass) {
+					if(c->status.active && c->node && c->node->devclass == devclass && c->node->devclass != DEV_CLASS_SLEEPY) {
 						connects += 1;
 					}
 				}
@@ -556,7 +662,7 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 			splay_tree_t *nodes = splay_alloc_tree(node_compare_devclass_desc, NULL);
 
 			for list_each(connection_t, c, mesh->connections) {
-				if(c->status.active && c->node) {
+				if(c->status.active && c->node && c->node->devclass != DEV_CLASS_SLEEPY) {
 					splay_insert(nodes, c->node);
 				}
 			}
