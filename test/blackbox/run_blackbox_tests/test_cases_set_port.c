@@ -112,8 +112,9 @@ static bool test_set_port_02(void) {
 	// meshlink_set_port called using NULL as mesh handle
 
 	bool ret = meshlink_set_port(NULL, 8000);
-
+	assert_int_equal(meshlink_errno, 0);
 	assert_int_equal(ret, false);
+
 	return false;
 }
 
@@ -139,10 +140,10 @@ static bool test_set_port_03(void) {
 	mesh_handle = meshlink_open("getportconf", "nut", "test", 1);
 	assert(mesh_handle);
 	meshlink_set_log_cb(mesh_handle, TEST_MESHLINK_LOG_LEVEL, meshlink_callback_logger);
-	assert(meshlink_start(mesh_handle));
 
 	// Setting port after starting NUT
 	bool ret = meshlink_set_port(mesh_handle, 50000);
+	assert_int_equal(meshlink_errno, 0);
 	assert_int_equal(ret, false);
 
 	// Clean up
@@ -155,11 +156,11 @@ static bool test_set_port_03(void) {
 int test_meshlink_set_port(void) {
 	const struct CMUnitTest blackbox_set_port_tests[] = {
 		cmocka_unit_test_prestate_setup_teardown(test_case_set_port_01, NULL, NULL,
-		                (void *)&test_case_set_port_01_state),
+		(void *)&test_case_set_port_01_state),
 		cmocka_unit_test_prestate_setup_teardown(test_case_set_port_02, NULL, NULL,
-		                (void *)&test_case_set_port_02_state),
+		(void *)&test_case_set_port_02_state),
 		cmocka_unit_test_prestate_setup_teardown(test_case_set_port_03, NULL, NULL,
-		                (void *)&test_case_set_port_03_state)
+		(void *)&test_case_set_port_03_state)
 	};
 	total_tests += sizeof(blackbox_set_port_tests) / sizeof(blackbox_set_port_tests[0]);
 	return cmocka_run_group_tests(blackbox_set_port_tests, NULL, NULL);
