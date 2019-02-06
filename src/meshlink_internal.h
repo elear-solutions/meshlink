@@ -92,6 +92,7 @@ struct meshlink_handle {
 
 	struct list_t *connections;
 	struct list_t *outgoings;
+	struct list_t *submeshes;
 
 	meshlink_queue_t outpacketqueue;
 
@@ -149,6 +150,12 @@ struct meshlink_handle {
 
 /// A handle for a MeshLink node.
 struct meshlink_node {
+	const char *name;
+	void *priv;
+};
+
+/// A handle for a node Sub-Mesh.
+struct meshlink_submesh {
 	const char *name;
 	void *priv;
 };

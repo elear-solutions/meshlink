@@ -37,6 +37,7 @@ typedef struct {
 #include "meshlink_internal.h"
 #include "netutl.h"
 #include "node.h"
+#include "submesh.h"
 #include "protocol.h"
 #include "route.h"
 #include "sockaddr.h"
@@ -59,6 +60,7 @@ const var_t variables[] = {
 	{"ConnectTo", VAR_SERVER | VAR_MULTIPLE | VAR_SAFE},
 	{"Name", VAR_SERVER},
 	/* Host configuration */
+	{"SubMesh", VAR_HOST | VAR_SAFE},
 	{"CanonicalAddress", VAR_HOST},
 	{"Address", VAR_HOST | VAR_MULTIPLE},
 	{"ECDSAPublicKey", VAR_HOST},
@@ -736,8 +738,7 @@ static bool finalize_join(meshlink_handle_t *mesh) {
 				break;
 			} else {
 				continue;
-			}
-		else if(!strcasecmp(l, "NetName")) {
+			} else if(!strcasecmp(l, "NetName")) {
 			continue;
 		}
 
@@ -1184,6 +1185,7 @@ meshlink_handle_t *meshlink_open(const char *confbase, const char *name, const c
 	mesh->devclass = devclass;
 	mesh->discovery = true;
 	mesh->invitation_timeout = 604800; // 1 week
+	mesh->submeshes = NULL;
 
 	if(usingname) {
 		mesh->name = xstrdup(name);
@@ -1281,6 +1283,37 @@ meshlink_handle_t *meshlink_open(const char *confbase, const char *name, const c
 
 	logger(NULL, MESHLINK_DEBUG, "meshlink_open returning\n");
 	return mesh;
+}
+
+meshlink_submesh_t *meshlink_submesh_open(meshlink_handle_t  *mesh, const char *submesh) {
+	meshlink_submesh_t *s = NULL;
+	if(!mesh) {
+		logger(NULL, MESHLINK_ERROR, "No mesh handle given!\n");
+		meshlink_errno = MESHLINK_EINVAL;
+		return NULL;
+	}
+
+	if(!submesh || !*submesh) {
+		logger(NULL, MESHLINK_ERROR, "No submesh name given!\n");
+		meshlink_errno = MESHLINK_EINVAL;
+		return NULL;
+	}
+
+	s = (meshlink_submesh_t *)lookup_submesh(mesh, submesh);
+
+	if (s) {
+		logger(NULL, MESHLINK_ERROR, "SubMesh Already exists!\n");
+		meshlink_errno = MESHLINK_EEXIST;
+		return NULL;
+	}
+
+	s = (meshlink_submesh_t *)new_submesh();
+	s->name = xstrdup(submesh);
+
+	submesh_add(mesh, (submesh_t *)s);
+
+	meshlink_errno = MESHLINK_OK;
+	return s;
 }
 
 static void *meshlink_main_loop(void *arg) {
@@ -2074,10 +2107,20 @@ void meshlink_set_invitation_timeout(meshlink_handle_t *mesh, int timeout) {
 	mesh->invitation_timeout = timeout;
 }
 
-char *meshlink_invite_ex(meshlink_handle_t *mesh, const char *name, uint32_t flags) {
+char *meshlink_invite_ex(meshlink_handle_t *mesh, meshlink_submesh_t *submesh, const char *name, uint32_t flags) {
+	meshlink_submesh_t *s = NULL;
 	if(!mesh) {
 		meshlink_errno = MESHLINK_EINVAL;
 		return NULL;
+	}
+
+	if ( submesh ) {
+		s = (meshlink_submesh_t *)lookup_submesh(mesh, submesh->name);
+		if ( s != submesh ) {	
+			logger(mesh, MESHLINK_DEBUG, "Invalid SubMesh Handle.\n");
+			meshlink_errno = MESHLINK_EINVAL;
+			return NULL;
+		}
 	}
 
 	pthread_mutex_lock(&(mesh->mesh_mutex));
@@ -2167,6 +2210,9 @@ char *meshlink_invite_ex(meshlink_handle_t *mesh, const char *name, uint32_t fla
 
 	// Fill in the details.
 	fprintf(f, "Name = %s\n", name);
+	if ( s ) {
+		fprintf(f, "SubMesh = %s\n", s->name);
+	}
 	fprintf(f, "ConnectTo = %s\n", mesh->self->name);
 
 	// Copy Broadcast and Mode
@@ -2212,8 +2258,8 @@ char *meshlink_invite_ex(meshlink_handle_t *mesh, const char *name, uint32_t fla
 	return url;
 }
 
-char *meshlink_invite(meshlink_handle_t *mesh, const char *name) {
-	return meshlink_invite_ex(mesh, name, 0);
+char *meshlink_invite(meshlink_handle_t *mesh, meshlink_submesh_t *submesh, const char *name) {
+	return meshlink_invite_ex(mesh, submesh, name, 0);
 }
 
 bool meshlink_join(meshlink_handle_t *mesh, const char *invitation) {
