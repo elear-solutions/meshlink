@@ -170,14 +170,15 @@ bool node_read_submesh(meshlink_handle_t *mesh, node_t *n) {
 
 	if(get_config_string(lookup_config(config_tree, "SubMesh"), &p)) {
 		n->submesh = NULL;
+
 		for list_each(submesh_t, s, mesh->submeshes) {
-			if ( !strcmp(p, s->name) ) {
+			if(!strcmp(p, s->name)) {
 				n->submesh = s;
 				break;
 			}
 		}
 
-		if ( !n->submesh ) {
+		if(!n->submesh) {
 			n->submesh = (submesh_t *)meshlink_submesh_open(mesh, p);
 		}
 
@@ -280,9 +281,10 @@ void load_all_nodes(meshlink_handle_t *mesh) {
 		node_t *n = lookup_node(mesh, ent->d_name);
 
 		if(n) {
-			if ( n == mesh->self && !n->submesh ) {
+			if(n == mesh->self && !n->submesh) {
 				node_read_submesh(mesh, n);
 			}
+
 			continue;
 		}
 

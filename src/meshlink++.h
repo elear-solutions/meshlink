@@ -537,7 +537,7 @@ public:
 	 *  @return             This function returns a string that contains the invitation URL.
 	 *                      The application should call free() after it has finished using the URL.
 	 */
-	char *invite( submesh *submesh, const char *name, uint32_t flags = 0) {
+	char *invite(submesh *submesh, const char *name, uint32_t flags = 0) {
 		return meshlink_invite_ex(handle, submesh, name, flags);
 	}
 

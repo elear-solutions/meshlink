@@ -167,7 +167,7 @@ extern const char *meshlink_strerror(meshlink_errno_t err);
 extern meshlink_handle_t *meshlink_open(const char *confbase, const char *name, const char *appname, dev_class_t devclass);
 
 /// Create Sub-Mesh.
-/** This function causes MeshLink to open a new Sub-Mesh network 
+/** This function causes MeshLink to open a new Sub-Mesh network
  *  create a new thread, which will handle all network I/O.
  *
  *  It is allowed to call this function even if MeshLink is already started, in which case it will return true.
