@@ -179,6 +179,9 @@ static bool finalize_invitation(meshlink_handle_t *mesh, connection_t *c, const 
 	}
 
 	fprintf(f, "ECDSAPublicKey = %s\n", (const char *)data);
+	if ( c->submesh ) {
+		fprintf(f, "SubMesh = %s\n", c->submesh->name);
+	}
 	fclose(f);
 
 	logger(mesh, MESHLINK_INFO, "Key succesfully received from %s", c->name);
@@ -287,6 +290,33 @@ static bool receive_invitation_sptps(void *handle, uint8_t type, const void *dat
 
 	free(c->name);
 	c->name = xstrdup(name);
+
+	// Check if the file contains Sub-Mesh information
+	buf[0] = 0;
+	fgets(buf, sizeof(buf), f);
+
+	if(*buf) {
+		buf[strlen(buf) - 1] = 0;
+	}
+
+	if ( !strncmp(buf, "SubMesh", 7) ) {
+		len = strcspn(buf, " \t=");
+		char *submesh_name = buf + len;
+		submesh_name += strspn(submesh_name, " \t");
+
+		if(*submesh_name == '=') {
+			submesh_name++;
+			submesh_name += strspn(submesh_name, " \t");
+		}
+
+		if(!check_id(submesh_name)) {
+			logger(mesh, MESHLINK_ERROR, "Invalid invitation file %s\n", cookie);
+			fclose(f);
+			return false;
+		}
+ 
+		c->submesh = lookup_submesh(mesh, submesh_name);
+	}
 
 	// Send the node the contents of the invitation file
 	rewind(f);
