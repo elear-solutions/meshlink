@@ -1,6 +1,6 @@
 /*
-    node.c -- node tree management
-    Copyright (C) 2014 Guus Sliepen <guus@meshlink.io>,
+    submesh.c -- submesh management
+    Copyright (C) 2019 Guus Sliepen <guus@meshlink.io>,
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by

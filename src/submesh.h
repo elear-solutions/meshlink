@@ -2,8 +2,8 @@
 #define MESHLINK_SUBMESH_H
 
 /*
-    submesh.h -- header for node.c
-    Copyright (C) 2014, 2017 Guus Sliepen <guus@meshlink.io>
+    submesh.h -- header for submesh.c
+    Copyright (C) 2019 Guus Sliepen <guus@meshlink.io>
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
