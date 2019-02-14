@@ -2131,7 +2131,7 @@ char *meshlink_invite_ex(meshlink_handle_t *mesh, meshlink_submesh_t *submesh, c
 			return NULL;
 		}
 	} else {
-		s = mesh->self->submesh;
+		s = (meshlink_submesh_t *)mesh->self->submesh;
 	}
 
 	pthread_mutex_lock(&(mesh->mesh_mutex));

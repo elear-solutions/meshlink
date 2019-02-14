@@ -42,28 +42,29 @@ bool send_add_edge(meshlink_handle_t *mesh, connection_t *c, const edge_t *e, in
 	char *address, *port;
 	char *from_submesh, *to_submesh;
 
-	if ( c->node && c->node->submesh ) {
-		if ( e->from->submesh && ( e->from->submesh != c->node->submesh ) ) {
+	if(c->node && c->node->submesh) {
+		if(e->from->submesh && (e->from->submesh != c->node->submesh)) {
 			return true;
 		}
-		if ( e->to->submesh && ( e->to->submesh != c->node->submesh ) ) {
+
+		if(e->to->submesh && (e->to->submesh != c->node->submesh)) {
 			return true;
 		}
 	}
 
-	if ( e->from->submesh && e->to->submesh && ( e->from->submesh != e->to->submesh ) ) {
+	if(e->from->submesh && e->to->submesh && (e->from->submesh != e->to->submesh)) {
 		return true;
 	}
 
 	sockaddr2str(&e->address, &address, &port);
 
-	if ( e->from->submesh ) {
+	if(e->from->submesh) {
 		from_submesh = e->from->submesh->name;
 	} else {
 		from_submesh = "0";
 	}
 
-	if ( e->to->submesh ) {
+	if(e->to->submesh) {
 		to_submesh = e->to->submesh->name;
 	} else {
 		to_submesh = "0";
@@ -95,7 +96,7 @@ bool add_edge_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	int contradictions = 0;
 
 	if(sscanf(request, "%*d %*x "MAX_STRING" %d "MAX_STRING" "MAX_STRING" "MAX_STRING" "MAX_STRING" %d "MAX_STRING" %x %d %d",
-	                from_name, &from_devclass, from_submesh_name, to_name, to_address, to_port, &to_devclass, to_submesh_name, 
+	                from_name, &from_devclass, from_submesh_name, to_name, to_address, to_port, &to_devclass, to_submesh_name,
 	                &options, &weight, &contradictions) < 10) {
 		logger(mesh, MESHLINK_ERROR, "Got bad %s from %s", "ADD_EDGE", c->name);
 		return false;
@@ -145,11 +146,13 @@ bool add_edge_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		from->name = xstrdup(from_name);
 
 		from->submesh = NULL;
-		if ( 0 != strcmp(from_submesh_name, "0") ) {
-			if ( !( from->submesh = lookup_submesh(mesh, from_submesh_name) ) ) {
+
+		if(0 != strcmp(from_submesh_name, "0")) {
+			if(!(from->submesh = lookup_submesh(mesh, from_submesh_name))) {
 				from->submesh = (submesh_t *)meshlink_submesh_open(mesh, from_submesh_name);
 			}
 		}
+
 		node_add(mesh, from);
 	}
 
@@ -159,7 +162,8 @@ bool add_edge_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 
 	from->devclass = from_devclass;
 	node_write_devclass(mesh, from);
-	if ( from->submesh ) {
+
+	if(from->submesh) {
 		node_write_submesh(mesh, from);
 	}
 
@@ -169,17 +173,20 @@ bool add_edge_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		to->name = xstrdup(to_name);
 
 		to->submesh = NULL;
-		if ( 0 != strcmp(to_submesh_name, "0") ) {
-			if ( !( to->submesh = lookup_submesh(mesh, to_submesh_name) ) ) {
+
+		if(0 != strcmp(to_submesh_name, "0")) {
+			if(!(to->submesh = lookup_submesh(mesh, to_submesh_name))) {
 				to->submesh = (submesh_t *)meshlink_submesh_open(mesh, to_submesh_name);
 			}
 		}
+
 		node_add(mesh, to);
 	}
 
 	to->devclass = to_devclass;
 	node_write_devclass(mesh, to);
-	if ( to->submesh ) {
+
+	if(to->submesh) {
 		node_write_submesh(mesh, to);
 	}
 

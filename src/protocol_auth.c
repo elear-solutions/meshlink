@@ -179,9 +179,11 @@ static bool finalize_invitation(meshlink_handle_t *mesh, connection_t *c, const 
 	}
 
 	fprintf(f, "ECDSAPublicKey = %s\n", (const char *)data);
-	if ( c->submesh ) {
+
+	if(c->submesh) {
 		fprintf(f, "SubMesh = %s\n", c->submesh->name);
 	}
+
 	fclose(f);
 
 	logger(mesh, MESHLINK_INFO, "Key succesfully received from %s", c->name);
@@ -299,7 +301,7 @@ static bool receive_invitation_sptps(void *handle, uint8_t type, const void *dat
 		buf[strlen(buf) - 1] = 0;
 	}
 
-	if ( !strncmp(buf, "SubMesh", 7) ) {
+	if(!strncmp(buf, "SubMesh", 7)) {
 		len = strcspn(buf, " \t=");
 		char *submesh_name = buf + len;
 		submesh_name += strspn(submesh_name, " \t");
@@ -314,7 +316,7 @@ static bool receive_invitation_sptps(void *handle, uint8_t type, const void *dat
 			fclose(f);
 			return false;
 		}
- 
+
 		c->submesh = lookup_submesh(mesh, submesh_name);
 	}
 
