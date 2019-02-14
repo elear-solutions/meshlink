@@ -27,6 +27,7 @@
 #include "protocol.h"
 #include "utils.h"
 #include "xalloc.h"
+#include "submesh.h"
 
 /* Jumptable for the request handlers */
 
@@ -62,6 +63,38 @@ bool check_id(const char *id) {
 	return true;
 }
 
+static bool check_request_type( struct meshlink_handle *mesh, const char *request, submesh_t **from, submesh_t **to ) {
+	char from_submesh_name[MAX_STRING_SIZE] = "";
+	char to_submesh_name[MAX_STRING_SIZE] = "";
+	int request_id = -1;
+
+	sscanf(request, "%d", &request_id);
+
+	if ( ADD_EDGE != request_id ) {
+		return false;
+	}
+
+	sscanf(request, "%*d %*x %*s %*d "MAX_STRING" %*s %*s %*s %*d "MAX_STRING" ",
+	                from_submesh_name, to_submesh_name);
+
+	*from = NULL;
+	*to = NULL;
+
+	if ( 0 != strcmp( from_submesh_name, "0" ) ) {
+		*from = lookup_submesh(mesh, from_submesh_name);
+	}
+
+	if ( 0 != strcmp( to_submesh_name, "0" ) ) {
+		*to = lookup_submesh(mesh, to_submesh_name);
+	}
+
+	if ( !(*from) && !(*to) ) {
+		return false;
+	}
+  	
+  	return true;
+}
+
 /* Generic request routines - takes care of logging and error
    detection as well */
 
@@ -69,6 +102,12 @@ bool send_request(meshlink_handle_t *mesh, connection_t *c, const char *format, 
 	va_list args;
 	char request[MAXBUFSIZE];
 	int len;
+	int id;
+	submesh_t *to = NULL, *from = NULL;
+
+	if ( !c ) {
+		return false;
+	}
 
 	/* Use vsnprintf instead of vxasprintf: faster, no memory
 	   fragmentation, cleanup is automatic, and there is a limit on the
@@ -88,7 +127,16 @@ bool send_request(meshlink_handle_t *mesh, connection_t *c, const char *format, 
 	request[len++] = '\n';
 
 	if(c == mesh->everyone) {
-		broadcast_meta(mesh, NULL, request, len);
+		
+		if ( check_request_type( mesh, request, &from, &to ) ) {
+			fprintf(stderr, "\x1b[34m%s(%d):\x1b[0m Sending submesh request %s to every one\n", __func__, __LINE__, request);
+			broadcast_submesh_meta(mesh, NULL, from, to, request, len);
+		} else {
+			fprintf(stderr, "\x1b[34m%s(%d):\x1b[0m Sending request %s to every one\n", __func__, __LINE__, request);
+			broadcast_meta(mesh, NULL, request, len);
+		}
+		
+		//broadcast_meta(mesh, NULL, request, len);
 		return true;
 	} else {
 		return send_meta(mesh, c, request, len);
@@ -101,9 +149,16 @@ void forward_request(meshlink_handle_t *mesh, connection_t *from, const char *re
 	// Create a temporary newline-terminated copy of the request
 	int len = strlen(request);
 	char tmp[len + 1];
+	submesh_t *to = NULL, *src = NULL;
+
 	memcpy(tmp, request, len);
 	tmp[len] = '\n';
-	broadcast_meta(mesh, from, tmp, sizeof(tmp));
+
+	if ( check_request_type( mesh, request, &src, &to ) ) {
+		broadcast_submesh_meta(mesh, from, src, to, tmp, sizeof(tmp));
+	} else {
+		broadcast_meta(mesh, from, tmp, sizeof(tmp));
+	}
 }
 
 bool receive_request(meshlink_handle_t *mesh, connection_t *c, const char *request) {
