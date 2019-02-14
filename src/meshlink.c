@@ -1301,6 +1301,9 @@ meshlink_submesh_t *meshlink_submesh_open(meshlink_handle_t  *mesh, const char *
 		return NULL;
 	}
 
+	//lock mesh->nodes
+	pthread_mutex_lock(&(mesh->mesh_mutex));
+
 	s = (meshlink_submesh_t *)lookup_submesh(mesh, submesh);
 
 	if(s) {
@@ -1313,6 +1316,8 @@ meshlink_submesh_t *meshlink_submesh_open(meshlink_handle_t  *mesh, const char *
 	s->name = xstrdup(submesh);
 
 	submesh_add(mesh, (submesh_t *)s);
+
+	pthread_mutex_unlock(&(mesh->mesh_mutex));
 
 	meshlink_errno = MESHLINK_OK;
 	return s;
@@ -2125,6 +2130,8 @@ char *meshlink_invite_ex(meshlink_handle_t *mesh, meshlink_submesh_t *submesh, c
 			meshlink_errno = MESHLINK_EINVAL;
 			return NULL;
 		}
+	} else {
+		s = mesh->self->submesh;
 	}
 
 	pthread_mutex_lock(&(mesh->mesh_mutex));
