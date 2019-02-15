@@ -48,7 +48,7 @@ static bool send_proxyrequest(meshlink_handle_t *mesh, connection_t *c) {
 		char *port;
 
 		sockaddr2str(&c->address, &host, &port);
-		send_request(mesh, c, "CONNECT %s:%s HTTP/1.1\r\n\r", host, port);
+		send_request(mesh, c, mesh->self->submesh, "CONNECT %s:%s HTTP/1.1\r\n\r", host, port);
 		free(host);
 		free(port);
 		return true;
@@ -151,7 +151,7 @@ bool send_id(meshlink_handle_t *mesh, connection_t *c) {
 			return false;
 		}
 
-	return send_request(mesh, c, "%d %s %d.%d %s", ID, mesh->self->connection->name, mesh->self->connection->protocol_major, minor, mesh->appname);
+	return send_request(mesh, c, mesh->self->submesh, "%d %s %d.%d %s", ID, mesh->self->connection->name, mesh->self->connection->protocol_major, minor, mesh->appname);
 }
 
 static bool finalize_invitation(meshlink_handle_t *mesh, connection_t *c, const void *data, uint16_t len) {
@@ -368,7 +368,7 @@ bool id_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 			return false;
 		}
 
-		if(!send_request(mesh, c, "%d %s", ACK, mykey)) {
+		if(!send_request(mesh, c, NULL, "%d %s", ACK, mykey)) {
 			return false;
 		}
 
@@ -470,7 +470,7 @@ bool send_ack(meshlink_handle_t *mesh, connection_t *c) {
 		c->options |= OPTION_PMTU_DISCOVERY;
 	}
 
-	return send_request(mesh, c, "%d %s %d %x", ACK, mesh->myport, mesh->devclass, (c->options & 0xffffff) | (PROT_MINOR << 24));
+	return send_request(mesh, c, NULL, "%d %s %d %x", ACK, mesh->myport, mesh->devclass, (c->options & 0xffffff) | (PROT_MINOR << 24));
 }
 
 static void send_everything(meshlink_handle_t *mesh, connection_t *c) {

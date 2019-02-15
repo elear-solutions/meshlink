@@ -41,6 +41,7 @@ bool send_add_edge(meshlink_handle_t *mesh, connection_t *c, const edge_t *e, in
 	bool x;
 	char *address, *port;
 	char *from_submesh, *to_submesh;
+	submesh_t *s = NULL;
 
 	if(c->node && c->node->submesh) {
 		if(e->from->submesh && (e->from->submesh != c->node->submesh)) {
@@ -70,7 +71,13 @@ bool send_add_edge(meshlink_handle_t *mesh, connection_t *c, const edge_t *e, in
 		to_submesh = "0";
 	}
 
-	x = send_request(mesh, c, "%d %x %s %d %s %s %s %s %d %s %x %d %d", ADD_EDGE, rand(),
+	if(e->from->submesh) {
+		s = e->from->submesh;
+	} else {
+		s = e->to->submesh;
+	}
+
+	x = send_request(mesh, c, s, "%d %x %s %d %s %s %s %s %d %s %x %d %d", ADD_EDGE, rand(),
 	                 e->from->name, e->from->devclass, from_submesh, e->to->name, address, port,
 	                 e->to->devclass, to_submesh, e->options, e->weight, contradictions);
 	free(address);
@@ -94,6 +101,7 @@ bool add_edge_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	uint32_t options;
 	int weight;
 	int contradictions = 0;
+	submesh_t *s = NULL;
 
 	if(sscanf(request, "%*d %*x "MAX_STRING" %d "MAX_STRING" "MAX_STRING" "MAX_STRING" "MAX_STRING" %d "MAX_STRING" %x %d %d",
 	                from_name, &from_devclass, from_submesh_name, to_name, to_address, to_port, &to_devclass, to_submesh_name,
@@ -234,19 +242,52 @@ bool add_edge_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	e->weight = weight;
 	edge_add(mesh, e);
 
-	/* Tell the rest about the new edge */
-
-	forward_request(mesh, c, request);
-
 	/* Run MST before or after we tell the rest? */
 
 	graph(mesh);
+
+	if(e->from->submesh && e->to->submesh && (e->from->submesh != e->to->submesh)) {
+		return true;
+	}
+
+	if(e->from->submesh) {
+		s = e->from->submesh;
+	} else {
+		s = e->to->submesh;
+	}
+
+	/* Tell the rest about the new edge */
+
+	forward_request(mesh, c, s, request);
 
 	return true;
 }
 
 bool send_del_edge(meshlink_handle_t *mesh, connection_t *c, const edge_t *e, int contradictions) {
-	return send_request(mesh, c, "%d %x %s %s %d", DEL_EDGE, rand(),
+	submesh_t *s = NULL;
+
+	if(c->node && c->node->submesh) {
+		if(e->from->submesh && (e->from->submesh != c->node->submesh)) {
+			return true;
+		}
+
+		if(e->to->submesh && (e->to->submesh != c->node->submesh)) {
+			return true;
+		}
+	}
+
+	if(e->from->submesh && e->to->submesh && (e->from->submesh != e->to->submesh)) {
+		return true;
+	}
+
+
+	if(e->from->submesh) {
+		s = e->from->submesh;
+	} else {
+		s = e->to->submesh;
+	}
+
+	return send_request(mesh, c, s, "%d %x %s %s %d", DEL_EDGE, rand(),
 	                    e->from->name, e->to->name, contradictions);
 }
 
@@ -256,6 +297,7 @@ bool del_edge_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	char to_name[MAX_STRING_SIZE];
 	node_t *from, *to;
 	int contradictions = 0;
+	submesh_t *s = NULL;
 
 	if(sscanf(request, "%*d %*x "MAX_STRING" "MAX_STRING" %d", from_name, to_name, &contradictions) < 2) {
 		logger(mesh, MESHLINK_ERROR, "Got bad %s from %s", "DEL_EDGE", c->name);
@@ -314,7 +356,19 @@ bool del_edge_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 
 	/* Tell the rest about the deleted edge */
 
-	forward_request(mesh, c, request);
+
+	if(e->from->submesh && e->to->submesh && (e->from->submesh == e->to->submesh)) {
+		if(e->from->submesh) {
+			s = e->from->submesh;
+		} else {
+			s = e->to->submesh;
+		}
+
+		/* Tell the rest about the deleted edge */
+
+		forward_request(mesh, c, s, request);
+
+	}
 
 	/* Delete the edge */
 

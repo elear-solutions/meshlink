@@ -63,46 +63,13 @@ bool check_id(const char *id) {
 	return true;
 }
 
-static bool check_request_type(struct meshlink_handle *mesh, const char *request, submesh_t **from, submesh_t **to) {
-	char from_submesh_name[MAX_STRING_SIZE] = "";
-	char to_submesh_name[MAX_STRING_SIZE] = "";
-	int request_id = -1;
-
-	sscanf(request, "%d", &request_id);
-
-	if(ADD_EDGE != request_id) {
-		return false;
-	}
-
-	sscanf(request, "%*d %*x %*s %*d "MAX_STRING" %*s %*s %*s %*d "MAX_STRING" ",
-	       from_submesh_name, to_submesh_name);
-
-	*from = NULL;
-	*to = NULL;
-
-	if(0 != strcmp(from_submesh_name, "0")) {
-		*from = lookup_submesh(mesh, from_submesh_name);
-	}
-
-	if(0 != strcmp(to_submesh_name, "0")) {
-		*to = lookup_submesh(mesh, to_submesh_name);
-	}
-
-	if(!(*from) && !(*to)) {
-		return false;
-	}
-
-	return true;
-}
-
 /* Generic request routines - takes care of logging and error
    detection as well */
 
-bool send_request(meshlink_handle_t *mesh, connection_t *c, const char *format, ...) {
+bool send_request(meshlink_handle_t *mesh, connection_t *c, submesh_t *s, const char *format, ...) {
 	va_list args;
 	char request[MAXBUFSIZE];
 	int len;
-	submesh_t *to = NULL, *from = NULL;
 
 	if(!c) {
 		return false;
@@ -127,8 +94,8 @@ bool send_request(meshlink_handle_t *mesh, connection_t *c, const char *format, 
 
 	if(c == mesh->everyone) {
 
-		if(check_request_type(mesh, request, &from, &to)) {
-			broadcast_submesh_meta(mesh, NULL, from, to, request, len);
+		if(s) {
+			broadcast_submesh_meta(mesh, NULL, s, request, len);
 		} else {
 			broadcast_meta(mesh, NULL, request, len);
 		}
@@ -139,19 +106,18 @@ bool send_request(meshlink_handle_t *mesh, connection_t *c, const char *format, 
 	}
 }
 
-void forward_request(meshlink_handle_t *mesh, connection_t *from, const char *request) {
+void forward_request(meshlink_handle_t *mesh, connection_t *from, submesh_t *s, const char *request) {
 	logger(mesh, MESHLINK_DEBUG, "Forwarding %s from %s: %s", request_name[atoi(request)], from->name, request);
 
 	// Create a temporary newline-terminated copy of the request
 	int len = strlen(request);
 	char tmp[len + 1];
-	submesh_t *to = NULL, *src = NULL;
 
 	memcpy(tmp, request, len);
 	tmp[len] = '\n';
 
-	if(check_request_type(mesh, request, &src, &to)) {
-		broadcast_submesh_meta(mesh, from, src, to, tmp, sizeof(tmp));
+	if(s) {
+		broadcast_submesh_meta(mesh, from, s, tmp, sizeof(tmp));
 	} else {
 		broadcast_meta(mesh, from, tmp, sizeof(tmp));
 	}
