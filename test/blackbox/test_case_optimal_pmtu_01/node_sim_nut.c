@@ -45,26 +45,26 @@ static void node_status_cb(meshlink_handle_t *mesh, meshlink_node_t *node,
 static void channel_receive_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, const void *dat, size_t len);
 static bool channel_accept(meshlink_handle_t *mesh, meshlink_channel_t *channel, uint16_t port, const void *dat, size_t len);
 
-pmtu_attr_t node_pmtu[2];
+pmtu_attr_t *node_pmtu[2];
 static time_t node_shutdown_time = 0;
 static bool mtu_set = true;
 
-static void print_mtu_calc(pmtu_attr_t node_pmtu) {
-	fprintf(stderr, "MTU size : %d\n", node_pmtu.mtu_size);
-	fprintf(stderr, "Probes took for calculating PMTU discovery : %d\n", node_pmtu.mtu_discovery.probes);
-	fprintf(stderr, "Probes total length took for calculating PMTU discovery : %d\n", node_pmtu.mtu_discovery.probes_total_len);
-	fprintf(stderr, "Time took for calculating PMTU discovery : %lu\n", node_pmtu.mtu_discovery.time);
-	fprintf(stderr, "Total MTU ping probes : %d\n", node_pmtu.mtu_ping.probes);
-	fprintf(stderr, "Total MTU ping probes length : %d\n", node_pmtu.mtu_ping.probes_total_len);
+static void print_mtu_calc(pmtu_attr_t *node_pmtu) {
+	fprintf(stderr, "MTU size : %d\n", node_pmtu->mtu_size);
+	fprintf(stderr, "Probes took for calculating PMTU discovery : %d\n", node_pmtu->mtu_discovery->probes);
+	fprintf(stderr, "Probes total length took for calculating PMTU discovery : %d\n", node_pmtu->mtu_discovery->probes_total_len);
+	fprintf(stderr, "Time took for calculating PMTU discovery : %lu\n", node_pmtu->mtu_discovery->time);
+	fprintf(stderr, "Total MTU ping probes : %d\n", node_pmtu->mtu_ping->probes);
+	fprintf(stderr, "Total MTU ping probes length : %d\n", node_pmtu->mtu_ping->probes_total_len);
 	float avg = 0;
 
-	if(node_pmtu.mtu_ping.probes) {
-		avg = (float)node_pmtu.mtu_ping.time / (float)node_pmtu.mtu_ping.probes;
+	if(node_pmtu->mtu_ping->probes) {
+		avg = (float)node_pmtu->mtu_ping->time / (float)node_pmtu->mtu_ping->probes;
 	}
 
 	fprintf(stderr, "Average MTU ping probes ping time : %f\n", avg);
-	fprintf(stderr, "Total probes received %d\n", node_pmtu.mtu_recv_probes.probes);
-	fprintf(stderr, "Total probes sent %d\n", node_pmtu.mtu_sent_probes.probes);
+	fprintf(stderr, "Total probes received %d\n", node_pmtu->mtu_recv_probes->probes);
+	fprintf(stderr, "Total probes sent %d\n", node_pmtu->mtu_sent_probes->probes);
 }
 
 // Node status callback
@@ -153,41 +153,41 @@ static void meshlink_logger(meshlink_handle_t *mesh, meshlink_log_level_t level,
 	/* Calculate the MTU parameter values from the meshlink logs */
 	if(sscanf(text, "Sending MTU probe length %d to %s", &probe_len, node_name) == 2) {
 		find_node_index(i, node_name);
-		node_pmtu[i].mtu_sent_probes.probes += 1;
-		node_pmtu[i].mtu_sent_probes.probes_total_len += probe_len;
+		node_pmtu[i]->mtu_sent_probes->probes += 1;
+		node_pmtu[i]->mtu_sent_probes->probes_total_len += probe_len;
 
-		if(node_pmtu[i].mtu_size) {
-			if(node_pmtu[i].mtu_sent_probes.time > node_pmtu[i].mtu_recv_probes.time) {
-				probe_interval = cur_time - node_pmtu[i].mtu_sent_probes.time;
+		if(node_pmtu[i]->mtu_size) {
+			if(node_pmtu[i]->mtu_sent_probes->time > node_pmtu[i]->mtu_recv_probes->time) {
+				probe_interval = cur_time - node_pmtu[i]->mtu_sent_probes->time;
 			} else {
-				probe_interval = cur_time - node_pmtu[i].mtu_recv_probes.time;
+				probe_interval = cur_time - node_pmtu[i]->mtu_recv_probes->time;
 			}
 
-			node_pmtu[i].mtu_ping.probes += 1;
-			node_pmtu[i].mtu_ping.time += probe_interval;
-			node_pmtu[i].mtu_ping.probes_total_len += probe_len;
+			node_pmtu[i]->mtu_ping->probes += 1;
+			node_pmtu[i]->mtu_ping->time += probe_interval;
+			node_pmtu[i]->mtu_ping->probes_total_len += probe_len;
 		}
 
-		node_pmtu[i].mtu_sent_probes.time = cur_time;
+		node_pmtu[i]->mtu_sent_probes->time = cur_time;
 
 	} else if(sscanf(text, "Got MTU probe length %d from %s", &probe_len, node_name) == 2) {
 		find_node_index(i, node_name);
-		node_pmtu[i].mtu_recv_probes.probes += 1;
-		node_pmtu[i].mtu_recv_probes.probes_total_len += probe_len;
+		node_pmtu[i]->mtu_recv_probes->probes += 1;
+		node_pmtu[i]->mtu_recv_probes->probes_total_len += probe_len;
 
-		if(node_pmtu[i].mtu_size) {
-			if(node_pmtu[i].mtu_sent_probes.time > node_pmtu[i].mtu_recv_probes.time) {
-				probe_interval = cur_time - node_pmtu[i].mtu_sent_probes.time;
+		if(node_pmtu[i]->mtu_size) {
+			if(node_pmtu[i]->mtu_sent_probes->time > node_pmtu[i]->mtu_recv_probes->time) {
+				probe_interval = cur_time - node_pmtu[i]->mtu_sent_probes->time;
 			} else {
-				probe_interval = cur_time - node_pmtu[i].mtu_recv_probes.time;
+				probe_interval = cur_time - node_pmtu[i]->mtu_recv_probes->time;
 			}
 
-			node_pmtu[i].mtu_ping.probes += 1;
-			node_pmtu[i].mtu_ping.time += probe_interval;
-			node_pmtu[i].mtu_ping.probes_total_len += probe_len;
+			node_pmtu[i]->mtu_ping->probes += 1;
+			node_pmtu[i]->mtu_ping->time += probe_interval;
+			node_pmtu[i]->mtu_ping->probes_total_len += probe_len;
 		}
 
-		node_pmtu[i].mtu_recv_probes.time = cur_time;
+		node_pmtu[i]->mtu_recv_probes->time = cur_time;
 
 	} else if(sscanf(text, "Fixing MTU of %s to %d after %d probes", node_name, &mtu_len, &probes) == 3) {
 
@@ -197,24 +197,24 @@ static void meshlink_logger(meshlink_handle_t *mesh, meshlink_log_level_t level,
 		}
 
 		find_node_index(i, node_name);
-		node_pmtu[i].mtu_discovery.probes = node_pmtu[i].mtu_recv_probes.probes + node_pmtu[i].mtu_sent_probes.probes;
-		node_pmtu[i].mtu_discovery.probes_total_len = node_pmtu[i].mtu_sent_probes.probes_total_len + node_pmtu[i].mtu_recv_probes.probes_total_len;
-		node_pmtu[i].mtu_discovery.time = cur_time - node_pmtu[i].mtu_start.time;
-		node_pmtu[i].mtu_discovery.count += 1;
-		node_pmtu[i].mtu_size = mtu_len;
+		node_pmtu[i]->mtu_discovery->probes = node_pmtu[i]->mtu_recv_probes->probes + node_pmtu[i]->mtu_sent_probes->probes;
+		node_pmtu[i]->mtu_discovery->probes_total_len = node_pmtu[i]->mtu_sent_probes->probes_total_len + node_pmtu[i]->mtu_recv_probes->probes_total_len;
+		node_pmtu[i]->mtu_discovery->time = cur_time - node_pmtu[i]->mtu_start->time;
+		node_pmtu[i]->mtu_discovery->count += 1;
+		node_pmtu[i]->mtu_size = mtu_len;
 
 	} else if(sscanf(text, "SPTPS key exchange with %s succesful", node_name) == 1) {
 		find_node_index(i, node_name);
-		node_pmtu[i].mtu_start.time = cur_time;
-		node_pmtu[i].mtu_start.count += 1;
-		memset(&node_pmtu[i].mtu_discovery, 0, sizeof(struct pmtu_attr_para));
-		memset(&node_pmtu[i].mtu_ping, 0, sizeof(struct pmtu_attr_para));
-		memset(&node_pmtu[i].mtu_increase, 0, sizeof(struct pmtu_attr_para));
+		node_pmtu[i]->mtu_start->time = cur_time;
+		node_pmtu[i]->mtu_start->count += 1;
+		memset(node_pmtu[i]->mtu_discovery, 0, sizeof(struct pmtu_attr_para));
+		memset(node_pmtu[i]->mtu_ping, 0, sizeof(struct pmtu_attr_para));
+		memset(node_pmtu[i]->mtu_increase, 0, sizeof(struct pmtu_attr_para));
 
 	} else if(sscanf(text, "Increase in PMTU to %s detected, restarting PMTU discovery", node_name) == 1) {
 		find_node_index(i, node_name);
-		node_pmtu[i].mtu_increase.time = cur_time - node_pmtu[i].mtu_start.time;
-		node_pmtu[i].mtu_increase.count += 1;
+		node_pmtu[i]->mtu_increase->time = cur_time - node_pmtu[i]->mtu_start->time;
+		node_pmtu[i]->mtu_increase->count += 1;
 
 	} else if(sscanf(text, "Trying to send MTU probe to unreachable or rekeying node %s", node_name) == 1) {
 
@@ -249,22 +249,7 @@ void *node_sim_pmtu_nut_01(void *arg) {
 	// Join relay node and if fails to join then try few more attempts
 
 	if(mesh_arg->join_invitation) {
-		int attempts;
-		bool join_ret;
-
-		for(attempts = 0; attempts < 10; attempts++) {
-			join_ret = meshlink_join(mesh, mesh_arg->join_invitation);
-
-			if(join_ret) {
-				break;
-			}
-
-			sleep(1);
-		}
-
-		if(attempts == 10) {
-			fail();
-		}
+		assert(meshlink_join(mesh, mesh_arg->join_invitation));
 	}
 
 	assert(meshlink_start(mesh));

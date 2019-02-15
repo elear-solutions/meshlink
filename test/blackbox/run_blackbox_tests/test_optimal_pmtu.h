@@ -35,17 +35,17 @@ typedef struct pmtu_attr_para {
 } pmtu_attr_para_t;
 
 typedef struct pmtu_attr {
-	pmtu_attr_para_t mtu_sent_probes;
-	pmtu_attr_para_t mtu_recv_probes;
-	pmtu_attr_para_t mtu_discovery;
-	pmtu_attr_para_t mtu_ping;
-	pmtu_attr_para_t mtu_increase;
-	pmtu_attr_para_t mtu_start;
+	pmtu_attr_para_t *mtu_sent_probes;
+	pmtu_attr_para_t *mtu_recv_probes;
+	pmtu_attr_para_t *mtu_discovery;
+	pmtu_attr_para_t *mtu_ping;
+	pmtu_attr_para_t *mtu_increase;
+	pmtu_attr_para_t *mtu_start;
 	int mtu_size;
 } pmtu_attr_t;
 
-#define NODE_PMTU_RELAY 1
-#define NODE_PMTU_PEER 2
+#define NODE_PMTU_RELAY 0
+#define NODE_PMTU_PEER 1
 
 #define find_node_index(i, node_name) if(!strcasecmp(node_name, "peer")) {          \
 		i = NODE_PMTU_PEER;                        \
@@ -58,6 +58,6 @@ typedef struct pmtu_attr {
 #define PING_TRACK_TIMEOUT 100
 #define CHANNEL_PORT 1234
 
-extern pmtu_attr_t node_pmtu[2];
+extern pmtu_attr_t *node_pmtu[2];
 
 #endif // TEST_CASES_OPTIMAL_PMTU_H

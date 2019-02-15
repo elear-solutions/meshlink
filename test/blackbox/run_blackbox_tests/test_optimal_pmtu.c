@@ -32,6 +32,8 @@
 #include "../test_case_optimal_pmtu_01/node_sim_relay.h"
 #include "test_optimal_pmtu.h"
 
+typedef bool (*test_step_func_t)(void);
+
 static void test_case_optimal_pmtu_01(void **state);
 static bool test_steps_optimal_pmtu_01(void);
 static void test_case_optimal_pmtu_02(void **state);
@@ -47,8 +49,10 @@ static bool test_steps_optimal_pmtu_06(void);
 static void test_case_optimal_pmtu_07(void **state);
 static bool test_steps_optimal_pmtu_07(void);
 
-typedef bool (*test_step_func_t)(void);
 static int setup_test(void **state);
+static int teardown_test(void **state);
+static void execute_test(test_step_func_t step_func, void **state);
+
 bool test_pmtu_relay_running = true;
 bool test_pmtu_peer_running = true;
 bool test_pmtu_nut_running = true;
@@ -56,42 +60,6 @@ bool ping_channel_enable_07 = false;
 
 struct sync_flag test_pmtu_nut_closed = {.mutex  = PTHREAD_MUTEX_INITIALIZER, .cond = PTHREAD_COND_INITIALIZER};
 static netns_state_t *test_pmtu_state;
-
-static int setup_test(void **state) {
-	netns_create_topology(test_pmtu_state);
-	fprintf(stderr, "\nCreated topology\n");
-
-	test_pmtu_relay_running = true;
-	test_pmtu_peer_running = true;
-	test_pmtu_nut_running = true;
-	ping_channel_enable_07 = false;
-	memset(node_pmtu, 2, sizeof(node_pmtu[0]));
-	set_sync_flag(&test_pmtu_nut_closed, false);
-	meshlink_destroy("nut");
-	meshlink_destroy("peer");
-	meshlink_destroy("relay");
-
-	return EXIT_SUCCESS;
-}
-
-static int teardown_test(void **state) {
-	meshlink_destroy("nut");
-	meshlink_destroy("peer");
-	meshlink_destroy("relay");
-	netns_destroy_topology(test_pmtu_state);
-
-	return EXIT_SUCCESS;
-}
-
-static void execute_test(test_step_func_t step_func, void **state) {
-
-	fprintf(stderr, "\n\x1b[32mRunning Test\x1b[0m\n");
-	bool test_result = step_func();
-
-	if(!test_result) {
-		fail();
-	}
-}
 
 static void *gen_inv(void *arg) {
 	mesh_invite_arg_t *mesh_invite_arg = (mesh_invite_arg_t *)arg;
@@ -157,10 +125,10 @@ static bool test_steps_optimal_pmtu_01(void) {
 	test_pmtu_peer_running = false;
 
 	sleep(1);
-	assert_in_range(node_pmtu[NODE_PMTU_PEER].mtu_size, 1450, 1501);
-	assert_in_range(node_pmtu[NODE_PMTU_PEER].mtu_discovery.probes, 120, 160);
-	assert_in_range(node_pmtu[NODE_PMTU_RELAY].mtu_size, 1450, 1501);
-	assert_in_range(node_pmtu[NODE_PMTU_RELAY].mtu_discovery.probes, 120, 160);
+	assert_in_range(node_pmtu[NODE_PMTU_PEER]->mtu_size, 1450, 1501);
+	assert_in_range(node_pmtu[NODE_PMTU_PEER]->mtu_discovery->probes, 120, 160);
+	assert_in_range(node_pmtu[NODE_PMTU_RELAY]->mtu_size, 1450, 1501);
+	assert_in_range(node_pmtu[NODE_PMTU_RELAY]->mtu_discovery->probes, 120, 160);
 
 	return true;
 }
@@ -219,10 +187,10 @@ static bool test_steps_optimal_pmtu_02(void) {
 	test_pmtu_peer_running = false;
 
 	sleep(1);
-	assert_in_range(node_pmtu[NODE_PMTU_PEER].mtu_size, 1450, 1501);
-	assert_in_range(node_pmtu[NODE_PMTU_PEER].mtu_discovery.probes, 120, 160);
-	assert_in_range(node_pmtu[NODE_PMTU_RELAY].mtu_size, 1450, 1501);
-	assert_in_range(node_pmtu[NODE_PMTU_RELAY].mtu_discovery.probes, 120, 160);
+	assert_in_range(node_pmtu[NODE_PMTU_PEER]->mtu_size, 1450, 1501);
+	assert_in_range(node_pmtu[NODE_PMTU_PEER]->mtu_discovery->probes, 120, 160);
+	assert_in_range(node_pmtu[NODE_PMTU_RELAY]->mtu_size, 1450, 1501);
+	assert_in_range(node_pmtu[NODE_PMTU_RELAY]->mtu_discovery->probes, 120, 160);
 
 	return true;
 }
@@ -280,8 +248,8 @@ static bool test_steps_optimal_pmtu_03(void) {
 	test_pmtu_peer_running = false;
 
 	sleep(1);
-	assert_in_range(node_pmtu[NODE_PMTU_PEER].mtu_size, 1200, 1250);
-	assert_in_range(node_pmtu[NODE_PMTU_RELAY].mtu_size, 1200, 1250);
+	assert_in_range(node_pmtu[NODE_PMTU_PEER]->mtu_size, 1200, 1250);
+	assert_in_range(node_pmtu[NODE_PMTU_RELAY]->mtu_size, 1200, 1250);
 
 	return true;
 }
@@ -339,8 +307,8 @@ static bool test_steps_optimal_pmtu_04(void) {
 	test_pmtu_peer_running = false;
 
 	sleep(1);
-	assert_in_range(node_pmtu[NODE_PMTU_PEER].mtu_size, 925, 1000);
-	assert_in_range(node_pmtu[NODE_PMTU_RELAY].mtu_size, 925, 1000);
+	assert_in_range(node_pmtu[NODE_PMTU_PEER]->mtu_size, 925, 1000);
+	assert_in_range(node_pmtu[NODE_PMTU_RELAY]->mtu_size, 925, 1000);
 
 	return true;
 }
@@ -398,8 +366,8 @@ static bool test_steps_optimal_pmtu_05(void) {
 	test_pmtu_peer_running = false;
 
 	sleep(1);
-	assert_in_range(node_pmtu[NODE_PMTU_PEER].mtu_size, 700, 750);
-	assert_in_range(node_pmtu[NODE_PMTU_RELAY].mtu_size, 700, 750);
+	assert_in_range(node_pmtu[NODE_PMTU_PEER]->mtu_size, 700, 750);
+	assert_in_range(node_pmtu[NODE_PMTU_RELAY]->mtu_size, 700, 750);
 
 	return true;
 }
@@ -414,12 +382,16 @@ static void test_case_optimal_pmtu_06(void **state) {
 static bool run_conntrack;
 static pthread_t pmtu_test_case_conntrack_thread;
 static void *conntrack_flush(void *arg) {
-	// flushes mappings for every 60 seconds
+  int count;
+	// flushes mappings for every 100 seconds
 
-	while(run_conntrack) {
-		sleep(100);
-		assert(system("ip netns exec nut_nat conntrack -F") == 0);
-		assert(system("ip netns exec peer_nat conntrack -F") == 0);
+	for(count = 0; run_conntrack; count++) {
+		sleep(1);
+		if(count >= 100) {
+      assert(system("ip netns exec nut_nat conntrack -F") == 0);
+      assert(system("ip netns exec peer_nat conntrack -F") == 0);
+      count = 0;
+		}
 	}
 
 	pthread_exit(NULL);
@@ -474,10 +446,10 @@ static bool test_steps_optimal_pmtu_06(void) {
 
 	sleep(1);
 
-	assert_in_range(node_pmtu[NODE_PMTU_PEER].mtu_size, 1440, 1500);
-	assert_in_range(node_pmtu[NODE_PMTU_RELAY].mtu_size, 1440, 1500);
-	assert_in_range(node_pmtu[NODE_PMTU_PEER].mtu_ping.probes, 38, 42);
-	assert_in_range(node_pmtu[NODE_PMTU_RELAY].mtu_ping.probes, 38, 42);
+	assert_in_range(node_pmtu[NODE_PMTU_PEER]->mtu_size, 1440, 1500);
+	assert_in_range(node_pmtu[NODE_PMTU_RELAY]->mtu_size, 1440, 1500);
+	assert_in_range(node_pmtu[NODE_PMTU_PEER]->mtu_ping->probes, 38, 42);
+	assert_in_range(node_pmtu[NODE_PMTU_RELAY]->mtu_ping->probes, 38, 42);
 
 	return true;
 }
@@ -535,12 +507,106 @@ static bool test_steps_optimal_pmtu_07(void) {
 	test_pmtu_peer_running = false;
 
 	sleep(1);
-	assert_in_range(node_pmtu[NODE_PMTU_PEER].mtu_size, 1450, 1501);
-	assert_in_range(node_pmtu[NODE_PMTU_PEER].mtu_discovery.probes, 120, 160);
-	assert_in_range(node_pmtu[NODE_PMTU_RELAY].mtu_size, 1450, 1501);
-	assert_in_range(node_pmtu[NODE_PMTU_RELAY].mtu_discovery.probes, 120, 160);
+	assert_in_range(node_pmtu[NODE_PMTU_PEER]->mtu_size, 1450, 1501);
+	assert_in_range(node_pmtu[NODE_PMTU_PEER]->mtu_discovery->probes, 120, 160);
+	assert_in_range(node_pmtu[NODE_PMTU_RELAY]->mtu_size, 1450, 1501);
+	assert_in_range(node_pmtu[NODE_PMTU_RELAY]->mtu_discovery->probes, 120, 160);
 
 	return true;
+}
+
+pmtu_attr_para_t *pmtu_attr_para_alloc(void) {
+	pmtu_attr_para_t *ptr;
+
+	ptr = calloc(1, sizeof(pmtu_attr_para_t));
+	assert(ptr);
+
+	return ptr;
+}
+
+pmtu_attr_t *pmtu_attr_alloc(void) {
+	pmtu_attr_t *ptr;
+	ptr = calloc(1, sizeof(pmtu_attr_t));
+	assert(ptr);
+
+	ptr->mtu_sent_probes = pmtu_attr_para_alloc();
+	ptr->mtu_recv_probes = pmtu_attr_para_alloc();
+	ptr->mtu_ping = pmtu_attr_para_alloc();
+	ptr->mtu_discovery = pmtu_attr_para_alloc();
+	ptr->mtu_increase = pmtu_attr_para_alloc();
+	ptr->mtu_start = pmtu_attr_para_alloc();
+
+	return ptr;
+}
+
+void pmtu_attr_free(pmtu_attr_t *ptr) {
+	free(ptr->mtu_sent_probes);
+	free(ptr->mtu_recv_probes);
+	free(ptr->mtu_ping);
+	free(ptr->mtu_discovery);
+	free(ptr->mtu_increase);
+	free(ptr->mtu_start);
+
+	free(ptr);
+}
+
+void pmtu_attr_reset(pmtu_attr_t *ptr) {
+	memset(ptr->mtu_sent_probes, 0, sizeof(sizeof(pmtu_attr_para_t)));
+	memset(ptr->mtu_recv_probes, 0, sizeof(sizeof(pmtu_attr_para_t)));
+	memset(ptr->mtu_ping, 0, sizeof(sizeof(pmtu_attr_para_t)));
+	memset(ptr->mtu_discovery, 0, sizeof(sizeof(pmtu_attr_para_t)));
+	memset(ptr->mtu_increase, 0, sizeof(sizeof(pmtu_attr_para_t)));
+	memset(ptr->mtu_start, 0, sizeof(sizeof(pmtu_attr_para_t)));
+	ptr->mtu_size = 0;
+}
+
+static int black_box_group0_setup(void **state) {
+	node_pmtu[NODE_PMTU_PEER] = pmtu_attr_alloc();
+	node_pmtu[NODE_PMTU_RELAY] = pmtu_attr_alloc();
+	return 0;
+}
+
+static int black_box_group0_teardown(void **state) {
+	pmtu_attr_free(node_pmtu[NODE_PMTU_PEER]);
+	pmtu_attr_free(node_pmtu[NODE_PMTU_RELAY]);
+	return 0;
+}
+
+static int setup_test(void **state) {
+	netns_create_topology(test_pmtu_state);
+	fprintf(stderr, "\nCreated topology\n");
+
+	test_pmtu_relay_running = true;
+	test_pmtu_peer_running = true;
+	test_pmtu_nut_running = true;
+	ping_channel_enable_07 = false;
+	pmtu_attr_reset(node_pmtu[NODE_PMTU_PEER]);
+	pmtu_attr_reset(node_pmtu[NODE_PMTU_RELAY]);
+	set_sync_flag(&test_pmtu_nut_closed, false);
+	meshlink_destroy("nut");
+	meshlink_destroy("peer");
+	meshlink_destroy("relay");
+
+	return EXIT_SUCCESS;
+}
+
+static int teardown_test(void **state) {
+	meshlink_destroy("nut");
+	meshlink_destroy("peer");
+	meshlink_destroy("relay");
+	netns_destroy_topology(test_pmtu_state);
+
+	return EXIT_SUCCESS;
+}
+
+static void execute_test(test_step_func_t step_func, void **state) {
+
+	fprintf(stderr, "\n\x1b[32mRunning Test\x1b[0m\n");
+	bool test_result = step_func();
+
+	if(!test_result) {
+		fail();
+	}
 }
 
 // Optimal PMTU test case driver
@@ -629,5 +695,5 @@ int test_optimal_pmtu(void) {
 	};
 	total_tests += sizeof(blackbox_group0_tests) / sizeof(blackbox_group0_tests[0]);
 
-	return cmocka_run_group_tests(blackbox_group0_tests, NULL, NULL);
+	return cmocka_run_group_tests(blackbox_group0_tests, black_box_group0_setup, black_box_group0_teardown);
 }
