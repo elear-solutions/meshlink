@@ -40,14 +40,11 @@ static void send_udppacket(meshlink_handle_t *mesh, node_t *, vpn_packet_t *);
 
 /* mtuprobes == 1..30: initial discovery, send bursts with 1 second interval
    mtuprobes ==    31: sleep pinginterval seconds
-   mtuprobes ==    32: send 1 burst, sleep pingtimeout second
+   mtuprobes ==    32: send 1 tiny ping probe, sleep pingtimeout second
    mtuprobes ==    33: no response from other side, restart PMTU discovery process
 
    Probes are sent in batches of at least three, with random sizes between the
    lower and upper boundaries for the MTU thus far discovered.
-
-   After the initial discovery, a fourth packet is added to each batch with a
-   size larger than the currently known PMTU, to test if the PMTU has increased.
 
    In case local discovery is enabled, another packet is added to each batch,
    which will be broadcast to the local network.
@@ -102,7 +99,14 @@ static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 		timeout = mesh->pinginterval;
 		goto end;
 	} else if(n->mtuprobes == 32) {
+		vpn_packet_t packet;
+		packet.probe = true;
+		packet.len = 1;
+
+		logger(mesh, MESHLINK_DEBUG, "Sending MTU probe length %d to %s", packet.len, n->name);
+		sptps_send_record(&n->sptps, PKT_PROBE, packet.data, packet.len);
 		timeout = mesh->pingtimeout;
+		goto end;
 	}
 
 	for(int i = 0; i < 4 + mesh->localdiscovery; i++) {
@@ -120,8 +124,8 @@ static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 			len = n->minmtu + 1 + rand() % (n->maxmtu - n->minmtu);
 		}
 
-		if(len < 64) {
-			len = 64;
+		if(len < 500) {
+			len = 500;
 		}
 
 		vpn_packet_t packet;
@@ -173,21 +177,14 @@ static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet
 
 		n->status.udp_confirmed = true;
 
-		/* If we haven't established the PMTU yet, restart the discovery process. */
-
 		if(n->mtuprobes > 30) {
-			if(len == n->maxmtu + 8) {
-				logger(mesh, MESHLINK_INFO, "Increase in PMTU to %s detected, restarting PMTU discovery", n->name);
-				n->maxmtu = MTU;
-				n->mtuprobes = 10;
-				return;
-			}
-
 			if(n->minmtu) {
 				n->mtuprobes = 30;
 			} else {
 				n->mtuprobes = 1;
 			}
+
+			return;
 		}
 
 		/* If applicable, raise the minimum supported MTU */
@@ -385,6 +382,11 @@ bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 			to->incompression = mesh->self->incompression;
 			return send_request(mesh, to->nexthop->connection, "%d %s %s %s -1 -1 -1 %d", ANS_KEY, mesh->self->name, to->name, buf, to->incompression);
 		} else {
+
+			if(to->mtu && (to->mtuprobes > 30)) {
+				to->mtuprobes = 1;
+			}
+
 			return send_request(mesh, to->nexthop->connection, "%d %s %s %d %s", REQ_KEY, mesh->self->name, to->name, REQ_SPTPS, buf);
 		}
 	}
@@ -409,10 +411,20 @@ bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 			if(to->mtu >= len) {
 				to->mtu = len - 1;
 			}
+
+			if(to->mtu && (to->mtuprobes > 30) && !type) {
+				to->mtuprobes = 1;
+			}
 		} else {
 			logger(mesh, MESHLINK_WARNING, "Error sending UDP SPTPS packet to %s: %s", to->name, sockstrerror(sockerrno));
 			return false;
 		}
+	}
+
+	if(to->mtu && (to->mtuprobes > 30) && !type) {
+		timeout_set(&mesh->loop, &to->mtutimeout, &(struct timeval) {
+			mesh->pinginterval, rand() % 100000
+		});
 	}
 
 	return true;
