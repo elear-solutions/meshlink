@@ -87,6 +87,8 @@ static void parse_command(meshlink_handle_t *mesh, char *buf) {
 	char *arg = strchr(buf, ' ');
 	char *arg1 = NULL;
 	meshlink_submesh_t *s = NULL;
+	static meshlink_submesh_t **submesh = NULL;
+	static size_t nmemb = 0;
 	size_t i;
 
 	if(arg) {
@@ -109,8 +111,6 @@ static void parse_command(meshlink_handle_t *mesh, char *buf) {
 		}
 
 		if(arg1) {
-			static meshlink_submesh_t **submesh = NULL;
-			static size_t nmemb = 0;
 
 			submesh = devtool_get_all_submeshes(mesh, submesh, &nmemb);
 
@@ -231,16 +231,24 @@ static void parse_command(meshlink_handle_t *mesh, char *buf) {
 
 		fprintf(stderr, "Node '%s' blacklisted.\n", arg);
 	} else if(!strcasecmp(buf, "who")) {
+		meshlink_submesh_t *node_group = NULL;
+
 		if(!arg) {
 			nodes = meshlink_get_all_nodes(mesh, nodes, &nnodes);
 
 			if(!nnodes) {
 				fprintf(stderr, "Could not get list of nodes: %s\n", meshlink_strerror(meshlink_errno));
 			} else {
-				fprintf(stderr, "%zu known nodes:", nnodes);
+				fprintf(stderr, "%zu known nodes:\n", nnodes);
 
 				for(size_t i = 0; i < nnodes; i++) {
-					fprintf(stderr, " %s", nodes[i]->name);
+					fprintf(stderr, " %lu. %s", i, nodes[i]->name);
+
+					if((node_group = meshlink_get_node_submesh(mesh, nodes[i]))) {
+						fprintf(stderr, "\t%s", node_group->name);
+					}
+
+					fprintf(stderr, "\n");
 				}
 
 				fprintf(stderr, "\n");
@@ -251,8 +259,59 @@ static void parse_command(meshlink_handle_t *mesh, char *buf) {
 			if(!node) {
 				fprintf(stderr, "Error looking up '%s': %s\n", arg, meshlink_strerror(meshlink_errno));
 			} else {
-				fprintf(stderr, "Node %s found\n", arg);
+				fprintf(stderr, "Node %s found", arg);
+
+				if((node_group = meshlink_get_node_submesh(mesh, node))) {
+					fprintf(stderr, " in group %s", node_group->name);
+				}
+
+				fprintf(stderr, "\n");
 			}
+		}
+	} else if(!strcasecmp(buf, "listgroup")) {
+		if(!arg) {
+			fprintf(stderr, "/listgroup requires an argument!\n");
+			return;
+		}
+
+		submesh = devtool_get_all_submeshes(mesh, submesh, &nmemb);
+
+		if(!submesh || !nmemb) {
+			fprintf(stderr, "Group does not exist!\n");
+			return;
+		}
+
+		for(i = 0; i < nmemb; i++) {
+			if(!strcmp(arg, submesh[i]->name)) {
+				s = submesh[i];
+				break;
+			} else {
+				s = NULL;
+			}
+		}
+
+		if(!s) {
+			fprintf(stderr, "Group %s does not exist!\n", arg);
+			return;
+		}
+
+		nodes = meshlink_get_all_nodes_by_submesh(mesh, s, nodes, &nnodes);
+
+		if(!nodes) {
+			fprintf(stderr, "Group %s does not contain any nodes!\n", arg);
+			return;
+		}
+
+		if(nnodes <= 0) {
+			fprintf(stderr, "Could not get list of nodes for group %s: %s\n", arg, meshlink_strerror(meshlink_errno));
+		} else {
+			fprintf(stderr, "%zu known nodes in group %s:", nnodes, arg);
+
+			for(size_t i = 0; i < nnodes; i++) {
+				fprintf(stderr, " %s", nodes[i]->name);
+			}
+
+			fprintf(stderr, "\n");
 		}
 	} else if(!strcasecmp(buf, "quit")) {
 		fprintf(stderr, "Bye!\n");
@@ -261,12 +320,13 @@ static void parse_command(meshlink_handle_t *mesh, char *buf) {
 		fprintf(stderr,
 		        "<name>: <message>     			  Send a message to the given node.\n"
 		        "                      			  Subsequent messages don't need the <name>: prefix.\n"
-		        "/submesh <name>				  Create a new submesh"
+		        "/group <name>				  Create a new group"
 		        "/invite <name> [submesh]		  Create an invitation for a new node.\n"
 		        "                      			  Node joins either coremesh or submesh depending on submesh parameter.\n"
 		        "/join <invitation>				  Join an existing mesh using an invitation.\n"
 		        "/kick <name>          			  Blacklist the given node.\n"
 		        "/who [<name>]         			  List all nodes or show information about the given node.\n"
+		        "/listgroup <name>         		  List all nodes in a given group.\n"
 		        "/canonical -h<hostname> -p<port> Set Canonical address to be present in invitation.\n"
 		        "                      			  Any one of two options an be specified. Atleast one option must be present\n"
 		        "/quit                 			  Exit this program.\n"
