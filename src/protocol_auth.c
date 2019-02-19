@@ -48,7 +48,7 @@ static bool send_proxyrequest(meshlink_handle_t *mesh, connection_t *c) {
 		char *port;
 
 		sockaddr2str(&c->address, &host, &port);
-		send_request(mesh, c, mesh->self->submesh, "CONNECT %s:%s HTTP/1.1\r\n\r", host, port);
+		send_request(mesh, c, NULL, "CONNECT %s:%s HTTP/1.1\r\n\r", host, port);
 		free(host);
 		free(port);
 		return true;

@@ -247,7 +247,8 @@ bool add_edge_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	graph(mesh);
 
 	if(e->from->submesh && e->to->submesh && (e->from->submesh != e->to->submesh)) {
-		return true;
+		logger(mesh, MESHLINK_ERROR, "Dropping add edge ( %s to %s )", e->from->submesh->name, e->to->submesh->name);
+		return false;
 	}
 
 	if(e->from->submesh) {
@@ -357,7 +358,7 @@ bool del_edge_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	/* Tell the rest about the deleted edge */
 
 
-	if(e->from->submesh && e->to->submesh && (e->from->submesh == e->to->submesh)) {
+	if(!e->from->submesh || !e->to->submesh || (e->from->submesh == e->to->submesh)) {
 		if(e->from->submesh) {
 			s = e->from->submesh;
 		} else {
@@ -365,9 +366,11 @@ bool del_edge_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		}
 
 		/* Tell the rest about the deleted edge */
-
 		forward_request(mesh, c, s, request);
 
+	} else {
+		logger(mesh, MESHLINK_ERROR, "Dropping del edge ( %s to %s )", e->from->submesh->name, e->to->submesh->name);
+		return false;
 	}
 
 	/* Delete the edge */
