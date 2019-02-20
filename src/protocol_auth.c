@@ -151,7 +151,7 @@ bool send_id(meshlink_handle_t *mesh, connection_t *c) {
 			return false;
 		}
 
-	return send_request(mesh, c, mesh->self->submesh, "%d %s %d.%d %s", ID, mesh->self->connection->name, mesh->self->connection->protocol_major, minor, mesh->appname);
+	return send_request(mesh, c, NULL, "%d %s %d.%d %s", ID, mesh->self->connection->name, mesh->self->connection->protocol_major, minor, mesh->appname);
 }
 
 static bool finalize_invitation(meshlink_handle_t *mesh, connection_t *c, const void *data, uint16_t len) {
@@ -317,7 +317,12 @@ static bool receive_invitation_sptps(void *handle, uint8_t type, const void *dat
 			return false;
 		}
 
-		c->submesh = lookup_submesh(mesh, submesh_name);
+		c->submesh = NULL;
+		c->submesh = lookup_or_create_submesh(mesh, submesh_name);
+
+		if(!c->submesh) {
+			return false;
+		}
 	}
 
 	// Send the node the contents of the invitation file

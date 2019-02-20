@@ -44,11 +44,11 @@ bool send_add_edge(meshlink_handle_t *mesh, connection_t *c, const edge_t *e, in
 	submesh_t *s = NULL;
 
 	if(c->node && c->node->submesh) {
-		if(e->from->submesh && (e->from->submesh != c->node->submesh)) {
+		if(!submesh_allows_node(e->from->submesh, c->node)) {
 			return true;
 		}
 
-		if(e->to->submesh && (e->to->submesh != c->node->submesh)) {
+		if(!submesh_allows_node(e->to->submesh, c->node)) {
 			return true;
 		}
 	}
@@ -62,13 +62,13 @@ bool send_add_edge(meshlink_handle_t *mesh, connection_t *c, const edge_t *e, in
 	if(e->from->submesh) {
 		from_submesh = e->from->submesh->name;
 	} else {
-		from_submesh = "0";
+		from_submesh = CORE_MESH;
 	}
 
 	if(e->to->submesh) {
 		to_submesh = e->to->submesh->name;
 	} else {
-		to_submesh = "0";
+		to_submesh = CORE_MESH;
 	}
 
 	if(e->from->submesh) {
@@ -110,13 +110,6 @@ bool add_edge_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		return false;
 	}
 
-	/* Check if names are valid */
-
-	if(!check_id(from_name) || !check_id(to_name)) {
-		logger(mesh, MESHLINK_ERROR, "Got bad %s from %s: %s", "ADD_EDGE", c->name, "invalid name");
-		return false;
-	}
-
 	// Check if devclasses are valid
 
 	if(from_devclass < 0 || from_devclass > _DEV_CLASS_MAX) {
@@ -129,12 +122,12 @@ bool add_edge_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		return false;
 	}
 
-	if(strcmp(from_submesh_name, "") && !check_id(from_submesh_name)) {
+	if(0 == strcmp(from_submesh_name, "")) {
 		logger(mesh, MESHLINK_ERROR, "Got bad %s from %s: %s", "ADD_EDGE", c->name, "invalid submesh id");
 		return false;
 	}
 
-	if(strcmp(to_submesh_name, "") && !check_id(to_submesh_name)) {
+	if(0 == strcmp(to_submesh_name, "")) {
 		logger(mesh, MESHLINK_ERROR, "Got bad %s from %s: %s", "ADD_EDGE", c->name, "invalid submesh id");
 		return false;
 	}
@@ -155,9 +148,9 @@ bool add_edge_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 
 		from->submesh = NULL;
 
-		if(0 != strcmp(from_submesh_name, "0")) {
-			if(!(from->submesh = lookup_submesh(mesh, from_submesh_name))) {
-				from->submesh = (submesh_t *)meshlink_submesh_open(mesh, from_submesh_name);
+		if(0 != strcmp(from_submesh_name, CORE_MESH)) {
+			if(!(from->submesh = lookup_or_create_submesh(mesh, from_submesh_name))) {
+				return false;
 			}
 		}
 
@@ -182,9 +175,10 @@ bool add_edge_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 
 		to->submesh = NULL;
 
-		if(0 != strcmp(to_submesh_name, "0")) {
-			if(!(to->submesh = lookup_submesh(mesh, to_submesh_name))) {
-				to->submesh = (submesh_t *)meshlink_submesh_open(mesh, to_submesh_name);
+		if(0 != strcmp(to_submesh_name, CORE_MESH)) {
+			if(!(to->submesh = lookup_or_create_submesh(mesh, to_submesh_name))) {
+				return false;
+
 			}
 		}
 
@@ -268,11 +262,11 @@ bool send_del_edge(meshlink_handle_t *mesh, connection_t *c, const edge_t *e, in
 	submesh_t *s = NULL;
 
 	if(c->node && c->node->submesh) {
-		if(e->from->submesh && (e->from->submesh != c->node->submesh)) {
+		if(!submesh_allows_node(e->from->submesh, c->node)) {
 			return true;
 		}
 
-		if(e->to->submesh && (e->to->submesh != c->node->submesh)) {
+		if(!submesh_allows_node(e->to->submesh, c->node)) {
 			return true;
 		}
 	}
@@ -302,13 +296,6 @@ bool del_edge_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 
 	if(sscanf(request, "%*d %*x "MAX_STRING" "MAX_STRING" %d", from_name, to_name, &contradictions) < 2) {
 		logger(mesh, MESHLINK_ERROR, "Got bad %s from %s", "DEL_EDGE", c->name);
-		return false;
-	}
-
-	/* Check if names are valid */
-
-	if(!check_id(from_name) || !check_id(to_name)) {
-		logger(mesh, MESHLINK_ERROR, "Got bad %s from %s: %s", "DEL_EDGE", c->name, "invalid name");
 		return false;
 	}
 

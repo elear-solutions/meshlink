@@ -54,7 +54,7 @@ __thread meshlink_errno_t meshlink_errno;
 meshlink_log_cb_t global_log_cb;
 meshlink_log_level_t global_log_level;
 
-typedef bool (*search_node_by_condition_t)(node_t *, void *);
+typedef bool (*search_node_by_condition_t)(const node_t *, const void *);
 
 //TODO: this can go away completely
 const var_t variables[] = {
@@ -1306,22 +1306,10 @@ meshlink_submesh_t *meshlink_submesh_open(meshlink_handle_t  *mesh, const char *
 	//lock mesh->nodes
 	pthread_mutex_lock(&(mesh->mesh_mutex));
 
-	s = (meshlink_submesh_t *)lookup_submesh(mesh, submesh);
-
-	if(s) {
-		logger(NULL, MESHLINK_ERROR, "SubMesh Already exists!\n");
-		meshlink_errno = MESHLINK_EEXIST;
-		return NULL;
-	}
-
-	s = (meshlink_submesh_t *)new_submesh();
-	s->name = xstrdup(submesh);
-
-	submesh_add(mesh, (submesh_t *)s);
+	s = (meshlink_submesh_t *)create_submesh(mesh, submesh);
 
 	pthread_mutex_unlock(&(mesh->mesh_mutex));
 
-	meshlink_errno = MESHLINK_OK;
 	return s;
 }
 
@@ -1747,7 +1735,7 @@ meshlink_node_t **meshlink_get_all_nodes(meshlink_handle_t *mesh, meshlink_node_
 	return result;
 }
 
-static meshlink_node_t **meshlink_get_all_nodes_by_condition(meshlink_handle_t *mesh, void *condition, meshlink_node_t **nodes, size_t *nmemb, search_node_by_condition_t search_node) {
+static meshlink_node_t **meshlink_get_all_nodes_by_condition(meshlink_handle_t *mesh, const void *condition, meshlink_node_t **nodes, size_t *nmemb, search_node_by_condition_t search_node) {
 	meshlink_node_t **result;
 
 	pthread_mutex_lock(&(mesh->mesh_mutex));
@@ -1787,7 +1775,7 @@ static meshlink_node_t **meshlink_get_all_nodes_by_condition(meshlink_handle_t *
 	return result;
 }
 
-static bool search_node_by_dev_class(node_t *node, void *condition) {
+static bool search_node_by_dev_class(const node_t *node, const void *condition) {
 	dev_class_t *devclass = (dev_class_t *)condition;
 
 	if(*devclass == node->devclass) {
@@ -1797,7 +1785,7 @@ static bool search_node_by_dev_class(node_t *node, void *condition) {
 	return false;
 }
 
-static bool search_node_by_submesh(node_t *node, void *condition) {
+static bool search_node_by_submesh(const node_t *node, const void *condition) {
 	if(condition == node->submesh) {
 		return true;
 	}
@@ -1815,23 +1803,12 @@ meshlink_node_t **meshlink_get_all_nodes_by_dev_class(meshlink_handle_t *mesh, d
 }
 
 meshlink_node_t **meshlink_get_all_nodes_by_submesh(meshlink_handle_t *mesh, meshlink_submesh_t *submesh, meshlink_node_t **nodes, size_t *nmemb) {
-	meshlink_submesh_t *s = NULL;
-
-	if(!mesh || !submesh || !submesh->name || !nmemb) {
+	if(!mesh || !submesh || !nmemb) {
 		meshlink_errno = MESHLINK_EINVAL;
 		return NULL;
 	}
 
-	pthread_mutex_lock(&(mesh->mesh_mutex));
-	s = (meshlink_submesh_t *)lookup_submesh(mesh, submesh->name);
-	pthread_mutex_unlock(&(mesh->mesh_mutex));
-
-	if(!s || (s != submesh)) {
-		meshlink_errno = MESHLINK_EINVAL;
-		return NULL;
-	}
-
-	return meshlink_get_all_nodes_by_condition(mesh, s, nodes, nmemb, search_node_by_submesh);
+	return meshlink_get_all_nodes_by_condition(mesh, submesh, nodes, nmemb, search_node_by_submesh);
 }
 
 int meshlink_get_node_dev_class(meshlink_handle_t *mesh, meshlink_node_t *node) {
@@ -1861,11 +1838,7 @@ meshlink_submesh_t *meshlink_get_node_submesh(meshlink_handle_t *mesh, meshlink_
 
 	meshlink_submesh_t *s;
 
-	pthread_mutex_lock(&(mesh->mesh_mutex));
-
 	s = (meshlink_submesh_t *)n->submesh;
-
-	pthread_mutex_unlock(&(mesh->mesh_mutex));
 
 	return s;
 }

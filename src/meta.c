@@ -72,7 +72,7 @@ void broadcast_submesh_meta(meshlink_handle_t *mesh, connection_t *from, submesh
                             const char *buffer, int length) {
 	for list_each(connection_t, c, mesh->connections)
 		if(c != from && c->status.active) {
-			if(c->node && (!c->node->submesh || (!s || (s == c->node->submesh)))) {
+			if(c->node && submesh_allows_node(s, c->node)) {
 				send_meta(mesh, c, buffer, length);
 			}
 		}
