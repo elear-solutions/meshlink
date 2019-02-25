@@ -23,7 +23,7 @@
 #include "../../../src/meshlink.h"
 
 meshlink_handle_t *execute_open(char *node_name, char *dev_class);
-char *execute_invite(char *invitee);
+char *execute_invite(char *invitee, meshlink_submesh_t *submesh);
 void execute_join(char *invite_url);
 void execute_start(void);
 void execute_stop(void);

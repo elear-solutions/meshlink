@@ -72,7 +72,7 @@ typedef enum {
 	INCOMING_META_CONN,
 	OUTGOING_META_CONN,
 	AUTO_DISCONN,
-
+	MESH_EVENT_COMPLETED,
 	MAX_EVENT           // Maximum event enum
 } mesh_event_t;
 
@@ -89,6 +89,20 @@ struct cond_flag {
 	pthread_cond_t cond;
 	bool flag;
 };
+
+typedef struct {
+	mesh_event_t  currentEv;
+	mesh_event_t  nextEv;
+} meshlink_node_status_lookup_t;
+
+typedef struct {
+	uint16_t                        node_id;
+	mesh_event_t                    currentEv;
+	meshlink_node_status_lookup_t   *lookup;
+	uint16_t                        current_index;
+	uint8_t                         max_events;
+	bool                            status;
+} meshlink_node_status_t;
 
 /// callback for handling the mesh event
 /** mesh event callback called from wait_for_event() if the mesh event UDP server gets a mesh event.
