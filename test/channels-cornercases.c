@@ -120,7 +120,7 @@ int main() {
 	// Start MeshLink and wait for the channel to become connected.
 	start_meshlink_pair(a, b);
 
-	assert(wait_sync_flag(&channel_opened, 20));
+	assert(wait_sync_flag_ex(&channel_opened, 20));
 
 	// Re-initialize everything
 	close_meshlink_pair(a, b, "channels-cornercases");
@@ -143,7 +143,7 @@ int main() {
 	channel->priv = &channel_opened;
 	meshlink_set_channel_poll_cb(a, channel, poll_cb);
 
-	assert(wait_sync_flag(&channel_opened, 20));
+	assert(wait_sync_flag_ex(&channel_opened, 20));
 
 	assert(!b_responded);
 	assert(!b_closed);

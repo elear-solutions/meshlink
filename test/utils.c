@@ -15,21 +15,25 @@ void set_sync_flag(struct sync_flag *s, bool value) {
 	pthread_mutex_unlock(&s->mutex);
 }
 
-bool wait_sync_flag(struct sync_flag *s, int seconds) {
+bool wait_sync_flag_ex(struct sync_flag *s, int seconds) {
 	struct timespec timeout;
 	clock_gettime(CLOCK_REALTIME, &timeout);
 	timeout.tv_sec += seconds;
-
-	pthread_mutex_lock(&s->mutex);
 
 	while(!s->flag)
 		if(!pthread_cond_timedwait(&s->cond, &s->mutex, &timeout) || errno != EINTR) {
 			break;
 		}
 
-	pthread_mutex_unlock(&s->mutex);
-
 	return s->flag;
+}
+
+bool wait_sync_flag(struct sync_flag *s, int seconds) {
+	bool s_flag;
+	pthread_mutex_lock(&s->mutex);
+	s_flag = wait_sync_flag_ex(s, seconds);
+	pthread_mutex_unlock(&s->mutex);
+	return s_flag;
 }
 
 void open_meshlink_pair(meshlink_handle_t **pa, meshlink_handle_t **pb, const char *prefix) {
@@ -92,7 +96,7 @@ void start_meshlink_pair(meshlink_handle_t *a, meshlink_handle_t *b) {
 	meshlink_start(a);
 	meshlink_start(b);
 
-	assert(wait_sync_flag(&pair_status, 5));
+	assert(wait_sync_flag_ex(&pair_status, 5));
 
 	pthread_mutex_unlock(&pair_status.mutex);
 
