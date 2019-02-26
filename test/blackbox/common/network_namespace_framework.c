@@ -256,6 +256,24 @@ void netns_enable_all_nats(netns_state_t *test_state) {
 				free(ip_addr);
 			}
 		}
+
+		if(namespace->type == PORT_REST) {
+			assert(namespace->nat_arg);
+			netns_fullcone_handle_t **nat_rules = namespace->nat_arg;
+			char *eth0;
+
+			for(j = 0; nat_rules[j]; j++) {
+				assert(nat_rules[j]->snat_to_source);
+
+				interface_handle = get_interface_handle_by_name(test_state, namespace, nat_rules[j]->snat_to_source);
+				assert(interface_handle);
+				eth0 = interface_handle->if_name;
+				ip_addr = ipv4_str_remove_cidr(interface_handle->if_addr);
+				assert(sprintf(cmd, "ip netns exec %s iptables -t nat -A POSTROUTING -o %s -j SNAT --to-source %s", namespace->name, eth0, ip_addr) >= 0);
+				assert(system(cmd) == 0);
+				free(ip_addr);
+			}
+		}
 	}
 }
 
