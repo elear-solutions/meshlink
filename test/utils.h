@@ -11,6 +11,7 @@ struct sync_flag {
 };
 
 extern void set_sync_flag(struct sync_flag *s, bool value);
+extern bool read_sync_flag(struct sync_flag *s);
 extern bool wait_sync_flag(struct sync_flag *s, int seconds);
 extern bool wait_sync_flag_ex(struct sync_flag *s, int seconds);
 
