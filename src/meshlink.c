@@ -2652,6 +2652,7 @@ void meshlink_blacklist(meshlink_handle_t *mesh, meshlink_node_t *node) {
 	}
 
 	n->status.blacklisted = true;
+	bool node_status_reachable = n->status.reachable;
 	logger(mesh, MESHLINK_DEBUG, "Blacklisted %s.\n", node->name);
 
 	//Make blacklisting persistent in the config file
@@ -2672,7 +2673,7 @@ void meshlink_blacklist(meshlink_handle_t *mesh, meshlink_node_t *node) {
 	n->mtuprobes = 0;
 	n->status.udp_confirmed = false;
 
-	if(n->status.reachable) {
+	if(node_status_reachable) {
 		update_node_status(mesh, n);
 	}
 
