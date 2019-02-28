@@ -42,7 +42,6 @@ static bool channel_accept(meshlink_handle_t *mesh, meshlink_channel_t *channel,
 
 static int client_id = -1;
 static meshlink_handle_t *mesh = NULL;
-static time_t sendTime, recvTime;
 
 static struct sync_flag peer_reachable = {.mutex  = PTHREAD_MUTEX_INITIALIZER, .cond = PTHREAD_COND_INITIALIZER, .flag = false};
 static struct sync_flag start_test = {.mutex  = PTHREAD_MUTEX_INITIALIZER, .cond = PTHREAD_COND_INITIALIZER, .flag = false};
@@ -120,7 +119,7 @@ static void poll_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, size_t
 	char *node = (char *)channel->node->name;
 	(void)len;
 	meshlink_set_channel_poll_cb(mesh, channel, NULL);
-	fprintf(stderr, "\tapp1node2's Channel request has been accepted by %s at : %lu\n", node, time(&recvTime));
+	fprintf(stderr, "\tapp1node2's Channel request has been accepted by %s at : %lu\n", node, time(NULL));
 	set_sync_flag(&channel_opened, true);
 	assert(meshlink_channel_send(mesh, channel, message, strlen(message)) >= 0);
 	return;
@@ -197,7 +196,7 @@ int main(int argc, char *argv[]) {
 	// Open a channel to peer node
 	core_node = meshlink_get_node(mesh, "corenode1");
 	assert(core_node);
-	fprintf(stderr, "\tapp1node2 Sending Channel request to corenode1 at : %lu\n", time(&sendTime));
+	fprintf(stderr, "\tapp1node2 Sending Channel request to corenode1 at : %lu\n", time(NULL));
 	channel = meshlink_channel_open(mesh, core_node, CHANNEL_PORT,
 	                                channel_receive_cb, NULL, 0);
 	meshlink_set_channel_poll_cb(mesh, channel, poll_cb);
@@ -215,7 +214,7 @@ int main(int argc, char *argv[]) {
 
 	core_node = meshlink_get_node(mesh, "app1node1");
 	assert(core_node);
-	fprintf(stderr, "\tapp1node2 Sending Channel request to app1node1 at : %lu\n", time(&sendTime));
+	fprintf(stderr, "\tapp1node2 Sending Channel request to app1node1 at : %lu\n", time(NULL));
 	channel = meshlink_channel_open(mesh, core_node, CHANNEL_PORT,
 	                                channel_receive_cb, NULL, 0);
 	meshlink_set_channel_poll_cb(mesh, channel, poll_cb);

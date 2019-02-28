@@ -52,7 +52,7 @@ run_blackbox_tests_SOURCES = \
 	../test_case_optimal_pmtu_01/node_sim_relay.c \
 	../test_case_optimal_pmtu_01/node_sim_peer.c \
 	test_optimal_pmtu.c \
-	test_cases_submesh.c \
+	test_cases_submesh01.c \
 	test_cases_submesh02.c \
 	test_cases_submesh03.c \
 	test_cases_submesh04.c

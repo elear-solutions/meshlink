@@ -28,15 +28,15 @@
 
 int main(int argc, char *argv[]) {
 	char *invite = NULL;
-    meshlink_submesh_t *s = NULL;
+	meshlink_submesh_t *s = NULL;
 
 	/* Start mesh, generate an invite and print out the invite */
 	meshlink_handle_t *mesh = execute_open(argv[CMD_LINE_ARG_NODENAME], "1");
 	execute_start();
 
-    if ( argc > 2 ) {
-        s = meshlink_submesh_open(mesh, argv[CMD_LINE_ARG_SUBMESH]);
-    }
+	if(argc > CMD_LINE_ARG_SUBMESH) {
+		s = meshlink_submesh_open(mesh, argv[CMD_LINE_ARG_SUBMESH]);
+	}
 
 	invite = execute_invite(argv[CMD_LINE_ARG_INVITEE], s);
 	printf("%s\n", invite);

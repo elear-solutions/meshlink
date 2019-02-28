@@ -50,46 +50,17 @@ static const char *node_ids[] = { "corenode1", "app1node1", "app2node1", "coreno
                                   "app1node2", "app2node2"
                                 };
 
-static meshlink_node_status_lookup_t core_node1[] = { {INIT_ST, NODE_STARTED},
-	{NODE_STARTED, CHANNEL_OPENED},
-	{CHANNEL_OPENED, CHANNEL_DATA_RECIEVED}
-};
+static mesh_event_t core_node1[] = { NODE_STARTED, CHANNEL_OPENED, CHANNEL_DATA_RECIEVED};
 
-static meshlink_node_status_lookup_t core_node2[] = { {INIT_ST, NODE_STARTED},
-	{NODE_STARTED, NODE_JOINED},
-	{NODE_JOINED, CHANNEL_OPENED},
-	{CHANNEL_OPENED, CHANNEL_DATA_RECIEVED}
-};
+static mesh_event_t core_node2[] = { NODE_STARTED, NODE_JOINED, CHANNEL_OPENED, CHANNEL_DATA_RECIEVED};
 
-static meshlink_node_status_lookup_t app1_node1[] = { {INIT_ST, NODE_STARTED},
-	{NODE_STARTED, NODE_JOINED},
-	{NODE_JOINED, CHANNEL_OPENED},
-	{CHANNEL_OPENED, CHANNEL_DATA_RECIEVED}
-};
+static mesh_event_t app1_node1[] = { NODE_STARTED, NODE_JOINED, CHANNEL_OPENED, CHANNEL_DATA_RECIEVED};
 
-static meshlink_node_status_lookup_t app2_node1[] = { {INIT_ST, NODE_STARTED},
-	{NODE_STARTED, NODE_JOINED},
-	{NODE_JOINED, CHANNEL_OPENED},
-	{CHANNEL_OPENED, CHANNEL_DATA_RECIEVED}
-};
+static mesh_event_t app2_node1[] = { NODE_STARTED, NODE_JOINED, CHANNEL_OPENED, CHANNEL_DATA_RECIEVED};
 
-static meshlink_node_status_lookup_t app1_node2[] = { {INIT_ST, NODE_STARTED},
-	{NODE_STARTED, NODE_JOINED},
-	{NODE_JOINED, CHANNEL_OPENED},
-	{CHANNEL_OPENED, CHANNEL_DATA_RECIEVED},
-	{CHANNEL_DATA_RECIEVED, CHANNEL_OPENED},
-	{CHANNEL_OPENED, CHANNEL_DATA_RECIEVED},
-	{CHANNEL_DATA_RECIEVED, MESH_EVENT_COMPLETED}
-};
+static mesh_event_t app1_node2[] = { NODE_STARTED, NODE_JOINED, CHANNEL_OPENED, CHANNEL_DATA_RECIEVED, CHANNEL_OPENED, CHANNEL_DATA_RECIEVED, MESH_EVENT_COMPLETED};
 
-static meshlink_node_status_lookup_t app2_node2[] = { {INIT_ST, NODE_STARTED},
-	{NODE_STARTED, NODE_JOINED},
-	{NODE_JOINED, CHANNEL_OPENED},
-	{CHANNEL_OPENED, CHANNEL_DATA_RECIEVED},
-	{CHANNEL_DATA_RECIEVED, CHANNEL_OPENED},
-	{CHANNEL_OPENED, CHANNEL_DATA_RECIEVED},
-	{CHANNEL_DATA_RECIEVED, MESH_EVENT_COMPLETED}
-};
+static mesh_event_t app2_node2[] = { NODE_STARTED, NODE_JOINED, CHANNEL_OPENED, CHANNEL_DATA_RECIEVED, CHANNEL_OPENED, CHANNEL_DATA_RECIEVED, MESH_EVENT_COMPLETED};
 
 /* State structure for SubMesh Test Case #1 */
 static char *test_case_submesh_2_nodes[] = { "corenode1", "app1node1", "app2node1", "corenode2", "app1node2", "app2node2" };
@@ -128,131 +99,28 @@ static int black_box_all_nodes_setup(void **state) {
 	return 0;
 }
 
-static bool change_state(meshlink_node_status_t *status, mesh_event_t currentEv) {
-	meshlink_node_status_lookup_t *lookup = status->lookup;
-
-	fprintf(stderr, "Got Current event as : %d\n", currentEv);
-
-	if(true == status->status) {
-		fprintf(stderr, "%s:%d Returning False\n", __func__, __LINE__);
-		return false;
-	}
-
-	fprintf(stderr, "At state index %d, comaring %d with %d\n", status->current_index,
-	        lookup[status->current_index].currentEv, status->currentEv);
-
-	if(lookup[status->current_index].currentEv != status->currentEv) {
-		fprintf(stderr, "%s:%d Returning False\n", __func__, __LINE__);
-		return false;
-	}
-
-	fprintf(stderr, "At state index %d, comaring %d with %d\n", status->current_index,
-	        currentEv, lookup[status->current_index].nextEv);
-
-	if(currentEv == lookup[status->current_index].nextEv) {
-		status->currentEv = lookup[status->current_index].nextEv;
-		status->current_index = status->current_index + 1;
-		fprintf(stderr, "%s:%d Updated current_index is : %d\n", __func__, __LINE__, status->current_index);
-
-		if(status->current_index == status->max_events) {
-			status->status = true;
-		}
-
-		fprintf(stderr, "%s:%d Returning True\n", __func__, __LINE__);
-		return true;
-	} else {
-		fprintf(stderr, "%s:%d Returning False\n", __func__, __LINE__);
-		return false;
-	}
-}
-
-static void signal_node_start(meshlink_node_status_t *node_status, int start,
-                              int end) {
-	int i;
-	fprintf(stderr, "\tChecking if the nodes are ready\n");
-
-	for(i = start; i <= end; i++) {
-		if(NODE_JOINED != node_status[i].currentEv) {
-			fprintf(stderr, "\tReturning from Send Signal as nodes are not ready\n");
-			return;
-		}
-	}
-
-	fprintf(stderr, "\tSending signals to all the nodes\n");
-
-	for(i = start; i <= end; i++) {
-		fprintf(stderr, "\tSending signals to %s\n", event_node_name[i]);
-		node_step_in_container(node_ids[i], "SIGIO");
-	}
-
-	fprintf(stderr, "\tReturning from Send Signal\n");
-	return;
-}
-
 static bool event_cb(mesh_event_payload_t payload) {
-	static meshlink_node_status_t node_status[6] = { {0, INIT_ST, core_node1, 0, 3, false},
-		{1, INIT_ST, app1_node1, 0, 4, false},
-		{2, INIT_ST, app2_node1, 0, 4, false},
-		{3, INIT_ST, core_node2, 0, 4, false},
-		{4, INIT_ST, app1_node2, 0, 7, false},
-		{5, INIT_ST, app2_node2, 0, 7, false}
+	static node_status_t node_status[6] = {
+		{core_node1, 0, 3, false},
+		{app1_node1, 0, 4, false},
+		{app2_node1, 0, 4, false},
+		{core_node2, 0, 4, false},
+		{app1_node2, 0, 7, false},
+		{app2_node2, 0, 7, false}
 	};
 
-	fprintf(stderr, "%s(%lu) : ", event_node_name[payload.client_id], time(NULL));
+	fprintf(stderr, "%s(%lu) : %s\n", event_node_name[payload.client_id], time(NULL), event_status[payload.mesh_event]);
+	assert(change_state(&node_status[payload.client_id], payload.mesh_event));
 
-	switch(payload.mesh_event) {
-	case NODE_STARTED:
-		fprintf(stderr, "Node Started\n");
-		assert(change_state(&node_status[payload.client_id], payload.mesh_event));
-		fprintf(stderr, "%s:%d Updated current_index is : %d\n", __func__, __LINE__, node_status[payload.client_id].current_index);
-		break;
-
-	case NODE_JOINED:
-		fprintf(stderr, "Node Joined\n");
-		assert(change_state(&node_status[payload.client_id], payload.mesh_event));
-		fprintf(stderr, "%s:%d Updated current_index is : %d\n", __func__, __LINE__, node_status[payload.client_id].current_index);
-		signal_node_start(node_status, 1, 5);
-		break;
-
-	case ERR_NETWORK:
-		fprintf(stderr, "Network Error\n");
-		assert(false);
-		break;
-
-	case CHANNEL_OPENED:
-		fprintf(stderr, "Channel Opened\n");
-		assert(change_state(&node_status[payload.client_id], payload.mesh_event));
-		fprintf(stderr, "%s:%d Updated current_index is : %d\n", __func__, __LINE__, node_status[payload.client_id].current_index);
-		break;
-
-	case CHANNEL_DATA_RECIEVED:
-		fprintf(stderr, "Channel Data Received\n");
-		assert(change_state(&node_status[payload.client_id], payload.mesh_event));
-		fprintf(stderr, "%s:%d Updated current_index is : %d\n", __func__, __LINE__, node_status[payload.client_id].current_index);
-		break;
-
-	case SIG_ABORT:
-		fprintf(stderr, "SIG_ABORT Received\n");
-		assert(change_state(&node_status[payload.client_id], payload.mesh_event));
-		fprintf(stderr, "%s:%d Updated current_index is : %d\n", __func__, __LINE__, node_status[payload.client_id].current_index);
-
-	case MESH_EVENT_COMPLETED:
-		fprintf(stderr, "MESH_EVENT_COMPLETED Received\n");
-		assert(change_state(&node_status[payload.client_id], payload.mesh_event));
-		fprintf(stderr, "%s:%d Updated current_index is : %d\n", __func__, __LINE__, node_status[payload.client_id].current_index);
+	if(payload.mesh_event == NODE_JOINED) {
+		signal_node_start(node_status, 1, 5, node_ids);
 	}
 
-	fprintf(stderr, "%s:%d Checking Status\n", __func__, __LINE__);
-
-	if((node_status[0].status == true) && (node_status[3].status == true)
-	                && (node_status[1].status == true) && (node_status[2].status == true)
-	                && (node_status[4].status == true) && (node_status[5].status == true)) {
+	if(check_nodes_finished(node_status, 6)) {
 		test_case_status = true;
-		fprintf(stderr, "%s:%d Returning True\n", __func__, __LINE__);
 		return true;
 	}
 
-	fprintf(stderr, "%s:%d Returning False\n", __func__, __LINE__);
 	return false;
 }
 
@@ -268,14 +136,14 @@ static void test_case_submesh_02(void **state) {
     2. Generate invites to app1node1, app2node1, corenode2, app1node2 and app2node2
         from corenode1 to join corenode1.
     3. After Join is successful start channels from all nodes and exchange data on channels
-    4. Try to fetch the list of all nodes and check if the nodes in other submesh doesnot 
+    4. Try to fetch the list of all nodes and check if the nodes in other submesh doesnot
        appear in the list.
     5. Try fetch all the nodes with a submesh handle and check only if both the nodes joining
        the submesh are present.
 
     Expected Result:
     Channels should be formed between nodes of sub-mesh & coremesh, nodes with in sub-mesh
-    and should be able to exchange data. Lis of all nodes should only conatin four nodes 
+    and should be able to exchange data. Lis of all nodes should only conatin four nodes
     and the list of submesh should only conatin two nodes of that submesh.
 */
 static bool test_steps_submesh_02(void) {

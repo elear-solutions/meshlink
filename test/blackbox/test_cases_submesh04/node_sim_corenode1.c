@@ -37,7 +37,6 @@
 
 static bool conn_status = false;
 static int client_id = -1;
-static time_t sendTime, recvTime;
 
 static struct sync_flag peer_reachable = {.mutex  = PTHREAD_MUTEX_INITIALIZER, .cond = PTHREAD_COND_INITIALIZER, .flag = false};
 static struct sync_flag channel_opened = {.mutex  = PTHREAD_MUTEX_INITIALIZER, .cond = PTHREAD_COND_INITIALIZER, .flag = false};
@@ -103,7 +102,7 @@ static void poll_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, size_t
 	char *node = (char *)channel->node->name;
 	(void)len;
 	meshlink_set_channel_poll_cb(mesh, channel, NULL);
-	fprintf(stderr, "corenode1's Channel request has been accepted by %s at : %lu\n", node, time(&recvTime));
+	fprintf(stderr, "corenode1's Channel request has been accepted by %s at : %lu\n", node, time(NULL));
 
 	if(0 == strcmp("app1node2", node)) {
 		set_sync_flag(&channel_opened, true);
@@ -133,7 +132,7 @@ void mesh_send_message_handler(char *destination) {
 	// Open a channel to destination node
 	target_node = meshlink_get_node(mesh, destination);
 	assert(target_node);
-	fprintf(stderr, "corenode1 Sending Channel request to %s at : %lu\n", destination, time(&sendTime));
+	fprintf(stderr, "corenode1 Sending Channel request to %s at : %lu\n", destination, time(NULL));
 	channel = meshlink_channel_open(mesh, target_node, CHANNEL_PORT,
 	                                channel_receive_cb, NULL, 0);
 	meshlink_set_channel_poll_cb(mesh, channel, poll_cb);

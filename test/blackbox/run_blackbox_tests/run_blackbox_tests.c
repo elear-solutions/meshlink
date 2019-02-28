@@ -66,7 +66,7 @@
 
 #include "test_cases_channel_conn.h"
 #include "test_cases_get_all_nodes_by_dev_class.h"
-#include "test_cases_submesh.h"
+#include "test_cases_submesh01.h"
 #include "test_cases_submesh02.h"
 #include "test_cases_submesh03.h"
 #include "test_cases_submesh04.h"
@@ -134,7 +134,7 @@ int main(int argc, char *argv[]) {
 	failed_tests += test_meshlink_channel_conn();
 	failed_tests += test_optimal_pmtu();
 	*/
-	failed_tests += test_submesh();
+	failed_tests += test_cases_submesh01();
 	failed_tests += test_cases_submesh02();
 	failed_tests += test_cases_submesh03();
 	failed_tests += test_cases_submesh04();
