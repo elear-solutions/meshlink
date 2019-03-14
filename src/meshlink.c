@@ -49,7 +49,6 @@ typedef struct {
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
 #endif
-
 __thread meshlink_errno_t meshlink_errno;
 meshlink_log_cb_t global_log_cb;
 meshlink_log_level_t global_log_level;
@@ -1584,6 +1583,13 @@ bool meshlink_send(meshlink_handle_t *mesh, meshlink_node_t *destination, const 
 		return false;
 	}
 
+	node_t *n = (node_t *)destination;
+
+	if(n->status.blacklisted) {
+		logger(mesh, MESHLINK_ERROR, "Node %s blacklisted, dropping packet\n", n->name);
+		return false;
+	}
+
 	// Prepare the packet
 	vpn_packet_t *packet = malloc(sizeof(*packet));
 
@@ -2673,7 +2679,22 @@ void meshlink_blacklist(meshlink_handle_t *mesh, meshlink_node_t *node) {
 
 	node_t *n;
 	n = (node_t *)node;
+
+	if(n == mesh->self) {
+		logger(mesh, MESHLINK_ERROR, "%s blacklisting itself?\n", node->name);
+		meshlink_errno = MESHLINK_EINVAL;
+		pthread_mutex_unlock(&(mesh->mesh_mutex));
+		return;
+	}
+
+	if(n->status.blacklisted) {
+		logger(mesh, MESHLINK_DEBUG, "Node %s already blacklisted\n", node->name);
+		pthread_mutex_unlock(&(mesh->mesh_mutex));
+		return;
+	}
+
 	n->status.blacklisted = true;
+	bool node_status_reachable = n->status.reachable;
 	logger(mesh, MESHLINK_DEBUG, "Blacklisted %s.\n", node->name);
 
 	//Make blacklisting persistent in the config file
@@ -2684,6 +2705,18 @@ void meshlink_blacklist(meshlink_handle_t *mesh, meshlink_node_t *node) {
 		if(c->node == n) {
 			terminate_connection(mesh, c, c->status.active);
 		}
+	}
+
+	utcp_abort_all_connections(n->utcp);
+
+	n->mtu = 0;
+	n->minmtu = 0;
+	n->maxmtu = MTU;
+	n->mtuprobes = 0;
+	n->status.udp_confirmed = false;
+
+	if(node_status_reachable) {
+		update_node_status(mesh, n);
 	}
 
 	pthread_mutex_unlock(&(mesh->mesh_mutex));
@@ -2698,9 +2731,22 @@ void meshlink_whitelist(meshlink_handle_t *mesh, meshlink_node_t *node) {
 	pthread_mutex_lock(&(mesh->mesh_mutex));
 
 	node_t *n = (node_t *)node;
+
+	if(!n->status.blacklisted) {
+		logger(mesh, MESHLINK_DEBUG, "Node %s was already whitelisted\n", node->name);
+		meshlink_errno = MESHLINK_EINVAL;
+		pthread_mutex_unlock(&(mesh->mesh_mutex));
+		return;
+	}
+
 	n->status.blacklisted = false;
 
-	//TODO: remove blacklisted = yes from the config file
+	if(n->status.reachable) {
+		update_node_status(mesh, n);
+	}
+
+	//Remove blacklisting from the config file
+	append_config_file(mesh, n->name, "blacklisted", NULL);
 
 	pthread_mutex_unlock(&(mesh->mesh_mutex));
 	return;
@@ -2889,6 +2935,11 @@ meshlink_channel_t *meshlink_channel_open_ex(meshlink_handle_t *mesh, meshlink_n
 		}
 	}
 
+	if(n->status.blacklisted) {
+		logger(mesh, MESHLINK_ERROR, "Cannot open a channel with blacklisted node\n");
+		return NULL;
+	}
+
 	meshlink_channel_t *channel = xzalloc(sizeof(*channel));
 	channel->node = n;
 	channel->receive_cb = cb;
@@ -2972,7 +3023,7 @@ void update_node_status(meshlink_handle_t *mesh, node_t *n) {
 	}
 
 	if(mesh->node_status_cb) {
-		mesh->node_status_cb(mesh, (meshlink_node_t *)n, n->status.reachable);
+		mesh->node_status_cb(mesh, (meshlink_node_t *)n, n->status.reachable && !n->status.blacklisted);
 	}
 }
 
