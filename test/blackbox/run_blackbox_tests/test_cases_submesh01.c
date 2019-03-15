@@ -1,5 +1,5 @@
 /*
-    test_cases_submesh02.c -- Execution of specific meshlink black box test cases
+    test_cases_submesh.c -- Execution of specific meshlink black box test cases
     Copyright (C) 2018  Guus Sliepen <guus@meshlink.io>
 
     This program is free software; you can redistribute it and/or modify
@@ -22,7 +22,7 @@
 #include <cmocka.h>
 #include <assert.h>
 #include "execute_tests.h"
-#include "test_cases_submesh02.h"
+#include "test_cases_submesh01.h"
 #include "pthread.h"
 #include "../common/containers.h"
 #include "../common/test_step.h"
@@ -40,8 +40,8 @@
 
 static bool test_case_status = false;
 
-static void test_case_submesh_02(void **state);
-static bool test_steps_submesh_02(void);
+static void test_case_submesh_01(void **state);
+static bool test_steps_submesh_01(void);
 
 static char event_node_name[][10] = {"CORENODE1", "APP1NODE1", "APP2NODE1", "CORENODE2",
                                      "APP1NODE2", "APP2NODE2"
@@ -63,10 +63,10 @@ static mesh_event_t app1_node2[] = { NODE_STARTED, NODE_JOINED, CHANNEL_OPENED, 
 static mesh_event_t app2_node2[] = { NODE_STARTED, NODE_JOINED, CHANNEL_OPENED, CHANNEL_DATA_RECIEVED, CHANNEL_OPENED, CHANNEL_DATA_RECIEVED, MESH_EVENT_COMPLETED};
 
 /* State structure for SubMesh Test Case #1 */
-static char *test_case_submesh_2_nodes[] = { "corenode1", "app1node1", "app2node1", "corenode2", "app1node2", "app2node2" };
-static black_box_state_t test_case_submesh_2_state = {
-	.test_case_name =  "test_cases_submesh02",
-	.node_names =  test_case_submesh_2_nodes,
+static char *test_case_submesh_1_nodes[] = { "corenode1", "app1node1", "app2node1", "corenode2", "app1node2", "app2node2" };
+static black_box_state_t test_case_submesh_1_state = {
+	.test_case_name =  "test_cases_submesh01",
+	.node_names =  test_case_submesh_1_nodes,
 	.num_nodes =  6
 };
 
@@ -124,29 +124,26 @@ static bool event_cb(mesh_event_payload_t payload) {
 	return false;
 }
 
-/* Execute SubMesh Test Case # 2 */
-static void test_case_submesh_02(void **state) {
-	execute_test(test_steps_submesh_02, state);
+/* Execute SubMesh Test Case # 1 */
+static void test_case_submesh_01(void **state) {
+	execute_test(test_steps_submesh_01, state);
 }
 
-/* Test Steps for SubMesh Test Case # 2
+/* Test Steps for SubMesh Test Case # 1
 
     Test Steps:
     1. Run corenode1, app1node1, app2node1, corenode2, app1node2 and app2node2
     2. Generate invites to app1node1, app2node1, corenode2, app1node2 and app2node2
         from corenode1 to join corenode1.
     3. After Join is successful start channels from all nodes and exchange data on channels
-    4. Try to fetch the list of all nodes and check if the nodes in other submesh doesnot
-       appear in the list.
-    5. Try fetch all the nodes with a submesh handle and check only if both the nodes joining
-       the submesh are present.
+    4. Try to fetch the node handle of one sub-mesh node from node in another sub-mesh
 
     Expected Result:
     Channels should be formed between nodes of sub-mesh & coremesh, nodes with in sub-mesh
-    and should be able to exchange data. Lis of all nodes should only conatin four nodes
-    and the list of submesh should only conatin two nodes of that submesh.
+    and should be able to exchange data. But node in one sub-mesh should not get the details
+    of node in another sub-mesh.
 */
-static bool test_steps_submesh_02(void) {
+static bool test_steps_submesh_01(void) {
 	char *invite_corenode2, *invite_app1node1, *invite_app2node1, *invite_app1node2, *invite_app2node2;
 	bool result = false;
 	int i;
@@ -183,10 +180,10 @@ static bool test_steps_submesh_02(void) {
 	return true;
 }
 
-int test_cases_submesh02(void) {
+int test_cases_submesh01(void) {
 	const struct CMUnitTest blackbox_group0_tests[] = {
-		cmocka_unit_test_prestate_setup_teardown(test_case_submesh_02, setup_test, teardown_test,
-		                (void *)&test_case_submesh_2_state)
+		cmocka_unit_test_prestate_setup_teardown(test_case_submesh_01, setup_test, teardown_test,
+		                (void *)&test_case_submesh_1_state)
 	};
 	total_tests += sizeof(blackbox_group0_tests) / sizeof(blackbox_group0_tests[0]);
 

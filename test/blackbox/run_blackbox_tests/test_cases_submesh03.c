@@ -43,9 +43,9 @@ static bool test_steps_submesh_03(void);
 static char event_node_name[][10] = {"CORENODE1", "APP1NODE1", "APP1NODE2"};
 static const char *node_ids[] = { "corenode1", "app1node1", "app1node2" };
 
-static mesh_event_t core_node1[] = { NODE_STARTED , CHANNEL_OPENED , CHANNEL_DATA_RECIEVED};
+static mesh_event_t core_node1[] = { NODE_STARTED, CHANNEL_OPENED, CHANNEL_DATA_RECIEVED};
 
-static mesh_event_t app1_node1[] = { NODE_STARTED , NODE_JOINED , CHANNEL_OPENED , CHANNEL_DATA_RECIEVED};
+static mesh_event_t app1_node1[] = { NODE_STARTED, NODE_JOINED, CHANNEL_OPENED, CHANNEL_DATA_RECIEVED};
 
 static mesh_event_t app1_node2[] = { NODE_STARTED, NODE_JOINED, CHANNEL_OPENED, CHANNEL_DATA_RECIEVED, CHANNEL_OPENED, CHANNEL_DATA_RECIEVED, MESH_EVENT_COMPLETED};
 
@@ -181,7 +181,7 @@ static bool test_steps_submesh_03(void) {
 int test_cases_submesh03(void) {
 	const struct CMUnitTest blackbox_group0_tests[] = {
 		cmocka_unit_test_prestate_setup_teardown(test_case_submesh_03, setup_test, teardown_test,
-		(void *)&test_case_submesh_3_state)
+		                (void *)&test_case_submesh_3_state)
 	};
 	total_tests += sizeof(blackbox_group0_tests) / sizeof(blackbox_group0_tests[0]);
 

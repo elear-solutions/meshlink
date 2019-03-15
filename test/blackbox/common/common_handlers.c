@@ -82,7 +82,7 @@ char *get_ip(const char *if_name) {
 
 		family = ifa->ifa_addr->sa_family;
 
-		if(family == AF_INET && !strcmp(ifa->ifa_name , if_name)) {
+		if(family == AF_INET && !strcmp(ifa->ifa_name, if_name)) {
 			assert(!getnameinfo(ifa->ifa_addr, (family == AF_INET) ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6), ip, NI_MAXHOST, NULL, 0, NI_NUMERICHOST));
 			break;
 		}
@@ -109,7 +109,7 @@ char *get_netmask(const char *if_name) {
 
 		family = ifa->ifa_addr->sa_family;
 
-		if(family == AF_INET && !strcmp(ifa->ifa_name , if_name)) {
+		if(family == AF_INET && !strcmp(ifa->ifa_name, if_name)) {
 			assert(!getnameinfo(ifa->ifa_netmask, (family == AF_INET) ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6), ip, NI_MAXHOST, NULL, 0, NI_NUMERICHOST));
 			break;
 		}

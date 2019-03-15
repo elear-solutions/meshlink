@@ -323,13 +323,13 @@ static int black_box_setup_test_case(void **state) {
 int test_meshlink_get_all_node_by_device_class(void) {
 	const struct CMUnitTest blackbox_get_node_tests[] = {
 		cmocka_unit_test_prestate_setup_teardown(test_case_mesh_get_node_by_dev_class_01, black_box_setup_test_case, black_box_setup_test_case,
-		(void *)&test_mesh_get_node_by_dev_class_01_state),
+		                (void *)&test_mesh_get_node_by_dev_class_01_state),
 		cmocka_unit_test_prestate_setup_teardown(test_case_mesh_get_node_by_dev_class_02, NULL, NULL,
-		(void *)&test_mesh_get_node_by_dev_class_02_state),
+		                (void *)&test_mesh_get_node_by_dev_class_02_state),
 		cmocka_unit_test_prestate_setup_teardown(test_case_mesh_get_node_dev_class_01, NULL, NULL,
-		(void *)&test_mesh_get_node_01_state),
+		                (void *)&test_mesh_get_node_01_state),
 		cmocka_unit_test_prestate_setup_teardown(test_case_mesh_get_node_dev_class_02, NULL, NULL,
-		(void *)&test_mesh_get_node_02_state),
+		                (void *)&test_mesh_get_node_02_state),
 	};
 
 	total_tests += sizeof(blackbox_get_node_tests) / sizeof(blackbox_get_node_tests[0]);

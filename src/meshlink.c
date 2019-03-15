@@ -45,6 +45,7 @@ typedef struct {
 #include "xalloc.h"
 #include "ed25519/sha512.h"
 #include "discovery.h"
+#include "utcp/utcp.h"
 
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
@@ -738,8 +739,7 @@ static bool finalize_join(meshlink_handle_t *mesh) {
 				break;
 			} else {
 				continue;
-			}
-		else if(!strcasecmp(l, "NetName")) {
+			} else if(!strcasecmp(l, "NetName")) {
 			continue;
 		}
 

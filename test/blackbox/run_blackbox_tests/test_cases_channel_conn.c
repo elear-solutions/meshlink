@@ -772,7 +772,7 @@ static int black_box_group_teardown(void **state) {
 int test_meshlink_channel_conn(void) {
 	const struct CMUnitTest blackbox_group0_tests[] = {
 		cmocka_unit_test_prestate_setup_teardown(test_case_channel_conn_01, setup_test, teardown_test,
-		(void *)&test_case_channel_conn_01_state),/*
+		                (void *)&test_case_channel_conn_01_state),/*
                 cmocka_unit_test_prestate_setup_teardown(test_case_channel_conn_02, setup_test, teardown_test,
                                 (void *)&test_case_channel_conn_02_state),
                 cmocka_unit_test_prestate_setup_teardown(test_case_channel_conn_03, setup_test, teardown_test,

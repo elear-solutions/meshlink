@@ -160,7 +160,7 @@ static bool test_steps_submesh_04(void) {
 int test_cases_submesh04(void) {
 	const struct CMUnitTest blackbox_group0_tests[] = {
 		cmocka_unit_test_prestate_setup_teardown(test_case_submesh_04, setup_test, teardown_test,
-		(void *)&test_case_submesh_4_state)
+		                (void *)&test_case_submesh_4_state)
 	};
 	total_tests += sizeof(blackbox_group0_tests) / sizeof(blackbox_group0_tests[0]);
 
