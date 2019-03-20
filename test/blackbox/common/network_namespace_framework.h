@@ -115,6 +115,7 @@ typedef struct {
 	mesh_arg_t *mesh_arg;
 	char *invitee_name;
 	char *invite_str;
+	char *submesh;
 } mesh_invite_arg_t;
 
 extern bool netns_create_topology(netns_state_t *state);
