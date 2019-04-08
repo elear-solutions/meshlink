@@ -64,6 +64,7 @@
 #include "test_cases_hint_address.h"
 
 #include "test_cases_channel_conn.h"
+#include "test_cases_encrypted_storage.h"
 
 #include "../common/containers.h"
 #include "../common/common_handlers.h"
@@ -87,7 +88,7 @@ int main(int argc, char *argv[]) {
 	failed_tests += test_meshlink_set_status_cb();
 	failed_tests += test_meshlink_join();
 	failed_tests += test_meshlink_set_channel_poll_cb();
-//  failed_tests += test_meshlink_channel_open_ex();
+	failed_tests += test_meshlink_channel_open_ex();
 	failed_tests += test_meshlink_channel_get_flags();
 	failed_tests += test_meshlink_set_channel_accept_cb();
 	failed_tests += test_meshlink_destroy();
@@ -124,6 +125,7 @@ int main(int argc, char *argv[]) {
 	failed_tests += test_meshlink_channel_close();
 
 	failed_tests += test_meshlink_channel_conn();
+	failed_tests += test_meshlink_encrypted_storage();
 
 	printf("[ PASSED ] %d test(s).\n", total_tests - failed_tests);
 	printf("[ FAILED ] %d test(s).\n", failed_tests);
