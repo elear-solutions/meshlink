@@ -1,7 +1,7 @@
 /*
     run_blackbox_tests.c -- Implementation of Black Box Test Execution for meshlink
 
-    Copyright (C) 2018  Guus Sliepen <guus@meshlink.io>
+    Copyright (C) 2019  Guus Sliepen <guus@meshlink.io>
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -70,6 +70,7 @@
 #include "test_cases_submesh02.h"
 #include "test_cases_submesh03.h"
 #include "test_cases_submesh04.h"
+#include "test_cases_set_connection_try_cb.h"
 
 #include "../common/containers.h"
 #include "../common/common_handlers.h"
@@ -89,7 +90,6 @@ int main(int argc, char *argv[]) {
 
 	int failed_tests = 0;
 
-	/*
 	failed_tests += test_meta_conn();
 	failed_tests += test_meshlink_set_status_cb();
 	failed_tests += test_meshlink_join();
@@ -133,11 +133,12 @@ int main(int argc, char *argv[]) {
 
 	failed_tests += test_meshlink_channel_conn();
 	failed_tests += test_optimal_pmtu();
-	*/
+
 	failed_tests += test_cases_submesh01();
 	failed_tests += test_cases_submesh02();
 	failed_tests += test_cases_submesh03();
 	failed_tests += test_cases_submesh04();
+	failed_tests += test_cases_connection_try();
 
 	printf("[ PASSED ] %d test(s).\n", total_tests - failed_tests);
 	printf("[ FAILED ] %d test(s).\n", failed_tests);
