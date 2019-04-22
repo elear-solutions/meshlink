@@ -58,7 +58,7 @@ void callback_logger(meshlink_handle_t *mesh, meshlink_log_level_t level,
 
 	if((check_sync_flag(&test_autoconnect_blacklisted) == true) && (strcmp("m1n2", mesh->name) == 0) && (strcmp("* could not find node for initial connect", text) == 0)) {
 		fprintf(stderr, "Test case successful\n");
-	  	set_sync_flag(&test_autoconnect_successful, true);
+		set_sync_flag(&test_autoconnect_successful, true);
 	} else if((check_sync_flag(&test_autoconnect_blacklisted) == true) && (strcmp("m1n2", mesh->name) == 0)) {
 		assert(strcmp(text, "Autoconnect trying to connect to m1n1") != 0);
 	}
@@ -67,7 +67,7 @@ void callback_logger(meshlink_handle_t *mesh, meshlink_log_level_t level,
 
 static void receive(meshlink_handle_t *mesh, meshlink_node_t *src, const void *data, size_t len) {
 	(void)mesh;
-  	(void)src;
+	(void)src;
 	(void)data;
 	assert(len);
 }
@@ -75,8 +75,9 @@ static void receive(meshlink_handle_t *mesh, meshlink_node_t *src, const void *d
 static bool bar_reachable;
 
 static void status_cb(meshlink_handle_t *mesh, meshlink_node_t *node, bool reachable) {
-  	(void)mesh;
-  	fprintf(stderr, "Status of node {%s} is %d\n", node->name, reachable);
+	(void)mesh;
+	fprintf(stderr, "Status of node {%s} is %d\n", node->name, reachable);
+
 	if(!strcmp(node->name, "m1n1") && reachable) {
 		set_sync_flag(&test_autoconnect_m1n1_reachable, true);
 	}
@@ -120,10 +121,10 @@ bool test_steps_mesh_autoconnect(void) {
 
 	assert(meshlink_join(mesh2, invite));
 
-  	meshlink_set_node_status_cb(mesh2, status_cb);
+	meshlink_set_node_status_cb(mesh2, status_cb);
 	assert(meshlink_start(mesh2));
 
-  	assert(wait_sync_flag(&test_autoconnect_m1n1_reachable, 30));
+	assert(wait_sync_flag(&test_autoconnect_m1n1_reachable, 30));
 
 	node = meshlink_get_node(mesh2, "m1n1");
 	meshlink_blacklist(mesh2, node);
@@ -133,13 +134,13 @@ bool test_steps_mesh_autoconnect(void) {
 
 	// Clean up.
 	meshlink_close(mesh1);
-  	fprintf(stderr, "Meshlink node1 closed\n");
+	fprintf(stderr, "Meshlink node1 closed\n");
 	meshlink_close(mesh2);
-  	fprintf(stderr, "Meshlink node2 closed\n");
+	fprintf(stderr, "Meshlink node2 closed\n");
 
 	meshlink_destroy("m1n1");
 	meshlink_destroy("m1n2");
-  	fprintf(stderr, "Meshlink nodes destroyed\n");
+	fprintf(stderr, "Meshlink nodes destroyed\n");
 
 	return true;
 }
