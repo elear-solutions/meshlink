@@ -72,6 +72,8 @@
 #include "test_cases_submesh04.h"
 #include "test_cases_set_connection_try_cb.h"
 
+#include "test_cases_autoconnect.h"
+
 #include "../common/containers.h"
 #include "../common/common_handlers.h"
 
@@ -139,6 +141,8 @@ int main(int argc, char *argv[]) {
 	failed_tests += test_cases_submesh03();
 	failed_tests += test_cases_submesh04();
 	failed_tests += test_cases_connection_try();
+
+	failed_tests += test_meshlink_autoconnect();
 
 	printf("[ PASSED ] %d test(s).\n", total_tests - failed_tests);
 	printf("[ FAILED ] %d test(s).\n", failed_tests);
