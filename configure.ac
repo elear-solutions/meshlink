@@ -171,6 +171,7 @@ AC_CONFIG_FILES([
 	 test/blackbox/test_cases_submesh02/Makefile
 	 test/blackbox/test_cases_submesh03/Makefile
 	 test/blackbox/test_cases_submesh04/Makefile
+	 test/blackbox/test_case_1000_nodes_01/Makefile
 	 examples/Makefile
 ])
 

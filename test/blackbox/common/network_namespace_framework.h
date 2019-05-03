@@ -43,6 +43,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <spawn.h>
+#include <sys/prctl.h>
 
 #define PUB_IF  0
 #define PRIV_IF 1
@@ -120,4 +121,5 @@ typedef struct {
 extern bool netns_create_topology(netns_state_t *state);
 extern void netns_destroy_topology(netns_state_t *test_state);
 extern void run_node_in_namespace_thread(netns_thread_t *netns_arg);
-extern pid_t run_cmd_in_netns(netns_state_t *test_state, char *namespace_name, char *cmd_str);
+extern pid_t run_cmd_in_netns(netns_state_t *test_state, const char *namespace_name, const char *cmd_str, const char *log_file);
+extern pid_t node_sim_in_netns(netns_state_t *test_state, const char *namespace_name, const char *exe_file, const char *confbase, const char *node_name, const char *app_name, const char *device_class, const char *invite_url);

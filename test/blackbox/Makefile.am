@@ -17,7 +17,8 @@ SUBDIRS = \
 	test_cases_submesh01 \
 	test_cases_submesh02 \
 	test_cases_submesh03 \
-	test_cases_submesh04
+	test_cases_submesh04\
+	test_case_1000_nodes_01
 
 
 gen_invite_SOURCES = util/gen_invite.c common/common_handlers.c common/test_step.c common/mesh_event_handler.c

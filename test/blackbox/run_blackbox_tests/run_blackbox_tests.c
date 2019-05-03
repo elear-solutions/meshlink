@@ -1,7 +1,7 @@
 /*
     run_blackbox_tests.c -- Implementation of Black Box Test Execution for meshlink
 
-    Copyright (C) 2018  Guus Sliepen <guus@meshlink.io>
+    Copyright (C) 2019  Guus Sliepen <guus@meshlink.io>
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -141,6 +141,7 @@ int main(int argc, char *argv[]) {
 
 	failed_tests += test_optimal_pmtu();
 	failed_tests += test_meshlink_encrypted_key_rotation();
+	failed_tests += test_1000_nodes();
 
 	printf("[ PASSED ] %d test(s).\n", total_tests - failed_tests);
 	printf("[ FAILED ] %d test(s).\n", failed_tests);

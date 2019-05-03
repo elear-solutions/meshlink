@@ -456,20 +456,76 @@ static void netns_namespace_init_pids(netns_state_t *test_state) {
 	}
 }
 
-pid_t run_cmd_in_netns(netns_state_t *test_state, char *namespace_name, char *cmd_str) {
+pid_t run_cmd_in_netns(netns_state_t *test_state, const char *namespace_name, const char *cmd, const char *log_file) {
 	pid_t pid;
 	namespace_t *namespace_handle;
-	char cmd[1000];
 
-	assert(namespace_name && cmd_str);
+	assert(namespace_name && cmd);
 	namespace_handle = find_namespace(test_state, namespace_name);
 	assert(namespace_handle);
+	pid_t ppid_before_fork = getpid();
 
 	if((pid = fork()) == 0) {
-		assert(daemon(1, 0) != -1);
-		assert(sprintf(cmd, "ip netns exec %s %s", namespace_name, cmd_str) >= 0);
-		assert(system(cmd) == 0);
-		exit(0);
+
+        // Auto kill child if it's parent dies
+
+        assert(prctl(PR_SET_PDEATHSIG, SIGKILL) != -1);
+        assert(getppid() == ppid_before_fork);
+
+        char command[250];
+
+        // Parse the command string and break it into arguments
+
+        char *argv[253];
+        int i, n;
+        bool arg_start;
+        int len;
+
+        char *cmd_str = strdup(cmd);
+        assert(cmd_str);
+        len = strlen(cmd_str);
+        arg_start = true;
+        for(i = 0, n = 0; i <= len; i++ ) {
+            if(cmd_str[i] == ' ' || cmd_str[i] == '\0') {
+                cmd_str[i] = '\0';
+                arg_start = true;
+            } else {
+                if(arg_start) {
+                    argv[n++] = cmd_str + i;
+                    arg_start = false;
+                }
+            }
+        }
+        argv[n] = NULL;
+
+        // Run the forked process in the given namespace
+
+        assert(sprintf(command, "/var/run/netns/%s", namespace_name) >= 0);
+        int netns_fd = open(command, O_RDONLY);
+        if(netns_fd < 0) {
+            fprintf(stderr, "Failed to open %s network namespace file\n", namespace_name);
+            abort();
+        }
+        assert(setns(netns_fd, CLONE_NEWNET) != -1);
+
+        // Re-direct the stdout and stderr logs into the log file if log file name is passed to the function
+
+        if(log_file) {
+            int log_fd = open(log_file, O_CREAT | O_RDWR, 0644);
+            if(log_fd < 0) {
+                fprintf(stderr, "Failed to open %s network namespace file\n", namespace_name);
+                abort();
+            }
+            close(STDIN_FILENO);
+            dup2(log_fd, STDOUT_FILENO);
+            dup2(log_fd, STDERR_FILENO);
+            //close(log_fd);
+        }
+
+        execvp(argv[0], argv);
+        perror("execvp: ");
+		//return -1;
+		abort();
 	}
 
 	pid_t *pid_ptr;
@@ -478,6 +534,26 @@ pid_t run_cmd_in_netns(netns_state_t *test_state, char *namespace_name, char *cm
 	namespace_handle->pids = pid_ptr;
 	(namespace_handle->pids)[namespace_handle->pid_nos] = pid;
 	namespace_handle->pid_nos = namespace_handle->pid_nos + 1;
+
+	return pid;
+}
+
+pid_t node_sim_in_netns(netns_state_t *test_state, const char *namespace_name, const char *exe_file, const char *confbase, const char *node_name, const char *app_name, const char *device_class, const char *invite_url) {
+	char *node_sim_command;
+	size_t node_sim_command_len;
+	char cwd[256];
+
+	node_sim_command_len = 1000 + (invite_url ? strlen(invite_url) : 0);
+	node_sim_command = calloc(1, node_sim_command_len);
+	assert(node_sim_command);
+
+    	assert(getcwd(cwd, sizeof(cwd)));
+	assert(snprintf(node_sim_command, node_sim_command_len,
+	                "%s/blackbox/%s/node_sim_%s %s %s %s %s %s", cwd, test_state->test_case_name, exe_file,
+	                confbase, node_name, app_name, device_class, invite_url ? invite_url : "") >= 0);
+
+    	pid_t pid = run_cmd_in_netns(test_state, namespace_name, node_sim_command, NULL);
+	free(node_sim_command);
 
 	return pid;
 }
@@ -513,7 +589,7 @@ void netns_destroy_topology(netns_state_t *test_state) {
 
 		for(i = 0; i < namespace_handle->pid_nos; i++) {
 			pid = (namespace_handle->pids)[i];
-			assert(kill(pid, SIGINT) != -1);
+			assert(kill(pid, SIGKILL) != -1);
 			pid_ret = waitpid(pid, NULL, WNOHANG);
 			assert(pid_ret != -1);
 
