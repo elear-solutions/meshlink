@@ -50,7 +50,6 @@ typedef struct {
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
 #endif
-
 __thread meshlink_errno_t meshlink_errno;
 meshlink_log_cb_t global_log_cb;
 meshlink_log_level_t global_log_level;
@@ -216,23 +215,27 @@ struct socket_in_netns_params {
 	int fd;
 };
 
+#ifdef HAVE_SETNS
 static void *socket_in_netns_thread(void *arg) {
 	struct socket_in_netns_params *params = arg;
 
 	if(setns(params->netns, CLONE_NEWNET) == -1) {
 		meshlink_errno = MESHLINK_EINVAL;
-	} else {
-		params->fd = socket(params->domain, params->type, params->protocol);
+		return NULL;
 	}
+
+	params->fd = socket(params->domain, params->type, params->protocol);
 
 	return NULL;
 }
+#endif // HAVE_SETNS
 
 static int socket_in_netns(int domain, int type, int protocol, int netns) {
 	if(netns == -1) {
 		return socket(domain, type, protocol);
 	}
 
+#ifdef HAVE_SETNS
 	struct socket_in_netns_params params = {domain, type, protocol, netns, -1};
 
 	pthread_t thr;
@@ -242,6 +245,10 @@ static int socket_in_netns(int domain, int type, int protocol, int netns) {
 	}
 
 	return params.fd;
+#else
+	return -1;
+#endif // HAVE_SETNS
+
 }
 
 // Find out what local address a socket would use if we connect to the given address.
@@ -1173,6 +1180,7 @@ static bool meshlink_setup(meshlink_handle_t *mesh) {
 	return true;
 }
 
+#ifdef HAVE_SETNS
 static void *setup_network_in_netns_thread(void *arg) {
 	meshlink_handle_t *mesh = arg;
 
@@ -1184,6 +1192,7 @@ static void *setup_network_in_netns_thread(void *arg) {
 	add_local_addresses(mesh);
 	return success ? arg : NULL;
 }
+#endif // HAVE_SETNS
 
 meshlink_open_params_t *meshlink_open_params_init(const char *confbase, const char *name, const char *appname, dev_class_t devclass) {
 	if(!confbase || !*confbase) {
@@ -1247,7 +1256,8 @@ void meshlink_open_params_free(meshlink_open_params_t *params) {
 
 meshlink_handle_t *meshlink_open(const char *confbase, const char *name, const char *appname, dev_class_t devclass) {
 	/* Create a temporary struct on the stack, to avoid allocating and freeing one. */
-	meshlink_open_params_t params = {NULL};
+	meshlink_open_params_t params;
+	memset(&params, 0, sizeof(params));
 
 	params.confbase = (char *)confbase;
 	params.name = (char *)name;
@@ -1397,12 +1407,19 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 	bool success = false;
 
 	if(mesh->netns != -1) {
+#ifdef HAVE_SETNS
 		pthread_t thr;
 
 		if(pthread_create(&thr, NULL, setup_network_in_netns_thread, mesh) == 0) {
 			void *retval = NULL;
 			success = pthread_join(thr, &retval) == 0 && retval;
 		}
+
+#else
+		meshlink_errno = MESHLINK_EINTERNAL;
+		return NULL;
+
+#endif // HAVE_SETNS
 	} else {
 		success = setup_network(mesh);
 		add_local_addresses(mesh);
@@ -1449,9 +1466,15 @@ static void *meshlink_main_loop(void *arg) {
 	meshlink_handle_t *mesh = arg;
 
 	if(mesh->netns != -1) {
+#ifdef HAVE_SETNS
+
 		if(setns(mesh->netns, CLONE_NEWNET) != 0) {
 			return NULL;
 		}
+
+#else
+		return NULL;
+#endif // HAVE_SETNS
 	}
 
 	pthread_mutex_lock(&(mesh->mesh_mutex));
@@ -2113,7 +2136,7 @@ static bool refresh_invitation_key(meshlink_handle_t *mesh) {
 		}
 
 		if(!stat(invname, &st)) {
-			if(mesh->invitation_key && deadline < st.st_mtime) {
+			if(mesh->invitation_key && deadline < (time_t)st.st_mtime) {
 				count++;
 			} else {
 				unlink(invname);

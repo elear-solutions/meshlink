@@ -115,7 +115,7 @@ static bool test_set_connection_try_cb_01(void) {
 	assert(attempt_time_start != -1);
 	assert_int_equal(wait_sync_flag(&connection_attempt_cond, 60), true);
 
-    // Close bar node and assert on number of callbacks invoked and the time taken.
+	// Close bar node and assert on number of callbacks invoked and the time taken.
 	meshlink_close(mesh1);
 	time_t attempt_time_stop = time(NULL);
 	assert(attempt_time_stop != -1);

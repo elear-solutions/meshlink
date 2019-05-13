@@ -9,5 +9,5 @@ tar xfj android-ndk-r8b-linux-x86.tar.bz2
 git clone git://meshlink.io/meshlink
 cd meshlink
 autoreconf -fsi
-CC=/tmp/my-android-toolchain/bin/arm-linux-androideabi-gcc ./configure --host=arm-linux
+CC=/tmp/my-android-toolchain/bin/arm-linux-androideabi-gcc CXX=/tmp/my-android-toolchain/bin/arm-linux-androideabi-g++ ./configure --host=arm-linux
 make -j5

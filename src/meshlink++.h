@@ -220,7 +220,13 @@ public:
 		(void)message;
 	}
 
-	/// This functions is called whenever another node attempts to open a channel to the local node.
+	/// This functions is called whenever MeshLink a meta-connection attempt is made.
+	virtual void connection_try(node *peer) {
+		/* do nothing */
+		(void)peer;
+	}
+
+	/// This functions is called whenever another node attemps to open a channel to the local node.
 	/**
 	 *  If the channel is accepted, the poll_callback will be set to channel_poll and can be
 	 *  changed using set_channel_poll_cb(). Likewise, the receive callback is set to
@@ -551,6 +557,7 @@ public:
 	 *  This URL should be passed by the application to the invitee in a way that no eavesdroppers can see the URL.
 	 *  The URL can only be used once, after the user has joined the mesh the URL is no longer valid.
 	 *
+	 *  @param submesh      A handle to the submesh to put the invitee in.
 	 *  @param name         The name that the invitee will use in the mesh.
 	 *  @param flags        A bitwise-or'd combination of flags that controls how the URL is generated.
 	 *
