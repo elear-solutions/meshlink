@@ -50,6 +50,7 @@ typedef struct {
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
 #endif
+
 __thread meshlink_errno_t meshlink_errno;
 meshlink_log_cb_t global_log_cb;
 meshlink_log_level_t global_log_level;
@@ -922,7 +923,7 @@ static bool invitation_receive(void *handle, uint8_t type, const void *msg, uint
 		return finalize_join(mesh);
 
 	case 2:
-		logger(mesh, MESHLINK_DEBUG, "Invitation succesfully accepted.\n");
+		logger(mesh, MESHLINK_DEBUG, "Invitation successfully accepted.\n");
 		shutdown(mesh->sock, SHUT_RDWR);
 		mesh->success = true;
 		break;
@@ -1207,7 +1208,6 @@ meshlink_open_params_t *meshlink_open_params_init(const char *confbase, const ch
 		logger(NULL, MESHLINK_ERROR, "No name given!\n");
 		//return NULL;
 	} else { //check name only if there is a name != NULL
-
 		if(!check_id(name)) {
 			logger(NULL, MESHLINK_ERROR, "Invalid name given!\n");
 			meshlink_errno = MESHLINK_EINVAL;
@@ -1985,7 +1985,7 @@ meshlink_node_t **meshlink_get_all_nodes_by_submesh(meshlink_handle_t *mesh, mes
 	return meshlink_get_all_nodes_by_condition(mesh, submesh, nodes, nmemb, search_node_by_submesh);
 }
 
-int meshlink_get_node_dev_class(meshlink_handle_t *mesh, meshlink_node_t *node) {
+dev_class_t meshlink_get_node_dev_class(meshlink_handle_t *mesh, meshlink_node_t *node) {
 	if(!mesh || !node) {
 		meshlink_errno = MESHLINK_EINVAL;
 		return -1;
@@ -3163,7 +3163,7 @@ ssize_t meshlink_channel_send(meshlink_handle_t *mesh, meshlink_channel_t *chann
 
 	// TODO: more finegrained locking.
 	// Ideally we want to put the data into the UTCP connection's send buffer.
-	// Then, preferrably only if there is room in the receiver window,
+	// Then, preferably only if there is room in the receiver window,
 	// kick the meshlink thread to go send packets.
 
 	pthread_mutex_lock(&mesh->mesh_mutex);

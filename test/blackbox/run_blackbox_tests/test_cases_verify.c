@@ -120,7 +120,7 @@ bool test_verify_01(void) {
 		return false;
 	}
 
-	PRINT_TEST_CASE_MSG("meshlink_verify Successfuly verified data\n");
+	PRINT_TEST_CASE_MSG("meshlink_verify Successfully verified data\n");
 	return true;
 }
 

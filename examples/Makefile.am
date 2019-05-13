@@ -18,8 +18,10 @@ manynodes_LDADD = ${top_builddir}/src/libmeshlink.la
 channels_SOURCES = channels.c
 channels_LDADD = ${top_builddir}/src/libmeshlink.la
 
+if CURSES
 monitor_SOURCES = monitor.c
-monitor_LDADD = ${top_builddir}/src/libmeshlink.la -lcurses -lm
+monitor_LDADD = ${top_builddir}/src/libmeshlink.la $(NCURSES_LIBS) -lm
+endif
 
 groupchat_SOURCES = groupchat.c
 groupchat_LDADD = ${top_builddir}/src/libmeshlink.la

@@ -9,6 +9,7 @@ run_blackbox_tests_SOURCES = \
 	../common/common_handlers.c \
 	../common/test_step.c \
 	../common/network_namespace_framework.c \
+	../../utils.c \
 	test_cases_destroy.c \
 	test_cases_export.c \
 	test_cases_get_all_nodes.c \
