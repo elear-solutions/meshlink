@@ -43,16 +43,18 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <spawn.h>
+#include <linux/limits.h>
 
-#define PUB_IF  0
-#define PRIV_IF 1
+#define WAN 0
+#define LAN 1
+#define POOR_MANS_NAT_SIM_PATH "./blackbox/util/cone_nat.py"
 
 typedef enum {
-	HOST,
 	FULL_CONE,
 	PORT_REST,
 	ADDR_REST,
 	SYMMERTRIC,
+	HOST,
 	BRIDGE,
 } namespace_type_t;
 
@@ -67,19 +69,22 @@ typedef struct {
 	char *addr_host;
 	char *fetch_ip_netns_name;
 	char *if_default_route_ip;
+	char host_config_start_addr[INET6_ADDRSTRLEN];   // Buffer should be of length INET_ADDRSTRLEN or INET6_ADDRSTRLEN
 	void *priv;
 } interface_t;
 
 typedef struct {
-	char *snat_to_source;
-	char *dnat_to_destination;
-} netns_fullcone_handle_t;
+	char *wan;
+	char *lan;
+	int  timeout;
+	bool daemon;
+	bool verbose;
+} netns_nat_handle_t;
 
 typedef struct {
 	char *name;
 	namespace_type_t type;
 	void *nat_arg;
-	char static_config_net_addr[INET6_ADDRSTRLEN];   // Buffer should be of length INET_ADDRSTRLEN or INET6_ADDRSTRLEN
 	interface_t *interfaces;
 	int interfaces_no;
 	pid_t *pids;
@@ -120,4 +125,4 @@ typedef struct {
 extern bool netns_create_topology(netns_state_t *state);
 extern void netns_destroy_topology(netns_state_t *test_state);
 extern void run_node_in_namespace_thread(netns_thread_t *netns_arg);
-extern pid_t run_cmd_in_netns(netns_state_t *test_state, char *namespace_name, char *cmd_str);
+extern int netns_exec_prog(netns_state_t *test_state, const char *namespace_name, const char *cmd_str, const char *redirect_file, bool daemon_stat);
