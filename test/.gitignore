@@ -7,10 +7,10 @@
 /channels-fork
 /duplicate
 /echo-fork
+/encrypted
+/ephemeral
 /import-export
 /invite-join
 /sign-verify
 /trio
 /*.[0123456789]
-*conf*
-interfaces

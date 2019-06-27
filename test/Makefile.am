@@ -5,10 +5,13 @@ TESTS = \
 	channels-fork.test \
 	channels-cornercases.test \
 	duplicate.test \
+	encrypted.test \
+	ephemeral.test \
 	import-export.test \
 	invite-join.test \
 	sign-verify.test \
-	trio.test
+	trio.test \
+	trio2.test
 
 if BLACKBOX_TESTS
 SUBDIRS = blackbox
@@ -27,10 +30,13 @@ check_PROGRAMS = \
 	channels-cornercases \
 	duplicate \
 	echo-fork \
+	encrypted \
+	ephemeral \
 	import-export \
 	invite-join \
 	sign-verify \
-	trio
+	trio \
+	trio2
 
 if INSTALL_TESTS
 bin_PROGRAMS = $(check_PROGRAMS)
@@ -57,6 +63,12 @@ duplicate_LDADD = ../src/libmeshlink.la
 echo_fork_SOURCES = echo-fork.c
 echo_fork_LDADD = ../src/libmeshlink.la
 
+encrypted_SOURCES = encrypted.c
+encrypted_LDADD = ../src/libmeshlink.la
+
+ephemeral_SOURCES = ephemeral.c
+ephemeral_LDADD = ../src/libmeshlink.la
+
 import_export_SOURCES = import-export.c
 import_export_LDADD = ../src/libmeshlink.la
 
@@ -68,3 +80,6 @@ sign_verify_LDADD = ../src/libmeshlink.la
 
 trio_SOURCES = trio.c
 trio_LDADD = ../src/libmeshlink.la
+
+trio2_SOURCES = trio2.c
+trio2_LDADD = ../src/libmeshlink.la
