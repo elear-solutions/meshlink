@@ -30,6 +30,18 @@
 
 #include "devtools.h"
 
+static void trybind_nop_probe(void) {
+	return;
+}
+
+static void keyrotate_nop_probe(int stage) {
+	(void)stage;
+	return;
+}
+
+void (*devtool_trybind_probe)(void) = trybind_nop_probe;
+void (*devtool_keyrotate_probe)(int stage) = keyrotate_nop_probe;
+
 /* Return an array of edges in the current network graph.
  * Data captures the current state and will not be updated.
  * Caller must deallocate data when done.
@@ -310,4 +322,20 @@ meshlink_submesh_t **devtool_get_all_submeshes(meshlink_handle_t *mesh, meshlink
 	pthread_mutex_unlock(&(mesh->mesh_mutex));
 
 	return result;
+}
+meshlink_handle_t *devtool_open_in_netns(const char *confbase, const char *name, const char *appname, dev_class_t devclass, int netns) {
+	meshlink_open_params_t *params = meshlink_open_params_init(confbase, name, appname, devclass);
+	params->netns = dup(netns);
+	meshlink_handle_t *handle;
+
+	if(params->netns == -1) {
+		handle = NULL;
+		meshlink_errno = MESHLINK_EINVAL;
+	} else {
+		handle = meshlink_open_ex(params);
+	}
+
+	meshlink_open_params_free(params);
+
+	return handle;
 }

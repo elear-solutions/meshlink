@@ -20,7 +20,7 @@
     51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */
 
-#include "meshlink.h"
+#include "meshlink_internal.h"
 
 #define CORE_MESH "."
 

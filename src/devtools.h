@@ -68,7 +68,7 @@ struct devtool_edge {
  *  @return             A pointer to an array containing devtool_edge_t elements,
  *                      or NULL in case of an error.
  *                      If the @a edges @a argument was not NULL, then the
- *                      retun value can be either the same value or a different
+ *                      return value can be either the same value or a different
  *                      value. If the new values is NULL, then the old array
  *                      will have been freed by Meshlink.
  */
@@ -133,5 +133,39 @@ extern void devtool_get_node_status(meshlink_handle_t *mesh, meshlink_node_t *no
  *                      the number if array elements.
  */
 extern meshlink_submesh_t **devtool_get_all_submeshes(meshlink_handle_t *mesh, meshlink_submesh_t **submeshes, size_t *nmemb);
+
+/// Open a MeshLink instance in a given network namespace.
+/** This function opens MeshLink in the given network namespace.
+ *
+ *  @param confbase The directory in which MeshLink will store its configuration files.
+ *                  After the function returns, the application is free to overwrite or free @a confbase @a.
+ *  @param name     The name which this instance of the application will use in the mesh.
+ *                  After the function returns, the application is free to overwrite or free @a name @a.
+ *  @param appname  The application name which will be used in the mesh.
+ *                  After the function returns, the application is free to overwrite or free @a name @a.
+ *  @param devclass The device class which will be used in the mesh.
+ *  @param netns    A filedescriptor that represents the network namespace.
+ *
+ *  @return         A pointer to a meshlink_handle_t which represents this instance of MeshLink, or NULL in case of an error.
+ *                  The pointer is valid until meshlink_close() is called.
+ */
+extern meshlink_handle_t *devtool_open_in_netns(const char *confbase, const char *name, const char *appname, dev_class_t devclass, int netns);
+
+/// Debug function pointer variable for set port API
+/** This function pointer variable is a userspace tracepoint or debugger callback for
+ *  set port function @a meshlink_set_port @a.
+ *  On assigning a debug function variable invokes callback when try_bind() succeeds in meshlink_set_port API.
+ *
+ */
+extern void (*devtool_trybind_probe)(void);
+
+/// Debug function pointer variable for encrypted key rotate API
+/** This function pointer variable is a userspace tracepoint or debugger callback for
+ *  encrypted key rotation function @a meshlink_encrypted_key_rotate @a.
+ *  On assigning a debug function variable invokes callback for each stage from the key rotate API.
+ *
+ *  @param stage Debug stage number.
+ */
+extern void (*devtool_keyrotate_probe)(int stage);
 
 #endif

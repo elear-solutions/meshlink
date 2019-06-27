@@ -424,7 +424,7 @@ bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t
 
 	if(type == SPTPS_HANDSHAKE) {
 		if(!from->status.validkey) {
-			logger(mesh, MESHLINK_INFO, "SPTPS key exchange with %s succesful", from->name);
+			logger(mesh, MESHLINK_INFO, "SPTPS key exchange with %s successful", from->name);
 			from->status.validkey = true;
 			from->status.waitingforkey = false;
 
@@ -551,10 +551,12 @@ void handle_incoming_vpn_data(event_loop_t *loop, void *data, int flags) {
 	listen_socket_t *ls = data;
 	vpn_packet_t pkt;
 	char *hostname;
-	sockaddr_t from = {0};
+	sockaddr_t from;
 	socklen_t fromlen = sizeof(from);
 	node_t *n;
 	int len;
+
+	memset(&from, 0, sizeof(from));
 
 	len = recvfrom(ls->udp.fd, pkt.data, MAXSIZE, 0, &from.sa, &fromlen);
 

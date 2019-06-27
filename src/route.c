@@ -45,14 +45,14 @@ void route(meshlink_handle_t *mesh, node_t *source, vpn_packet_t *packet) {
 	owner = lookup_node(mesh, (char *)hdr->destination);
 	logger(mesh, MESHLINK_DEBUG, "Routing packet from \"%s\" to \"%s\"\n", hdr->source, hdr->destination);
 
-	//Check Lenght
+	//Check Length
 	if(!checklength(source, packet, sizeof(*hdr))) {
 		return;
 	}
 
 	if(owner == NULL) {
 		//Lookup failed
-		logger(mesh, MESHLINK_WARNING, "Cant lookup the owner of a packet in the route() function. This should never happen!\n");
+		logger(mesh, MESHLINK_WARNING, "Can't lookup the owner of a packet in the route() function. This should never happen!\n");
 		logger(mesh, MESHLINK_WARNING, "Destination was: %s\n", hdr->destination);
 		return;
 	}
@@ -63,7 +63,7 @@ void route(meshlink_handle_t *mesh, node_t *source, vpn_packet_t *packet) {
 
 		char hex[len * 2 + 1];
 
-		if(mesh->log_level >= MESHLINK_DEBUG) {
+		if(mesh->log_level <= MESHLINK_DEBUG) {
 			bin2hex(payload, hex, len);        // don't do this unless it's going to be logged
 		}
 

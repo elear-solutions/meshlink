@@ -51,6 +51,9 @@ typedef struct meshlink_node meshlink_node_t;
 /// A handle for a MeshLink channel.
 typedef struct meshlink_channel meshlink_channel_t;
 
+/// A struct containing all parameters used for opening a mesh.
+typedef struct meshlink_open_params meshlink_open_params_t;
+
 /// A handle for a MeshLink sub-mesh.
 typedef struct meshlink_submesh meshlink_submesh_t;
 
@@ -63,7 +66,7 @@ typedef enum {
 	MESHLINK_EEXIST,    ///< Node already exists
 	MESHLINK_EINTERNAL, ///< MeshLink internal error
 	MESHLINK_ERESOLV,   ///< MeshLink could not resolve a hostname
-	MESHLINK_ESTORAGE,  ///< MeshLink coud not load or write data from/to disk
+	MESHLINK_ESTORAGE,  ///< MeshLink could not load or write data from/to disk
 	MESHLINK_ENETWORK,  ///< MeshLink encountered a network error
 	MESHLINK_EPEER,     ///< A peer caused an error
 	MESHLINK_ENOTSUP,   ///< The operation is not supported in the current configuration of MeshLink
@@ -98,7 +101,7 @@ static const uint32_t MESHLINK_CHANNEL_UDP = 0;        // Select UDP semantics.
 /** This is a thread local variable that contains the error code of the most recent error
  *  encountered by a MeshLink API function called in the current thread.
  *  The variable is only updated when an error is encountered, and is not reset to MESHLINK_OK
- *  if a function returned succesfully.
+ *  if a function returned successfully.
  */
 extern __thread meshlink_errno_t meshlink_errno;
 
@@ -137,7 +140,102 @@ struct meshlink_channel {
  */
 extern const char *meshlink_strerror(meshlink_errno_t err);
 
+/// Create a new meshlink_open_params_t struct.
+/** This function allocates and initializes a new meshlink_open_params_t struct that can be passed to meshlink_open_ex().
+ *  The resulting struct may be reused for multiple calls to meshlink_open_ex().
+ *  After the last use, the application must free this struct using meshlink_open_params_free().
+ *
+ *  @param confbase The directory in which MeshLink will store its configuration files.
+ *                  After the function returns, the application is free to overwrite or free @a confbase.
+ *  @param name     The name which this instance of the application will use in the mesh.
+ *                  After the function returns, the application is free to overwrite or free @a name.
+ *  @param appname  The application name which will be used in the mesh.
+ *                  After the function returns, the application is free to overwrite or free @a name.
+ *  @param devclass The device class which will be used in the mesh.
+ *
+ *  @return         A pointer to a meshlink_open_params_t which can be passed to meshlink_open_ex(), or NULL in case of an error.
+ *                  The pointer is valid until meshlink_open_params_free() is called.
+ */
+extern meshlink_open_params_t *meshlink_open_params_init(const char *confbase, const char *name, const char *appname, dev_class_t devclass);
+
+/// Free a meshlink_open_params_t struct.
+/** This function frees a meshlink_open_params_t struct and all resources associated with it.
+ *
+ *  @param params   A pointer to a meshlink_open_params_t which must have been created earlier with meshlink_open_params_init().
+ */
+extern void meshlink_open_params_free(meshlink_open_params_t *params);
+
+/// Set the network namespace MeshLink should use.
+/** This function changes the open parameters to use the given netns filedescriptor.
+ *
+ *  @param params   A pointer to a meshlink_open_params_t which must have been created earlier with meshlink_open_params_init().
+ *  @param netns    A filedescriptor that must point to a valid network namespace, or -1 to have MeshLink use the same namespace as the calling thread.
+ *
+ *  @return         This function will return true if the open parameters have been succesfully updated, false otherwise.
+ */
+extern bool meshlink_open_params_set_netns(meshlink_open_params_t *params, int netns);
+
+/// Set the encryption key MeshLink should use for local storage.
+/** This function changes the open parameters to use the given key for encrypting MeshLink's own configuration files.
+ *
+ *  @param params   A pointer to a meshlink_open_params_t which must have been created earlier with meshlink_open_params_init().
+ *  @param key      A pointer to a key, or NULL in case no encryption should be used.
+ *  @param keylen   The length of the given key, or 0 in case no encryption should be used.
+ *
+ *  @return         This function will return true if the open parameters have been succesfully updated, false otherwise.
+ */
+extern bool meshlink_open_params_set_storage_key(meshlink_open_params_t *params, const void *key, size_t keylen);
+
 /// Open or create a MeshLink instance.
+/** This function opens or creates a MeshLink instance.
+ *  All parameters needed by MeshLink are passed via a meshlink_open_params_t struct,
+ *  which must have been initialized earlier by the application.
+ *
+ *  This function returns a pointer to a struct meshlink_handle that will be allocated by MeshLink.
+ *  When the application does no longer need to use this handle, it must call meshlink_close() to
+ *  free its resources.
+ *
+ *  This function does not start any network I/O yet. The application should
+ *  first set callbacks, and then call meshlink_start().
+ *
+ *  @param params   A pointer to a meshlink_open_params_t which must be filled in by the application.
+ *                  After the function returns, the application is free to reuse or free @a params.
+ *
+ *  @return         A pointer to a meshlink_handle_t which represents this instance of MeshLink, or NULL in case of an error.
+ *                  The pointer is valid until meshlink_close() is called.
+ */
+extern meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params);
+
+/// Open or create a MeshLink instance.
+/** This function opens or creates a MeshLink instance.
+ *  The state is stored in the configuration directory passed in the variable @a confbase.
+ *  If the configuration directory does not exist yet, for example when it is the first time
+ *  this instance is opened, the configuration directory will be automatically created and initialized.
+ *  However, the parent directory should already exist, otherwise an error will be returned.
+ *
+ *  The name given should be a unique identifier for this instance.
+ *
+ *  This function returns a pointer to a struct meshlink_handle that will be allocated by MeshLink.
+ *  When the application does no longer need to use this handle, it must call meshlink_close() to
+ *  free its resources.
+ *
+ *  This function does not start any network I/O yet. The application should
+ *  first set callbacks, and then call meshlink_start().
+ *
+ *  @param confbase The directory in which MeshLink will store its configuration files.
+ *                  After the function returns, the application is free to overwrite or free @a confbase.
+ *  @param name     The name which this instance of the application will use in the mesh.
+ *                  After the function returns, the application is free to overwrite or free @a name.
+ *  @param appname  The application name which will be used in the mesh.
+ *                  After the function returns, the application is free to overwrite or free @a name.
+ *  @param devclass The device class which will be used in the mesh.
+ *
+ *  @return         A pointer to a meshlink_handle_t which represents this instance of MeshLink, or NULL in case of an error.
+ *                  The pointer is valid until meshlink_close() is called.
+ */
+extern meshlink_handle_t *meshlink_open(const char *confbase, const char *name, const char *appname, dev_class_t devclass);
+
+/// Open or create a MeshLink instance that uses encrypted storage.
 /** This function opens or creates a MeshLink instance.
  *  The state is stored in the configuration directory passed in the variable @a confbase @a.
  *  If the configuration directory does not exist yet, for example when it is the first time
@@ -160,11 +258,37 @@ extern const char *meshlink_strerror(meshlink_errno_t err);
  *  @param appname  The application name which will be used in the mesh.
  *                  After the function returns, the application is free to overwrite or free @a name @a.
  *  @param devclass The device class which will be used in the mesh.
+ *  @param key      A pointer to a key used to encrypt storage.
+ *  @param keylen   The length of the key in bytes.
  *
  *  @return         A pointer to a meshlink_handle_t which represents this instance of MeshLink, or NULL in case of an error.
  *                  The pointer is valid until meshlink_close() is called.
  */
-extern meshlink_handle_t *meshlink_open(const char *confbase, const char *name, const char *appname, dev_class_t devclass);
+extern meshlink_handle_t *meshlink_open_encrypted(const char *confbase, const char *name, const char *appname, dev_class_t devclass, const void *key, size_t keylen);
+
+/// Create an ephemeral MeshLink instance that does not store any state.
+/** This function creates a MeshLink instance.
+ *  No state is ever saved, so once this instance is closed, all its state is gone.
+ *
+ *  The name given should be a unique identifier for this instance.
+ *
+ *  This function returns a pointer to a struct meshlink_handle that will be allocated by MeshLink.
+ *  When the application does no longer need to use this handle, it must call meshlink_close() to
+ *  free its resources.
+ *
+ *  This function does not start any network I/O yet. The application should
+ *  first set callbacks, and then call meshlink_start().
+ *
+ *  @param name     The name which this instance of the application will use in the mesh.
+ *                  After the function returns, the application is free to overwrite or free @a name @a.
+ *  @param appname  The application name which will be used in the mesh.
+ *                  After the function returns, the application is free to overwrite or free @a name @a.
+ *  @param devclass The device class which will be used in the mesh.
+ *
+ *  @return         A pointer to a meshlink_handle_t which represents this instance of MeshLink, or NULL in case of an error.
+ *                  The pointer is valid until meshlink_close() is called.
+ */
+extern meshlink_handle_t *meshlink_open_ephemeral(const char *name, const char *appname, dev_class_t devclass);
 
 /// Create Sub-Mesh.
 /** This function causes MeshLink to open a new Sub-Mesh network
@@ -189,7 +313,7 @@ meshlink_submesh_t *meshlink_submesh_open(meshlink_handle_t  *mesh, const char *
  *
  *  @param mesh     A handle which represents an instance of MeshLink.
  *
- *  @return         This function will return true if MeshLink has succesfully started, false otherwise.
+ *  @return         This function will return true if MeshLink has successfully started, false otherwise.
  */
 extern bool meshlink_start(meshlink_handle_t *mesh);
 
@@ -223,9 +347,9 @@ extern void meshlink_close(meshlink_handle_t *mesh);
  *  new instance.
  *
  *  @param confbase The directory in which MeshLink stores its configuration files.
- *                  After the function returns, the application is free to overwrite or free @a confbase @a.
+ *                  After the function returns, the application is free to overwrite or free @a confbase.
  *
- *  @return         This function will return true if the MeshLink instance was succesfully destroyed, false otherwise.
+ *  @return         This function will return true if the MeshLink instance was successfully destroyed, false otherwise.
  */
 extern bool meshlink_destroy(const char *confbase);
 
@@ -335,16 +459,16 @@ typedef void (*meshlink_log_cb_t)(meshlink_handle_t *mesh, meshlink_log_level_t 
 /// Set the log callback.
 /** This functions sets the callback that is called whenever MeshLink has some information to log.
  *
- *  The @a mesh @a parameter can either be a valid MeshLink handle, or NULL.
+ *  The @a mesh parameter can either be a valid MeshLink handle, or NULL.
  *  In case it is NULL, the callback will be called for errors that happen outside the context of a valid mesh instance.
  *  Otherwise, it will be called for errors that happen in the context of the given mesh instance.
  *
- *  If @a mesh @a is not NULL, then the callback is run in MeshLink's own thread.
+ *  If @a mesh is not NULL, then the callback is run in MeshLink's own thread.
  *  It is important that the callback uses apprioriate methods (queues, pipes, locking, etc.)
  *  to hand the data over to the application's thread.
  *  The callback should also not block itself and return as quickly as possible.
  *
- *  The @a mesh @a parameter can either be a valid MeshLink handle, or NULL.
+ *  The @a mesh parameter can either be a valid MeshLink handle, or NULL.
  *  In case it is NULL, the callback will be called for errors that happen outside the context of a valid mesh instance.
  *  Otherwise, it will be called for errors that happen in the context of the given mesh instance.
  *
@@ -368,7 +492,7 @@ extern void meshlink_set_log_cb(meshlink_handle_t *mesh, meshlink_log_level_t le
  *  @param destination  A pointer to a meshlink_node_t describing the destination for the data.
  *  @param data         A pointer to a buffer containing the data to be sent to the source.
  *                      After meshlink_send() returns, the application is free to overwrite or free this buffer.
- *                      It is valid to specify a NULL pointer, but only if @a len @a is also 0.
+ *                      It is valid to specify a NULL pointer, but only if @a len is also 0.
  *  @param len          The length of the data.
  *  @return             This function will return true if MeshLink has queued the message for transmission, and false otherwise.
  *                      A return value of true does not guarantee that the message will actually arrive at the destination.
@@ -405,7 +529,7 @@ extern meshlink_node_t *meshlink_get_self(meshlink_handle_t *mesh);
  *
  *  @param mesh         A handle which represents an instance of MeshLink.
  *  @param name         The name of the node for which a handle is requested.
- *                      After this function returns, the application is free to overwrite or free @a name @a.
+ *                      After this function returns, the application is free to overwrite or free @a name.
  *
  *  @return             A pointer to a meshlink_node_t which represents the requested node,
  *                      or NULL if the requested node does not exist.
@@ -447,12 +571,12 @@ extern char *meshlink_get_fingerprint(meshlink_handle_t *mesh, meshlink_node_t *
  *                      The application is allowed to call free() on the array whenever it wishes.
  *                      The pointers in the array are valid until meshlink_close() is called.
  *  @param nmemb        A pointer to a variable holding the number of nodes that are stored in the array.
- *                      In case the @a nodes @a argument is not NULL, MeshLink might call realloc() on the array to change its size.
+ *                      In case the @a nodes argument is not NULL, MeshLink might call realloc() on the array to change its size.
  *                      The contents of this variable will be changed to reflect the new size of the array.
  *
  *  @return             A pointer to an array containing pointers to all known nodes, or NULL in case of an error.
- *                      If the @a nodes @a argument was not NULL, then the return value can either be the same value or a different value.
- *                      If it is a new value, the old value of @a nodes @a should not be used anymore.
+ *                      If the @a nodes argument was not NULL, then the return value can either be the same value or a different value.
+ *                      If it is a new value, the old value of @a nodes should not be used anymore.
  *                      If the new value is NULL, then the old array will have been freed by MeshLink.
  */
 extern meshlink_node_t **meshlink_get_all_nodes(meshlink_handle_t *mesh, meshlink_node_t **nodes, size_t *nmemb);
@@ -474,7 +598,7 @@ extern meshlink_node_t **meshlink_get_all_nodes(meshlink_handle_t *mesh, meshlin
 extern bool meshlink_sign(meshlink_handle_t *mesh, const void *data, size_t len, void *signature, size_t *siglen);
 
 /// Get the list of all nodes by device class.
-/** This function returns a list with handles for all the nodes that matches with the given @a devclass @a .
+/** This function returns a list with handles for all the nodes that matches with the given @a devclass.
  *
  *  @param mesh         A handle which represents an instance of MeshLink.
  *  @param devclass     Device class of the nodes for which the list has to be obtained.
@@ -482,19 +606,19 @@ extern bool meshlink_sign(meshlink_handle_t *mesh, const void *data, size_t len,
  *                      The application can supply an array it allocated itself with malloc, or the return value from the previous call to this function (which is the preferred way).
  *                      The application is allowed to call free() on the array whenever it wishes.
  *                      The pointers in the array are valid until meshlink_close() is called.
- *  @param nmemb        A pointer to a variable holding the number of nodes with the same @a device class @a that are stored in the array.
- *                      In case the @a nodes @a argument is not NULL, MeshLink might call realloc() on the array to change its size.
+ *  @param nmemb        A pointer to a variable holding the number of nodes with the same @a device class that are stored in the array.
+ *                      In case the @a nodes argument is not NULL, MeshLink might call realloc() on the array to change its size.
  *                      The contents of this variable will be changed to reflect the new size of the array.
  *
  *  @return             A pointer to an array containing pointers to all known nodes of the given device class, or NULL in case of an error.
- *                      If the @a nodes @a argument was not NULL, then the return value can either be the same value or a different value.
- *                      If it is a new value, the old value of @a nodes @a should not be used anymore.
+ *                      If the @a nodes argument was not NULL, then the return value can either be the same value or a different value.
+ *                      If it is a new value, the old value of @a nodes should not be used anymore.
  *                      If the new value is NULL, then the old array will have been freed by MeshLink.
  */
 extern meshlink_node_t **meshlink_get_all_nodes_by_dev_class(meshlink_handle_t *mesh, dev_class_t devclass, meshlink_node_t **nodes, size_t *nmemb);
 
 /// Get the list of all nodes by Submesh.
-/** This function returns a list with handles for all the nodes that matches with the given @a Submesh @a .
+/** This function returns a list with handles for all the nodes that matches with the given @a Submesh.
  *
  *  @param mesh         A handle which represents an instance of MeshLink.
  *  @param submesh      Submesh handle of the nodes for which the list has to be obtained.
@@ -502,13 +626,13 @@ extern meshlink_node_t **meshlink_get_all_nodes_by_dev_class(meshlink_handle_t *
  *                      The application can supply an array it allocated itself with malloc, or the return value from the previous call to this function (which is the preferred way).
  *                      The application is allowed to call free() on the array whenever it wishes.
  *                      The pointers in the array are valid until meshlink_close() is called.
- *  @param nmemb        A pointer to a variable holding the number of nodes with the same @a device class @a that are stored in the array.
- *                      In case the @a nodes @a argument is not NULL, MeshLink might call realloc() on the array to change its size.
+ *  @param nmemb        A pointer to a variable holding the number of nodes with the same @a device class that are stored in the array.
+ *                      In case the @a nodes argument is not NULL, MeshLink might call realloc() on the array to change its size.
  *                      The contents of this variable will be changed to reflect the new size of the array.
  *
  *  @return             A pointer to an array containing pointers to all known nodes of the given Submesh, or NULL in case of an error.
- *                      If the @a nodes @a argument was not NULL, then the return value can either be the same value or a different value.
- *                      If it is a new value, the old value of @a nodes @a should not be used anymore.
+ *                      If the @a nodes argument was not NULL, then the return value can either be the same value or a different value.
+ *                      If it is a new value, the old value of @a nodes should not be used anymore.
  *                      If the new value is NULL, then the old array will have been freed by MeshLink.
  */
 extern meshlink_node_t **meshlink_get_all_nodes_by_submesh(meshlink_handle_t *mesh, meshlink_submesh_t *submesh, meshlink_node_t **nodes, size_t *nmemb);
@@ -519,9 +643,9 @@ extern meshlink_node_t **meshlink_get_all_nodes_by_submesh(meshlink_handle_t *me
  *  @param mesh          A handle which represents an instance of MeshLink.
  *  @param node         A pointer to a meshlink_node_t describing the node.
  *
- *  @return              This function returns the device class of the @a node @a , or -1 in case of an error.
+ *  @return              This function returns the device class of the @a node, or -1 in case of an error.
  */
-extern int meshlink_get_node_dev_class(meshlink_handle_t *mesh, meshlink_node_t *node);
+extern dev_class_t meshlink_get_node_dev_class(meshlink_handle_t *mesh, meshlink_node_t *node);
 
 /// Get the node's submesh handle.
 /** This function returns the submesh handle of the given node.
@@ -529,7 +653,7 @@ extern int meshlink_get_node_dev_class(meshlink_handle_t *mesh, meshlink_node_t 
  *  @param mesh          A handle which represents an instance of MeshLink.
  *  @param node          A pointer to a meshlink_node_t describing the node.
  *
- *  @return              This function returns the submesh handle of the @a node @a , or NULL in case of an error.
+ *  @return              This function returns the submesh handle of the @a node, or NULL in case of an error.
  */
 extern meshlink_submesh_t *meshlink_get_node_submesh(meshlink_handle_t *mesh, meshlink_node_t *node);
 
@@ -615,13 +739,13 @@ extern char *meshlink_get_external_address(meshlink_handle_t *mesh);
  *  There is no guarantee it will be able to resolve the external address.
  *  Failures might be because by temporary network outages.
  *
- *  @param mesh         A handle which represents an instance of MeshLink.
- *  @param family       The address family to check, for example AF_INET or AF_INET6. If AF_UNSPEC is given,
- *                      this might return the external address for any working address family.
+ *  @param mesh            A handle which represents an instance of MeshLink.
+ *  @param address_family  The address family to check, for example AF_INET or AF_INET6. If AF_UNSPEC is given,
+ *                         this might return the external address for any working address family.
  *
- *  @return             This function returns a pointer to a C string containing the discovered external address,
- *                      or NULL if there was an error looking up the address.
- *                      After meshlink_get_external_address_for_family() returns, the application is free to overwrite or free this string.
+ *  @return                This function returns a pointer to a C string containing the discovered external address,
+ *                         or NULL if there was an error looking up the address.
+ *                         After meshlink_get_external_address_for_family() returns, the application is free to overwrite or free this string.
  */
 extern char *meshlink_get_external_address_for_family(meshlink_handle_t *mesh, int address_family);
 
@@ -637,13 +761,13 @@ extern char *meshlink_get_external_address_for_family(meshlink_handle_t *mesh, i
  *  This function will fail if it couldn't find a local address for the given address family.
  *  If hostname resolving is requested, this function may block for a few seconds.
  *
- *  @param mesh         A handle which represents an instance of MeshLink.
- *  @param family       The address family to check, for example AF_INET or AF_INET6. If AF_UNSPEC is given,
- *                      this might return the local address for any working address family.
+ *  @param mesh            A handle which represents an instance of MeshLink.
+ *  @param address_family  The address family to check, for example AF_INET or AF_INET6. If AF_UNSPEC is given,
+ *                         this might return the local address for any working address family.
  *
- *  @return             This function returns a pointer to a C string containing the discovered local address,
- *                      or NULL if there was an error looking up the address.
- *                      After meshlink_get_local_address_for_family() returns, the application is free to overwrite or free this string.
+ *  @return                This function returns a pointer to a C string containing the discovered local address,
+ *                         or NULL if there was an error looking up the address.
+ *                         After meshlink_get_local_address_for_family() returns, the application is free to overwrite or free this string.
  */
 extern char *meshlink_get_local_address_for_family(meshlink_handle_t *mesh, int address_family);
 
@@ -682,7 +806,9 @@ extern int meshlink_get_port(meshlink_handle_t *mesh);
  *                       If the port is set to 0, then MeshLink will listen on a port
  *                       that is randomly assigned by the operating system every time meshlink_open() is called.
  *
- *  @return              This function returns true if the port was succesfully changed, false otherwise.
+ *  @return              This function returns true if the port was successfully changed
+ *                       to the desired port, false otherwise. If it returns false, there
+ *                       is no guarantee that MeshLink is listening on the old port.
  */
 
 extern bool meshlink_set_port(meshlink_handle_t *mesh, int port);
@@ -706,7 +832,7 @@ extern void meshlink_set_invitation_timeout(meshlink_handle_t *mesh, int timeout
  *  @param mesh         A handle which represents an instance of MeshLink.
  *  @param submesh      A handle which represents an instance of SubMesh.
  *  @param name         A nul-terminated C string containing the name that the invitee will be allowed to use in the mesh.
- *                      After this function returns, the application is free to overwrite or free @a name @a.
+ *                      After this function returns, the application is free to overwrite or free @a name.
  *  @param flags        A bitwise-or'd combination of flags that controls how the URL is generated.
  *
  *  @return             This function returns a nul-terminated C string that contains the invitation URL, or NULL in case of an error.
@@ -725,7 +851,7 @@ extern char *meshlink_invite_ex(meshlink_handle_t *mesh, meshlink_submesh_t *sub
  *  @param mesh         A handle which represents an instance of MeshLink.
  *  @param submesh      A handle which represents an instance of SubMesh.
  *  @param name         A nul-terminated C string containing the name that the invitee will be allowed to use in the mesh.
- *                      After this function returns, the application is free to overwrite or free @a name @a.
+ *                      After this function returns, the application is free to overwrite or free @a name.
  *
  *  @return             This function returns a nul-terminated C string that contains the invitation URL, or NULL in case of an error.
  *                      The application should call free() after it has finished using the URL.
@@ -735,7 +861,7 @@ extern char *meshlink_invite(meshlink_handle_t *mesh, meshlink_submesh_t *submes
 /// Use an invitation to join a mesh.
 /** This function allows the local node to join an existing mesh using an invitation URL generated by another node.
  *  An invitation can only be used if the local node has never connected to other nodes before.
- *  After a succesfully accepted invitation, the name of the local node may have changed.
+ *  After a successfully accepted invitation, the name of the local node may have changed.
  *
  *  This function may only be called on a mesh that has not been started yet and which is not already part of an existing mesh.
  *
@@ -745,7 +871,7 @@ extern char *meshlink_invite(meshlink_handle_t *mesh, meshlink_submesh_t *submes
  *
  *  @param mesh         A handle which represents an instance of MeshLink.
  *  @param invitation   A nul-terminated C string containing the invitation URL.
- *                      After this function returns, the application is free to overwrite or free @a invitation @a.
+ *                      After this function returns, the application is free to overwrite or free @a invitation.
  *
  *  @return             This function returns true if the local node joined the mesh it was invited to, false otherwise.
  */
@@ -775,7 +901,7 @@ extern char *meshlink_export(meshlink_handle_t *mesh);
  *
  *  @param mesh         A handle which represents an instance of MeshLink.
  *  @param data         A nul-terminated C string containing the other node's exported key and addresses.
- *                      After this function returns, the application is free to overwrite or free @a data @a.
+ *                      After this function returns, the application is free to overwrite or free @a data.
  *
  *  @return             This function returns true if the data was valid and the other node has been granted access to the mesh, false otherwise.
  */
@@ -843,8 +969,8 @@ typedef bool (*meshlink_channel_accept_cb_t)(meshlink_handle_t *mesh, meshlink_c
 /** This function is called whenever data is received from a remote node on a channel.
  *
  *  This function is also called in case the channel has been closed by the remote node, or when the channel is terminated abnormally.
- *  In both cases, @a data @a will be NULL and @a len @a will be 0, and meshlink_errno will be set.
- *  In any case, the @a channel @a handle will still be valid until the application calls meshlink_close().
+ *  In both cases, @a data will be NULL and @a len will be 0, and meshlink_errno will be set.
+ *  In any case, the @a channel handle will still be valid until the application calls meshlink_close().
  *
  *  @param mesh         A handle which represents an instance of MeshLink.
  *  @param channel      A handle for the channel.
@@ -1006,14 +1132,34 @@ extern ssize_t meshlink_channel_send(meshlink_handle_t *mesh, meshlink_channel_t
  */
 extern uint32_t meshlink_channel_get_flags(meshlink_handle_t *mesh, meshlink_channel_t *channel);
 
+/// Get the amount of bytes in the send buffer.
+/** This returns the amount of bytes in the send buffer.
+ *  These bytes have not been received by the peer yet.
+ *
+ *  @param mesh         A handle which represents an instance of MeshLink.
+ *  @param channel      A handle for the channel.
+ *
+ *  @return             The amount of un-ACKed bytes in the send buffer.
+ */
+extern size_t meshlink_channel_get_sendq(meshlink_handle_t *mesh, meshlink_channel_t *channel);
+
+/// Get the amount of bytes in the receive buffer.
+/** This returns the amount of bytes in the receive buffer.
+ *  These bytes have not been processed by the application yet.
+ *
+ *  @param mesh         A handle which represents an instance of MeshLink.
+ *  @param channel      A handle for the channel.
+ *
+ *  @return             The amount of bytes in the receive buffer.
+ */
+extern size_t meshlink_channel_get_recvq(meshlink_handle_t *mesh, meshlink_channel_t *channel);
+
 /// Hint that a hostname may be found at an address
 /** This function indicates to meshlink that the given hostname is likely found
  *  at the given IP address and port.
  *
  *  @param mesh     A handle which represents an instance of MeshLink.
- *  @param hostname The hostname which can be found at the given address.
- *                  The caller is free to overwrite or free this string
- *                  once meshlink returns.
+ *  @param node     A pointer to a meshlink_node_t describing the node to add the address hint for.
  *  @param addr     The IP address and port which should be tried for the
  *                  given hostname. The caller is free to overwrite or free
  *                  this memory once meshlink returns.
@@ -1029,6 +1175,19 @@ extern void meshlink_hint_address(meshlink_handle_t *mesh, meshlink_node_t *node
  *  @param enable  Set to true to enable discovery, false to disable.
  */
 extern void meshlink_enable_discovery(meshlink_handle_t *mesh, bool enable);
+
+/// Performs key rotation for an encrypted storage
+
+/** This rotates the (master) key for an encrypted storage and discards the old key
+ *  if the call succeeded. This is an atomic call.
+ *
+ *  @param mesh     A handle which represents an instance of MeshLink.
+ *  @param key      A pointer to the new key used to encrypt storage.
+ *  @param keylen   The length of the new key in bytes.
+ *
+ *  @return         This function returns true if the key rotation for the encrypted storage succeeds, false otherwise.
+ */
+extern bool meshlink_encrypted_key_rotate(meshlink_handle_t *mesh, const void *new_key, size_t new_keylen);
 
 #ifdef __cplusplus
 }

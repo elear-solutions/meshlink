@@ -81,6 +81,7 @@ void free_node(node_t *n) {
 	}
 
 	free(n->name);
+	free(n->canonical_address);
 
 	free(n);
 }
@@ -136,7 +137,7 @@ void update_node_udp(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa) {
 
 		meshlink_hint_address(mesh, (meshlink_node_t *)n, &sa->sa);
 
-		if(mesh->log_level >= MESHLINK_DEBUG) {
+		if(mesh->log_level <= MESHLINK_DEBUG) {
 			char *hostname = sockaddr2hostname(&n->address);
 			logger(mesh, MESHLINK_DEBUG, "UDP address of %s set to %s", n->name, hostname);
 			free(hostname);
