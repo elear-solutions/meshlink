@@ -4,4 +4,4 @@
 	branch = develop
 [submodule "src/utcp"]
 	path = src/utcp
-	url = https://github.com/elear-solutions/utcp.git
+	url = git://meshlink.io/utcp

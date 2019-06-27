@@ -57,7 +57,7 @@ dnl No -fstack-protector-all because it doesn't work on all platforms or archite
 
 AC_ARG_ENABLE([hardening], AS_HELP_STRING([--disable-hardening], [disable compiler and linker hardening flags]))
 AS_IF([test "x$enable_hardening" != "xno"],
-  [CPPFLAGS="$CPPFLAGS -W -pedantic"
+  [CPPFLAGS="$CPPFLAGS -Wall -W -pedantic"
    AX_CHECK_COMPILE_FLAG([-DFORTIFY_SOURCE=2], [CPPFLAGS="$CPPFLAGS -DFORITFY_SOURCE=2"])
    AX_CHECK_COMPILE_FLAG([-fwrapv], [CPPFLAGS="$CPPFLAGS -fwrapv"],
      [AX_CHECK_COMPILE_FLAG([-fno-strict-overflow], [CPPFLAGS="$CPPFLAGS -fno-strict-overflow"])]
@@ -96,6 +96,16 @@ PKG_CHECK_MODULES([CMOCKA], [cmocka >= 1.1.0], [cmocka=true], [cmocka=false])
 PKG_CHECK_MODULES([LXC], [lxc >= 2.0.0], [lxc=true], [lxc=false])
 AM_CONDITIONAL(BLACKBOX_TESTS, test "$cmocka" = true -a "$lxc" = true)
 
+
+dnl Additional example code
+PKG_CHECK_MODULES([NCURSES], [ncurses >= 5], [curses=true], [curses=false])
+AC_ARG_ENABLE([monitor_code], 
+	[AS_HELP_STRING([--enable-monitor-code], [Add monitor example code to the build])],
+  [AS_IF([test "x$enable_monitor_code" = "xyes"], [monitor_code=true], [monitor_code=false])],
+  [monitor_code=false]
+)
+AM_CONDITIONAL(MONITOR, test "$monitor_code" = true)
+
 dnl Install test binaries
 AC_ARG_ENABLE([install_tests],
   [AS_HELP_STRING([--enable-install-tests], [include test binaries in installation])],
@@ -108,7 +118,7 @@ AM_CONDITIONAL(INSTALL_TESTS, test "$install_tests" = true)
 dnl Checks for header files.
 dnl We do this in multiple stages, because unlike Linux all the other operating systems really suck and don't include their own dependencies.
 
-AC_CHECK_HEADERS([syslog.h sys/file.h sys/param.h sys/resource.h sys/socket.h sys/time.h sys/un.h sys/wait.h netdb.h arpa/inet.h dirent.h])
+AC_CHECK_HEADERS([syslog.h sys/file.h sys/param.h sys/resource.h sys/socket.h sys/time.h sys/un.h sys/wait.h netdb.h arpa/inet.h dirent.h curses.h])
 
 dnl Checks for typedefs, structures, and compiler characteristics.
 MeshLink_ATTRIBUTE(__malloc__)
@@ -124,7 +134,7 @@ AC_CHECK_TYPES([struct sockaddr_storage], ,AC_MSG_ERROR([System must support str
 
 dnl Checks for library functions.
 AC_TYPE_SIGNAL
-AC_CHECK_FUNCS([asprintf fchmod fork gettimeofday random select strdup usleep],
+AC_CHECK_FUNCS([asprintf fchmod fork gettimeofday random select setns strdup usleep],
   [], [], [#include "$srcdir/src/have.h"]
 )
 
