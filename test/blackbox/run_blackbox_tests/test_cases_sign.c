@@ -143,7 +143,7 @@ static bool test_sign_02(void) {
 	bool ret = meshlink_sign(NULL, data, strlen(data) + 1, sig, &ssize);
 
 	if(!ret) {
-		PRINT_TEST_CASE_MSG("meshlink_sign Successfuly reported error on passing NULL as mesh_handle arg\n");
+		PRINT_TEST_CASE_MSG("meshlink_sign Successfully reported error on passing NULL as mesh_handle arg\n");
 		return true;
 	}
 
@@ -187,7 +187,7 @@ static bool test_sign_03(void) {
 	meshlink_destroy("signconf");
 
 	if(!ret) {
-		PRINT_TEST_CASE_MSG("meshlink_sign Successfuly reported error on passing NULL as data arg\n");
+		PRINT_TEST_CASE_MSG("meshlink_sign Successfully reported error on passing NULL as data arg\n");
 		return true;
 	} else {
 		PRINT_TEST_CASE_MSG("meshlink_sign FAILED to report error on passing NULL as data arg\n");
@@ -233,7 +233,7 @@ static bool test_sign_04(void) {
 	meshlink_destroy("signconf");
 
 	if(!ret) {
-		PRINT_TEST_CASE_MSG("meshlink_sign Successfuly reported error on passing 0 as size of data arg\n");
+		PRINT_TEST_CASE_MSG("meshlink_sign Successfully reported error on passing 0 as size of data arg\n");
 		return true;
 	}
 
@@ -269,7 +269,6 @@ static bool test_sign_05(void) {
 	// Signing data
 
 	char *data = "Test";
-	char sig[MESHLINK_SIGLEN];
 	size_t ssize = MESHLINK_SIGLEN;
 	bool ret = meshlink_sign(mesh_handle, data, strlen(data) + 1, NULL, &ssize);
 
@@ -279,7 +278,7 @@ static bool test_sign_05(void) {
 	meshlink_destroy("signconf");
 
 	if(!ret) {
-		PRINT_TEST_CASE_MSG("meshlink_sign Successfuly reported error on passing NULL as sign arg\n");
+		PRINT_TEST_CASE_MSG("meshlink_sign Successfully reported error on passing NULL as sign arg\n");
 		return true;
 	}
 
@@ -315,7 +314,6 @@ static bool test_sign_06(void) {
 
 	char *data = "Test";
 	char sig[MESHLINK_SIGLEN];
-	size_t ssize = MESHLINK_SIGLEN;
 	bool ret = meshlink_sign(mesh_handle, data, strlen(data) + 1, sig, NULL);
 
 	// Clean up
@@ -324,7 +322,7 @@ static bool test_sign_06(void) {
 	meshlink_destroy("signconf");
 
 	if(!ret) {
-		PRINT_TEST_CASE_MSG("meshlink_sign Successfuly reported error on passing NULL as signsize arg\n");
+		PRINT_TEST_CASE_MSG("meshlink_sign Successfully reported error on passing NULL as signsize arg\n");
 		return true;
 	}
 
@@ -370,7 +368,7 @@ static bool test_sign_07(void) {
 	meshlink_destroy("signconf");
 
 	if(!ret) {
-		PRINT_TEST_CASE_MSG("meshlink_sign Successfuly reported error on passing signsize < MESHLINK_SIGLEN arg\n");
+		PRINT_TEST_CASE_MSG("meshlink_sign Successfully reported error on passing signsize < MESHLINK_SIGLEN arg\n");
 		return true;
 	}
 

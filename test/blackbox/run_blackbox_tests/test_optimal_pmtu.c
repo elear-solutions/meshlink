@@ -27,9 +27,7 @@
 #include "../common/common_handlers.h"
 #include "../common/network_namespace_framework.h"
 #include "../../utils.h"
-#include "../test_case_optimal_pmtu_01/node_sim_nut.h"
-#include "../test_case_optimal_pmtu_01/node_sim_peer.h"
-#include "../test_case_optimal_pmtu_01/node_sim_relay.h"
+#include "../test_case_optimal_pmtu_01/test_case_optimal_pmtu.h"
 #include "test_optimal_pmtu.h"
 
 static void test_case_optimal_pmtu_01(void **state);
@@ -47,6 +45,11 @@ static bool test_steps_optimal_pmtu_06(void);
 static void test_case_optimal_pmtu_07(void **state);
 static bool test_steps_optimal_pmtu_07(void);
 
+extern void *node_sim_relay_01(void *arg);
+extern void *node_sim_peer_01(void *arg);
+extern void *node_sim_nut_01(void *arg);
+extern pmtu_attr_t node_pmtu[2];
+
 typedef bool (*test_step_func_t)(void);
 static int setup_test(void **state);
 bool test_pmtu_relay_running = true;
@@ -58,6 +61,8 @@ struct sync_flag test_pmtu_nut_closed = {.mutex  = PTHREAD_MUTEX_INITIALIZER, .c
 static netns_state_t *test_pmtu_state;
 
 static int setup_test(void **state) {
+	(void)state;
+
 	netns_create_topology(test_pmtu_state);
 	fprintf(stderr, "\nCreated topology\n");
 
@@ -65,7 +70,7 @@ static int setup_test(void **state) {
 	test_pmtu_peer_running = true;
 	test_pmtu_nut_running = true;
 	ping_channel_enable_07 = false;
-	memset(node_pmtu, 2, sizeof(node_pmtu[0]));
+	memset(node_pmtu, 0, sizeof(node_pmtu));
 	set_sync_flag(&test_pmtu_nut_closed, false);
 	meshlink_destroy("nut");
 	meshlink_destroy("peer");
@@ -75,6 +80,8 @@ static int setup_test(void **state) {
 }
 
 static int teardown_test(void **state) {
+	(void)state;
+
 	meshlink_destroy("nut");
 	meshlink_destroy("peer");
 	meshlink_destroy("relay");
@@ -84,6 +91,8 @@ static int teardown_test(void **state) {
 }
 
 static void execute_test(test_step_func_t step_func, void **state) {
+	(void)state;
+
 
 	fprintf(stderr, "\n\x1b[32mRunning Test\x1b[0m\n");
 	bool test_result = step_func();
@@ -103,6 +112,8 @@ static void *gen_inv(void *arg) {
 	assert(invitation);
 	mesh_invite_arg->invite_str = invitation;
 	meshlink_close(mesh);
+
+	return NULL;
 }
 
 /* Test Steps for optimal PMTU discovery Test Case # 1 -
@@ -414,6 +425,8 @@ static void test_case_optimal_pmtu_06(void **state) {
 static bool run_conntrack;
 static pthread_t pmtu_test_case_conntrack_thread;
 static void *conntrack_flush(void *arg) {
+	(void)arg;
+
 	// flushes mappings for every 60 seconds
 
 	while(run_conntrack) {

@@ -44,6 +44,8 @@ static void node_status_cb(meshlink_handle_t *mesh, meshlink_node_t *source, boo
 
 /* Meta-connection try callback handler */
 static void connection_try_cb(meshlink_handle_t *mesh, meshlink_node_t *source) {
+	(void)source;
+
 	if(!strcmp(mesh->name, "foo")) {
 		++connection_attempts;
 
@@ -89,8 +91,8 @@ static bool test_set_connection_try_cb_01(void) {
 	assert(exp1 != NULL);
 	char *exp2 = meshlink_export(mesh2);
 	assert(exp2 != NULL);
-	bool imp1 = meshlink_import(mesh1, exp2);
-	bool imp2 = meshlink_import(mesh2, exp1);
+	meshlink_import(mesh1, exp2);
+	meshlink_import(mesh2, exp1);
 	free(exp1);
 	free(exp2);
 
@@ -115,7 +117,7 @@ static bool test_set_connection_try_cb_01(void) {
 	assert(attempt_time_start != -1);
 	assert_int_equal(wait_sync_flag(&connection_attempt_cond, 60), true);
 
-    // Close bar node and assert on number of callbacks invoked and the time taken.
+	// Close bar node and assert on number of callbacks invoked and the time taken.
 	meshlink_close(mesh1);
 	time_t attempt_time_stop = time(NULL);
 	assert(attempt_time_stop != -1);
