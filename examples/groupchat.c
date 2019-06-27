@@ -239,10 +239,10 @@ static void parse_command(meshlink_handle_t *mesh, char *buf) {
 			if(!nnodes) {
 				fprintf(stderr, "Could not get list of nodes: %s\n", meshlink_strerror(meshlink_errno));
 			} else {
-				fprintf(stderr, "%zu known nodes:\n", nnodes);
+				fprintf(stderr, "%lu known nodes:\n", (unsigned long)nnodes);
 
 				for(size_t i = 0; i < nnodes; i++) {
-					fprintf(stderr, " %lu. %s", i, nodes[i]->name);
+					fprintf(stderr, " %lu. %s", (unsigned long)i, nodes[i]->name);
 
 					if((node_group = meshlink_get_node_submesh(mesh, nodes[i]))) {
 						fprintf(stderr, "\t%s", node_group->name);
@@ -328,7 +328,7 @@ static void parse_command(meshlink_handle_t *mesh, char *buf) {
 		        "/who [<name>]         			  List all nodes or show information about the given node.\n"
 		        "/listgroup <name>         		  List all nodes in a given group.\n"
 		        "/canonical -h<hostname> -p<port> Set Canonical address to be present in invitation.\n"
-		        "                      			  Any one of two options an be specified. Atleast one option must be present\n"
+		        "                      			  Any one of two options an be specified. At least one option must be present\n"
 		        "/quit                 			  Exit this program.\n"
 		       );
 	} else {
