@@ -33,7 +33,7 @@ lib_LTLIBRARIES = libmeshlink.la
 
 pkginclude_HEADERS = meshlink++.h meshlink.h
 
-libmeshlink_la_LDFLAGS = -export-symbols-regex '^(meshlink_|devtool_)'
+libmeshlink_la_LDFLAGS = -export-symbols $(srcdir)/meshlink.sym
 
 libmeshlink_la_SOURCES = \
 	buffer.c buffer.h \
@@ -54,7 +54,7 @@ libmeshlink_la_SOURCES = \
 	have.h \
 	list.c list.h \
 	logger.c logger.h \
-	meshlink.c meshlink.h \
+	meshlink.c meshlink.h meshlink.sym \
 	meshlink_internal.h \
 	meshlink_queue.h \
 	meta.c meta.h \
@@ -82,6 +82,8 @@ libmeshlink_la_SOURCES = \
 	$(ed25519_SOURCES) \
 	$(chacha_poly1305_SOURCES) \
 	$(utcp_SOURCES)
+
+EXTRA_libmeshlink_la_DEPENDENCIES = $(srcdir)/meshlink.sym
 
 libmeshlink_la_CFLAGS = $(PTHREAD_CFLAGS) -fPIC -iquote.
 libmeshlink_la_LDFLAGS += $(PTHREAD_LIBS)
