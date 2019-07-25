@@ -13,6 +13,7 @@ class MeshlinklibConan(ConanFile):
     default_options = "shared=False"
     generators = "make"
 
+
     def build(self):
         autotools = AutoToolsBuildEnvironment(self)
         self.run("cd .. && autoreconf -fsi")
