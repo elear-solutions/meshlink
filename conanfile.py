@@ -2,7 +2,7 @@ from conans import ConanFile, AutoToolsBuildEnvironment
 
 class MeshlinklibConan(ConanFile):
     name = "meshlink"
-    version = "0.1"
+    version = "0.0.1"
     license = "<Put the package license here>"
     author = "<Put your name here> <And your email here>"
     url = "<Package recipe repository url here, for issues about the package>"
