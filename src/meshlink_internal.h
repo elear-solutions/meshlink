@@ -32,6 +32,7 @@
 #include "meshlink_queue.h"
 #include "sockaddr.h"
 #include "sptps.h"
+#include "xoshiro.h"
 
 #include <pthread.h>
 
@@ -53,6 +54,7 @@ typedef struct listen_socket_t {
 	struct io_t tcp;
 	struct io_t udp;
 	sockaddr_t sa;
+	sockaddr_t broadcast_sa;
 	bool bindto;
 } listen_socket_t;
 
@@ -92,7 +94,7 @@ struct meshlink_handle {
 	void *priv;
 
 	// private members
-	pthread_mutex_t mesh_mutex;
+	pthread_mutex_t mutex;
 	event_loop_t loop;
 	struct node_t *self;
 	meshlink_log_cb_t log_cb;
@@ -130,6 +132,8 @@ struct meshlink_handle {
 	timeout_t periodictimer;
 
 	struct connection_t *everyone;
+	uint64_t prng_state[4];
+	uint32_t session_id;
 
 	int next_pit;
 	int pits[10];
@@ -140,6 +144,7 @@ struct meshlink_handle {
 	meshlink_channel_accept_cb_t channel_accept_cb;
 	meshlink_node_duplicate_cb_t node_duplicate_cb;
 	meshlink_connection_try_cb_t connection_try_cb;
+	meshlink_error_cb_t error_cb;
 
 	// Mesh parameters
 	char *appname;
@@ -247,12 +252,21 @@ typedef struct meshlink_packethdr {
 	uint8_t source[16];
 } __attribute__((__packed__)) meshlink_packethdr_t;
 
-extern void meshlink_send_from_queue(event_loop_t *el, meshlink_handle_t *mesh);
+extern void meshlink_send_from_queue(event_loop_t *loop, void *mesh);
 extern void update_node_status(meshlink_handle_t *mesh, struct node_t *n);
 extern void update_node_pmtu(meshlink_handle_t *mesh, struct node_t *n);
 extern meshlink_log_level_t global_log_level;
 extern meshlink_log_cb_t global_log_cb;
 extern void handle_duplicate_node(meshlink_handle_t *mesh, struct node_t *n);
 extern void handle_network_change(meshlink_handle_t *mesh, bool online);
+extern void call_error_cb(meshlink_handle_t *mesh, meshlink_errno_t meshlink_errno);
+
+/// Per-instance PRNG
+static inline int prng(meshlink_handle_t *mesh, uint64_t max) {
+	return xoshiro(mesh->prng_state) % max;
+}
+
+/// Fudge value of ~0.1 seconds, in microseconds.
+static const unsigned int TIMER_FUDGE = 0x20000;
 
 #endif

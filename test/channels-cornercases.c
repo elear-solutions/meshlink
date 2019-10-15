@@ -15,24 +15,6 @@ static volatile bool b_responded = false;
 static volatile bool b_closed = false;
 static volatile size_t a_poll_cb_len;
 
-static void log_cb(meshlink_handle_t *mesh, meshlink_log_level_t level, const char *text) {
-	static struct timeval tv0;
-	struct timeval tv;
-
-	if(tv0.tv_sec == 0) {
-		gettimeofday(&tv0, NULL);
-	}
-
-	gettimeofday(&tv, NULL);
-	fprintf(stderr, "%u.%.03u ", (unsigned int)(tv.tv_sec - tv0.tv_sec), (unsigned int)tv.tv_usec / 1000);
-
-	if(mesh) {
-		fprintf(stderr, "(%s) ", mesh->name);
-	}
-
-	fprintf(stderr, "[%d] %s\n", level, text);
-}
-
 static void a_receive_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, const void *data, size_t len) {
 	(void)mesh;
 	(void)channel;
@@ -111,10 +93,9 @@ int main() {
 
 	struct sync_flag channel_opened = {.flag = false};
 
-	meshlink_channel_t *channel = meshlink_channel_open(a, nb, 7, a_receive_cb, NULL, 0);
+	meshlink_channel_t *channel = meshlink_channel_open(a, nb, 7, a_receive_cb, &channel_opened, 0);
 	assert(channel);
 
-	channel->priv = &channel_opened;
 	meshlink_set_channel_poll_cb(a, channel, poll_cb);
 
 	// Start MeshLink and wait for the channel to become connected.
@@ -123,7 +104,8 @@ int main() {
 	assert(wait_sync_flag(&channel_opened, 20));
 
 	// Re-initialize everything
-	close_meshlink_pair(a, b, "channels-cornercases");
+	meshlink_channel_close(a, channel);
+	close_meshlink_pair(a, b);
 	b_responded = false;
 	b_closed = false;
 	channel_opened.flag = false;
@@ -138,9 +120,8 @@ int main() {
 	nb = meshlink_get_node(a, "b");
 	assert(nb);
 
-	channel = meshlink_channel_open(a, nb, 7, a_receive_cb, NULL, 0);
+	channel = meshlink_channel_open(a, nb, 7, a_receive_cb, &channel_opened, 0);
 	assert(channel);
-	channel->priv = &channel_opened;
 	meshlink_set_channel_poll_cb(a, channel, poll_cb);
 
 	assert(wait_sync_flag(&channel_opened, 20));
@@ -163,14 +144,15 @@ int main() {
 
 	struct sync_flag channel_polled = {.flag = false};
 
-	meshlink_channel_t *channel2 = meshlink_channel_open(a, nb, 7, a_receive_cb, NULL, 0);
+	meshlink_channel_t *channel2 = meshlink_channel_open(a, nb, 7, a_receive_cb, &channel_polled, 0);
 	assert(channel2);
-	channel2->priv = &channel_polled;
 	meshlink_set_channel_poll_cb(a, channel2, poll_cb2);
 
 	assert(wait_sync_flag(&channel_polled, 20));
 
 	assert(0 == a_poll_cb_len);
 
-	return 0;
+	meshlink_channel_close(a, channel);
+	meshlink_channel_close(a, channel2);
+	close_meshlink_pair(a, b);
 }

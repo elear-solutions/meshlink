@@ -1,26 +1,10 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <sys/time.h>
 #include <assert.h>
 
 #include "meshlink.h"
-
-void log_cb(meshlink_handle_t *mesh, meshlink_log_level_t level, const char *text) {
-	static struct timeval tv0;
-	struct timeval tv;
-
-	if(tv0.tv_sec == 0) {
-		gettimeofday(&tv0, NULL);
-	}
-
-	gettimeofday(&tv, NULL);
-	fprintf(stderr, "%u.%.03u ", (unsigned int)(tv.tv_sec - tv0.tv_sec), (unsigned int)tv.tv_usec / 1000);
-
-	if(mesh) {
-		fprintf(stderr, "(%s) ", mesh->name);
-	}
-
-	fprintf(stderr, "[%d] %s\n", level, text);
-}
+#include "utils.h"
 
 int main() {
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
@@ -38,8 +22,17 @@ int main() {
 
 	// Exchange data
 
-	assert(meshlink_import(mesh1, meshlink_export(mesh2)));
-	assert(meshlink_import(mesh2, meshlink_export(mesh1)));
+	char *export1 = meshlink_export(mesh1);
+	char *export2 = meshlink_export(mesh2);
+
+	assert(export1);
+	assert(export2);
+
+	assert(meshlink_import(mesh1, export2));
+	assert(meshlink_import(mesh2, export1));
+
+	free(export1);
+	free(export2);
 
 	// Check that they know each other
 
@@ -69,6 +62,4 @@ int main() {
 
 	meshlink_close(mesh1);
 	meshlink_close(mesh2);
-
-	return 0;
 }

@@ -109,6 +109,8 @@ void terminate_connection(meshlink_handle_t *mesh, connection_t *c, bool report)
   and close the connection.
 */
 static void timeout_handler(event_loop_t *loop, void *data) {
+	assert(data);
+
 	meshlink_handle_t *mesh = loop->data;
 	logger(mesh, MESHLINK_DEBUG, "timeout_handler()");
 
@@ -146,7 +148,7 @@ static void timeout_handler(event_loop_t *loop, void *data) {
 	}
 
 	timeout_set(&mesh->loop, data, &(struct timeval) {
-		default_timeout, rand() % 100000
+		default_timeout, prng(mesh, TIMER_FUDGE)
 	});
 }
 
@@ -421,7 +423,7 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 				logger(mesh, MESHLINK_DEBUG, "* could not find node for initial connect");
 			}
 
-			splay_free_tree(nodes);
+			splay_delete_tree(nodes);
 		}
 
 
@@ -450,11 +452,11 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 						logger(mesh, MESHLINK_DEBUG, "* found better node");
 						connect_to = (node_t *)nodes->head->data;
 
-						splay_free_tree(nodes);
+						splay_delete_tree(nodes);
 						break;
 					}
 
-					splay_free_tree(nodes);
+					splay_delete_tree(nodes);
 				} else {
 					break;
 				}
@@ -484,7 +486,7 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 				logger(mesh, MESHLINK_DEBUG, "* could not find nodes for partition healing");
 			}
 
-			splay_free_tree(nodes);
+			splay_delete_tree(nodes);
 		}
 
 
@@ -546,7 +548,7 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 						disconnect_from = (node_t *)nodes->head->data;
 					}
 
-					splay_free_tree(nodes);
+					splay_delete_tree(nodes);
 					break;
 				}
 			}
@@ -577,7 +579,7 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 				logger(mesh, MESHLINK_DEBUG, "* no node we want to disconnect, even though we have too many connections");
 			}
 
-			splay_free_tree(nodes);
+			splay_delete_tree(nodes);
 		}
 
 
@@ -608,7 +610,7 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 	}
 
 	timeout_set(&mesh->loop, data, &(struct timeval) {
-		timeout, rand() % 100000
+		timeout, prng(mesh, TIMER_FUDGE)
 	});
 }
 
@@ -696,7 +698,7 @@ void retry(meshlink_handle_t *mesh) {
 */
 int main_loop(meshlink_handle_t *mesh) {
 	timeout_add(&mesh->loop, &mesh->pingtimer, timeout_handler, &mesh->pingtimer, &(struct timeval) {
-		default_timeout, rand() % 100000
+		default_timeout, prng(mesh, TIMER_FUDGE)
 	});
 	timeout_add(&mesh->loop, &mesh->periodictimer, periodic_handler, &mesh->periodictimer, &(struct timeval) {
 		0, 0
@@ -704,17 +706,19 @@ int main_loop(meshlink_handle_t *mesh) {
 
 	//Add signal handler
 	mesh->datafromapp.signum = 0;
-	signal_add(&(mesh->loop), &(mesh->datafromapp), (signal_cb_t)meshlink_send_from_queue, mesh, mesh->datafromapp.signum);
+	signal_add(&mesh->loop, &mesh->datafromapp, meshlink_send_from_queue, mesh, mesh->datafromapp.signum);
 
-	if(!event_loop_run(&(mesh->loop), &(mesh->mesh_mutex))) {
+	if(!event_loop_run(&mesh->loop, &mesh->mutex)) {
 		logger(mesh, MESHLINK_ERROR, "Error while waiting for input: %s", strerror(errno));
 		abort();
+		signal_del(&mesh->loop, &mesh->datafromapp);
 		timeout_del(&mesh->loop, &mesh->periodictimer);
 		timeout_del(&mesh->loop, &mesh->pingtimer);
 
 		return 1;
 	}
 
+	signal_del(&mesh->loop, &mesh->datafromapp);
 	timeout_del(&mesh->loop, &mesh->periodictimer);
 	timeout_del(&mesh->loop, &mesh->pingtimer);
 

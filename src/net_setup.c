@@ -46,6 +46,7 @@ static bool node_get_config(meshlink_handle_t *mesh, node_t *n, config_t *config
 	uint32_t version = packmsg_get_uint32(in);
 
 	if(version != MESHLINK_CONFIG_VERSION) {
+		logger(mesh, MESHLINK_ERROR, "Invalid config file for node %s", n->name);
 		config_free(config);
 		return false;
 	}
@@ -54,47 +55,11 @@ static bool node_get_config(meshlink_handle_t *mesh, node_t *n, config_t *config
 	uint32_t len = packmsg_get_str_raw(in, &name);
 
 	if(len != strlen(n->name) || !name || strncmp(name, n->name, len)) {
+		logger(mesh, MESHLINK_ERROR, "Invalid config file for node %s", n->name);
 		config_free(config);
 		return false;
 	}
 
-	return true;
-}
-
-/// Read device class, blacklist status and submesh from a host config file. Used at startup when reading all host config files.
-bool node_read_partial(meshlink_handle_t *mesh, node_t *n) {
-	config_t config;
-	packmsg_input_t in;
-
-	if(!node_get_config(mesh, n, &config, &in)) {
-		return false;
-	}
-
-	char *submesh_name = packmsg_get_str_dup(&in);
-
-	if(!strcmp(submesh_name, CORE_MESH)) {
-		free(submesh_name);
-		n->submesh = NULL;
-	} else {
-		n->submesh = lookup_or_create_submesh(mesh, submesh_name);
-		free(submesh_name);
-
-		if(!n->submesh) {
-			config_free(&config);
-			return false;
-		}
-	}
-
-	dev_class_t devclass = packmsg_get_int32(&in);
-	bool blacklisted = packmsg_get_bool(&in);
-	config_free(&config);
-
-	if(!packmsg_input_ok(&in) || devclass < 0 || devclass >= DEV_CLASS_COUNT) {
-		return false;
-	}
-
-	n->devclass = devclass;
-	n->status.blacklisted = blacklisted;
 	return true;
 }
 
@@ -270,7 +235,13 @@ bool node_write_config(meshlink_handle_t *mesh, node_t *n) {
 	}
 
 	config_t config = {buf, packmsg_output_size(&out, buf)};
-	return config_write(mesh, "current", n->name, &config, mesh->config_key);
+
+	if(!config_write(mesh, "current", n->name, &config, mesh->config_key)) {
+		call_error_cb(mesh, MESHLINK_ESTORAGE);
+		return false;
+	}
+
+	return true;
 }
 
 static bool load_node(meshlink_handle_t *mesh, const char *name, void *priv) {
@@ -289,10 +260,22 @@ static bool load_node(meshlink_handle_t *mesh, const char *name, void *priv) {
 	n = new_node();
 	n->name = xstrdup(name);
 
-	if(!node_read_partial(mesh, n)) {
+	config_t config;
+	packmsg_input_t in;
+
+	if(!node_get_config(mesh, n, &config, &in)) {
 		free_node(n);
-		return true;
+		return false;
 	}
+
+	if(!node_read_from_config(mesh, n, &config)) {
+		logger(mesh, MESHLINK_ERROR, "Invalid config file for node %s", n->name);
+		config_free(&config);
+		free_node(n);
+		return false;
+	}
+
+	config_free(&config);
 
 	node_add(mesh, n);
 
@@ -381,6 +364,16 @@ static bool add_listen_address(meshlink_handle_t *mesh, char *address, bool bind
 
 		mesh->listen_socket[mesh->listen_sockets].bindto = bindto;
 		memcpy(&mesh->listen_socket[mesh->listen_sockets].sa, aip->ai_addr, aip->ai_addrlen);
+		memcpy(&mesh->listen_socket[mesh->listen_sockets].broadcast_sa, aip->ai_addr, aip->ai_addrlen);
+
+		if(aip->ai_family == AF_INET6) {
+			mesh->listen_socket[mesh->listen_sockets].broadcast_sa.in6.sin6_addr.s6_addr[0x0] = 0xff;
+			mesh->listen_socket[mesh->listen_sockets].broadcast_sa.in6.sin6_addr.s6_addr[0x1] = 0x02;
+			mesh->listen_socket[mesh->listen_sockets].broadcast_sa.in6.sin6_addr.s6_addr[0xf] = 0x01;
+		} else {
+			mesh->listen_socket[mesh->listen_sockets].broadcast_sa.in.sin_addr.s_addr = 0xffffffff;
+		}
+
 		mesh->listen_sockets++;
 		success = true;
 	}
@@ -407,7 +400,10 @@ bool setup_myself(meshlink_handle_t *mesh) {
 
 	graph(mesh);
 
-	config_scan_all(mesh, "current", "hosts", load_node, NULL);
+	if(!config_scan_all(mesh, "current", "hosts", load_node, NULL)) {
+		meshlink_errno = MESHLINK_ESTORAGE;
+		return false;
+	}
 
 	/* Open sockets */
 

@@ -164,8 +164,15 @@ static bool finalize_invitation(meshlink_handle_t *mesh, connection_t *c, const 
 	n->devclass = DEV_CLASS_UNKNOWN;
 	n->ecdsa = ecdsa_set_public_key(data);
 	n->submesh = c->submesh;
+
+	if(!node_write_config(mesh, n)) {
+		logger(mesh, MESHLINK_ERROR, "Error writing configuration file for invited node %s!\n", c->name);
+		free_node(n);
+		return false;
+
+	}
+
 	node_add(mesh, n);
-	node_write_config(mesh, n);
 
 	logger(mesh, MESHLINK_INFO, "Key successfully received from %s", c->name);
 
@@ -248,6 +255,9 @@ static bool receive_invitation_sptps(void *handle, uint8_t type, const void *dat
 }
 
 bool id_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
+	assert(request);
+	assert(*request);
+
 	char name[MAX_STRING_SIZE];
 
 	if(sscanf(request, "%*d " MAX_STRING " %d.%d", name, &c->protocol_major, &c->protocol_minor) < 2) {
@@ -385,6 +395,9 @@ static void send_everything(meshlink_handle_t *mesh, connection_t *c) {
 }
 
 bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
+	assert(request);
+	assert(*request);
+
 	char hisport[MAX_STRING_SIZE];
 	int devclass;
 	uint32_t options;

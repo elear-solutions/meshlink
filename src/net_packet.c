@@ -120,7 +120,7 @@ static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 		} else if(n->maxmtu <= n->minmtu) {
 			len = n->maxmtu;
 		} else {
-			len = n->minmtu + 1 + rand() % (n->maxmtu - n->minmtu);
+			len = n->minmtu + 1 + prng(mesh, n->maxmtu - n->minmtu);
 		}
 
 		if(len < 64) {
@@ -143,7 +143,7 @@ static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 
 end:
 	timeout_set(&mesh->loop, &n->mtutimeout, &(struct timeval) {
-		timeout, rand() % 100000
+		timeout, prng(mesh, TIMER_FUDGE)
 	});
 }
 
@@ -155,6 +155,11 @@ void send_mtu_probe(meshlink_handle_t *mesh, node_t *n) {
 }
 
 static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet, uint16_t len) {
+	if(len < 64) {
+		logger(mesh, MESHLINK_WARNING, "Got too short MTU probe length %d from %s", packet->len, n->name);
+		return;
+	}
+
 	logger(mesh, MESHLINK_DEBUG, "Got MTU probe length %d from %s", packet->len, n->name);
 
 	if(!packet->data[0]) {
@@ -292,7 +297,7 @@ static void choose_udp_address(meshlink_handle_t *mesh, const node_t *n, const s
 	   So we pick a random edge and a random socket. */
 
 	int i = 0;
-	int j = rand() % n->edge_tree->count;
+	int j = prng(mesh, n->edge_tree->count);
 	edge_t *candidate = NULL;
 
 	for splay_each(edge_t, e, n->edge_tree) {
@@ -304,7 +309,7 @@ static void choose_udp_address(meshlink_handle_t *mesh, const node_t *n, const s
 
 	if(candidate) {
 		*sa = &candidate->address;
-		*sock = rand() % mesh->listen_sockets;
+		*sock = prng(mesh, mesh->listen_sockets);
 	}
 
 	/* Make sure we have a suitable socket for the chosen address */
@@ -319,32 +324,16 @@ static void choose_udp_address(meshlink_handle_t *mesh, const node_t *n, const s
 }
 
 static void choose_broadcast_address(meshlink_handle_t *mesh, const node_t *n, const sockaddr_t **sa, int *sock) {
-	static sockaddr_t broadcast_ipv4 = {
-		.in = {
-			.sin_family = AF_INET,
-			.sin_addr.s_addr = -1,
-		}
-	};
+	*sock = prng(mesh, mesh->listen_sockets);
+	sockaddr_t *broadcast_sa = &mesh->listen_socket[*sock].broadcast_sa;
 
-	static sockaddr_t broadcast_ipv6 = {
-		.in6 = {
-			.sin6_family = AF_INET6,
-			.sin6_addr.s6_addr[0x0] = 0xff,
-			.sin6_addr.s6_addr[0x1] = 0x02,
-			.sin6_addr.s6_addr[0xf] = 0x01,
-		}
-	};
-
-	*sock = rand() % mesh->listen_sockets;
-
-	if(mesh->listen_socket[*sock].sa.sa.sa_family == AF_INET6) {
-		broadcast_ipv6.in6.sin6_port = n->prevedge->address.in.sin_port;
-		broadcast_ipv6.in6.sin6_scope_id = mesh->listen_socket[*sock].sa.in6.sin6_scope_id;
-		*sa = &broadcast_ipv6;
+	if(broadcast_sa->sa.sa_family == AF_INET6) {
+		broadcast_sa->in6.sin6_port = n->prevedge->address.in.sin_port;
 	} else {
-		broadcast_ipv4.in.sin_port = n->prevedge->address.in.sin_port;
-		*sa = &broadcast_ipv4;
+		broadcast_sa->in.sin_port = n->prevedge->address.in.sin_port;
 	}
+
+	*sa = broadcast_sa;
 }
 
 static void send_udppacket(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *origpkt) {
@@ -357,6 +346,10 @@ static void send_udppacket(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *ori
 }
 
 bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
+	assert(handle);
+	assert(data);
+	assert(len);
+
 	node_t *to = handle;
 	meshlink_handle_t *mesh = to->mesh;
 
@@ -405,6 +398,9 @@ bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 }
 
 bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t len) {
+	assert(handle);
+	assert(!data || len);
+
 	node_t *from = handle;
 	meshlink_handle_t *mesh = from->mesh;
 
@@ -479,22 +475,6 @@ void send_packet(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet) {
 
 	send_sptps_packet(mesh, n, packet);
 	return;
-}
-
-/* Broadcast a packet using the minimum spanning tree */
-
-void broadcast_packet(meshlink_handle_t *mesh, const node_t *from, vpn_packet_t *packet) {
-	// Always give ourself a copy of the packet.
-	if(from != mesh->self) {
-		send_packet(mesh, mesh->self, packet);
-	}
-
-	logger(mesh, MESHLINK_INFO, "Broadcasting packet of %d bytes from %s", packet->len, from->name);
-
-	for list_each(connection_t, c, mesh->connections)
-		if(c->status.active && c->status.mst && c != from->nexthop->connection) {
-			send_packet(mesh, c->node, packet);
-		}
 }
 
 static node_t *try_harder(meshlink_handle_t *mesh, const sockaddr_t *from, const vpn_packet_t *pkt) {

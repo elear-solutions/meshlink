@@ -34,7 +34,7 @@
 static const int req_key_timeout = 2;
 
 void send_key_changed(meshlink_handle_t *mesh) {
-	send_request(mesh, mesh->everyone, NULL, "%d %x %s", KEY_CHANGED, rand(), mesh->self->name);
+	send_request(mesh, mesh->everyone, NULL, "%d %x %s", KEY_CHANGED, prng(mesh, UINT_MAX), mesh->self->name);
 
 	/* Force key exchange for connections using SPTPS */
 
@@ -45,6 +45,9 @@ void send_key_changed(meshlink_handle_t *mesh) {
 }
 
 bool key_changed_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
+	assert(request);
+	assert(*request);
+
 	char name[MAX_STRING_SIZE];
 	node_t *n;
 
@@ -73,6 +76,10 @@ bool key_changed_h(meshlink_handle_t *mesh, connection_t *c, const char *request
 
 static bool send_initial_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 	(void)type;
+
+	assert(data);
+	assert(len);
+
 	node_t *to = handle;
 	meshlink_handle_t *mesh = to->mesh;
 	to->sptps.send_data = send_sptps_data;
@@ -211,6 +218,9 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 }
 
 bool req_key_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
+	assert(request);
+	assert(*request);
+
 	char from_name[MAX_STRING_SIZE];
 	char to_name[MAX_STRING_SIZE];
 	node_t *from, *to;
@@ -265,13 +275,10 @@ bool req_key_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	return true;
 }
 
-bool send_ans_key(meshlink_handle_t *mesh, node_t *to) {
-	(void)mesh;
-	(void)to;
-	abort();
-}
-
 bool ans_key_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
+	assert(request);
+	assert(*request);
+
 	char from_name[MAX_STRING_SIZE];
 	char to_name[MAX_STRING_SIZE];
 	char key[MAX_STRING_SIZE];

@@ -52,7 +52,7 @@ devtool_edge_t *devtool_get_all_edges(meshlink_handle_t *mesh, devtool_edge_t *e
 		return NULL;
 	}
 
-	pthread_mutex_lock(&(mesh->mesh_mutex));
+	pthread_mutex_lock(&mesh->mutex);
 
 	devtool_edge_t *result = NULL;
 	unsigned int result_size = 0;
@@ -72,7 +72,7 @@ devtool_edge_t *devtool_get_all_edges(meshlink_handle_t *mesh, devtool_edge_t *e
 
 		for splay_each(edge_t, e, mesh->edges) {
 			// skip edges that do not represent a two-directional connection
-			if((!e->reverse) || (e->reverse->to != e->from)) {
+			if(!e->reverse || e->reverse->to != e->from) {
 				continue;
 			}
 
@@ -100,12 +100,14 @@ devtool_edge_t *devtool_get_all_edges(meshlink_handle_t *mesh, devtool_edge_t *e
 		meshlink_errno = MESHLINK_ENOMEM;
 	}
 
-	pthread_mutex_unlock(&(mesh->mesh_mutex));
+	pthread_mutex_unlock(&mesh->mutex);
 
 	return result;
 }
 
 static bool fstrwrite(const char *str, FILE *stream) {
+	assert(stream);
+
 	size_t len = strlen(str);
 
 	if(fwrite((void *)str, 1, len, stream) != len) {
@@ -116,9 +118,11 @@ static bool fstrwrite(const char *str, FILE *stream) {
 }
 
 bool devtool_export_json_all_edges_state(meshlink_handle_t *mesh, FILE *stream) {
+	assert(stream);
+
 	bool result = true;
 
-	pthread_mutex_lock(&(mesh->mesh_mutex));
+	pthread_mutex_lock(&mesh->mutex);
 
 	// export edges and nodes
 	size_t node_count = 0;
@@ -233,7 +237,7 @@ done:
 	free(nodes);
 	free(edges);
 
-	pthread_mutex_unlock(&(mesh->mesh_mutex));
+	pthread_mutex_unlock(&mesh->mutex);
 
 	return result;
 }
@@ -246,7 +250,7 @@ void devtool_get_node_status(meshlink_handle_t *mesh, meshlink_node_t *node, dev
 
 	node_t *internal = (node_t *)node;
 
-	pthread_mutex_lock(&mesh->mesh_mutex);
+	pthread_mutex_lock(&mesh->mutex);
 
 	memcpy(&status->status, &internal->status, sizeof status->status);
 	memcpy(&status->address, &internal->address, sizeof status->address);
@@ -276,7 +280,7 @@ void devtool_get_node_status(meshlink_handle_t *mesh, meshlink_node_t *node, dev
 		status->udp_status = DEVTOOL_UDP_UNKNOWN;
 	}
 
-	pthread_mutex_unlock(&mesh->mesh_mutex);
+	pthread_mutex_unlock(&mesh->mutex);
 }
 
 meshlink_submesh_t **devtool_get_all_submeshes(meshlink_handle_t *mesh, meshlink_submesh_t **submeshes, size_t *nmemb) {
@@ -288,7 +292,7 @@ meshlink_submesh_t **devtool_get_all_submeshes(meshlink_handle_t *mesh, meshlink
 	meshlink_submesh_t **result;
 
 	//lock mesh->nodes
-	pthread_mutex_lock(&(mesh->mesh_mutex));
+	pthread_mutex_lock(&mesh->mutex);
 
 	*nmemb = mesh->submeshes->count;
 	result = realloc(submeshes, *nmemb * sizeof(*submeshes));
@@ -305,10 +309,11 @@ meshlink_submesh_t **devtool_get_all_submeshes(meshlink_handle_t *mesh, meshlink
 		meshlink_errno = MESHLINK_ENOMEM;
 	}
 
-	pthread_mutex_unlock(&(mesh->mesh_mutex));
+	pthread_mutex_unlock(&mesh->mutex);
 
 	return result;
 }
+
 meshlink_handle_t *devtool_open_in_netns(const char *confbase, const char *name, const char *appname, dev_class_t devclass, int netns) {
 	meshlink_open_params_t *params = meshlink_open_params_init(confbase, name, appname, devclass);
 	params->netns = dup(netns);

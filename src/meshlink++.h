@@ -259,6 +259,12 @@ public:
 		(void)message;
 	}
 
+	/// This functions is called whenever MeshLink has encountered a serious error.
+	virtual void error(meshlink_errno_t meshlink_errno) {
+		/* do nothing */
+		(void)meshlink_errno;
+	}
+
 	/// This functions is called whenever MeshLink a meta-connection attempt is made.
 	virtual void connection_try(node *peer) {
 		/* do nothing */
@@ -339,6 +345,7 @@ public:
 		meshlink_set_node_pmtu_cb(handle, &node_pmtu_trampoline);
 		meshlink_set_node_duplicate_cb(handle, &node_duplicate_trampoline);
 		meshlink_set_log_cb(handle, MESHLINK_DEBUG, &log_trampoline);
+		meshlink_set_error_cb(handle, &error_trampoline);
 		meshlink_set_channel_accept_cb(handle, &channel_accept_trampoline);
 		meshlink_set_connection_try_cb(handle, &connection_try_trampoline);
 		return meshlink_start(handle);
@@ -701,6 +708,18 @@ public:
 		meshlink_set_channel_rcvbuf(handle, channel, size);
 	}
 
+	/// Set the connection timeout used for channels to the given node.
+	/** This sets the timeout after which unresponsive channels will be reported as closed.
+	 *  The timeout is set for all current and future channels to the given node.
+	 *
+	 *  @param channel      A handle for the channel.
+	 *  @param timeout      The timeout in seconds after which unresponsive channels will be reported as closed.
+	 *                      The default is 60 seconds.
+	 */
+	void set_node_channel_timeout(node *node, int timeout) {
+		meshlink_set_node_channel_timeout(handle, node, timeout);
+	}
+
 	/// Open a reliable stream channel to another node.
 	/** This function is called whenever a remote node wants to open a channel to the local node.
 	 *  The application then has to decide whether to accept or reject this channel.
@@ -713,6 +732,7 @@ public:
 	 *  @param cb           A pointer to the function which will be called when the remote node sends data to the local node.
 	 *  @param data         A pointer to a buffer containing data to already queue for sending.
 	 *  @param len          The length of the data.
+	 *                      If len is 0, the data pointer is copied into the channel's priv member.
 	 *  @param flags        A bitwise-or'd combination of flags that set the semantics for this channel.
 	 *
 	 *  @return             A handle for the channel, or NULL in case of an error.
@@ -737,6 +757,7 @@ public:
 	 *  @param port         The port number the peer wishes to connect to.
 	 *  @param data         A pointer to a buffer containing data to already queue for sending.
 	 *  @param len          The length of the data.
+	 *                      If len is 0, the data pointer is copied into the channel's priv member.
 	 *  @param flags        A bitwise-or'd combination of flags that set the semantics for this channel.
 	 *
 	 *  @return             A handle for the channel, or NULL in case of an error.
@@ -950,6 +971,15 @@ private:
 
 		meshlink::mesh *that = static_cast<mesh *>(handle->priv);
 		that->log(level, message);
+	}
+
+	static void error_trampoline(meshlink_handle_t *handle, meshlink_errno_t meshlink_errno) {
+		if(!(handle->priv)) {
+			return;
+		}
+
+		meshlink::mesh *that = static_cast<mesh *>(handle->priv);
+		that->error(meshlink_errno);
 	}
 
 	static void connection_try_trampoline(meshlink_handle_t *handle, meshlink_node_t *peer) {

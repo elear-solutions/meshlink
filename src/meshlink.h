@@ -511,6 +511,38 @@ typedef void (*meshlink_log_cb_t)(struct meshlink_handle *mesh, meshlink_log_lev
  */
 extern void meshlink_set_log_cb(struct meshlink_handle *mesh, meshlink_log_level_t level, meshlink_log_cb_t cb);
 
+/// A callback for receiving error conditions encountered by the MeshLink thread.
+/** @param mesh      A handle which represents an instance of MeshLink, or NULL.
+ *  @param errno     The error code describing what kind of error occured.
+ */
+typedef void (*meshlink_error_cb_t)(struct meshlink_handle *mesh, meshlink_errno_t meshlink_errno);
+
+/// Set the error callback.
+/** This functions sets the callback that is called whenever the MeshLink thread encounters a serious error.
+ *
+ *  While most API functions report an error directly to the caller in case something went wrong,
+ *  MeshLink also runs a background thread which can encounter error conditions.
+ *  Most of them will be dealt with automatically, however there can be errors that will prevent MeshLink from
+ *  working correctly. When the callback is called, it means that MeshLink is no longer functioning
+ *  as expected. The application should then present an error message and shut down, or perform any other
+ *  action it deems appropriate.
+ *
+ *  The callback is run in MeshLink's own thread.
+ *  It is important that the callback uses apprioriate methods (queues, pipes, locking, etc.)
+ *  to hand the data over to the application's thread.
+ *  The callback should also not block itself and return as quickly as possible.
+ *
+ *  Even though the callback signals a serious error inside MeshLink, all open handles are still valid,
+ *  and the application should close handles in exactly the same it would have to do if the callback
+ *  was not called. This must not be done inside the callback itself.
+ *
+ *  \memberof meshlink_handle
+ *  @param mesh      A handle which represents an instance of MeshLink, or NULL.
+ *  @param cb        A pointer to the function which will be called when a serious error is encountered.
+ *                   If a NULL pointer is given, the callback will be disabled.
+ */
+extern void meshlink_set_error_cb(struct meshlink_handle *mesh, meshlink_error_cb_t cb);
+
 /// Send data to another node.
 /** This functions sends one packet of data to another node in the mesh.
  *  The packet is sent using UDP semantics, which means that
@@ -1139,6 +1171,7 @@ extern void meshlink_set_channel_rcvbuf(struct meshlink_handle *mesh, struct mes
  *                      The pointer may be NULL, in which case incoming data is ignored.
  *  @param data         A pointer to a buffer containing data to already queue for sending, or NULL if there is no data to send.
  *                      After meshlink_send() returns, the application is free to overwrite or free this buffer.
+ *                      If len is 0, the data pointer is copied into the channel's priv member.
  *  @param len          The length of the data, or 0 if there is no data to send.
  *  @param flags        A bitwise-or'd combination of flags that set the semantics for this channel.
  *
@@ -1167,6 +1200,7 @@ extern struct meshlink_channel *meshlink_channel_open_ex(struct meshlink_handle 
  *  @param data         A pointer to a buffer containing data to already queue for sending, or NULL if there is no data to send.
  *                      After meshlink_send() returns, the application is free to overwrite or free this buffer.
  *  @param len          The length of the data, or 0 if there is no data to send.
+ *                      If len is 0, the data pointer is copied into the channel's priv member.
  *
  *  @return             A handle for the channel, or NULL in case of an error.
  *                      The handle is valid until meshlink_channel_close() is called.
@@ -1347,6 +1381,18 @@ extern size_t meshlink_channel_get_sendq(struct meshlink_handle *mesh, struct me
  *  @return             The amount of bytes in the receive buffer.
  */
 extern size_t meshlink_channel_get_recvq(struct meshlink_handle *mesh, struct meshlink_channel *channel);
+
+/// Set the connection timeout used for channels to the given node.
+/** This sets the timeout after which unresponsive channels will be reported as closed.
+ *  The timeout is set for all current and future channels to the given node.
+ *
+ *  \memberof meshlink_node
+ *  @param mesh         A handle which represents an instance of MeshLink.
+ *  @param channel      A handle for the channel.
+ *  @param timeout      The timeout in seconds after which unresponsive channels will be reported as closed.
+ *                      The default is 60 seconds.
+ */
+extern void meshlink_set_node_channel_timeout(struct meshlink_handle *mesh, struct meshlink_node *node, int timeout);
 
 /// Hint that a hostname may be found at an address
 /** This function indicates to meshlink that the given hostname is likely found
