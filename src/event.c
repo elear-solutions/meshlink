@@ -174,8 +174,10 @@ static void signalio_handler(event_loop_t *loop, void *data, int flags) {
 }
 
 static void pipe_init(event_loop_t *loop) {
-	assert(pipe(loop->pipefd) == 0);
-	io_add(loop, &loop->signalio, signalio_handler, NULL, loop->pipefd[0], IO_READ);
+	//assert(pipe(loop->pipefd) == 0);
+	if(!pipe(loop->pipefd)) {
+		io_add(loop, &loop->signalio, signalio_handler, NULL, loop->pipefd[0], IO_READ);
+	}
 }
 
 static void pipe_exit(event_loop_t *loop) {
