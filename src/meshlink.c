@@ -796,6 +796,7 @@ static const char *errstr[] = {
 	[MESHLINK_EPEER] = "Error communicating with peer",
 	[MESHLINK_ENOTSUP] = "Operation not supported",
 	[MESHLINK_EBUSY] = "MeshLink instance already in use",
+	[MESHLINK_EBLACKLISTED] = "Node is blacklisted",
 };
 
 const char *meshlink_strerror(meshlink_errno_t err) {
@@ -1757,6 +1758,7 @@ bool meshlink_send(meshlink_handle_t *mesh, meshlink_node_t *destination, const 
 
 	if(n->status.blacklisted) {
 		logger(mesh, MESHLINK_ERROR, "Node %s blacklisted, dropping packet\n", n->name);
+		meshlink_errno = MESHLINK_EBLACKLISTED;
 		return false;
 	}
 
@@ -2829,10 +2831,12 @@ void meshlink_blacklist(meshlink_handle_t *mesh, meshlink_node_t *node) {
 
 	logger(mesh, MESHLINK_DEBUG, "Blacklisted %s.\n", node->name);
 
-	//Immediately terminate any connections we have with the blacklisted node
+	/* Immediately shut down any connections we have with the blacklisted node.
+	 * We can't call terminate_connection(), because we might be called from a callback function.
+	 */
 	for list_each(connection_t, c, mesh->connections) {
 		if(c->node == n) {
-			terminate_connection(mesh, c, c->status.active);
+			shutdown(c->socket, SHUT_RDWR);
 		}
 	}
 
@@ -2843,10 +2847,6 @@ void meshlink_blacklist(meshlink_handle_t *mesh, meshlink_node_t *node) {
 	n->maxmtu = MTU;
 	n->mtuprobes = 0;
 	n->status.udp_confirmed = false;
-
-	if(n->status.reachable) {
-		update_node_status(mesh, n);
-	}
 
 	pthread_mutex_unlock(&mesh->mutex);
 }
@@ -2861,9 +2861,15 @@ void meshlink_whitelist(meshlink_handle_t *mesh, meshlink_node_t *node) {
 
 	node_t *n = (node_t *)node;
 
+	if(n == mesh->self) {
+		logger(mesh, MESHLINK_ERROR, "%s whitelisting itself?\n", node->name);
+		meshlink_errno = MESHLINK_EINVAL;
+		pthread_mutex_unlock(&mesh->mutex);
+		return;
+	}
+
 	if(!n->status.blacklisted) {
 		logger(mesh, MESHLINK_DEBUG, "Node %s was already whitelisted\n", node->name);
-		meshlink_errno = MESHLINK_EINVAL;
 		pthread_mutex_unlock(&mesh->mutex);
 		return;
 	}
@@ -2875,6 +2881,8 @@ void meshlink_whitelist(meshlink_handle_t *mesh, meshlink_node_t *node) {
 	if(n->status.reachable) {
 		update_node_status(mesh, n);
 	}
+
+	logger(mesh, MESHLINK_DEBUG, "Whitelisted %s.\n", node->name);
 
 	pthread_mutex_unlock(&mesh->mutex);
 	return;
@@ -3183,6 +3191,7 @@ meshlink_channel_t *meshlink_channel_open_ex(meshlink_handle_t *mesh, meshlink_n
 
 	if(n->status.blacklisted) {
 		logger(mesh, MESHLINK_ERROR, "Cannot open a channel with blacklisted node\n");
+		meshlink_errno = MESHLINK_EBLACKLISTED;
 		pthread_mutex_unlock(&mesh->mutex);
 		return NULL;
 	}
