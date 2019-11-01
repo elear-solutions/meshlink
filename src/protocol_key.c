@@ -324,7 +324,14 @@ bool ans_key_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 			return true;
 		}
 
-		if(!*address && from->address.sa.sa_family != AF_UNSPEC) {
+		if(from == to) {
+			logger(mesh, MESHLINK_WARNING, "Got %s from %s from %s to %s",
+			       "ANS_KEY", c->name, from_name, to_name);
+			return true;
+		}
+
+		/* Append the known UDP address of the from node, if we have a confirmed one */
+		if(!*address && from->status.udp_confirmed && from->address.sa.sa_family != AF_UNSPEC) {
 			char *address, *port;
 			logger(mesh, MESHLINK_DEBUG, "Appending reflexive UDP address to ANS_KEY from %s to %s", from->name, to->name);
 			sockaddr2str(&from->address, &address, &port);
@@ -337,22 +344,55 @@ bool ans_key_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		return send_request(mesh, to->nexthop->connection, NULL, "%s", request);
 	}
 
-	/* Don't use key material until every check has passed. */
-	from->status.validkey = false;
+	/* Is this an ANS_KEY informing us of our own reflexive UDP address? */
 
-	/* Compression is not supported. */
-	if(compression != 0) {
-		logger(mesh, MESHLINK_ERROR, "Node %s uses bogus compression level!", from->name);
+	if(from == mesh->self) {
+		if(*key == '.' && *address && *port) {
+			logger(mesh, MESHLINK_DEBUG, "Learned our own reflexive UDP address from %s: %s port %s", c->name, address, port);
+
+			/* Inform all other nodes we want to communicate with and which are reachable via this connection */
+			for splay_each(node_t, n, mesh->nodes) {
+				if(n->nexthop == c->node) {
+					continue;
+				}
+
+				if(n->status.udp_confirmed) {
+					continue;
+				}
+
+				if(!n->status.waitingforkey && !n->status.validkey) {
+					continue;
+				}
+
+				logger(mesh, MESHLINK_DEBUG, "Forwarding our own reflexive UDP address to %s", n->name);
+				send_request(mesh, c, NULL, "%d %s %s . -1 -1 -1 0 %s %s", ANS_KEY, mesh->self->name, n->name, address, port);
+			}
+		} else {
+			logger(mesh, MESHLINK_WARNING, "Got %s from %s from %s to %s",
+			       "ANS_KEY", c->name, from_name, to_name);
+		}
+
 		return true;
 	}
 
-	/* SPTPS or old-style key exchange? */
+	/* Process SPTPS data if present */
 
-	char buf[strlen(key)];
-	int len = b64decode(key, buf, strlen(key));
+	if(*key != '.') {
+		/* Don't use key material until every check has passed. */
+		from->status.validkey = false;
 
-	if(!len || !sptps_receive_data(&from->sptps, buf, len)) {
-		logger(mesh, MESHLINK_ERROR, "Error processing SPTPS data from %s", from->name);
+		/* Compression is not supported. */
+		if(compression != 0) {
+			logger(mesh, MESHLINK_ERROR, "Node %s uses bogus compression level!", from->name);
+			return true;
+		}
+
+		char buf[strlen(key)];
+		int len = b64decode(key, buf, strlen(key));
+
+		if(!len || !sptps_receive_data(&from->sptps, buf, len)) {
+			logger(mesh, MESHLINK_ERROR, "Error processing SPTPS data from %s", from->name);
+		}
 	}
 
 	if(from->status.validkey) {
