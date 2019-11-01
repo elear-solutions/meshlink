@@ -102,6 +102,12 @@ static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 	}
 
 	if(n->mtuprobes == 31) {
+		if(!n->minmtu && n->status.want_udp) {
+			/* Send a dummy ANS_KEY to try to update the reflexive UDP address */
+			send_request(mesh, n->nexthop->connection, NULL, "%d %s %s . -1 -1 -1 0", ANS_KEY, mesh->self->name, n->name);
+			n->status.want_udp = false;
+		}
+
 		timeout = mesh->dev_class_traits[n->devclass].pinginterval;
 		goto end;
 	} else if(n->mtuprobes == 32) {
@@ -179,7 +185,14 @@ static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet
 		   is possible using the address and socket that the reply
 		   packet used. */
 
-		n->status.udp_confirmed = true;
+		if(!n->status.udp_confirmed) {
+			char *address, *port;
+			sockaddr2str(&n->address, &address, &port);
+			send_request(mesh, n->nexthop->connection, NULL, "%d %s %s . -1 -1 -1 0 %s %s", ANS_KEY, n->name, n->name, address, port);
+			free(address);
+			free(port);
+			n->status.udp_confirmed = true;
+		}
 
 		/* If we haven't established the PMTU yet, restart the discovery process. */
 
@@ -472,6 +485,7 @@ void send_packet(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet) {
 
 	n->out_packets++;
 	n->out_bytes += packet->len;
+	n->status.want_udp = true;
 
 	send_sptps_packet(mesh, n, packet);
 	return;
