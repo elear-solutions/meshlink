@@ -373,7 +373,17 @@ bool config_rename(meshlink_handle_t *mesh, const char *old_conf_subdir, const c
 	snprintf(old_path, sizeof(old_path), "%s" SLASH "%s", mesh->confbase, old_conf_subdir);
 	snprintf(new_path, sizeof(new_path), "%s" SLASH "%s", mesh->confbase, new_conf_subdir);
 
-	return rename(old_path, new_path) == 0;
+	if(rename(old_path, new_path)) {
+		logger(mesh, MESHLINK_ERROR, "Failed to rename `%s' to `%s': %s", old_path, new_path, strerror(errno));
+		return false;
+	}
+
+	if(!sync_path(new_path)) {
+		logger(mesh, MESHLINK_ERROR, "Failed to sync `%s' : %s", new_path, strerror(errno));
+		return false;
+	}
+
+	return  true;
 }
 
 bool config_sync(meshlink_handle_t *mesh, const char *conf_subdir) {
@@ -580,6 +590,11 @@ bool config_write_file(meshlink_handle_t *mesh, FILE *f, const config_t *config,
 		return false;
 	}
 
+	if(fflush(f)) {
+		logger(mesh, MESHLINK_ERROR, "Failed to flush file : %s\n", strerror(errno));
+		return false;
+	}
+
 	if(fsync(fileno(f))) {
 		logger(mesh, MESHLINK_ERROR, "Failed to sync file: %s\n", strerror(errno));
 		return false;
@@ -704,12 +719,6 @@ bool config_write(meshlink_handle_t *mesh, const char *conf_subdir, const char *
 		return false;
 	}
 
-	if(fsync(fileno(f))) {
-		logger(mesh, MESHLINK_ERROR, "Failed to sync `%s': %s", tmp_path, strerror(errno));
-		fclose(f);
-		return false;
-	}
-
 	if(fclose(f)) {
 		logger(mesh, MESHLINK_ERROR, "Failed to close `%s': %s", tmp_path, strerror(errno));
 		return false;
@@ -717,6 +726,15 @@ bool config_write(meshlink_handle_t *mesh, const char *conf_subdir, const char *
 
 	if(rename(tmp_path, path)) {
 		logger(mesh, MESHLINK_ERROR, "Failed to rename `%s' to `%s': %s", tmp_path, path, strerror(errno));
+		return false;
+	}
+
+	// Sync the renamed file's directory where the file system looks to find your file
+	// and to avoid system failure (such as power loss, ENOSPC or an I/O error)
+	snprintf(path, sizeof(path), "%s" SLASH "%s" SLASH "hosts", mesh->confbase, conf_subdir);
+
+	if(!sync_path(path)) {
+		logger(mesh, MESHLINK_ERROR, "Failed to sync `%s' directory", path);
 		return false;
 	}
 
@@ -780,9 +798,8 @@ bool main_config_write(meshlink_handle_t *mesh, const char *conf_subdir, const c
 		return false;
 	}
 
-	if(fsync(fileno(f))) {
-		logger(mesh, MESHLINK_ERROR, "Failed to sync `%s': %s", tmp_path, strerror(errno));
-		fclose(f);
+	if(fclose(f)) {
+		logger(mesh, MESHLINK_ERROR, "Failed to close `%s': %s", tmp_path, strerror(errno));
 		return false;
 	}
 
@@ -792,8 +809,12 @@ bool main_config_write(meshlink_handle_t *mesh, const char *conf_subdir, const c
 		return false;
 	}
 
-	if(fclose(f)) {
-		logger(mesh, MESHLINK_ERROR, "Failed to close `%s': %s", tmp_path, strerror(errno));
+	// Sync the renamed main conf file's directory where the file system looks to find your file
+	// and to avoid system failure (such as power loss, ENOSPC or an I/O error)
+	snprintf(path, sizeof(path), "%s" SLASH "%s", mesh->confbase, conf_subdir);
+
+	if(!sync_path(path)) {
+		logger(mesh, MESHLINK_ERROR, "Failed to sync `%s' directory", path);
 		return false;
 	}
 
@@ -874,29 +895,39 @@ bool invitation_write(meshlink_handle_t *mesh, const char *conf_subdir, const ch
 	}
 
 	char path[PATH_MAX];
+	char tmp_path[PATH_MAX + 4];
 	make_invitation_path(mesh, conf_subdir, name, path, sizeof(path));
+	snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
 
-	FILE *f = fopen(path, "w");
+	FILE *f = fopen(tmp_path, "w");
 
 	if(!f) {
-		logger(mesh, MESHLINK_ERROR, "Failed to open `%s': %s", path, strerror(errno));
+		logger(mesh, MESHLINK_ERROR, "Failed to open `%s': %s", tmp_path, strerror(errno));
 		return false;
 	}
 
 	if(!config_write_file(mesh, f, config, key)) {
-		logger(mesh, MESHLINK_ERROR, "Failed to write `%s': %s", path, strerror(errno));
-		fclose(f);
-		return false;
-	}
-
-	if(fsync(fileno(f))) {
-		logger(mesh, MESHLINK_ERROR, "Failed to sync `%s': %s", path, strerror(errno));
+		logger(mesh, MESHLINK_ERROR, "Failed to write `%s': %s", tmp_path, strerror(errno));
 		fclose(f);
 		return false;
 	}
 
 	if(fclose(f)) {
-		logger(mesh, MESHLINK_ERROR, "Failed to close `%s': %s", path, strerror(errno));
+		logger(mesh, MESHLINK_ERROR, "Failed to close `%s': %s", tmp_path, strerror(errno));
+		return false;
+	}
+
+	if(rename(tmp_path, path)) {
+		logger(mesh, MESHLINK_ERROR, "Failed to rename `%s' to `%s': %s", tmp_path, path, strerror(errno));
+		return false;
+	}
+
+	// Sync the renamed file's directory where the file system looks to find your file
+	// and to avoid system failure (such as power loss, ENOSPC or an I/O error)
+	snprintf(path, sizeof(path), "%s" SLASH "%s" SLASH "invitations", mesh->confbase, conf_subdir);
+
+	if(!sync_path(path)) {
+		logger(mesh, MESHLINK_ERROR, "Failed to sync `%s' directory", path);
 		return false;
 	}
 
