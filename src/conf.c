@@ -373,7 +373,18 @@ bool config_rename(meshlink_handle_t *mesh, const char *old_conf_subdir, const c
 	snprintf(old_path, sizeof(old_path), "%s" SLASH "%s", mesh->confbase, old_conf_subdir);
 	snprintf(new_path, sizeof(new_path), "%s" SLASH "%s", mesh->confbase, new_conf_subdir);
 
-	return rename(old_path, new_path) == 0;
+	if(rename(old_path, new_path)) {
+		logger(mesh, MESHLINK_ERROR, "Failed to rename `%s' to `%s': %s", old_path, new_path, strerror(errno));
+		return false;
+	}
+
+	if(!sync_path(new_path)) {
+		logger(mesh, MESHLINK_ERROR, "Failed to sync `%s' : %s", new_path, strerror(errno));
+		meshlink_errno = MESHLINK_ESTORAGE;
+		return false;
+	}
+
+	return  true;
 }
 
 bool config_sync(meshlink_handle_t *mesh, const char *conf_subdir) {
@@ -393,6 +404,7 @@ bool config_sync(meshlink_handle_t *mesh, const char *conf_subdir) {
 	snprintf(path, sizeof(path), "%s" SLASH "%s", mesh->confbase, conf_subdir);
 
 	if(!sync_path(path)) {
+		meshlink_errno = MESHLINK_ESTORAGE;
 		return false;
 	}
 
@@ -730,6 +742,16 @@ bool config_write(meshlink_handle_t *mesh, const char *conf_subdir, const char *
 		return false;
 	}
 
+	// Sync the renamed file's directory where the file system looks to find your file
+	// and to avoid system failure (such as power loss, ENOSPC or an I/O error)
+	snprintf(path, sizeof(path), "%s" SLASH "%s" SLASH "hosts", mesh->confbase, conf_subdir);
+
+	if(!sync_path(path)) {
+		logger(mesh, MESHLINK_ERROR, "Failed to sync `%s' directory", path);
+		meshlink_errno = MESHLINK_ESTORAGE;
+		return false;
+	}
+
 	return true;
 }
 
@@ -800,6 +822,16 @@ bool main_config_write(meshlink_handle_t *mesh, const char *conf_subdir, const c
 
 	if(fclose(f)) {
 		logger(mesh, MESHLINK_ERROR, "Failed to close `%s': %s", tmp_path, strerror(errno));
+		meshlink_errno = MESHLINK_ESTORAGE;
+		return false;
+	}
+
+	// Sync the renamed main conf file's directory where the file system looks to find your file
+	// and to avoid system failure (such as power loss, ENOSPC or an I/O error)
+	snprintf(path, sizeof(path), "%s" SLASH "%s", mesh->confbase, conf_subdir);
+
+	if(!sync_path(path)) {
+		logger(mesh, MESHLINK_ERROR, "Failed to sync `%s' directory", path);
 		meshlink_errno = MESHLINK_ESTORAGE;
 		return false;
 	}
