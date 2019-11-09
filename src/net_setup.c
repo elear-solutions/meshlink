@@ -127,7 +127,6 @@ bool node_read_public_key(meshlink_handle_t *mesh, node_t *n) {
 		n->last_unreachable = last_unreachable;
 	}
 
-
 	config_free(&config);
 	return true;
 }
@@ -250,6 +249,7 @@ bool node_write_config(meshlink_handle_t *mesh, node_t *n) {
 	packmsg_add_int64(&out, n->last_unreachable);
 
 	if(!packmsg_output_ok(&out)) {
+		meshlink_errno = MESHLINK_EINTERNAL;
 		return false;
 	}
 
@@ -532,7 +532,9 @@ bool setup_myself(meshlink_handle_t *mesh) {
 
 	node_add(mesh, mesh->self);
 
-	config_scan_all(mesh, "current", "hosts", load_node, NULL);
+	if(!config_scan_all(mesh, "current", "hosts", load_node, NULL)) {
+		logger(mesh, MESHLINK_WARNING, "Could not scan all host config files");
+	}
 
 	/* Open sockets */
 
