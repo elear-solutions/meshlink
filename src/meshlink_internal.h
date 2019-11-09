@@ -172,7 +172,7 @@ struct meshlink_handle {
 
 	// Configuration
 	char *confbase;
-	FILE *conffile;
+	FILE *lockfile;
 	void *config_key;
 	char *external_address_url;
 	struct list_t *invitation_addresses;
