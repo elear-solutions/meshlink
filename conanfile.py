@@ -32,5 +32,4 @@ class MeshlinklibConan(ConanFile):
         self.copy("*", dst="lib", src="catta/src/lib", keep_path=False)
 
     def package_info(self):
-        self.cpp_info.libs = [ "meshlink" ]
-        self.cpp_info.libs = [ "catta" ]
+        self.cpp_info.libs = [ "meshlink" , "catta"]
