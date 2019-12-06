@@ -3149,9 +3149,12 @@ void meshlink_hint_address(meshlink_handle_t *mesh, meshlink_node_t *node, const
 	pthread_mutex_lock(&mesh->mutex);
 
 	node_t *n = (node_t *)node;
-	memmove(n->recent + 1, n->recent, 4 * sizeof(*n->recent));
-	memcpy(n->recent, addr, SALEN(*addr));
-	node_write_config(mesh, n);
+
+	if(node_add_recent_address(mesh, n, (sockaddr_t *)addr)) {
+		if(!node_write_config(mesh, n)) {
+			logger(mesh, MESHLINK_DEBUG, "Could not update %s\n", n->name);
+		}
+	}
 
 	pthread_mutex_unlock(&mesh->mutex);
 	// @TODO do we want to fire off a connection attempt right away?

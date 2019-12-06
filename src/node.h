@@ -105,5 +105,6 @@ extern void node_del(struct meshlink_handle *mesh, node_t *n);
 extern node_t *lookup_node(struct meshlink_handle *mesh, const char *name);
 extern node_t *lookup_node_udp(struct meshlink_handle *mesh, const sockaddr_t *sa);
 extern void update_node_udp(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *sa);
+extern bool node_add_recent_address(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *addr);
 
 #endif
