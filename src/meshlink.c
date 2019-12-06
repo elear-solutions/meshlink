@@ -628,7 +628,7 @@ static bool finalize_join(join_state_t *state, const void *buf, uint16_t len) {
 	}
 
 	// Write host config files
-	while(count--) {
+	for(uint32_t i = 0; i < count; i++) {
 		const void *data;
 		uint32_t len = packmsg_get_bin_raw(&in, &data);
 
@@ -671,15 +671,29 @@ static bool finalize_join(join_state_t *state, const void *buf, uint16_t len) {
 			return false;
 		}
 
+
 		/* Clear the reachability times, since we ourself have never seen these nodes yet */
 		n->last_reachable = 0;
 		n->last_unreachable = 0;
 
-		node_add(mesh, n);
+		if(i == 0) {
+			/* The first host config file is of the inviter itself;
+			 * remember the address we are currently using for the invitation connection.
+			 */
+			sockaddr_t sa;
+			socklen_t salen = sizeof(sa);
+
+			if(getpeername(state->sock, &sa.sa, &salen) == 0) {
+				node_add_recent_address(mesh, n, &sa);
+			}
+		}
 
 		if(!node_write_config(mesh, n)) {
+			free_node(n);
 			return false;
 		}
+
+		node_add(mesh, n);
 	}
 
 	/* Ensure the configuration directory metadata is on disk */
