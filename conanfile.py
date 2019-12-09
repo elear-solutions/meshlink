@@ -17,7 +17,7 @@ class MeshlinklibConan(ConanFile):
         self.run("cd .. && autoreconf -fsi")
         if tools.cross_building(self.settings) and self.settings.os != "Windows":
             host = tools.get_gnu_triplet(str(self.settings.os), str(self.settings.arch))
-            autotools.configure(configure_dir="..", args=["--prefix=${PWD}", "--host " + host])
+            autotools.configure(configure_dir="..", args=["--prefix=${PWD}", "--host=" + host])
         else:
             autotools.configure(configure_dir="..", args=["--prefix=${PWD}"])
         # This is a temporary fix for the error - "Error 512 while executing make -j1".
