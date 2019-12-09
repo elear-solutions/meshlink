@@ -14,6 +14,7 @@ class MeshlinklibConan(ConanFile):
 
     def build(self):
         autotools = AutoToolsBuildEnvironment(self)
+        self.run("cd .. && autoreconf -fsi")
         autotools.configure(configure_dir="..", args=["--prefix=${PWD}"])
         # This is a temporary fix for the error - "Error 512 while executing make -j1".
         # Once the issue is resolved in the meshlink's build process, this will be removed.
