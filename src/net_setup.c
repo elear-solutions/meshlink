@@ -567,6 +567,7 @@ bool setup_myself(meshlink_handle_t *mesh) {
 	/* Done. */
 
 	mesh->last_config_check = mesh->loop.now.tv_sec;
+	mesh->last_unreachable = mesh->loop.now.tv_sec;
 
 	return true;
 }
