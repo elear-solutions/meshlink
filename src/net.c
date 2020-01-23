@@ -118,6 +118,10 @@ static void timeout_handler(event_loop_t *loop, void *data) {
 		int pingtimeout = c->node ? mesh->dev_class_traits[c->node->devclass].pingtimeout : default_timeout;
 		int pinginterval = c->node ? mesh->dev_class_traits[c->node->devclass].pinginterval : default_interval;
 
+		if(c->outgoing && c->outgoing->timeout < 5) {
+			pingtimeout = 1;
+		}
+
 		// Also make sure that if outstanding key requests for the UDP counterpart of a connection has timed out, we restart it.
 		if(c->node) {
 			if(c->node->status.waitingforkey && c->node->last_req_key + pingtimeout <= mesh->loop.now.tv_sec) {
@@ -148,7 +152,7 @@ static void timeout_handler(event_loop_t *loop, void *data) {
 	}
 
 	timeout_set(&mesh->loop, data, &(struct timeval) {
-		default_timeout, prng(mesh, TIMER_FUDGE)
+		1, prng(mesh, TIMER_FUDGE)
 	});
 }
 
@@ -604,7 +608,10 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 
 	for splay_each(node_t, n, mesh->nodes) {
 		if(n->status.dirty) {
-			node_write_config(mesh, n);
+			if(node_write_config(mesh, n)) {
+				logger(mesh, MESHLINK_DEBUG, "Could not update %s", n->name);
+			}
+
 			n->status.dirty = false;
 		}
 	}
@@ -696,9 +703,9 @@ void retry(meshlink_handle_t *mesh) {
 /*
   this is where it all happens...
 */
-int main_loop(meshlink_handle_t *mesh) {
+void main_loop(meshlink_handle_t *mesh) {
 	timeout_add(&mesh->loop, &mesh->pingtimer, timeout_handler, &mesh->pingtimer, &(struct timeval) {
-		default_timeout, prng(mesh, TIMER_FUDGE)
+		1, prng(mesh, TIMER_FUDGE)
 	});
 	timeout_add(&mesh->loop, &mesh->periodictimer, periodic_handler, &mesh->periodictimer, &(struct timeval) {
 		0, 0
@@ -710,17 +717,10 @@ int main_loop(meshlink_handle_t *mesh) {
 
 	if(!event_loop_run(&mesh->loop, &mesh->mutex)) {
 		logger(mesh, MESHLINK_ERROR, "Error while waiting for input: %s", strerror(errno));
-		abort();
-		signal_del(&mesh->loop, &mesh->datafromapp);
-		timeout_del(&mesh->loop, &mesh->periodictimer);
-		timeout_del(&mesh->loop, &mesh->pingtimer);
-
-		return 1;
+		call_error_cb(mesh, MESHLINK_ENETWORK);
 	}
 
 	signal_del(&mesh->loop, &mesh->datafromapp);
 	timeout_del(&mesh->loop, &mesh->periodictimer);
 	timeout_del(&mesh->loop, &mesh->pingtimer);
-
-	return 0;
 }

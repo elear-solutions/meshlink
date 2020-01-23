@@ -40,6 +40,8 @@ typedef struct node_status_t {
 	uint16_t want_udp: 1;               /* 1 if we want working UDP because we have data to send */
 } node_status_t;
 
+#define MAX_RECENT 5
+
 typedef struct node_t {
 	// Public member variables
 	char *name;                             /* name of this node */
@@ -74,7 +76,6 @@ typedef struct node_t {
 	struct meshlink_handle *mesh;           /* The mesh this node belongs to */
 	struct submesh_t *submesh;              /* Nodes Sub-Mesh Handle*/
 
-	time_t last_state_change;
 	time_t last_req_key;
 
 	struct ecdsa *ecdsa;                    /* His public ECDSA key */
@@ -84,9 +85,12 @@ typedef struct node_t {
 	time_t last_successfull_connection;
 
 	char *canonical_address;                /* The canonical address of this node, if known */
-	sockaddr_t recent[5];                   /* Recently seen addresses */
+	sockaddr_t recent[MAX_RECENT];                   /* Recently seen addresses */
 
 	// Graph-related member variables
+	time_t last_reachable;
+	time_t last_unreachable;
+
 	int distance;
 	struct node_t *nexthop;                 /* nearest node from us to him */
 	struct edge_t *prevedge;                /* nearest node from him to us */
@@ -100,8 +104,9 @@ extern node_t *new_node(void) __attribute__((__malloc__));
 extern void free_node(node_t *n);
 extern void node_add(struct meshlink_handle *mesh, node_t *n);
 extern void node_del(struct meshlink_handle *mesh, node_t *n);
-extern node_t *lookup_node(struct meshlink_handle *mesh, const char *name);
-extern node_t *lookup_node_udp(struct meshlink_handle *mesh, const sockaddr_t *sa);
+extern node_t *lookup_node(struct meshlink_handle *mesh, const char *name) __attribute__((__warn_unused_result__));
+extern node_t *lookup_node_udp(struct meshlink_handle *mesh, const sockaddr_t *sa) __attribute__((__warn_unused_result__));
 extern void update_node_udp(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *sa);
+extern bool node_add_recent_address(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *addr);
 
 #endif

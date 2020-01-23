@@ -164,7 +164,7 @@ static int socket_in_netns(int domain, int type, int protocol, int netns) {
 // Find out what local address a socket would use if we connect to the given address.
 // We do this using connect() on a UDP socket, so the kernel has to resolve the address
 // of both endpoints, but this will actually not send any UDP packet.
-static bool getlocaladdr(char *destaddr, struct sockaddr *sn, socklen_t *sl, int netns) {
+static bool getlocaladdr(char *destaddr, sockaddr_t *sa, socklen_t *salen, int netns) {
 	struct addrinfo *rai = NULL;
 	const struct addrinfo hint = {
 		.ai_family = AF_UNSPEC,
@@ -191,7 +191,7 @@ static bool getlocaladdr(char *destaddr, struct sockaddr *sn, socklen_t *sl, int
 
 	freeaddrinfo(rai);
 
-	if(getsockname(sock, sn, sl)) {
+	if(getsockname(sock, &sa->sa, salen)) {
 		closesocket(sock);
 		return false;
 	}
@@ -201,14 +201,14 @@ static bool getlocaladdr(char *destaddr, struct sockaddr *sn, socklen_t *sl, int
 }
 
 static bool getlocaladdrname(char *destaddr, char *host, socklen_t hostlen, int netns) {
-	struct sockaddr_storage sn;
-	socklen_t sl = sizeof(sn);
+	sockaddr_t sa;
+	socklen_t salen = sizeof(sa);
 
-	if(!getlocaladdr(destaddr, (struct sockaddr *)&sn, &sl, netns)) {
+	if(!getlocaladdr(destaddr, &sa, &salen, netns)) {
 		return false;
 	}
 
-	if(getnameinfo((struct sockaddr *)&sn, sl, host, hostlen, NULL, 0, NI_NUMERICHOST | NI_NUMERICSERV)) {
+	if(getnameinfo(&sa.sa, salen, host, hostlen, NULL, 0, NI_NUMERICHOST | NI_NUMERICSERV)) {
 		return false;
 	}
 
@@ -393,58 +393,66 @@ static char *get_my_hostname(meshlink_handle_t *mesh, uint32_t flags) {
 
 	remove_duplicate_hostnames(hostname, port, 4);
 
-	if(!(flags & MESHLINK_INVITE_NUMERIC)) {
-		for(int i = 0; i < 4; i++) {
-			if(!hostname[i]) {
-				continue;
-			}
+	// Resolve the hostnames
+	for(int i = 0; i < 4; i++) {
+		if(!hostname[i]) {
+			continue;
+		}
 
-			// Convert what we have to a sockaddr
-			struct addrinfo *ai_in, *ai_out;
-			struct addrinfo hint = {
-				.ai_family = AF_UNSPEC,
-				.ai_flags = AI_NUMERICSERV,
-				.ai_socktype = SOCK_STREAM,
-			};
-			int err = getaddrinfo(hostname[i], port[i], &hint, &ai_in);
+		// Convert what we have to a sockaddr
+		struct addrinfo *ai_in, *ai_out;
+		struct addrinfo hint = {
+			.ai_family = AF_UNSPEC,
+			.ai_flags = AI_NUMERICSERV,
+			.ai_socktype = SOCK_STREAM,
+		};
+		int err = getaddrinfo(hostname[i], port[i], &hint, &ai_in);
 
-			if(err || !ai_in) {
-				continue;
-			}
+		if(err || !ai_in) {
+			continue;
+		}
 
-			// Convert it to a hostname
-			char resolved_host[NI_MAXHOST];
-			char resolved_port[NI_MAXSERV];
-			err = getnameinfo(ai_in->ai_addr, ai_in->ai_addrlen, resolved_host, sizeof resolved_host, resolved_port, sizeof resolved_port, NI_NUMERICSERV);
+		// Remember the address
+		node_add_recent_address(mesh, mesh->self, (sockaddr_t *)ai_in->ai_addr);
 
-			if(err || !is_valid_hostname(resolved_host)) {
-				freeaddrinfo(ai_in);
-				continue;
-			}
+		if(flags & MESHLINK_INVITE_NUMERIC) {
+			// We don't need to do any further conversion
+			freeaddrinfo(ai_in);
+			continue;
+		}
 
-			// Convert the hostname back to a sockaddr
-			hint.ai_family = ai_in->ai_family;
-			err = getaddrinfo(resolved_host, resolved_port, &hint, &ai_out);
+		// Convert it to a hostname
+		char resolved_host[NI_MAXHOST];
+		char resolved_port[NI_MAXSERV];
+		err = getnameinfo(ai_in->ai_addr, ai_in->ai_addrlen, resolved_host, sizeof resolved_host, resolved_port, sizeof resolved_port, NI_NUMERICSERV);
 
-			if(err || !ai_out) {
-				freeaddrinfo(ai_in);
-				continue;
-			}
+		if(err || !is_valid_hostname(resolved_host)) {
+			freeaddrinfo(ai_in);
+			continue;
+		}
 
-			// Check if it's still the same sockaddr
-			if(ai_in->ai_addrlen != ai_out->ai_addrlen || memcmp(ai_in->ai_addr, ai_out->ai_addr, ai_in->ai_addrlen)) {
-				freeaddrinfo(ai_in);
-				freeaddrinfo(ai_out);
-				continue;
-			}
+		// Convert the hostname back to a sockaddr
+		hint.ai_family = ai_in->ai_family;
+		err = getaddrinfo(resolved_host, resolved_port, &hint, &ai_out);
 
-			// Yes: replace the hostname with the resolved one
-			free(hostname[i]);
-			hostname[i] = xstrdup(resolved_host);
+		if(err || !ai_out) {
+			freeaddrinfo(ai_in);
+			continue;
+		}
 
+		// Check if it's still the same sockaddr
+		if(ai_in->ai_addrlen != ai_out->ai_addrlen || memcmp(ai_in->ai_addr, ai_out->ai_addr, ai_in->ai_addrlen)) {
 			freeaddrinfo(ai_in);
 			freeaddrinfo(ai_out);
+			continue;
 		}
+
+		// Yes: replace the hostname with the resolved one
+		free(hostname[i]);
+		hostname[i] = xstrdup(resolved_host);
+
+		freeaddrinfo(ai_in);
+		freeaddrinfo(ai_out);
 	}
 
 	// Remove duplicates again, since IPv4 and IPv6 addresses might map to the same hostname
@@ -455,13 +463,6 @@ static char *get_my_hostname(meshlink_handle_t *mesh, uint32_t flags) {
 		if(!hostname[i]) {
 			continue;
 		}
-
-		// Ensure we have the same addresses in our own host config file.
-		char *tmphostport;
-		xasprintf(&tmphostport, "%s %s", hostname[i], port[i]);
-		/// TODO: FIX
-		//config_add_string(&mesh->config, "Address", tmphostport);
-		free(tmphostport);
 
 		// Append the address to the hostport string
 		char *newhostport;
@@ -611,7 +612,7 @@ static bool finalize_join(meshlink_handle_t *mesh, const void *buf, uint16_t len
 	}
 
 	// Write host config files
-	while(count--) {
+	for(uint32_t i = 0; i < count; i++) {
 		const void *data;
 		uint32_t len = packmsg_get_bin_raw(&in, &data);
 
@@ -654,15 +655,28 @@ static bool finalize_join(meshlink_handle_t *mesh, const void *buf, uint16_t len
 			return false;
 		}
 
-		node_add(mesh, n);
+		if(i == 0) {
+			/* The first host config file is of the inviter itself;
+			 * remember the address we are currently using for the invitation connection.
+			 */
+			sockaddr_t sa;
+			socklen_t salen = sizeof(sa);
 
-		if(!config_write(mesh, "current", n->name, &config, mesh->config_key)) {
+			if(getpeername(mesh->sock, &sa.sa, &salen) == 0) {
+				node_add_recent_address(mesh, n, &sa);
+			}
+		}
+
+		if(!node_write_config(mesh, n)) {
+			free_node(n);
 			return false;
 		}
+
+		node_add(mesh, n);
 	}
 
 	/* Ensure the configuration directory metadata is on disk */
-	if(!config_sync(mesh, "current")) {
+	if(!config_sync(mesh, "current") || !sync_path(mesh->confbase)) {
 		return false;
 	}
 
@@ -846,28 +860,40 @@ static struct timeval idle(event_loop_t *loop, void *data) {
 
 // Get our local address(es) by simulating connecting to an Internet host.
 static void add_local_addresses(meshlink_handle_t *mesh) {
-	struct sockaddr_storage sn;
-	sn.ss_family = AF_UNKNOWN;
-	socklen_t sl = sizeof(sn);
+	sockaddr_t sa;
+	sa.storage.ss_family = AF_UNKNOWN;
+	socklen_t salen = sizeof(sa);
 
 	// IPv4 example.org
 
-	if(getlocaladdr("93.184.216.34", (struct sockaddr *)&sn, &sl, mesh->netns)) {
-		((struct sockaddr_in *)&sn)->sin_port = ntohs(atoi(mesh->myport));
-		meshlink_hint_address(mesh, (meshlink_node_t *)mesh->self, (struct sockaddr *)&sn);
+	if(getlocaladdr("93.184.216.34", &sa, &salen, mesh->netns)) {
+		sa.in.sin_port = ntohs(atoi(mesh->myport));
+		node_add_recent_address(mesh, mesh->self, &sa);
 	}
 
 	// IPv6 example.org
 
-	sl = sizeof(sn);
+	salen = sizeof(sa);
 
-	if(getlocaladdr("2606:2800:220:1:248:1893:25c8:1946", (struct sockaddr *)&sn, &sl, mesh->netns)) {
-		((struct sockaddr_in6 *)&sn)->sin6_port = ntohs(atoi(mesh->myport));
-		meshlink_hint_address(mesh, (meshlink_node_t *)mesh->self, (struct sockaddr *)&sn);
+	if(getlocaladdr("2606:2800:220:1:248:1893:25c8:1946", &sa, &salen, mesh->netns)) {
+		sa.in6.sin6_port = ntohs(atoi(mesh->myport));
+		node_add_recent_address(mesh, mesh->self, &sa);
 	}
 }
 
 static bool meshlink_setup(meshlink_handle_t *mesh) {
+	if(!config_destroy(mesh->confbase, "new")) {
+		logger(mesh, MESHLINK_ERROR, "Could not delete configuration in %s/new: %s\n", mesh->confbase, strerror(errno));
+		meshlink_errno = MESHLINK_ESTORAGE;
+		return false;
+	}
+
+	if(!config_destroy(mesh->confbase, "old")) {
+		logger(mesh, MESHLINK_ERROR, "Could not delete configuration in %s/old: %s\n", mesh->confbase, strerror(errno));
+		meshlink_errno = MESHLINK_ESTORAGE;
+		return false;
+	}
+
 	if(!config_init(mesh, "current")) {
 		logger(mesh, MESHLINK_ERROR, "Could not set up configuration in %s/current: %s\n", mesh->confbase, strerror(errno));
 		meshlink_errno = MESHLINK_ESTORAGE;
@@ -903,23 +929,10 @@ static bool meshlink_setup(meshlink_handle_t *mesh) {
 		return false;
 	}
 
-	if(!main_config_lock(mesh)) {
-		logger(NULL, MESHLINK_ERROR, "Cannot lock main config file\n");
-		meshlink_errno = MESHLINK_ESTORAGE;
-		return false;
-	}
-
 	return true;
 }
 
 static bool meshlink_read_config(meshlink_handle_t *mesh) {
-	// Open the configuration file and lock it
-	if(!main_config_lock(mesh)) {
-		logger(NULL, MESHLINK_ERROR, "Cannot lock main config file\n");
-		meshlink_errno = MESHLINK_ESTORAGE;
-		return false;
-	}
-
 	config_t config;
 
 	if(!main_config_read(mesh, "current", &config, mesh->config_key)) {
@@ -1104,14 +1117,11 @@ bool meshlink_encrypted_key_rotate(meshlink_handle_t *mesh, const void *new_key,
 
 	devtool_keyrotate_probe(1);
 
-	main_config_unlock(mesh);
-
 	// Rename confbase/current/ to confbase/old
 
 	if(!config_rename(mesh, "current", "old")) {
 		logger(mesh, MESHLINK_ERROR, "Cannot rename %s/current to %s/old\n", mesh->confbase, mesh->confbase);
 		meshlink_errno = MESHLINK_ESTORAGE;
-		main_config_lock(mesh);
 		pthread_mutex_unlock(&mesh->mutex);
 		return false;
 	}
@@ -1123,17 +1133,11 @@ bool meshlink_encrypted_key_rotate(meshlink_handle_t *mesh, const void *new_key,
 	if(!config_rename(mesh, "new", "current")) {
 		logger(mesh, MESHLINK_ERROR, "Cannot rename %s/new to %s/current\n", mesh->confbase, mesh->confbase);
 		meshlink_errno = MESHLINK_ESTORAGE;
-		main_config_lock(mesh);
 		pthread_mutex_unlock(&mesh->mutex);
 		return false;
 	}
 
 	devtool_keyrotate_probe(3);
-
-	if(!main_config_lock(mesh)) {
-		pthread_mutex_unlock(&mesh->mutex);
-		return false;
-	}
 
 	// Cleanup the "old" confbase sub-directory
 
@@ -1325,6 +1329,12 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 
 	meshlink_queue_init(&mesh->outpacketqueue);
 
+	// Atomically lock the configuration directory.
+	if(!main_config_lock(mesh)) {
+		meshlink_close(mesh);
+		return NULL;
+	}
+
 	// If no configuration exists yet, create it.
 
 	if(!meshlink_confbase_exists(mesh)) {
@@ -1377,7 +1387,11 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 	}
 
 	add_local_addresses(mesh);
-	node_write_config(mesh, mesh->self);
+
+	if(!node_write_config(mesh, mesh->self)) {
+		logger(NULL, MESHLINK_ERROR, "Cannot update configuration\n");
+		return NULL;
+	}
 
 	idle_set(&mesh->loop, idle, mesh);
 
@@ -1513,6 +1527,8 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 
 	pthread_cond_wait(&mesh->cond, &mesh->mutex);
 	mesh->threadstarted = true;
+	mesh->self->last_reachable = time(NULL);
+	mesh->self->status.dirty = true;
 
 	pthread_mutex_unlock(&mesh->mutex);
 	return true;
@@ -1527,13 +1543,18 @@ void meshlink_stop(meshlink_handle_t *mesh) {
 	pthread_mutex_lock(&mesh->mutex);
 	logger(mesh, MESHLINK_DEBUG, "meshlink_stop called\n");
 
+	if(mesh->self) {
+		mesh->self->last_unreachable = time(NULL);
+		mesh->self->status.dirty = true;
+	}
+
 	// Shut down the main thread
 	event_loop_stop(&mesh->loop);
 
 	// Send ourselves a UDP packet to kick the event loop
 	for(int i = 0; i < mesh->listen_sockets; i++) {
 		sockaddr_t sa;
-		socklen_t salen = sizeof(sa.sa);
+		socklen_t salen = sizeof(sa);
 
 		if(getsockname(mesh->listen_socket[i].udp.fd, &sa.sa, &salen) == -1) {
 			logger(mesh, MESHLINK_ERROR, "System call `%s' failed: %s", "getsockname", sockstrerror(sockerrno));
@@ -1566,12 +1587,11 @@ void meshlink_stop(meshlink_handle_t *mesh) {
 
 	exit_outgoings(mesh);
 
-	// Write out any changed node config files
+	// Try to write out any changed node config files, ignore errors at this point.
 	if(mesh->nodes) {
 		for splay_each(node_t, n, mesh->nodes) {
 			if(n->status.dirty) {
-				node_write_config(mesh, n);
-				n->status.dirty = false;
+				n->status.dirty = !node_write_config(mesh, n);
 			}
 		}
 	}
@@ -1641,16 +1661,56 @@ bool meshlink_destroy(const char *confbase) {
 		return false;
 	}
 
-	if(!config_destroy(confbase, "current")) {
-		logger(NULL, MESHLINK_ERROR, "Cannot remove confbase sub-directories %s: %s\n", confbase, strerror(errno));
+	/* Exit early if the confbase directory itself doesn't exist */
+	if(access(confbase, F_OK) && errno == ENOENT) {
+		return true;
+	}
+
+	/* Take the lock the same way meshlink_open() would. */
+	char lockfilename[PATH_MAX];
+	snprintf(lockfilename, sizeof(lockfilename), "%s" SLASH "meshlink.lock", confbase);
+
+	FILE *lockfile = fopen(lockfilename, "w+");
+
+	if(!lockfile) {
+		logger(NULL, MESHLINK_ERROR, "Could not open lock file %s: %s", lockfilename, strerror(errno));
+		meshlink_errno = MESHLINK_ESTORAGE;
 		return false;
 	}
 
-	config_destroy(confbase, "new");
-	config_destroy(confbase, "old");
+#ifdef FD_CLOEXEC
+	fcntl(fileno(lockfile), F_SETFD, FD_CLOEXEC);
+#endif
 
-	if(rmdir(confbase) && errno != ENOENT) {
-		logger(NULL, MESHLINK_ERROR, "Cannot remove directory %s: %s\n", confbase, strerror(errno));
+#ifdef HAVE_MINGW
+	// TODO: use _locking()?
+#else
+
+	if(flock(fileno(lockfile), LOCK_EX | LOCK_NB) != 0) {
+		logger(NULL, MESHLINK_ERROR, "Configuration directory %s still in use\n", lockfilename);
+		fclose(lockfile);
+		meshlink_errno = MESHLINK_EBUSY;
+		return false;
+	}
+
+#endif
+
+	if(!config_destroy(confbase, "current") || !config_destroy(confbase, "new") || !config_destroy(confbase, "old")) {
+		logger(NULL, MESHLINK_ERROR, "Cannot remove sub-directories in %s: %s\n", confbase, strerror(errno));
+		return false;
+	}
+
+	if(unlink(lockfilename)) {
+		logger(NULL, MESHLINK_ERROR, "Cannot remove lock file %s: %s\n", lockfilename, strerror(errno));
+		fclose(lockfile);
+		meshlink_errno = MESHLINK_ESTORAGE;
+		return false;
+	}
+
+	fclose(lockfile);
+
+	if(!sync_path(confbase)) {
+		logger(NULL, MESHLINK_ERROR, "Cannot sync directory %s: %s\n", confbase, strerror(errno));
 		meshlink_errno = MESHLINK_ESTORAGE;
 		return false;
 	}
@@ -1876,17 +1936,17 @@ meshlink_node_t *meshlink_get_node(meshlink_handle_t *mesh, const char *name) {
 		return NULL;
 	}
 
-	meshlink_node_t *node = NULL;
+	node_t *n = NULL;
 
 	pthread_mutex_lock(&mesh->mutex);
-	node = (meshlink_node_t *)lookup_node(mesh, (char *)name); // TODO: make lookup_node() use const
+	n = lookup_node(mesh, (char *)name); // TODO: make lookup_node() use const
 	pthread_mutex_unlock(&mesh->mutex);
 
-	if(!node) {
+	if(!n) {
 		meshlink_errno = MESHLINK_ENOENT;
 	}
 
-	return node;
+	return (meshlink_node_t *)n;
 }
 
 meshlink_submesh_t *meshlink_get_submesh(meshlink_handle_t *mesh, const char *name) {
@@ -1947,8 +2007,8 @@ static meshlink_node_t **meshlink_get_all_nodes_by_condition(meshlink_handle_t *
 	*nmemb = 0;
 
 	for splay_each(node_t, n, mesh->nodes) {
-		if(true == search_node(n, condition)) {
-			*nmemb = *nmemb + 1;
+		if(search_node(n, condition)) {
+			++*nmemb;
 		}
 	}
 
@@ -1964,7 +2024,7 @@ static meshlink_node_t **meshlink_get_all_nodes_by_condition(meshlink_handle_t *
 		meshlink_node_t **p = result;
 
 		for splay_each(node_t, n, mesh->nodes) {
-			if(true == search_node(n, condition)) {
+			if(search_node(n, condition)) {
 				*p++ = (meshlink_node_t *)n;
 			}
 		}
@@ -1997,6 +2057,31 @@ static bool search_node_by_submesh(const node_t *node, const void *condition) {
 	return false;
 }
 
+struct time_range {
+	time_t start;
+	time_t end;
+};
+
+static bool search_node_by_last_reachable(const node_t *node, const void *condition) {
+	const struct time_range *range = condition;
+	time_t start = node->last_reachable;
+	time_t end = node->last_unreachable;
+
+	if(end < start) {
+		end = time(NULL);
+
+		if(end < start) {
+			start = end;
+		}
+	}
+
+	if(range->end >= range->start) {
+		return start <= range->end && end >= range->start;
+	} else {
+		return start > range->start || end < range->end;
+	}
+}
+
 meshlink_node_t **meshlink_get_all_nodes_by_dev_class(meshlink_handle_t *mesh, dev_class_t devclass, meshlink_node_t **nodes, size_t *nmemb) {
 	if(!mesh || devclass < 0 || devclass >= DEV_CLASS_COUNT || !nmemb) {
 		meshlink_errno = MESHLINK_EINVAL;
@@ -2013,6 +2098,17 @@ meshlink_node_t **meshlink_get_all_nodes_by_submesh(meshlink_handle_t *mesh, mes
 	}
 
 	return meshlink_get_all_nodes_by_condition(mesh, submesh, nodes, nmemb, search_node_by_submesh);
+}
+
+meshlink_node_t **meshlink_get_all_nodes_by_last_reachable(meshlink_handle_t *mesh, time_t start, time_t end, meshlink_node_t **nodes, size_t *nmemb) {
+	if(!mesh || !nmemb) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return NULL;
+	}
+
+	struct time_range range = {start, end};
+
+	return meshlink_get_all_nodes_by_condition(mesh, &range, nodes, nmemb, search_node_by_last_reachable);
 }
 
 dev_class_t meshlink_get_node_dev_class(meshlink_handle_t *mesh, meshlink_node_t *node) {
@@ -2045,6 +2141,31 @@ meshlink_submesh_t *meshlink_get_node_submesh(meshlink_handle_t *mesh, meshlink_
 	s = (meshlink_submesh_t *)n->submesh;
 
 	return s;
+}
+
+bool meshlink_get_node_reachability(struct meshlink_handle *mesh, struct meshlink_node *node, time_t *last_reachable, time_t *last_unreachable) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return NULL;
+	}
+
+	node_t *n = (node_t *)node;
+	bool reachable;
+
+	pthread_mutex_lock(&mesh->mutex);
+	reachable = n->status.reachable;
+
+	if(last_reachable) {
+		*last_reachable = n->last_reachable;
+	}
+
+	if(last_unreachable) {
+		*last_unreachable = n->last_unreachable;
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+
+	return reachable;
 }
 
 bool meshlink_sign(meshlink_handle_t *mesh, const void *data, size_t len, void *signature, size_t *siglen) {
@@ -2144,11 +2265,15 @@ bool meshlink_set_canonical_address(meshlink_handle_t *mesh, meshlink_node_t *no
 	node_t *n = (node_t *)node;
 	free(n->canonical_address);
 	n->canonical_address = canonical_address;
-	node_write_config(mesh, n);
+
+	if(!node_write_config(mesh, n)) {
+		pthread_mutex_unlock(&mesh->mutex);
+		return false;
+	}
 
 	pthread_mutex_unlock(&mesh->mutex);
 
-	return true;
+	return config_sync(mesh, "current");
 }
 
 bool meshlink_add_address(meshlink_handle_t *mesh, const char *address) {
@@ -2286,7 +2411,7 @@ char *meshlink_invite_ex(meshlink_handle_t *mesh, meshlink_submesh_t *submesh, c
 
 	// Check validity of the new node's name
 	if(!check_id(name)) {
-		logger(mesh, MESHLINK_DEBUG, "Invalid name for node.\n");
+		logger(mesh, MESHLINK_ERROR, "Invalid name for node.\n");
 		meshlink_errno = MESHLINK_EINVAL;
 		pthread_mutex_unlock(&mesh->mutex);
 		return NULL;
@@ -2294,7 +2419,7 @@ char *meshlink_invite_ex(meshlink_handle_t *mesh, meshlink_submesh_t *submesh, c
 
 	// Ensure no host configuration file with that name exists
 	if(config_exists(mesh, "current", name)) {
-		logger(mesh, MESHLINK_DEBUG, "A host config file for %s already exists!\n", name);
+		logger(mesh, MESHLINK_ERROR, "A host config file for %s already exists!\n", name);
 		meshlink_errno = MESHLINK_EEXIST;
 		pthread_mutex_unlock(&mesh->mutex);
 		return NULL;
@@ -2302,7 +2427,7 @@ char *meshlink_invite_ex(meshlink_handle_t *mesh, meshlink_submesh_t *submesh, c
 
 	// Ensure no other nodes know about this name
 	if(meshlink_get_node(mesh, name)) {
-		logger(mesh, MESHLINK_DEBUG, "A node with name %s is already known!\n", name);
+		logger(mesh, MESHLINK_ERROR, "A node with name %s is already known!\n", name);
 		meshlink_errno = MESHLINK_EEXIST;
 		pthread_mutex_unlock(&mesh->mutex);
 		return NULL;
@@ -2312,7 +2437,7 @@ char *meshlink_invite_ex(meshlink_handle_t *mesh, meshlink_submesh_t *submesh, c
 	char *address = get_my_hostname(mesh, flags);
 
 	if(!address) {
-		logger(mesh, MESHLINK_DEBUG, "No Address known for ourselves!\n");
+		logger(mesh, MESHLINK_ERROR, "No Address known for ourselves!\n");
 		meshlink_errno = MESHLINK_ERESOLV;
 		pthread_mutex_unlock(&mesh->mutex);
 		return NULL;
@@ -2322,6 +2447,15 @@ char *meshlink_invite_ex(meshlink_handle_t *mesh, meshlink_submesh_t *submesh, c
 		meshlink_errno = MESHLINK_EINTERNAL;
 		pthread_mutex_unlock(&mesh->mutex);
 		return NULL;
+	}
+
+	// If we changed our own host config file, write it out now
+	if(mesh->self->status.dirty) {
+		if(!node_write_config(mesh, mesh->self)) {
+			logger(mesh, MESHLINK_ERROR, "Could not write our own host conifg file!\n");
+			pthread_mutex_unlock(&mesh->mutex);
+			return NULL;
+		}
 	}
 
 	char hash[64];
@@ -2668,7 +2802,7 @@ char *meshlink_export(meshlink_handle_t *mesh) {
 
 	uint32_t count = 0;
 
-	for(uint32_t i = 0; i < 5; i++) {
+	for(uint32_t i = 0; i < MAX_RECENT; i++) {
 		if(mesh->self->recent[i].sa.sa_family) {
 			count++;
 		} else {
@@ -2681,6 +2815,9 @@ char *meshlink_export(meshlink_handle_t *mesh) {
 	for(uint32_t i = 0; i < count; i++) {
 		packmsg_add_sockaddr(&out, &mesh->self->recent[i]);
 	}
+
+	packmsg_add_int64(&out, 0);
+	packmsg_add_int64(&out, 0);
 
 	pthread_mutex_unlock(&mesh->mutex);
 
@@ -2780,7 +2917,11 @@ bool meshlink_import(meshlink_handle_t *mesh, const char *data) {
 			break;
 		}
 
-		config_write(mesh, "current", n->name, &config, mesh->config_key);
+		if(!config_write(mesh, "current", n->name, &config, mesh->config_key)) {
+			free_node(n);
+			return false;
+		}
+
 		node_add(mesh, n);
 	}
 
@@ -2801,35 +2942,19 @@ bool meshlink_import(meshlink_handle_t *mesh, const char *data) {
 	return true;
 }
 
-void meshlink_blacklist(meshlink_handle_t *mesh, meshlink_node_t *node) {
-	if(!mesh || !node) {
-		meshlink_errno = MESHLINK_EINVAL;
-		return;
-	}
-
-	pthread_mutex_lock(&mesh->mutex);
-
-	node_t *n;
-	n = (node_t *)node;
-
+static bool blacklist(meshlink_handle_t *mesh, node_t *n) {
 	if(n == mesh->self) {
-		logger(mesh, MESHLINK_ERROR, "%s blacklisting itself?\n", node->name);
+		logger(mesh, MESHLINK_ERROR, "%s blacklisting itself?\n", n->name);
 		meshlink_errno = MESHLINK_EINVAL;
-		pthread_mutex_unlock(&mesh->mutex);
-		return;
+		return false;
 	}
 
 	if(n->status.blacklisted) {
-		logger(mesh, MESHLINK_DEBUG, "Node %s already blacklisted\n", node->name);
-		pthread_mutex_unlock(&mesh->mutex);
-		return;
+		logger(mesh, MESHLINK_DEBUG, "Node %s already blacklisted\n", n->name);
+		return true;
 	}
 
 	n->status.blacklisted = true;
-	node_write_config(mesh, n);
-	config_sync(mesh, "current");
-
-	logger(mesh, MESHLINK_DEBUG, "Blacklisted %s.\n", node->name);
 
 	/* Immediately shut down any connections we have with the blacklisted node.
 	 * We can't call terminate_connection(), because we might be called from a callback function.
@@ -2848,48 +2973,187 @@ void meshlink_blacklist(meshlink_handle_t *mesh, meshlink_node_t *node) {
 	n->mtuprobes = 0;
 	n->status.udp_confirmed = false;
 
-	pthread_mutex_unlock(&mesh->mutex);
+	/* Graph updates will suppress status updates for blacklisted nodes, so we need to
+	 * manually call the status callback if necessary.
+	 */
+	if(n->status.reachable && mesh->node_status_cb) {
+		mesh->node_status_cb(mesh, (meshlink_node_t *)n, false);
+	}
+
+	return node_write_config(mesh, n) && config_sync(mesh, "current");
 }
 
-void meshlink_whitelist(meshlink_handle_t *mesh, meshlink_node_t *node) {
+bool meshlink_blacklist(meshlink_handle_t *mesh, meshlink_node_t *node) {
 	if(!mesh || !node) {
 		meshlink_errno = MESHLINK_EINVAL;
-		return;
+		return false;
 	}
 
 	pthread_mutex_lock(&mesh->mutex);
 
-	node_t *n = (node_t *)node;
-
-	if(n == mesh->self) {
-		logger(mesh, MESHLINK_ERROR, "%s whitelisting itself?\n", node->name);
-		meshlink_errno = MESHLINK_EINVAL;
+	if(!blacklist(mesh, (node_t *)node)) {
 		pthread_mutex_unlock(&mesh->mutex);
-		return;
+		return false;
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+
+	logger(mesh, MESHLINK_DEBUG, "Blacklisted %s.\n", node->name);
+	return true;
+}
+
+bool meshlink_blacklist_by_name(meshlink_handle_t *mesh, const char *name) {
+	if(!mesh || !name) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	pthread_mutex_lock(&mesh->mutex);
+
+	node_t *n = lookup_node(mesh, (char *)name);
+
+	if(!n) {
+		n = new_node();
+		n->name = xstrdup(name);
+		node_add(mesh, n);
+	}
+
+	if(!blacklist(mesh, (node_t *)n)) {
+		pthread_mutex_unlock(&mesh->mutex);
+		return false;
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+
+	logger(mesh, MESHLINK_DEBUG, "Blacklisted %s.\n", name);
+	return true;
+}
+
+static bool whitelist(meshlink_handle_t *mesh, node_t *n) {
+	if(n == mesh->self) {
+		logger(mesh, MESHLINK_ERROR, "%s whitelisting itself?\n", n->name);
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
 	}
 
 	if(!n->status.blacklisted) {
-		logger(mesh, MESHLINK_DEBUG, "Node %s was already whitelisted\n", node->name);
-		pthread_mutex_unlock(&mesh->mutex);
-		return;
+		logger(mesh, MESHLINK_DEBUG, "Node %s was already whitelisted\n", n->name);
+		return true;
 	}
 
 	n->status.blacklisted = false;
-	node_write_config(mesh, n);
-	config_sync(mesh, "current");
 
 	if(n->status.reachable) {
 		update_node_status(mesh, n);
 	}
 
-	logger(mesh, MESHLINK_DEBUG, "Whitelisted %s.\n", node->name);
+	return node_write_config(mesh, n) && config_sync(mesh, "current");
+}
+
+bool meshlink_whitelist(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	pthread_mutex_lock(&mesh->mutex);
+
+	if(!whitelist(mesh, (node_t *)node)) {
+		pthread_mutex_unlock(&mesh->mutex);
+		return false;
+	}
 
 	pthread_mutex_unlock(&mesh->mutex);
-	return;
+
+	logger(mesh, MESHLINK_DEBUG, "Whitelisted %s.\n", node->name);
+	return true;
+}
+
+bool meshlink_whitelist_by_name(meshlink_handle_t *mesh, const char *name) {
+	if(!mesh || !name) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	pthread_mutex_lock(&mesh->mutex);
+
+	node_t *n = lookup_node(mesh, (char *)name);
+
+	if(!n) {
+		n = new_node();
+		n->name = xstrdup(name);
+		node_add(mesh, n);
+	}
+
+	if(!whitelist(mesh, (node_t *)n)) {
+		pthread_mutex_unlock(&mesh->mutex);
+		return false;
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+
+	logger(mesh, MESHLINK_DEBUG, "Whitelisted %s.\n", name);
+	return true;
 }
 
 void meshlink_set_default_blacklist(meshlink_handle_t *mesh, bool blacklist) {
 	mesh->default_blacklist = blacklist;
+}
+
+bool meshlink_forget_node(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	node_t *n = (node_t *)node;
+
+	pthread_mutex_lock(&mesh->mutex);
+
+	/* Check that the node is not reachable */
+	if(n->status.reachable || n->connection) {
+		pthread_mutex_unlock(&mesh->mutex);
+		logger(mesh, MESHLINK_WARNING, "Could not forget %s: still reachable", n->name);
+		return false;
+	}
+
+	/* Check that we don't have any active UTCP connections */
+	if(n->utcp && utcp_is_active(n->utcp)) {
+		pthread_mutex_unlock(&mesh->mutex);
+		logger(mesh, MESHLINK_WARNING, "Could not forget %s: active UTCP connections", n->name);
+		return false;
+	}
+
+	/* Check that we have no active connections to this node */
+	for list_each(connection_t, c, mesh->connections) {
+		if(c->node == n) {
+			pthread_mutex_unlock(&mesh->mutex);
+			logger(mesh, MESHLINK_WARNING, "Could not forget %s: active connection", n->name);
+			return false;
+		}
+	}
+
+	/* Remove any pending outgoings to this node */
+	if(mesh->outgoings) {
+		for list_each(outgoing_t, outgoing, mesh->outgoings) {
+			if(outgoing->node == n) {
+				list_delete_node(mesh->outgoings, node);
+			}
+		}
+	}
+
+	/* Delete the config file for this node */
+	if(!config_delete(mesh, "current", n->name)) {
+		pthread_mutex_unlock(&mesh->mutex);
+		return false;
+	}
+
+	/* Delete the node struct and any remaining edges referencing this node */
+	node_del(mesh, n);
+
+	pthread_mutex_unlock(&mesh->mutex);
+
+	return config_sync(mesh, "current");
 }
 
 /* Hint that a hostname may be found at an address
@@ -2904,9 +3168,12 @@ void meshlink_hint_address(meshlink_handle_t *mesh, meshlink_node_t *node, const
 	pthread_mutex_lock(&mesh->mutex);
 
 	node_t *n = (node_t *)node;
-	memmove(n->recent + 1, n->recent, 4 * sizeof(*n->recent));
-	memcpy(n->recent, addr, SALEN(*addr));
-	node_write_config(mesh, n);
+
+	if(node_add_recent_address(mesh, n, (sockaddr_t *)addr)) {
+		if(!node_write_config(mesh, n)) {
+			logger(mesh, MESHLINK_DEBUG, "Could not update %s\n", n->name);
+		}
+	}
 
 	pthread_mutex_unlock(&mesh->mutex);
 	// @TODO do we want to fire off a connection attempt right away?
@@ -3562,6 +3829,22 @@ void meshlink_set_dev_class_timeouts(meshlink_handle_t *mesh, dev_class_t devcla
 	pthread_mutex_lock(&mesh->mutex);
 	mesh->dev_class_traits[devclass].pinginterval = pinginterval;
 	mesh->dev_class_traits[devclass].pingtimeout = pingtimeout;
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+void meshlink_set_dev_class_fast_retry_period(meshlink_handle_t *mesh, dev_class_t devclass, int fast_retry_period) {
+	if(!mesh || devclass < 0 || devclass >= DEV_CLASS_COUNT) {
+		meshlink_errno = EINVAL;
+		return;
+	}
+
+	if(fast_retry_period < 0) {
+		meshlink_errno = EINVAL;
+		return;
+	}
+
+	pthread_mutex_lock(&mesh->mutex);
+	mesh->dev_class_traits[devclass].fast_retry_period = fast_retry_period;
 	pthread_mutex_unlock(&mesh->mutex);
 }
 
