@@ -44,12 +44,25 @@
 
 #define NUT                         "nut"
 #define PEER                        "peer"
-#define PEER2                        "peer2"
+#define PEER2                       "peer2"
 #define GET_NODE_REACHABILITY       "test_get_node_reachability"
 #define UNDERSCORE                  "_"
 #define NUT_CONF                    GET_NODE_REACHABILITY UNDERSCORE NUT
 #define PEER_CONF                   GET_NODE_REACHABILITY UNDERSCORE PEER
 #define PEER2_CONF                  GET_NODE_REACHABILITY UNDERSCORE PEER2
+
+#define NUT_CONF_01                 NUT_CONF "_01"
+#define NUT_CONF_02                 NUT_CONF "_02"
+#define NUT_CONF_03                 NUT_CONF "_03"
+#define PEER_CONF_03                PEER_CONF "_03"
+#define NUT_CONF_04                 NUT_CONF "_04"
+#define PEER_CONF_04                PEER_CONF "_04"
+#define NUT_CONF_05                 NUT_CONF "_05"
+#define PEER_CONF_05                PEER_CONF "_05"
+#define NUT_CONF_06                 NUT_CONF "_06"
+#define PEER_CONF_06                PEER_CONF "_06"
+#define NUT_CONF_07                 NUT_CONF "_07"
+#define PEER_CONF_07                PEER_CONF "_07"
 
 static struct sync_flag peer_reachable_status_cond = {.mutex  = PTHREAD_MUTEX_INITIALIZER, .cond = PTHREAD_COND_INITIALIZER};
 static bool peer_reachable_status;
@@ -168,11 +181,10 @@ static bool test_get_node_reachability_01(void) {
 	time_t last_unreachable, last_reachable;
 
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
-	assert(meshlink_destroy(NUT_CONF));
 
 	// Open Node-Under-Test node instance
 
-	meshlink_handle_t *mesh = meshlink_open(NUT_CONF, NUT, GET_NODE_REACHABILITY, DEV_CLASS_STATIONARY);
+	meshlink_handle_t *mesh = meshlink_open(NUT_CONF_01, NUT, GET_NODE_REACHABILITY, DEV_CLASS_STATIONARY);
 	assert_int_not_equal(mesh, NULL);
 
 	// Call meshlink_get_node_reachability API with all valid arguments
@@ -203,7 +215,7 @@ static bool test_get_node_reachability_01(void) {
 	// Cleanup
 
 	meshlink_close(mesh);
-	assert(meshlink_destroy(NUT_CONF));
+	assert(meshlink_destroy(NUT_CONF_01));
 	return true;
 }
 
@@ -238,11 +250,10 @@ static bool test_get_node_reachability_02(void) {
 	bool status;
 	time_t last_unreachable, last_reachable, last_peer_unreachable, last_peer_reachable;
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
-	assert(meshlink_destroy(NUT_CONF));
 
 	// Open and start Node-Under-Test node instance
 
-	meshlink_handle_t *mesh = meshlink_open(NUT_CONF, NUT, GET_NODE_REACHABILITY, DEV_CLASS_STATIONARY);
+	meshlink_handle_t *mesh = meshlink_open(NUT_CONF_02, NUT, GET_NODE_REACHABILITY, DEV_CLASS_STATIONARY);
 	assert_int_not_equal(mesh, NULL);
 	assert_true(meshlink_start(mesh));
 
@@ -270,7 +281,7 @@ static bool test_get_node_reachability_02(void) {
 	// Reinitialize NUT node instance
 
 	meshlink_close(mesh);
-	mesh = meshlink_open(NUT_CONF, NUT, GET_NODE_REACHABILITY, DEV_CLASS_STATIONARY);
+	mesh = meshlink_open(NUT_CONF_02, NUT, GET_NODE_REACHABILITY, DEV_CLASS_STATIONARY);
 	assert_int_not_equal(mesh, NULL);
 
 	// Call meshlink_get_node_reachability API with all valid arguments
@@ -285,7 +296,7 @@ static bool test_get_node_reachability_02(void) {
 	// Cleanup
 
 	meshlink_close(mesh);
-	assert(meshlink_destroy(NUT_CONF));
+	assert(meshlink_destroy(NUT_CONF_02));
 	return true;
 }
 
@@ -329,12 +340,10 @@ static bool test_get_node_reachability_03(void) {
 	time_t last_unreachable, last_reachable;
 
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
-	assert(meshlink_destroy(NUT_CONF));
-	assert(meshlink_destroy(PEER_CONF));
 
 	// Open and start peer node instance, invite NUT.
 
-	meshlink_handle_t *mesh_peer = meshlink_open(PEER_CONF, PEER, GET_NODE_REACHABILITY,
+	meshlink_handle_t *mesh_peer = meshlink_open(PEER_CONF_03, PEER, GET_NODE_REACHABILITY,
 	                               DEV_CLASS_STATIONARY);
 	assert_int_not_equal(mesh_peer, NULL);
 	assert_true(meshlink_start(mesh_peer));
@@ -343,7 +352,7 @@ static bool test_get_node_reachability_03(void) {
 
 	// Open NUT node instance and join with the peer node
 
-	meshlink_handle_t *mesh = meshlink_open(NUT_CONF, NUT, GET_NODE_REACHABILITY, DEV_CLASS_STATIONARY);
+	meshlink_handle_t *mesh = meshlink_open(NUT_CONF_03, NUT, GET_NODE_REACHABILITY, DEV_CLASS_STATIONARY);
 	assert_int_not_equal(mesh, NULL);
 	assert_true(meshlink_join(mesh, invitation));
 	free(invitation);
@@ -353,7 +362,7 @@ static bool test_get_node_reachability_03(void) {
 	// Cleanup peer node instance
 
 	meshlink_close(mesh_peer);
-	assert(meshlink_destroy(PEER_CONF));
+	assert(meshlink_destroy(PEER_CONF_03));
 
 	// Call meshlink_get_node_reachability API with valid arguments
 
@@ -387,7 +396,7 @@ static bool test_get_node_reachability_03(void) {
 	// Reinitialize NUT node instance
 
 	meshlink_close(mesh);
-	mesh = meshlink_open(NUT_CONF, NUT, GET_NODE_REACHABILITY, DEV_CLASS_STATIONARY);
+	mesh = meshlink_open(NUT_CONF_03, NUT, GET_NODE_REACHABILITY, DEV_CLASS_STATIONARY);
 	assert_int_not_equal(mesh, NULL);
 	peer_handle = meshlink_get_node(mesh, PEER);
 	assert(peer_handle);
@@ -402,7 +411,7 @@ static bool test_get_node_reachability_03(void) {
 	// Cleanup NUT
 
 	meshlink_close(mesh);
-	assert(meshlink_destroy(NUT_CONF));
+	assert(meshlink_destroy(NUT_CONF_03));
 	return true;
 }
 
@@ -450,12 +459,10 @@ static bool test_get_node_reachability_04(void) {
 	time_t last_peer_unreachable, last_peer_reachable;
 	time_t last_reachable, last_unreachable;
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
-	assert(meshlink_destroy(NUT_CONF));
-	assert(meshlink_destroy(PEER_CONF));
 
 	// Open both NUT and peer node instance, invite and join NUT with peer node.
 
-	meshlink_handle_t *mesh_peer = meshlink_open(PEER_CONF, PEER, GET_NODE_REACHABILITY,
+	meshlink_handle_t *mesh_peer = meshlink_open(PEER_CONF_04, PEER, GET_NODE_REACHABILITY,
 	                               DEV_CLASS_STATIONARY);
 	assert_int_not_equal(mesh_peer, NULL);
 	meshlink_set_node_status_cb(mesh_peer, meshlink_node_reachable_status_cb);
@@ -463,7 +470,7 @@ static bool test_get_node_reachability_04(void) {
 	assert_non_null(invitation);
 	assert_true(meshlink_start(mesh_peer));
 
-	meshlink_handle_t *mesh = meshlink_open(NUT_CONF, NUT, GET_NODE_REACHABILITY,
+	meshlink_handle_t *mesh = meshlink_open(NUT_CONF_04, NUT, GET_NODE_REACHABILITY,
 	                                        DEV_CLASS_STATIONARY);
 	assert_int_not_equal(mesh, NULL);
 	meshlink_set_node_status_cb(mesh, meshlink_node_reachable_status_cb);
@@ -554,10 +561,10 @@ static bool test_get_node_reachability_04(void) {
 
 	sleep(2);
 
-	mesh = meshlink_open(NUT_CONF, NUT, GET_NODE_REACHABILITY, DEV_CLASS_STATIONARY);
+	mesh = meshlink_open(NUT_CONF_04, NUT, GET_NODE_REACHABILITY, DEV_CLASS_STATIONARY);
 	assert_int_not_equal(mesh, NULL);
 	meshlink_set_node_status_cb(mesh, meshlink_node_reachable_status_cb);
-	mesh_peer = meshlink_open(PEER_CONF, PEER, GET_NODE_REACHABILITY,
+	mesh_peer = meshlink_open(PEER_CONF_04, PEER, GET_NODE_REACHABILITY,
 	                          DEV_CLASS_STATIONARY);
 	assert_int_not_equal(mesh_peer, NULL);
 	meshlink_set_node_status_cb(mesh_peer, meshlink_node_reachable_status_cb);
@@ -605,8 +612,8 @@ static bool test_get_node_reachability_04(void) {
 
 	meshlink_close(mesh);
 	meshlink_close(mesh_peer);
-	assert(meshlink_destroy(NUT_CONF));
-	assert(meshlink_destroy(PEER_CONF));
+	assert(meshlink_destroy(NUT_CONF_04));
+	assert(meshlink_destroy(PEER_CONF_04));
 	return true;
 }
 
@@ -634,17 +641,14 @@ static bool test_get_node_reachability_05(void) {
 	bool status;
 	time_t last_reachable, last_unreachable;
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
-	assert(meshlink_destroy(NUT_CONF));
-	assert(meshlink_destroy(PEER_CONF));
-	assert(meshlink_destroy(PEER2_CONF));
 
 	// Open NUT, peer and peer2 and join peer nodes with NUT.
 
-	meshlink_handle_t *mesh = meshlink_open(NUT_CONF, NUT, GET_NODE_REACHABILITY,
+	meshlink_handle_t *mesh = meshlink_open(NUT_CONF_05, NUT, GET_NODE_REACHABILITY,
 	                                        DEV_CLASS_STATIONARY);
 	assert_int_not_equal(mesh, NULL);
 	meshlink_set_node_status_cb(mesh, meshlink_node_reachable_status_cb_2);
-	meshlink_handle_t *mesh_peer = meshlink_open(PEER_CONF, PEER, GET_NODE_REACHABILITY,
+	meshlink_handle_t *mesh_peer = meshlink_open(PEER_CONF_05, PEER, GET_NODE_REACHABILITY,
 	                               DEV_CLASS_STATIONARY);
 	assert_int_not_equal(mesh_peer, NULL);
 	meshlink_handle_t *mesh_peer2 = meshlink_open(PEER2_CONF, PEER2, GET_NODE_REACHABILITY,
@@ -684,8 +688,8 @@ static bool test_get_node_reachability_05(void) {
 	meshlink_close(mesh);
 	meshlink_close(mesh_peer);
 	meshlink_close(mesh_peer2);
-	assert(meshlink_destroy(NUT_CONF));
-	assert(meshlink_destroy(PEER_CONF));
+	assert(meshlink_destroy(NUT_CONF_05));
+	assert(meshlink_destroy(PEER_CONF_05));
 	assert(meshlink_destroy(PEER2_CONF));
 	return true;
 }
@@ -718,12 +722,10 @@ static bool test_get_node_reachability_06(void) {
 	pid_t pid;
 	int pid_status;
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
-	assert(meshlink_destroy(NUT_CONF));
-	assert(meshlink_destroy(PEER_CONF));
 
 	// Open NUT node instance and invite peer node. Close NUT node instance.
 
-	meshlink_handle_t *mesh = meshlink_open(NUT_CONF, NUT, GET_NODE_REACHABILITY, DEV_CLASS_STATIONARY);
+	meshlink_handle_t *mesh = meshlink_open(NUT_CONF_06, NUT, GET_NODE_REACHABILITY, DEV_CLASS_STATIONARY);
 	assert_non_null(mesh);
 	char *invitation = meshlink_invite(mesh, NULL, PEER);
 	meshlink_close(mesh);
@@ -735,7 +737,7 @@ static bool test_get_node_reachability_06(void) {
 	assert_int_not_equal(pid, -1);
 
 	if(!pid) {
-		mesh = meshlink_open(NUT_CONF, NUT, GET_NODE_REACHABILITY, DEV_CLASS_STATIONARY);
+		mesh = meshlink_open(NUT_CONF_06, NUT, GET_NODE_REACHABILITY, DEV_CLASS_STATIONARY);
 		assert(mesh);
 		meshlink_set_log_cb(mesh, MESHLINK_DEBUG, log_cb);
 		meshlink_set_node_status_cb(mesh, meshlink_node_reachable_status_cb);
@@ -750,7 +752,7 @@ static bool test_get_node_reachability_06(void) {
 
 	// Open peer node instance and join with the invitation obtained.
 
-	meshlink_handle_t *mesh_peer = meshlink_open(PEER_CONF, PEER, GET_NODE_REACHABILITY,
+	meshlink_handle_t *mesh_peer = meshlink_open(PEER_CONF_06, PEER, GET_NODE_REACHABILITY,
 	                               DEV_CLASS_STATIONARY);
 	assert_non_null(mesh_peer);
 	assert_true(meshlink_join(mesh_peer, invitation));
@@ -763,7 +765,7 @@ static bool test_get_node_reachability_06(void) {
 
 	// Reopen the NUT instance in the same test suite
 
-	mesh = meshlink_open(NUT_CONF, NUT, GET_NODE_REACHABILITY, DEV_CLASS_STATIONARY);
+	mesh = meshlink_open(NUT_CONF_06, NUT, GET_NODE_REACHABILITY, DEV_CLASS_STATIONARY);
 	assert(mesh);
 
 	// Call meshlink_get_node_reachability API and verify that the time stamps has persisted.
@@ -777,8 +779,8 @@ static bool test_get_node_reachability_06(void) {
 
 	meshlink_close(mesh);
 	meshlink_close(mesh_peer);
-	assert(meshlink_destroy(NUT_CONF));
-	assert(meshlink_destroy(PEER_CONF));
+	assert(meshlink_destroy(NUT_CONF_06));
+	assert(meshlink_destroy(PEER_CONF_06));
 	return true;
 }
 
@@ -808,12 +810,10 @@ static bool test_get_node_reachability_07(void) {
 	pid_t pid;
 	int pid_status;
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
-	assert(meshlink_destroy(NUT_CONF));
-	assert(meshlink_destroy(PEER_CONF));
 
 	// Open peer node instance and invite NUT.
 
-	meshlink_handle_t *mesh_peer = meshlink_open(PEER_CONF, PEER, GET_NODE_REACHABILITY,
+	meshlink_handle_t *mesh_peer = meshlink_open(PEER_CONF_07, PEER, GET_NODE_REACHABILITY,
 	                               DEV_CLASS_STATIONARY);
 	assert_int_not_equal(mesh_peer, NULL);
 	char *invitation = meshlink_invite(mesh_peer, NULL, PEER);
@@ -827,7 +827,7 @@ static bool test_get_node_reachability_07(void) {
 	assert(pid != -1);
 
 	if(!pid) {
-		meshlink_handle_t *mesh = meshlink_open(NUT_CONF, NUT, GET_NODE_REACHABILITY, DEV_CLASS_STATIONARY);
+		meshlink_handle_t *mesh = meshlink_open(NUT_CONF_07, NUT, GET_NODE_REACHABILITY, DEV_CLASS_STATIONARY);
 		assert(mesh);
 		meshlink_set_log_cb(mesh, MESHLINK_DEBUG, log_cb);
 
@@ -844,7 +844,7 @@ static bool test_get_node_reachability_07(void) {
 
 	// Reopen the NUT instance in the same test suite
 
-	meshlink_handle_t *mesh = meshlink_open(NUT_CONF, NUT, GET_NODE_REACHABILITY, DEV_CLASS_STATIONARY);
+	meshlink_handle_t *mesh = meshlink_open(NUT_CONF_07, NUT, GET_NODE_REACHABILITY, DEV_CLASS_STATIONARY);
 	assert(mesh);
 
 	// Call meshlink_get_node_reachability API and verify that the time stamps has persisted.
@@ -858,8 +858,8 @@ static bool test_get_node_reachability_07(void) {
 
 	meshlink_close(mesh);
 	meshlink_close(mesh_peer);
-	assert(meshlink_destroy(NUT_CONF));
-	assert(meshlink_destroy(PEER_CONF));
+	assert(meshlink_destroy(NUT_CONF_07));
+	assert(meshlink_destroy(PEER_CONF_07));
 	return true;
 }
 
