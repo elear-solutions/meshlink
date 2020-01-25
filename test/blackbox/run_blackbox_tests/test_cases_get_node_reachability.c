@@ -88,20 +88,20 @@ static bool test_get_node_reachability_07(void);
 static void meshlink_node_reachable_status_cb(meshlink_handle_t *mesh, meshlink_node_t *node, bool reachable_status) {
 	if(!strcasecmp(mesh->name, NUT)) {
 		if(!strcasecmp(node->name, PEER)) {
-			set_sync_flag(&peer_reachable_status_cond, true);
 			peer_reachable_status = reachable_status;
+			set_sync_flag(&peer_reachable_status_cond, true);
 		}
 	} else if(!strcasecmp(mesh->name, PEER)) {
 		if(!strcasecmp(node->name, NUT)) {
-			set_sync_flag(&nut_reachable_status_cond, true);
 			nut_reachable_status = reachable_status;
+			set_sync_flag(&nut_reachable_status_cond, true);
 		}
 	}
 }
 
 static void meshlink_node_reachable_status_cb_2(meshlink_handle_t *mesh, meshlink_node_t *node, bool reachable_status) {
 	meshlink_node_t *peer_handle;
-	char *peer_name;
+	char *peer_name = NULL;
 	time_t last_unreachable, last_reachable;
 	static int count = 2;
 
@@ -565,6 +565,11 @@ static bool test_get_node_reachability_04(void) {
 	                          DEV_CLASS_STATIONARY);
 	assert_int_not_equal(mesh_peer, NULL);
 	meshlink_set_node_status_cb(mesh_peer, meshlink_node_reachable_status_cb);
+
+	peer_handle = meshlink_get_node(mesh, PEER);
+	assert(peer_handle);
+	nut_handle = meshlink_get_node(mesh_peer, NUT);
+	assert(nut_handle);
 
 	// Call meshlink_get_node_reachability API from joined node and also from joining node.
 
