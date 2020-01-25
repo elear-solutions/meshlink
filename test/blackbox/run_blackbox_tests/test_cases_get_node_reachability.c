@@ -198,17 +198,19 @@ static bool test_get_node_reachability_01(void) {
 
 	status = meshlink_get_node_reachability(mesh, meshlink_get_self(mesh), NULL, NULL);
 	assert_int_equal(status, false);
-	assert_int_equal(last_reachable, 0);
-	assert_int_equal(last_unreachable, 0);
 
 	// Call meshlink_get_node_reachability API with invalid parameters
 
+	meshlink_errno = MESHLINK_OK;
 	meshlink_get_node_reachability(NULL, meshlink_get_self(mesh), NULL, NULL);
 	assert_int_equal(meshlink_errno, MESHLINK_EINVAL);
+	meshlink_errno = MESHLINK_OK;
 	meshlink_get_node_reachability(NULL, meshlink_get_self(mesh), &last_reachable, &last_unreachable);
 	assert_int_equal(meshlink_errno, MESHLINK_EINVAL);
+	meshlink_errno = MESHLINK_OK;
 	meshlink_get_node_reachability(mesh, NULL, NULL, NULL);
 	assert_int_equal(meshlink_errno, MESHLINK_EINVAL);
+	meshlink_errno = MESHLINK_OK;
 	meshlink_get_node_reachability(mesh, NULL, &last_reachable, &last_unreachable);
 	assert_int_equal(meshlink_errno, MESHLINK_EINVAL);
 
@@ -273,7 +275,6 @@ static bool test_get_node_reachability_02(void) {
 
 	status = meshlink_get_node_reachability(mesh, meshlink_get_self(mesh), &last_reachable, &last_unreachable);
 	assert_false(status);
-	assert_int_not_equal(last_reachable, 0);
 	assert_int_not_equal(last_unreachable, 0);
 	assert_int_equal(last_reachable, last_peer_reachable);
 	last_peer_unreachable = last_unreachable;
@@ -288,8 +289,6 @@ static bool test_get_node_reachability_02(void) {
 
 	status = meshlink_get_node_reachability(mesh, meshlink_get_self(mesh), &last_reachable, &last_unreachable);
 	assert_false(status);
-	assert_int_not_equal(last_reachable, 0);
-	assert_int_not_equal(last_unreachable, 0);
 	assert_int_equal(last_reachable, last_peer_reachable);
 	assert_int_equal(last_unreachable, last_peer_unreachable);
 
@@ -515,14 +514,12 @@ static bool test_get_node_reachability_04(void) {
 
 	status = meshlink_get_node_reachability(mesh, peer_handle, &last_reachable, &last_unreachable);
 	assert_false(status);
-	assert_int_not_equal(last_reachable, 0);
 	assert_int_not_equal(last_unreachable, 0);
 	assert_int_equal(last_reachable, last_peer_reachable);
 	last_peer_unreachable = last_unreachable;
 
 	status = meshlink_get_node_reachability(mesh_peer, nut_handle, &last_reachable, &last_unreachable);
 	assert_false(status);
-	assert_int_not_equal(last_reachable, 0);
 	assert_int_not_equal(last_unreachable, 0);
 	assert_int_equal(last_reachable, last_nut_reachable);
 	last_nut_unreachable = last_unreachable;
