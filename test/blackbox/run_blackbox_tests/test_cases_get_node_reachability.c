@@ -52,6 +52,7 @@ static struct sync_flag peer_reachable_status_cond = {.mutex  = PTHREAD_MUTEX_IN
 static bool peer_reachable_status;
 static struct sync_flag nut_reachable_status_cond = {.mutex  = PTHREAD_MUTEX_INITIALIZER, .cond = PTHREAD_COND_INITIALIZER};
 static bool nut_reachable_status;
+static struct sync_flag nut_started_status_cond = {.mutex  = PTHREAD_MUTEX_INITIALIZER, .cond = PTHREAD_COND_INITIALIZER};
 
 static void test_case_get_node_reachability_01(void **state);
 static bool test_get_node_reachability_01(void);
@@ -112,6 +113,14 @@ static void meshlink_node_reachable_status_cb_2(meshlink_handle_t *mesh, meshlin
 			peer_reachable_status = reachable_status;
 		}
 	}
+}
+
+/* SIGUSR2 signal handler that signals the NUT started and PEER node can join */
+void nut_started_user_signal_handler(int signum) {
+	if(signum == SIGUSR2) {
+		set_sync_flag(&nut_started_status_cond, true);
+	}
+
 }
 
 /*
@@ -738,6 +747,11 @@ static bool test_get_node_reachability_06(void) {
 	char *invitation = meshlink_invite(mesh, NULL, PEER);
 	meshlink_close(mesh);
 
+	// Set the SIGUSR2 signal handler with handler that signal the condition to the test suite
+
+	sighandler_t usr2sighandler = signal(SIGUSR2, nut_started_user_signal_handler);
+	assert_int_not_equal(usr2sighandler, SIG_ERR);
+
 	// Fork a new process and run NUT in it which just waits for the peer node reachable status callback
 	// and terminates the process immediately.
 
@@ -745,6 +759,8 @@ static bool test_get_node_reachability_06(void) {
 	assert_int_not_equal(pid, -1);
 
 	if(!pid) {
+		assert(signal(SIGUSR2, SIG_DFL) != SIG_ERR);
+
 		mesh = meshlink_open(nut_confbase, NUT, GET_NODE_REACHABILITY, DEV_CLASS_STATIONARY);
 		assert(mesh);
 		meshlink_set_log_cb(mesh, MESHLINK_DEBUG, log_cb);
@@ -752,10 +768,18 @@ static bool test_get_node_reachability_06(void) {
 
 		set_sync_flag(&peer_reachable_status_cond, false);
 		assert(meshlink_start(mesh));
-		assert(wait_sync_flag(&peer_reachable_status_cond, 60));
-		assert(peer_reachable_status);
 
-		raise(SIGINT);
+		assert(kill(getppid(), SIGUSR2) != -1);
+
+		for(int i = 0; i < 60; i++) {
+			if(meshlink_get_node(mesh, PEER)) {
+				raise(SIGINT);
+			}
+
+			sleep(1);
+		}
+
+		abort();
 	}
 
 	// Open peer node instance and join with the invitation obtained.
@@ -763,6 +787,12 @@ static bool test_get_node_reachability_06(void) {
 	meshlink_handle_t *mesh_peer = meshlink_open(peer_confbase, PEER, GET_NODE_REACHABILITY,
 	                               DEV_CLASS_STATIONARY);
 	assert_non_null(mesh_peer);
+
+	// Wait for the started signal from NUT and reset the previous SIGUSR2 signal handler
+
+	assert_true(wait_sync_flag(&nut_started_status_cond, 60));
+	assert_int_not_equal(signal(SIGUSR2, usr2sighandler), SIG_ERR);
+
 	assert_true(meshlink_join(mesh_peer, invitation));
 
 	// Wait for child exit and verify which signal terminated it
@@ -780,7 +810,7 @@ static bool test_get_node_reachability_06(void) {
 
 	status = meshlink_get_node_reachability(mesh, meshlink_get_node(mesh, PEER), &last_reachable, &last_unreachable);
 	assert_int_equal(status, false);
-	assert_int_not_equal(last_reachable, 0);
+	assert_int_equal(last_reachable, 0);
 	assert_int_equal(last_unreachable, 0);
 
 	// Cleanup
@@ -828,7 +858,7 @@ static bool test_get_node_reachability_07(void) {
 	meshlink_handle_t *mesh_peer = meshlink_open(peer_confbase, PEER, GET_NODE_REACHABILITY,
 	                               DEV_CLASS_STATIONARY);
 	assert_int_not_equal(mesh_peer, NULL);
-	char *invitation = meshlink_invite(mesh_peer, NULL, PEER);
+	char *invitation = meshlink_invite(mesh_peer, NULL, NUT);
 	assert_non_null(invitation);
 
 	assert_true(meshlink_start(mesh_peer));
@@ -863,7 +893,7 @@ static bool test_get_node_reachability_07(void) {
 
 	status = meshlink_get_node_reachability(mesh, meshlink_get_node(mesh, PEER), &last_reachable, &last_unreachable);
 	assert_int_equal(status, false);
-	assert_int_not_equal(last_reachable, 0);
+	assert_int_equal(last_reachable, 0);
 	assert_int_equal(last_unreachable, 0);
 
 	// Cleanup
@@ -900,7 +930,6 @@ int test_get_node_reachability(void) {
 	};
 
 	const struct CMUnitTest blackbox_status_tests[] = {
-
 		cmocka_unit_test_prestate_setup_teardown(test_case_get_node_reachability_01, NULL, NULL,
 		                (void *)&test_case_get_node_reachability_01_state),
 		cmocka_unit_test_prestate_setup_teardown(test_case_get_node_reachability_02, NULL, NULL,
