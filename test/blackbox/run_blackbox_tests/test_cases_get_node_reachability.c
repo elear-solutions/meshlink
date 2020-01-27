@@ -771,15 +771,10 @@ static bool test_get_node_reachability_06(void) {
 
 		assert(kill(getppid(), SIGUSR2) != -1);
 
-		for(int i = 0; i < 60; i++) {
-			if(meshlink_get_node(mesh, PEER)) {
-				raise(SIGINT);
-			}
+		assert(wait_sync_flag(&peer_reachable_status_cond, 60));
+		assert(peer_reachable_status);
 
-			sleep(1);
-		}
-
-		abort();
+		raise(SIGINT);
 	}
 
 	// Open peer node instance and join with the invitation obtained.
@@ -794,6 +789,7 @@ static bool test_get_node_reachability_06(void) {
 	assert_int_not_equal(signal(SIGUSR2, usr2sighandler), SIG_ERR);
 
 	assert_true(meshlink_join(mesh_peer, invitation));
+	assert_true(meshlink_start(mesh_peer));
 
 	// Wait for child exit and verify which signal terminated it
 
@@ -810,7 +806,7 @@ static bool test_get_node_reachability_06(void) {
 
 	status = meshlink_get_node_reachability(mesh, meshlink_get_node(mesh, PEER), &last_reachable, &last_unreachable);
 	assert_int_equal(status, false);
-	assert_int_equal(last_reachable, 0);
+	assert_int_not_equal(last_reachable, 0);
 	assert_int_equal(last_unreachable, 0);
 
 	// Cleanup
