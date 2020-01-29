@@ -11,7 +11,7 @@ class MeshlinklibConan(ConanFile):
     settings = "os", "compiler", "build_type", "arch"
     options = {
         "shared": [True, False]
-        }
+    }
     default_options = {key: False for key in options.keys()}
     default_options ["shared"] = False
     generators = "make"
