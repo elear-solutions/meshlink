@@ -110,7 +110,7 @@ bool pong_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	/* Successful connection, reset timeout if this is an outgoing connection. */
 
 	if(c->outgoing) {
-		reset_outgoing(outgoing);
+		reset_outgoing(c->outgoing);
 	}
 
 	return true;
