@@ -53,6 +53,7 @@ static bool peer_reachable_status;
 static struct sync_flag nut_reachable_status_cond = {.mutex  = PTHREAD_MUTEX_INITIALIZER, .cond = PTHREAD_COND_INITIALIZER};
 static bool nut_reachable_status;
 static struct sync_flag nut_started_status_cond = {.mutex  = PTHREAD_MUTEX_INITIALIZER, .cond = PTHREAD_COND_INITIALIZER};
+static bool peer_node_callback_test_status;
 
 static void test_case_get_node_reachability_01(void **state);
 static bool test_get_node_reachability_01(void);
@@ -105,12 +106,10 @@ static void meshlink_node_reachable_status_cb_2(meshlink_handle_t *mesh, meshlin
 			peer_handle = meshlink_get_node(mesh, peer_name);
 			assert_non_null(peer_handle);
 
-			assert_true(meshlink_get_node_reachability(mesh, peer_handle, &last_reachable, &last_unreachable));
-			assert_int_not_equal(last_reachable, 0);
-			assert_int_equal(last_unreachable, 0);
+      bool status = meshlink_get_node_reachability(mesh, peer_handle, &last_reachable, &last_unreachable);
 
+      peer_node_callback_test_status = status && last_reachable && !last_unreachable;
 			set_sync_flag(&peer_reachable_status_cond, true);
-			peer_reachable_status = reachable_status;
 		}
 	}
 }
@@ -695,6 +694,7 @@ static bool test_get_node_reachability_05(void) {
 	assert_true(meshlink_start(mesh_peer));
 	assert_true(meshlink_start(mesh_peer2));
 	assert_true(wait_sync_flag(&peer_reachable_status_cond, 60));
+	assert_true(peer_node_callback_test_status);
 
 	// Cleanup
 
