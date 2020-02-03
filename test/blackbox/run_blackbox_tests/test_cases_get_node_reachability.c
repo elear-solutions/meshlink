@@ -106,9 +106,9 @@ static void meshlink_node_reachable_status_cb_2(meshlink_handle_t *mesh, meshlin
 			peer_handle = meshlink_get_node(mesh, peer_name);
 			assert_non_null(peer_handle);
 
-      bool status = meshlink_get_node_reachability(mesh, peer_handle, &last_reachable, &last_unreachable);
+			bool status = meshlink_get_node_reachability(mesh, peer_handle, &last_reachable, &last_unreachable);
 
-      peer_node_callback_test_status = status && last_reachable && !last_unreachable;
+			peer_node_callback_test_status = status && last_reachable && !last_unreachable;
 			set_sync_flag(&peer_reachable_status_cond, true);
 		}
 	}
