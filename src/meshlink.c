@@ -2312,7 +2312,7 @@ bool meshlink_get_node_reachability(struct meshlink_handle *mesh, struct meshlin
 	bool reachable;
 
 	pthread_mutex_lock(&mesh->mutex);
-	reachable = n->status.reachable;
+	reachable = n->status.reachable && !n->status.blacklisted;
 
 	if(last_reachable) {
 		*last_reachable = n->last_reachable;
@@ -3198,6 +3198,10 @@ static bool blacklist(meshlink_handle_t *mesh, node_t *n) {
 	n->mtuprobes = 0;
 	n->status.udp_confirmed = false;
 
+	if(n->status.reachable) {
+		n->last_unreachable = mesh->loop.now.tv_sec;
+	}
+
 	/* Graph updates will suppress status updates for blacklisted nodes, so we need to
 	 * manually call the status callback if necessary.
 	 */
@@ -3269,6 +3273,7 @@ static bool whitelist(meshlink_handle_t *mesh, node_t *n) {
 	n->status.blacklisted = false;
 
 	if(n->status.reachable) {
+		n->last_reachable = mesh->loop.now.tv_sec;
 		update_node_status(mesh, n);
 	}
 
