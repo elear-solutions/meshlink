@@ -853,7 +853,7 @@ static bool invitation_receive(void *handle, uint8_t type, const void *msg, uint
 	if(mesh->inviter_commits_first) {
 		switch(type) {
 		case SPTPS_HANDSHAKE:
-			return sptps_send_record(&state->sptps, 2, state->cookie, 18 + 32);
+			return 	;
 
 		case 1:
 			break;
@@ -2665,7 +2665,7 @@ char *meshlink_invite_ex(meshlink_handle_t *mesh, meshlink_submesh_t *submesh, c
 	// If we changed our own host config file, write it out now
 	if(mesh->self->status.dirty) {
 		if(!node_write_config(mesh, mesh->self)) {
-			logger(mesh, MESHLINK_ERROR, "Could not write our own host conifg file!\n");
+			logger(mesh, MESHLINK_ERROR, "Could not write our own host config file!\n");
 			pthread_mutex_unlock(&mesh->mutex);
 			return NULL;
 		}
