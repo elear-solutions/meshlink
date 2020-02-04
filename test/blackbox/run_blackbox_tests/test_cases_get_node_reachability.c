@@ -91,6 +91,10 @@ static void meshlink_node_reachable_status_cb_2(meshlink_handle_t *mesh, meshlin
 	time_t last_unreachable, last_reachable;
 	static int count = 2;
 
+	if(meshlink_get_self(mesh) == node) {
+		return;
+	}
+
 	/*  Of the 2 node reachable callbacks, the latest callback calls meshlink_get_node_reachability API
 	    for the 1st node joined  */
 	if(count && reachable_status && !strcasecmp(mesh->name, NUT)) {
