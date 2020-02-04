@@ -12,6 +12,7 @@ TESTS = \
 	duplicate \
 	encrypted \
 	ephemeral \
+	get-all-nodes \
 	import-export \
 	invite-join \
 	sign-verify \
@@ -42,6 +43,7 @@ check_PROGRAMS = \
 	echo-fork \
 	encrypted \
 	ephemeral \
+	get-all-nodes \
 	import-export \
 	invite-join \
 	sign-verify \
@@ -93,6 +95,9 @@ encrypted_LDADD = ../src/libmeshlink.la
 
 ephemeral_SOURCES = ephemeral.c utils.c utils.h
 ephemeral_LDADD = ../src/libmeshlink.la
+
+get_all_nodes_SOURCES = get-all-nodes.c utils.c utils.h
+get_all_nodes_LDADD = ../src/libmeshlink.la
 
 import_export_SOURCES = import-export.c utils.c utils.h
 import_export_LDADD = ../src/libmeshlink.la
