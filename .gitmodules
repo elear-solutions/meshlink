@@ -1,7 +1,8 @@
 [submodule "catta"]
 	path = catta
-	url = git://meshlink.io/catta
+	url = https://github.com/elear-solutions/catta.git
 	branch = develop
 [submodule "src/utcp"]
 	path = src/utcp
-	url = git://meshlink.io/utcp
+	url = https://github.com/elear-solutions/utcp.git
+	branch = develop
