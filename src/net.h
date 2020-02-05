@@ -93,6 +93,7 @@ extern char *get_name(struct meshlink_handle *mesh);
 extern void load_all_nodes(struct meshlink_handle *mesh);
 extern bool setup_myself_reloadable(struct meshlink_handle *mesh);
 extern bool setup_network(struct meshlink_handle *mesh);
+extern void reset_outgoing(struct outgoing_t *);
 extern void setup_outgoing_connection(struct meshlink_handle *mesh, struct outgoing_t *);
 extern void close_network_connections(struct meshlink_handle *mesh);
 extern int main_loop(struct meshlink_handle *mesh);
