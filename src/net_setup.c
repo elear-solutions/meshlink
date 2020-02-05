@@ -116,17 +116,6 @@ bool node_read_public_key(meshlink_handle_t *mesh, node_t *n) {
 		n->recent[i + known_count] = packmsg_get_sockaddr(&in);
 	}
 
-	time_t last_reachable = packmsg_get_int64(&in);
-	time_t last_unreachable = packmsg_get_int64(&in);
-
-	if(!n->last_reachable) {
-		n->last_reachable = last_reachable;
-	}
-
-	if(!n->last_unreachable) {
-		n->last_unreachable = last_unreachable;
-	}
-
 
 	config_free(&config);
 	return true;
@@ -202,9 +191,6 @@ bool node_read_from_config(meshlink_handle_t *mesh, node_t *n, const config_t *c
 		n->recent[i] = packmsg_get_sockaddr(&in);
 	}
 
-	n->last_reachable = packmsg_get_int64(&in);
-	n->last_unreachable = packmsg_get_int64(&in);
-
 	return packmsg_done(&in);
 }
 
@@ -246,9 +232,6 @@ bool node_write_config(meshlink_handle_t *mesh, node_t *n) {
 		packmsg_add_sockaddr(&out, &n->recent[i]);
 	}
 
-	packmsg_add_int64(&out, n->last_reachable);
-	packmsg_add_int64(&out, n->last_unreachable);
-
 	if(!packmsg_output_ok(&out)) {
 		return false;
 	}
@@ -259,8 +242,6 @@ bool node_write_config(meshlink_handle_t *mesh, node_t *n) {
 		call_error_cb(mesh, MESHLINK_ESTORAGE);
 		return false;
 	}
-
-
 
 	return true;
 }
@@ -414,8 +395,12 @@ bool setup_myself(meshlink_handle_t *mesh) {
 	/* Done */
 
 	mesh->self->nexthop = mesh->self;
+	mesh->self->status.reachable = true;
+	mesh->self->last_state_change = mesh->loop.now.tv_sec;
 
 	node_add(mesh, mesh->self);
+
+	graph(mesh);
 
 	config_scan_all(mesh, "current", "hosts", load_node, NULL);
 

@@ -590,20 +590,6 @@ begin:
 	return true;
 }
 
-void reset_outgoing(outgoing_t *outgoing) {
-	if(outgoing->ai) {
-		if(outgoing->state == OUTGOING_RECENT || outgoing->state == OUTGOING_KNOWN) {
-			free_known_addresses(outgoing->ai);
-		} else {
-			freeaddrinfo(outgoing->ai);
-		}
-	}
-
-	outgoing->ai = NULL;
-	outgoing->aip = NULL;
-	outgoing->state = OUTGOING_START;
-}
-
 void setup_outgoing_connection(meshlink_handle_t *mesh, outgoing_t *outgoing) {
 	timeout_del(&mesh->loop, &outgoing->ev);
 
@@ -615,7 +601,15 @@ void setup_outgoing_connection(meshlink_handle_t *mesh, outgoing_t *outgoing) {
 	}
 
 
-	reset_outgoing(outgoing);
+	if(outgoing->ai) {
+		if(outgoing->state == OUTGOING_RECENT || outgoing->state == OUTGOING_KNOWN) {
+			free_known_addresses(outgoing->ai);
+		} else {
+			freeaddrinfo(outgoing->ai);
+		}
+	}
+
+	outgoing->state = OUTGOING_START;
 
 	if(outgoing->node->status.blacklisted) {
 		return;
