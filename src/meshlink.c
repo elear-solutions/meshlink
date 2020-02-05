@@ -37,7 +37,6 @@
 #include "ed25519/sha512.h"
 #include "discovery.h"
 #include "devtools.h"
-#include "graph.h"
 
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
@@ -654,10 +653,6 @@ static bool finalize_join(meshlink_handle_t *mesh, const void *buf, uint16_t len
 			meshlink_errno = MESHLINK_EPEER;
 			return false;
 		}
-
-		/* Clear the reachability times, since we ourself have never seen these nodes yet */
-		n->last_reachable = 0;
-		n->last_unreachable = 0;
 
 		node_add(mesh, n);
 
@@ -1519,9 +1514,6 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 	pthread_cond_wait(&mesh->cond, &mesh->mutex);
 	mesh->threadstarted = true;
 
-	// Ensure we are considered reachable
-	graph(mesh);
-
 	pthread_mutex_unlock(&mesh->mutex);
 	return true;
 }
@@ -1574,12 +1566,7 @@ void meshlink_stop(meshlink_handle_t *mesh) {
 
 	exit_outgoings(mesh);
 
-	// Ensure we are considered unreachable
-	if(mesh->nodes) {
-		graph(mesh);
-	}
-
-	// Try to write out any changed node config files, ignore errors at this point.
+	// Write out any changed node config files
 	if(mesh->nodes) {
 		for splay_each(node_t, n, mesh->nodes) {
 			if(n->status.dirty) {
@@ -2010,31 +1997,6 @@ static bool search_node_by_submesh(const node_t *node, const void *condition) {
 	return false;
 }
 
-struct time_range {
-	time_t start;
-	time_t end;
-};
-
-static bool search_node_by_last_reachable(const node_t *node, const void *condition) {
-	const struct time_range *range = condition;
-	time_t start = node->last_reachable;
-	time_t end = node->last_unreachable;
-
-	if(end < start) {
-		end = time(NULL);
-
-		if(end < start) {
-			start = end;
-		}
-	}
-
-	if(range->end >= range->start) {
-		return start <= range->end && end >= range->start;
-	} else {
-		return start > range->start || end < range->end;
-	}
-}
-
 meshlink_node_t **meshlink_get_all_nodes_by_dev_class(meshlink_handle_t *mesh, dev_class_t devclass, meshlink_node_t **nodes, size_t *nmemb) {
 	if(!mesh || devclass < 0 || devclass >= DEV_CLASS_COUNT || !nmemb) {
 		meshlink_errno = MESHLINK_EINVAL;
@@ -2051,17 +2013,6 @@ meshlink_node_t **meshlink_get_all_nodes_by_submesh(meshlink_handle_t *mesh, mes
 	}
 
 	return meshlink_get_all_nodes_by_condition(mesh, submesh, nodes, nmemb, search_node_by_submesh);
-}
-
-meshlink_node_t **meshlink_get_all_nodes_by_last_reachable(meshlink_handle_t *mesh, time_t start, time_t end, meshlink_node_t **nodes, size_t *nmemb) {
-	if(!mesh || !nmemb) {
-		meshlink_errno = MESHLINK_EINVAL;
-		return NULL;
-	}
-
-	struct time_range range = {start, end};
-
-	return meshlink_get_all_nodes_by_condition(mesh, &range, nodes, nmemb, search_node_by_last_reachable);
 }
 
 dev_class_t meshlink_get_node_dev_class(meshlink_handle_t *mesh, meshlink_node_t *node) {
@@ -2094,31 +2045,6 @@ meshlink_submesh_t *meshlink_get_node_submesh(meshlink_handle_t *mesh, meshlink_
 	s = (meshlink_submesh_t *)n->submesh;
 
 	return s;
-}
-
-bool meshlink_get_node_reachability(struct meshlink_handle *mesh, struct meshlink_node *node, time_t *last_reachable, time_t *last_unreachable) {
-	if(!mesh || !node) {
-		meshlink_errno = MESHLINK_EINVAL;
-		return NULL;
-	}
-
-	node_t *n = (node_t *)node;
-	bool reachable;
-
-	pthread_mutex_lock(&mesh->mutex);
-	reachable = n->status.reachable;
-
-	if(last_reachable) {
-		*last_reachable = n->last_reachable;
-	}
-
-	if(last_unreachable) {
-		*last_unreachable = n->last_unreachable;
-	}
-
-	pthread_mutex_unlock(&mesh->mutex);
-
-	return reachable;
 }
 
 bool meshlink_sign(meshlink_handle_t *mesh, const void *data, size_t len, void *signature, size_t *siglen) {
@@ -2755,9 +2681,6 @@ char *meshlink_export(meshlink_handle_t *mesh) {
 	for(uint32_t i = 0; i < count; i++) {
 		packmsg_add_sockaddr(&out, &mesh->self->recent[i]);
 	}
-
-	packmsg_add_int64(&out, 0);
-	packmsg_add_int64(&out, 0);
 
 	pthread_mutex_unlock(&mesh->mutex);
 
