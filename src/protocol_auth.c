@@ -211,6 +211,7 @@ static bool process_invitation(meshlink_handle_t *mesh, connection_t *c, const v
 	char *submesh_name = packmsg_get_str_dup(&in);
 
 	if(!strcmp(submesh_name, CORE_MESH)) {
+		free(submesh_name);
 		c->submesh = NULL;
 	} else {
 		if(!check_id(submesh_name)) {
