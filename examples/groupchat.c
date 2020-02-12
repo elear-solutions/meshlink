@@ -417,9 +417,7 @@ static void parse_input(meshlink_handle_t *mesh, char *buf) {
 
 	if(!channel) {
 		fprintf(stderr, "Opening chat channel to '%s'\n", destination->name);
-		//channel = meshlink_channel_open(mesh, destination, CHAT_PORT, channel_receive, NULL, 0);
-
-		channel = meshlink_channel_open_ex(mesh, destination, CHAT_PORT, channel_receive, NULL, 0, MESHLINK_CHANNEL_UDP);
+		channel = meshlink_channel_open(mesh, destination, CHAT_PORT, channel_receive, NULL, 0);
 
 		if(!channel) {
 			fprintf(stderr, "Could not create channel to '%s': %s\n", destination->name, meshlink_strerror(meshlink_errno));
