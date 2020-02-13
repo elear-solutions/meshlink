@@ -661,7 +661,7 @@ static bool finalize_join(meshlink_handle_t *mesh, const void *buf, uint16_t len
 
 		node_add(mesh, n);
 
-		if(!config_write(mesh, "current", n->name, &config, mesh->config_key)) {
+		if(!node_write_config(mesh, n)) {
 			return false;
 		}
 	}
@@ -2857,7 +2857,15 @@ bool meshlink_import(meshlink_handle_t *mesh, const char *data) {
 			break;
 		}
 
-		config_write(mesh, "current", n->name, &config, mesh->config_key);
+		/* Clear the reachability times, since we ourself have never seen these nodes yet */
+		n->last_reachable = 0;
+		n->last_unreachable = 0;
+
+		if(!node_write_config(mesh, n)) {
+			free_node(n);
+			return false;
+		}
+
 		node_add(mesh, n);
 	}
 
