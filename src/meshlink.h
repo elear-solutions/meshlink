@@ -1483,6 +1483,17 @@ extern bool meshlink_encrypted_key_rotate(struct meshlink_handle *mesh, const vo
  */
 extern void meshlink_set_dev_class_timeouts(struct meshlink_handle *mesh, dev_class_t devclass, int pinginterval, int pingtimeout);
 
+/// Set which order invitations are committed
+/** This determines in which order configuration files are written to disk during an invitation.
+ *  By default, the invitee saves the configuration to disk first, then the inviter.
+ *  By calling this function with @a inviter_commits_first set to true, the order is reversed.
+ *
+ *  \memberof meshlink_handle
+ *  @param mesh               A handle which represents an instance of MeshLink.
+ *  @param inviter_commits_first  If true, then the node that invited a peer will commit data to disk first.
+ */
+extern void meshlink_set_inviter_commits_first(struct meshlink_handle *mesh, bool inviter_commits_first);
+
 #ifdef __cplusplus
 }
 #endif

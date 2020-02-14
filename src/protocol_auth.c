@@ -37,6 +37,7 @@
 #include "utils.h"
 #include "xalloc.h"
 #include "ed25519/sha512.h"
+#include "devtools.h"
 
 #include <assert.h>
 
@@ -152,12 +153,7 @@ bool send_id(meshlink_handle_t *mesh, connection_t *c) {
 	return send_request(mesh, c, NULL, "%d %s %d.%d %s", ID, mesh->self->name, PROT_MAJOR, PROT_MINOR, mesh->appname);
 }
 
-static bool finalize_invitation(meshlink_handle_t *mesh, connection_t *c, const void *data, uint16_t len) {
-	if(len != 32) {
-		logger(mesh, MESHLINK_ERROR, "Received invalid key from invited node %s!\n", c->name);
-		return false;
-	}
-
+static bool commit_invitation(meshlink_handle_t *mesh, connection_t *c, const void *data) {
 	// Create a new node
 	node_t *n = new_node();
 	n->name = xstrdup(c->name);
@@ -183,22 +179,7 @@ static bool finalize_invitation(meshlink_handle_t *mesh, connection_t *c, const 
 	return true;
 }
 
-static bool receive_invitation_sptps(void *handle, uint8_t type, const void *data, uint16_t len) {
-	connection_t *c = handle;
-	meshlink_handle_t *mesh = c->mesh;
-
-	if(type == 128) {
-		return true;
-	}
-
-	if(type == 1 && c->status.invitation_used) {
-		return finalize_invitation(mesh, c, data, len);
-	}
-
-	if(type != 0 || len != 18 || c->status.invitation_used) {
-		return false;
-	}
-
+static bool process_invitation(meshlink_handle_t *mesh, connection_t *c, const void *data) {
 	// Recover the filename from the cookie and the key
 	char *fingerprint = ecdsa_get_base64_public_key(mesh->invitation_key);
 	char hash[64];
@@ -231,27 +212,60 @@ static bool receive_invitation_sptps(void *handle, uint8_t type, const void *dat
 	} else {
 		if(!check_id(submesh_name)) {
 			logger(mesh, MESHLINK_ERROR, "Invalid invitation file %s\n", cookie);
-			abort();
+			free(submesh_name);
 			return false;
 		}
 
 		c->submesh = lookup_or_create_submesh(mesh, submesh_name);
+		free(submesh_name);
 
 		if(!c->submesh) {
+			logger(mesh, MESHLINK_ERROR, "Unknown submesh in invitation file %s\n", cookie);
 			return false;
 		}
+	}
+
+	if(mesh->inviter_commits_first && !commit_invitation(mesh, c, (const char *)data + 18)) {
+		return false;
+	}
+
+	if (mesh->inviter_commits_first) {
+        devtool_set_inviter_commits_first(true);
 	}
 
 	// Send the node the contents of the invitation file
 	sptps_send_record(&c->sptps, 0, config.buf, config.len);
 
 	config_free(&config);
-	free(submesh_name);
 
 	c->status.invitation_used = true;
 
 	logger(mesh, MESHLINK_INFO, "Invitation %s successfully sent to %s", cookie, c->name);
 	return true;
+}
+
+static bool receive_invitation_sptps(void *handle, uint8_t type, const void *data, uint16_t len) {
+	connection_t *c = handle;
+	meshlink_handle_t *mesh = c->mesh;
+
+	if(type == SPTPS_HANDSHAKE) {
+		// The peer should send its cookie first.
+		return true;
+	}
+
+	if(mesh->inviter_commits_first) {
+		if(type == 2 && len == 18 + 32 && !c->status.invitation_used) {
+			return process_invitation(mesh, c, data);
+		}
+	} else {
+		if(type == 0 && len == 18 && !c->status.invitation_used) {
+			return process_invitation(mesh, c, data);
+		} else if(type == 1 && len == 32 && c->status.invitation_used) {
+			return commit_invitation(mesh, c, data);
+		}
+	}
+
+	return false;
 }
 
 bool id_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {

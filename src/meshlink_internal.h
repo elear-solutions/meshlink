@@ -166,6 +166,7 @@ struct meshlink_handle {
 	bool default_blacklist;
 	bool discovery;         // Whether Catta is enabled or not
 
+	bool inviter_commits_first;
 
 	// Configuration
 	char *confbase;
@@ -188,17 +189,6 @@ struct meshlink_handle {
 	struct CattaSEntryGroup *catta_group;
 	char *catta_servicetype;
 	unsigned int catta_interfaces;
-
-	// State used for meshlink_join()
-	int sock;
-	char cookie[18], hash[18];
-	bool success;
-	sptps_t sptps;
-	char *data;
-	size_t thedatalen;
-	size_t blen;
-	char line[4096];
-	char buffer[4096];
 
 	// Proxy configuration, currently not exposed.
 	char *proxyhost;

@@ -6,6 +6,7 @@ devtool_get_node_status
 devtool_keyrotate_probe
 devtool_open_in_netns
 devtool_trybind_probe
+devtool_set_inviter_commits_first
 meshlink_add_address
 meshlink_add_external_address
 meshlink_blacklist
@@ -68,6 +69,7 @@ meshlink_set_default_blacklist
 meshlink_set_dev_class_timeouts
 meshlink_set_error_cb
 meshlink_set_invitation_timeout
+meshlink_set_inviter_commits_first
 meshlink_set_log_cb
 meshlink_set_node_channel_timeout
 meshlink_set_node_duplicate_cb
