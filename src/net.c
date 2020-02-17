@@ -118,6 +118,10 @@ static void timeout_handler(event_loop_t *loop, void *data) {
 		int pingtimeout = c->node ? mesh->dev_class_traits[c->node->devclass].pingtimeout : default_timeout;
 		int pinginterval = c->node ? mesh->dev_class_traits[c->node->devclass].pinginterval : default_interval;
 
+		if(c->outgoing && c->outgoing->timeout < 5) {
+			pingtimeout = 1;
+		}
+
 		// Also make sure that if outstanding key requests for the UDP counterpart of a connection has timed out, we restart it.
 		if(c->node) {
 			if(c->node->status.waitingforkey && c->node->last_req_key + pingtimeout <= mesh->loop.now.tv_sec) {
@@ -148,7 +152,7 @@ static void timeout_handler(event_loop_t *loop, void *data) {
 	}
 
 	timeout_set(&mesh->loop, data, &(struct timeval) {
-		default_timeout, prng(mesh, TIMER_FUDGE)
+		1, prng(mesh, TIMER_FUDGE)
 	});
 }
 
@@ -604,7 +608,10 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 
 	for splay_each(node_t, n, mesh->nodes) {
 		if(n->status.dirty) {
-			node_write_config(mesh, n);
+			if(node_write_config(mesh, n)) {
+				logger(mesh, MESHLINK_DEBUG, "Could not update %s", n->name);
+			}
+
 			n->status.dirty = false;
 		}
 	}
@@ -632,11 +639,6 @@ void retry(meshlink_handle_t *mesh) {
 		});
 	}
 
-#ifdef HAVE_IFADDRS_H
-	struct ifaddrs *ifa = NULL;
-	getifaddrs(&ifa);
-#endif
-
 	/* For active connections, check if their addresses are still valid.
 	 * If yes, reset their ping timers, otherwise terminate them. */
 	for list_each(connection_t, c, mesh->connections) {
@@ -648,12 +650,6 @@ void retry(meshlink_handle_t *mesh) {
 			c->last_ping_time = 0;
 		}
 
-#ifdef HAVE_IFADDRS_H
-
-		if(!ifa) {
-			continue;
-		}
-
 		sockaddr_t sa;
 		socklen_t salen = sizeof(sa);
 
@@ -661,31 +657,32 @@ void retry(meshlink_handle_t *mesh) {
 			continue;
 		}
 
-		bool found = false;
+		switch(sa.sa.sa_family) {
+		case AF_INET:
+			sa.in.sin_port = 0;
+			break;
 
-		for(struct ifaddrs *ifap = ifa; ifap; ifap = ifap->ifa_next) {
-			if(ifap->ifa_addr && !sockaddrcmp_noport(&sa, (sockaddr_t *)ifap->ifa_addr)) {
-				found = true;
-				break;
-			}
+		case AF_INET6:
+			sa.in6.sin6_port = 0;
+			break;
 
+		default:
+			continue;
 		}
 
-		if(!found) {
+		int sock = socket(sa.sa.sa_family, SOCK_STREAM, IPPROTO_TCP);
+
+		if(sock != -1) {
+			continue;
+		}
+
+		if(bind(sock, &sa.sa, salen) && errno == EADDRNOTAVAIL) {
 			logger(mesh, MESHLINK_DEBUG, "Local address for connection to %s no longer valid, terminating", c->name);
 			terminate_connection(mesh, c, c->status.active);
 		}
 
-#endif
+		closesocket(sock);
 	}
-
-#ifdef HAVE_IFADDRS_H
-
-	if(ifa) {
-		freeifaddrs(ifa);
-	}
-
-#endif
 
 	/* Kick the ping timeout handler */
 	timeout_set(&mesh->loop, &mesh->pingtimer, &(struct timeval) {
@@ -696,9 +693,9 @@ void retry(meshlink_handle_t *mesh) {
 /*
   this is where it all happens...
 */
-int main_loop(meshlink_handle_t *mesh) {
+void main_loop(meshlink_handle_t *mesh) {
 	timeout_add(&mesh->loop, &mesh->pingtimer, timeout_handler, &mesh->pingtimer, &(struct timeval) {
-		default_timeout, prng(mesh, TIMER_FUDGE)
+		1, prng(mesh, TIMER_FUDGE)
 	});
 	timeout_add(&mesh->loop, &mesh->periodictimer, periodic_handler, &mesh->periodictimer, &(struct timeval) {
 		0, 0
@@ -710,17 +707,10 @@ int main_loop(meshlink_handle_t *mesh) {
 
 	if(!event_loop_run(&mesh->loop, &mesh->mutex)) {
 		logger(mesh, MESHLINK_ERROR, "Error while waiting for input: %s", strerror(errno));
-		abort();
-		signal_del(&mesh->loop, &mesh->datafromapp);
-		timeout_del(&mesh->loop, &mesh->periodictimer);
-		timeout_del(&mesh->loop, &mesh->pingtimer);
-
-		return 1;
+		call_error_cb(mesh, MESHLINK_ENETWORK);
 	}
 
 	signal_del(&mesh->loop, &mesh->datafromapp);
 	timeout_del(&mesh->loop, &mesh->periodictimer);
 	timeout_del(&mesh->loop, &mesh->pingtimer);
-
-	return 0;
 }

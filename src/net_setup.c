@@ -100,7 +100,7 @@ bool node_read_public_key(meshlink_handle_t *mesh, node_t *n) {
 	// Append any known addresses in the config file to the list we currently have
 	uint32_t known_count = 0;
 
-	for(uint32_t i = 0; i < 5; i++) {
+	for(uint32_t i = 0; i < MAX_RECENT; i++) {
 		if(n->recent[i].sa.sa_family) {
 			known_count++;
 		}
@@ -108,14 +108,24 @@ bool node_read_public_key(meshlink_handle_t *mesh, node_t *n) {
 
 	uint32_t count = packmsg_get_array(&in);
 
-	if(count > 5 - known_count) {
-		count = 5 - known_count;
-	}
-
 	for(uint32_t i = 0; i < count; i++) {
-		n->recent[i + known_count] = packmsg_get_sockaddr(&in);
+		if(i < MAX_RECENT - known_count) {
+			n->recent[i + known_count] = packmsg_get_sockaddr(&in);
+		} else {
+			packmsg_skip_element(&in);
+		}
 	}
 
+	time_t last_reachable = packmsg_get_int64(&in);
+	time_t last_unreachable = packmsg_get_int64(&in);
+
+	if(!n->last_reachable) {
+		n->last_reachable = last_reachable;
+	}
+
+	if(!n->last_unreachable) {
+		n->last_unreachable = last_unreachable;
+	}
 
 	config_free(&config);
 	return true;
@@ -183,13 +193,16 @@ bool node_read_from_config(meshlink_handle_t *mesh, node_t *n, const config_t *c
 	n->canonical_address = packmsg_get_str_dup(&in);
 	uint32_t count = packmsg_get_array(&in);
 
-	if(count > 5) {
-		count = 5;
+	for(uint32_t i = 0; i < count; i++) {
+		if(i < MAX_RECENT) {
+			n->recent[i] = packmsg_get_sockaddr(&in);
+		} else {
+			packmsg_skip_element(&in);
+		}
 	}
 
-	for(uint32_t i = 0; i < count; i++) {
-		n->recent[i] = packmsg_get_sockaddr(&in);
-	}
+	n->last_reachable = packmsg_get_int64(&in);
+	n->last_unreachable = packmsg_get_int64(&in);
 
 	return packmsg_done(&in);
 }
@@ -218,7 +231,7 @@ bool node_write_config(meshlink_handle_t *mesh, node_t *n) {
 
 	uint32_t count = 0;
 
-	for(uint32_t i = 0; i < 5; i++) {
+	for(uint32_t i = 0; i < MAX_RECENT; i++) {
 		if(n->recent[i].sa.sa_family) {
 			count++;
 		} else {
@@ -232,7 +245,11 @@ bool node_write_config(meshlink_handle_t *mesh, node_t *n) {
 		packmsg_add_sockaddr(&out, &n->recent[i]);
 	}
 
+	packmsg_add_int64(&out, n->last_reachable);
+	packmsg_add_int64(&out, n->last_unreachable);
+
 	if(!packmsg_output_ok(&out)) {
+		meshlink_errno = MESHLINK_EINTERNAL;
 		return false;
 	}
 
@@ -395,14 +412,12 @@ bool setup_myself(meshlink_handle_t *mesh) {
 	/* Done */
 
 	mesh->self->nexthop = mesh->self;
-	mesh->self->status.reachable = true;
-	mesh->self->last_state_change = mesh->loop.now.tv_sec;
 
 	node_add(mesh, mesh->self);
 
-	graph(mesh);
-
-	config_scan_all(mesh, "current", "hosts", load_node, NULL);
+	if(!config_scan_all(mesh, "current", "hosts", load_node, NULL)) {
+		logger(mesh, MESHLINK_WARNING, "Could not scan all host config files");
+	}
 
 	/* Open sockets */
 
@@ -434,6 +449,7 @@ bool setup_myself(meshlink_handle_t *mesh) {
 	/* Done. */
 
 	mesh->last_config_check = mesh->loop.now.tv_sec;
+	mesh->last_unreachable = mesh->loop.now.tv_sec;
 
 	return true;
 }

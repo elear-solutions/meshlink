@@ -43,8 +43,8 @@ int main() {
 
 	// Import and export both side's data
 
-	meshlink_add_address(mesh1, "localhost");
-	meshlink_add_address(mesh2, "localhost");
+	assert(meshlink_add_address(mesh1, "localhost"));
+	assert(meshlink_add_address(mesh2, "localhost"));
 
 	char *data = meshlink_export(mesh1);
 	assert(data);
@@ -57,6 +57,16 @@ int main() {
 
 	assert(meshlink_import(mesh1, data));
 	free(data);
+
+	// Check that foo knows bar, but that it is not reachable.
+
+	time_t last_reachable;
+	time_t last_unreachable;
+	meshlink_node_t *bar = meshlink_get_node(mesh1, "bar");
+	assert(bar);
+	assert(!meshlink_get_node_reachability(mesh1, bar, &last_reachable, &last_unreachable));
+	assert(!last_reachable);
+	assert(!last_unreachable);
 
 	// Start both instances
 
@@ -79,6 +89,24 @@ int main() {
 	}
 
 	assert(pmtu);
+
+	// Check that we now have reachability information
+
+	assert(meshlink_get_node_reachability(mesh1, bar, &last_reachable, &last_unreachable));
+	assert(last_reachable);
+	assert(!last_unreachable);
+
+	// Stop the meshes.
+
+	meshlink_stop(mesh1);
+	meshlink_stop(mesh2);
+
+	// Check that bar is no longer reachable
+
+	assert(!meshlink_get_node_reachability(mesh1, bar, &last_reachable, &last_unreachable));
+	assert(last_reachable);
+	assert(last_unreachable);
+	assert(last_reachable <= last_unreachable);
 
 	// Clean up.
 

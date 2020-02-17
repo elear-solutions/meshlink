@@ -248,10 +248,10 @@ static void discovery_resolve_callback(CattaSServiceResolver *resolver, CattaIfI
 				}
 
 				if(naddress.unknown.family != AF_UNKNOWN) {
-					meshlink_hint_address(mesh, node, (struct sockaddr *)&naddress);
-
 					node_t *n = (node_t *)node;
 					connection_t *c = n->connection;
+
+					node_add_recent_address(mesh, n, &naddress);
 
 					if(c && c->outgoing && !c->status.active) {
 						c->outgoing->timeout = 0;
@@ -397,7 +397,7 @@ static void *discovery_loop(void *userdata) {
 	/* Free the configuration data */
 	catta_server_config_free(&config);
 
-	/* Check wether creating the server object succeeded */
+	/* Check whether creating the server object succeeded */
 	if(!mesh->catta_server) {
 		logger(mesh, MESHLINK_ERROR, "Failed to create discovery server: %s\n", catta_strerror(error));
 		goto fail;

@@ -388,6 +388,20 @@ public:
 		return (node *)meshlink_get_node(handle, name);
 	}
 
+	/// Get a node's reachability status.
+	/** This function returns the current reachability of a given node, and the times of the last state changes.
+	 *  If a given state change never happened, the time returned will be 0.
+	 *
+	 *  @param node              A pointer to a meshlink::node describing the node.
+	 *  @param last_reachable    A pointer to a time_t variable that will be filled in with the last time the node became reachable.
+	 *  @param last_unreachable  A pointer to a time_t variable that will be filled in with the last time the node became unreachable.
+	 *
+	 *  @return                  This function returns true if the node is currently reachable, false otherwise.
+	 */
+	bool get_node_reachability(node *node, time_t *last_reachable = NULL, time_t *last_unreachable = NULL) {
+		return meshlink_get_node_reachability(handle, node, last_reachable, last_unreachable);
+	}
+
 	/// Get a handle for a specific submesh.
 	/** This function returns a handle for the submesh with the given name.
 	 *
@@ -658,15 +672,85 @@ public:
 		return meshlink_import(handle, data);
 	}
 
+	/// Forget any information about a node.
+	/** This function allows the local node to forget any information it has about a node,
+	 *  and if possible will remove any data it has stored on disk about the node.
+	 *
+	 *  Any open channels to this node must be closed before calling this function.
+	 *
+	 *  After this call returns, the node handle is invalid and may no longer be used, regardless
+	 *  of the return value of this call.
+	 *
+	 *  Note that this function does not prevent MeshLink from actually forgetting about a node,
+	 *  or re-learning information about a node at a later point in time. It is merely a hint that
+	 *  the application does not care about this node anymore and that any resources kept could be
+	 *  cleaned up.
+	 *
+	 *  \memberof meshlink_node
+	 *  @param node         A pointer to a struct meshlink_node describing the node to be forgotten.
+	 *
+	 *  @return             This function returns true if all currently known data about the node has been forgotten, false otherwise.
+	 */
+	bool forget_node(node *node) {
+		return meshlink_forget_node(handle, node);
+	}
+
 	/// Blacklist a node from the mesh.
 	/** This function causes the local node to blacklist another node.
 	 *  The local node will drop any existing connections to that node,
 	 *  and will not send data to it nor accept any data received from it any more.
 	 *
 	 *  @param node         A pointer to a meshlink::node describing the node to be blacklisted.
+	 *
+	 *  @return             This function returns true if the node has been whitelisted, false otherwise.
 	 */
-	void blacklist(node *node) {
+	bool blacklist(node *node) {
 		return meshlink_blacklist(handle, node);
+	}
+
+	/// Blacklist a node from the mesh by name.
+	/** This function causes the local node to blacklist another node by name.
+	 *  The local node will drop any existing connections to that node,
+	 *  and will not send data to it nor accept any data received from it any more.
+	 *
+	 *  If no node by the given name is known, it is created.
+	 *
+	 *  @param name         The name of the node to blacklist.
+	 *
+	 *  @return             This function returns true if the node has been blacklisted, false otherwise.
+	 */
+	bool blacklist_by_name(const char *name) {
+		return meshlink_blacklist_by_name(handle, name);
+	}
+
+	/// Whitelist a node on the mesh.
+	/** This function causes the local node to whitelist another node.
+	 *  The local node will allow connections to and from that node,
+	 *  and will send data to it and accept any data received from it.
+	 *
+	 *  @param node         A pointer to a meshlink::node describing the node to be whitelisted.
+	 *
+	 *  @return             This function returns true if the node has been whitelisted, false otherwise.
+	 */
+	bool whitelist(node *node) {
+		return meshlink_whitelist(handle, node);
+	}
+
+	/// Whitelist a node on the mesh by name.
+	/** This function causes the local node to whitelist a node by name.
+	 *  The local node will allow connections to and from that node,
+	 *  and will send data to it and accept any data received from it.
+	 *
+	 *  If no node by the given name is known, it is created.
+	 *  This is useful if new nodes are blacklisted by default.
+	 *
+	 *  \memberof meshlink_node
+	 *  @param node         A pointer to a struct meshlink_node describing the node to be whitelisted.
+	 *
+	 *  @return             This function returns true if the node has been whitelisted, false otherwise.
+	 */
+	bool whitelist_by_name(const char *name) {
+		return meshlink_whitelist_by_name(handle, name);
 	}
 
 	/// Set the poll callback.
@@ -920,7 +1004,20 @@ public:
 	 *  @param pingtimeout   The required time within which a peer should respond, in seconds. The default is 5.
 	 *                       The timeout must be smaller than the interval.
 	 */
-	void set_dev_class_timeouts(dev_class_t devclass, int pinginterval, int pingtimeout);
+	void set_dev_class_timeouts(dev_class_t devclass, int pinginterval, int pingtimeout) {
+		meshlink_set_dev_class_timeouts(handle, devclass, pinginterval, pingtimeout);
+	}
+
+	/// Set device class fast retry period
+	/** This sets the fast retry period for a given device class.
+	 *  During this period after the last time the mesh becomes unreachable, connections are tried once a second.
+	 *
+	 *  @param devclass           The device class to update
+	 *  @param fast_retry_period  The period during which fast connection retries are done. The default is 0.
+	 */
+	void set_dev_class_fast_retry_period(dev_class_t devclass, int fast_retry_period) {
+		meshlink_set_dev_class_fast_retry_period(handle, devclass, fast_retry_period);
+	}
 
 private:
 	// non-copyable:

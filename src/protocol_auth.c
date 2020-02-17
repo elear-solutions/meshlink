@@ -165,6 +165,9 @@ static bool finalize_invitation(meshlink_handle_t *mesh, connection_t *c, const 
 	n->ecdsa = ecdsa_set_public_key(data);
 	n->submesh = c->submesh;
 
+	// Remember its current address
+	node_add_recent_address(mesh, n, &c->address);
+
 	if(!node_write_config(mesh, n) || !config_sync(mesh, "current")) {
 		logger(mesh, MESHLINK_ERROR, "Error writing configuration file for invited node %s!\n", c->name);
 		free_node(n);
@@ -227,17 +230,20 @@ static bool receive_invitation_sptps(void *handle, uint8_t type, const void *dat
 	char *submesh_name = packmsg_get_str_dup(&in);
 
 	if(!strcmp(submesh_name, CORE_MESH)) {
+		free(submesh_name);
 		c->submesh = NULL;
 	} else {
 		if(!check_id(submesh_name)) {
 			logger(mesh, MESHLINK_ERROR, "Invalid invitation file %s\n", cookie);
-			abort();
+			free(submesh_name);
 			return false;
 		}
 
 		c->submesh = lookup_or_create_submesh(mesh, submesh_name);
+		free(submesh_name);
 
 		if(!c->submesh) {
+			logger(mesh, MESHLINK_ERROR, "Unknown submesh in invitation file %s\n", cookie);
 			return false;
 		}
 	}
@@ -246,7 +252,6 @@ static bool receive_invitation_sptps(void *handle, uint8_t type, const void *dat
 	sptps_send_record(&c->sptps, 0, config.buf, config.len);
 
 	config_free(&config);
-	free(submesh_name);
 
 	c->status.invitation_used = true;
 
@@ -343,9 +348,7 @@ bool id_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		return false;
 	}
 
-	node_read_public_key(mesh, n);
-
-	if(!ecdsa_active(n->ecdsa)) {
+	if(!node_read_public_key(mesh, n)) {
 		logger(mesh, MESHLINK_ERROR, "No key known for peer %s", c->name);
 
 		if(n->status.reachable && !n->status.waitingforkey) {

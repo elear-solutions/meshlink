@@ -72,7 +72,7 @@ static void sssp_bfs(meshlink_handle_t *mesh) {
 
 	/* Begin with mesh->self */
 
-	mesh->self->status.visited = true;
+	mesh->self->status.visited = mesh->threadstarted;
 	mesh->self->nexthop = mesh->self;
 	mesh->self->prevedge = NULL;
 	mesh->self->distance = 0;
@@ -136,7 +136,13 @@ static void sssp_bfs(meshlink_handle_t *mesh) {
 static void check_reachability(meshlink_handle_t *mesh) {
 	/* Check reachability status. */
 
+	int reachable = -1; /* Don't count ourself */
+
 	for splay_each(node_t, n, mesh->nodes) {
+		if(n->status.visited) {
+			reachable++;
+		}
+
 		/* Check for nodes that have changed session_id */
 		if(n->status.visited && n->prevedge && n->prevedge->reverse->session_id != n->session_id) {
 			n->session_id = n->prevedge->reverse->session_id;
@@ -165,12 +171,24 @@ static void check_reachability(meshlink_handle_t *mesh) {
 
 		if(n->status.visited != n->status.reachable) {
 			n->status.reachable = !n->status.reachable;
-			n->last_state_change = mesh->loop.now.tv_sec;
+			n->status.dirty = true;
 
-			if(n->status.reachable) {
-				logger(mesh, MESHLINK_DEBUG, "Node %s became reachable", n->name);
-			} else {
-				logger(mesh, MESHLINK_DEBUG, "Node %s became unreachable", n->name);
+			if(!n->status.blacklisted) {
+				if(n->status.reachable) {
+					logger(mesh, MESHLINK_DEBUG, "Node %s became reachable", n->name);
+					bool first_time_reachable = !n->last_reachable;
+					n->last_reachable = mesh->loop.now.tv_sec;
+
+					if(first_time_reachable) {
+						if(!node_write_config(mesh, n)) {
+							logger(mesh, MESHLINK_WARNING, "Could not write host config file for node %s!\n", n->name);
+
+						}
+					}
+				} else {
+					logger(mesh, MESHLINK_DEBUG, "Node %s became unreachable", n->name);
+					n->last_unreachable = mesh->loop.now.tv_sec;
+				}
 			}
 
 			/* TODO: only clear status.validkey if node is unreachable? */
@@ -204,6 +222,20 @@ static void check_reachability(meshlink_handle_t *mesh) {
 				utcp_offline(n->utcp, !n->status.reachable);
 			}
 		}
+	}
+
+	if(mesh->reachable != reachable) {
+		if(!reachable) {
+			mesh->last_unreachable = mesh->loop.now.tv_sec;
+
+			if(mesh->threadstarted) {
+				timeout_set(&mesh->loop, &mesh->periodictimer, &(struct timeval) {
+					0, prng(mesh, TIMER_FUDGE)
+				});
+			}
+		}
+
+		mesh->reachable = reachable;
 	}
 }
 

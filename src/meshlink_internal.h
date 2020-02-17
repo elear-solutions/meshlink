@@ -42,8 +42,8 @@ static const char meshlink_invitation_label[] = "MeshLink invitation";
 static const char meshlink_tcp_label[] = "MeshLink TCP";
 static const char meshlink_udp_label[] = "MeshLink UDP";
 
-#define MESHLINK_CONFIG_VERSION 1
-#define MESHLINK_INVITATION_VERSION 1
+#define MESHLINK_CONFIG_VERSION 2
+#define MESHLINK_INVITATION_VERSION 2
 
 struct CattaServer;
 struct CattaSServiceBrowser;
@@ -82,6 +82,7 @@ struct meshlink_open_params {
 typedef struct {
 	int pinginterval;
 	int pingtimeout;
+	int fast_retry_period;
 	unsigned int min_connects;
 	unsigned int max_connects;
 	int edge_weight;
@@ -101,6 +102,7 @@ struct meshlink_handle {
 	meshlink_log_level_t log_level;
 
 	// The most important network-related members come first
+	int reachable;
 	int listen_sockets;
 	listen_socket_t listen_socket[MAXSOCKETS];
 
@@ -128,6 +130,7 @@ struct meshlink_handle {
 	time_t connection_burst_time;
 	time_t last_config_check;
 	time_t last_hard_try;
+	time_t last_unreachable;
 	timeout_t pingtimer;
 	timeout_t periodictimer;
 
@@ -169,7 +172,7 @@ struct meshlink_handle {
 
 	// Configuration
 	char *confbase;
-	FILE *conffile;
+	FILE *lockfile;
 	void *config_key;
 
 	// Thread management
@@ -188,17 +191,6 @@ struct meshlink_handle {
 	struct CattaSEntryGroup *catta_group;
 	char *catta_servicetype;
 	unsigned int catta_interfaces;
-
-	// State used for meshlink_join()
-	int sock;
-	char cookie[18], hash[18];
-	bool success;
-	sptps_t sptps;
-	char *data;
-	size_t thedatalen;
-	size_t blen;
-	char line[4096];
-	char buffer[4096];
 
 	// Proxy configuration, currently not exposed.
 	char *proxyhost;

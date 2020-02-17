@@ -69,7 +69,7 @@ static void make_used_invitation_path(meshlink_handle_t *mesh, const char *conf_
 }
 
 /// Remove a directory recursively
-static void deltree(const char *dirname) {
+static bool deltree(const char *dirname) {
 	assert(dirname);
 
 	DIR *d = opendir(dirname);
@@ -86,17 +86,21 @@ static void deltree(const char *dirname) {
 			snprintf(filename, sizeof(filename), "%s" SLASH "%s", dirname, ent->d_name);
 
 			if(unlink(filename)) {
-				deltree(filename);
+				if(!deltree(filename)) {
+					return false;
+				}
 			}
 		}
 
 		closedir(d);
+	} else {
+		return errno == ENOENT;
 	}
 
-	rmdir(dirname);
+	return rmdir(dirname) == 0;
 }
 
-static bool sync_path(const char *pathname) {
+bool sync_path(const char *pathname) {
 	assert(pathname);
 
 	int fd = open(pathname, O_RDONLY);
@@ -153,16 +157,15 @@ bool config_init(meshlink_handle_t *mesh, const char *conf_subdir) {
 		return true;
 	}
 
-	if(mkdir(mesh->confbase, 0700) && errno != EEXIST) {
-		logger(mesh, MESHLINK_DEBUG, "Could not create directory %s: %s\n", mesh->confbase, strerror(errno));
-		return false;
-	}
-
 	char path[PATH_MAX];
 
 	// Create "current" sub-directory in the confbase
 	snprintf(path, sizeof(path), "%s" SLASH "%s", mesh->confbase, conf_subdir);
-	deltree(path);
+
+	if(!deltree(path)) {
+		logger(mesh, MESHLINK_DEBUG, "Could not delete directory %s: %s\n", path, strerror(errno));
+		return false;
+	}
 
 	if(mkdir(path, 0700)) {
 		logger(mesh, MESHLINK_DEBUG, "Could not create directory %s: %s\n", path, strerror(errno));
@@ -191,7 +194,7 @@ bool config_destroy(const char *confbase, const char *conf_subdir) {
 	assert(conf_subdir);
 
 	if(!confbase) {
-		return false;
+		return true;
 	}
 
 	struct stat st;
@@ -223,8 +226,14 @@ bool config_destroy(const char *confbase, const char *conf_subdir) {
 	}
 
 	snprintf(path, sizeof(path), "%s" SLASH "%s", confbase, conf_subdir);
-	deltree(path);
-	return true;
+
+	if(!deltree(path)) {
+		logger(NULL, MESHLINK_ERROR, "Cannot delete %s: %s\n", path, strerror(errno));
+		meshlink_errno = MESHLINK_ESTORAGE;
+		return false;
+	}
+
+	return sync_path(confbase);
 }
 
 static bool copytree(const char *src_dir_name, const void *src_key, const char *dst_dir_name, const void *dst_key) {
@@ -239,14 +248,20 @@ static bool copytree(const char *src_dir_name, const void *src_key, const char *
 
 	if(!src_dir) {
 		logger(NULL, MESHLINK_ERROR, "Could not open directory file %s\n", src_dir_name);
+		meshlink_errno = MESHLINK_ESTORAGE;
 		return false;
 	}
 
 	// Delete if already exists and create a new destination directory
-	deltree(dst_dir_name);
+	if(!deltree(dst_dir_name)) {
+		logger(NULL, MESHLINK_ERROR, "Cannot delete %s: %s\n", dst_dir_name, strerror(errno));
+		meshlink_errno = MESHLINK_ESTORAGE;
+		return false;
+	}
 
 	if(mkdir(dst_dir_name, 0700)) {
 		logger(NULL, MESHLINK_ERROR, "Could not create directory %s\n", dst_filename);
+		meshlink_errno = MESHLINK_ESTORAGE;
 		return false;
 	}
 
@@ -261,6 +276,7 @@ static bool copytree(const char *src_dir_name, const void *src_key, const char *
 		if(ent->d_type == DT_DIR) {
 			if(!copytree(src_filename, src_key, dst_filename, dst_key)) {
 				logger(NULL, MESHLINK_ERROR, "Copying %s to %s failed\n", src_filename, dst_filename);
+				meshlink_errno = MESHLINK_ESTORAGE;
 				return false;
 			}
 
@@ -273,6 +289,7 @@ static bool copytree(const char *src_dir_name, const void *src_key, const char *
 
 			if(stat(src_filename, &st)) {
 				logger(NULL, MESHLINK_ERROR, "Could not stat file `%s': %s\n", src_filename, strerror(errno));
+				meshlink_errno = MESHLINK_ESTORAGE;
 				return false;
 			}
 
@@ -280,18 +297,21 @@ static bool copytree(const char *src_dir_name, const void *src_key, const char *
 
 			if(!f) {
 				logger(NULL, MESHLINK_ERROR, "Failed to open `%s': %s\n", src_filename, strerror(errno));
+				meshlink_errno = MESHLINK_ESTORAGE;
 				return false;
 			}
 
 			if(!config_read_file(NULL, f, &config, src_key)) {
 				logger(NULL, MESHLINK_ERROR, "Failed to read `%s': %s\n", src_filename, strerror(errno));
 				fclose(f);
+				meshlink_errno = MESHLINK_ESTORAGE;
 				return false;
 			}
 
 			if(fclose(f)) {
 				logger(NULL, MESHLINK_ERROR, "Failed to close `%s': %s\n", src_filename, strerror(errno));
 				config_free(&config);
+				meshlink_errno = MESHLINK_ESTORAGE;
 				return false;
 			}
 
@@ -300,6 +320,7 @@ static bool copytree(const char *src_dir_name, const void *src_key, const char *
 			if(!f) {
 				logger(NULL, MESHLINK_ERROR, "Failed to open `%s': %s", dst_filename, strerror(errno));
 				config_free(&config);
+				meshlink_errno = MESHLINK_ESTORAGE;
 				return false;
 			}
 
@@ -307,12 +328,14 @@ static bool copytree(const char *src_dir_name, const void *src_key, const char *
 				logger(NULL, MESHLINK_ERROR, "Failed to write `%s': %s", dst_filename, strerror(errno));
 				config_free(&config);
 				fclose(f);
+				meshlink_errno = MESHLINK_ESTORAGE;
 				return false;
 			}
 
 			if(fclose(f)) {
 				logger(NULL, MESHLINK_ERROR, "Failed to close `%s': %s", dst_filename, strerror(errno));
 				config_free(&config);
+				meshlink_errno = MESHLINK_ESTORAGE;
 				return false;
 			}
 
@@ -324,6 +347,7 @@ static bool copytree(const char *src_dir_name, const void *src_key, const char *
 
 			if(utime(dst_filename, &times)) {
 				logger(NULL, MESHLINK_ERROR, "Failed to utime `%s': %s", dst_filename, strerror(errno));
+				meshlink_errno = MESHLINK_ESTORAGE;
 				return false;
 			}
 		}
@@ -373,7 +397,7 @@ bool config_rename(meshlink_handle_t *mesh, const char *old_conf_subdir, const c
 	snprintf(old_path, sizeof(old_path), "%s" SLASH "%s", mesh->confbase, old_conf_subdir);
 	snprintf(new_path, sizeof(new_path), "%s" SLASH "%s", mesh->confbase, new_conf_subdir);
 
-	return rename(old_path, new_path) == 0;
+	return rename(old_path, new_path) == 0 && sync_path(mesh->confbase);
 }
 
 bool config_sync(meshlink_handle_t *mesh, const char *conf_subdir) {
@@ -449,42 +473,50 @@ bool meshlink_confbase_exists(meshlink_handle_t *mesh) {
 
 	// Cleanup if current is existing with old and new
 	if(confbase_exists && confbase_decryptable) {
-		config_destroy(mesh->confbase, "old");
-		config_destroy(mesh->confbase, "new");
+		if(!config_destroy(mesh->confbase, "old") || !config_destroy(mesh->confbase, "new")) {
+			return false;
+		}
 	}
 
 	return confbase_exists;
 }
 
-/// Lock the main configuration file.
+/// Lock the main configuration file. Creates confbase if necessary.
 bool main_config_lock(meshlink_handle_t *mesh) {
 	if(!mesh->confbase) {
 		return true;
 	}
 
+	if(mkdir(mesh->confbase, 0700) && errno != EEXIST) {
+		logger(NULL, MESHLINK_ERROR, "Cannot create configuration directory %s: %s", mesh->confbase, strerror(errno));
+		meshlink_close(mesh);
+		meshlink_errno = MESHLINK_ESTORAGE;
+		return NULL;
+	}
+
 	char path[PATH_MAX];
-	make_main_path(mesh, "current", path, sizeof(path));
+	snprintf(path, sizeof(path), "%s" SLASH "meshlink.lock", mesh->confbase);
 
-	mesh->conffile = fopen(path, "r");
+	mesh->lockfile = fopen(path, "w+");
 
-	if(!mesh->conffile) {
+	if(!mesh->lockfile) {
 		logger(NULL, MESHLINK_ERROR, "Cannot not open %s: %s\n", path, strerror(errno));
 		meshlink_errno = MESHLINK_ESTORAGE;
 		return false;
 	}
 
 #ifdef FD_CLOEXEC
-	fcntl(fileno(mesh->conffile), F_SETFD, FD_CLOEXEC);
+	fcntl(fileno(mesh->lockfile), F_SETFD, FD_CLOEXEC);
 #endif
 
 #ifdef HAVE_MINGW
 	// TODO: use _locking()?
 #else
 
-	if(flock(fileno(mesh->conffile), LOCK_EX | LOCK_NB) != 0) {
+	if(flock(fileno(mesh->lockfile), LOCK_EX | LOCK_NB) != 0) {
 		logger(NULL, MESHLINK_ERROR, "Cannot lock %s: %s\n", path, strerror(errno));
-		fclose(mesh->conffile);
-		mesh->conffile = NULL;
+		fclose(mesh->lockfile);
+		mesh->lockfile = NULL;
 		meshlink_errno = MESHLINK_EBUSY;
 		return false;
 	}
@@ -496,9 +528,9 @@ bool main_config_lock(meshlink_handle_t *mesh) {
 
 /// Unlock the main configuration file.
 void main_config_unlock(meshlink_handle_t *mesh) {
-	if(mesh->conffile) {
-		fclose(mesh->conffile);
-		mesh->conffile = NULL;
+	if(mesh->lockfile) {
+		fclose(mesh->lockfile);
+		mesh->lockfile = NULL;
 	}
 }
 
@@ -726,6 +758,27 @@ bool config_write(meshlink_handle_t *mesh, const char *conf_subdir, const char *
 
 	if(rename(tmp_path, path)) {
 		logger(mesh, MESHLINK_ERROR, "Failed to rename `%s' to `%s': %s", tmp_path, path, strerror(errno));
+		meshlink_errno = MESHLINK_ESTORAGE;
+		return false;
+	}
+
+	return true;
+}
+
+/// Delete a host configuration file.
+bool config_delete(meshlink_handle_t *mesh, const char *conf_subdir, const char *name) {
+	assert(conf_subdir);
+	assert(name);
+
+	if(!mesh->confbase) {
+		return true;
+	}
+
+	char path[PATH_MAX];
+	make_host_path(mesh, conf_subdir, name, path, sizeof(path));
+
+	if(unlink(path) && errno != ENOENT) {
+		logger(mesh, MESHLINK_ERROR, "Failed to unlink `%s': %s", path, strerror(errno));
 		meshlink_errno = MESHLINK_ESTORAGE;
 		return false;
 	}
