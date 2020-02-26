@@ -32,9 +32,15 @@
 #include <stdarg.h>
 #include <setjmp.h>
 #include <cmocka.h>
+#include <linux/limits.h>
 
 /* Modify this to change the logging level of Meshlink */
 #define TEST_MESHLINK_LOG_LEVEL MESHLINK_DEBUG
+
+#define NUT                         "nut"
+#define PEER                        "peer"
+#define TEST_INVITE                "test_invite"
+#define create_path(confbase, node_name, test_case_no)   assert(snprintf(confbase, sizeof(confbase), TEST_INVITE "_%ld_%s_%02d", (long) getpid(), node_name, test_case_no) > 0)
 
 static void test_case_invite_01(void **state);
 static bool test_invite_01(void);
@@ -72,7 +78,7 @@ static void test_case_invite_01(void **state) {
 /*Test Steps for meshlink_invite Test Case # 1 - Valid case
     Test Steps:
     1. Run NUT
-    2. Invite 'new' node
+    2. Invite 'new' node with all types of flags available.
 
     Expected Result:
     Generates an invitation
@@ -86,10 +92,10 @@ static bool test_invite_01(void) {
 	assert(mesh_handle);
 	meshlink_set_log_cb(mesh_handle, TEST_MESHLINK_LOG_LEVEL, meshlink_callback_logger);
 
-	char *invitation = meshlink_invite(mesh_handle, NULL, "new");
-	assert_int_equal(invitation, NULL);
-
+	char *invitation = meshlink_invite(mesh_handle, NULL, "peer");
+	assert_non_null(invitation);
 	free(invitation);
+
 	meshlink_close(mesh_handle);
 	meshlink_destroy("inviteconf");
 	return true;
@@ -127,11 +133,13 @@ static void test_case_invite_03(void **state) {
     Reports appropriate error by returning NULL
 */
 static bool test_invite_03(void) {
-	meshlink_destroy("inviteconf");
+	char nut_confbase[PATH_MAX];
+	create_path(nut_confbase, NUT, 3);
 	meshlink_set_log_cb(NULL, TEST_MESHLINK_LOG_LEVEL, meshlink_callback_logger);
+	meshlink_destroy(nut_confbase);
 
 	// Create meshlink instance
-	meshlink_handle_t *mesh_handle = meshlink_open("inviteconf", "nut", "node_sim", 1);
+	meshlink_handle_t *mesh_handle = meshlink_open(nut_confbase, NUT, TEST_INVITE, DEV_CLASS_STATIONARY);
 	assert(mesh_handle);
 	meshlink_set_log_cb(mesh_handle, TEST_MESHLINK_LOG_LEVEL, meshlink_callback_logger);
 
@@ -140,7 +148,7 @@ static bool test_invite_03(void) {
 	assert_int_equal(invitation, NULL);
 
 	meshlink_close(mesh_handle);
-	meshlink_destroy("inviteconf");
+	assert_true(meshlink_destroy(nut_confbase));
 	return true;
 }
 
@@ -159,29 +167,35 @@ static void test_case_invite_04(void **state) {
     Newly added address should be there in the invitation.
 */
 static bool test_invite_04(void) {
-	meshlink_destroy("inviteconf");
+	char nut_confbase[PATH_MAX];
+	create_path(nut_confbase, NUT, 4);
 	meshlink_set_log_cb(NULL, TEST_MESHLINK_LOG_LEVEL, meshlink_callback_logger);
+	meshlink_destroy(nut_confbase);
 
 	// Create meshlink instance
-	meshlink_handle_t *mesh_handle = meshlink_open("inviteconf", "nut", "test", 1);
+	meshlink_handle_t *mesh_handle = meshlink_open(nut_confbase, NUT, TEST_INVITE, DEV_CLASS_STATIONARY);
 	assert(mesh_handle);
 	meshlink_set_log_cb(mesh_handle, TEST_MESHLINK_LOG_LEVEL, meshlink_callback_logger);
 
 	char *hostname1 = "127.1.1.1";
 	meshlink_add_address(mesh_handle, hostname1);
 	char *invitation = meshlink_invite(mesh_handle, NULL, "foo");
+	assert_non_null(invitation);
 	assert_int_not_equal(strstr(invitation, hostname1), NULL);
+	free(invitation);
 
 	char *hostname2 = "127.1.2.3";
 	meshlink_add_address(mesh_handle, hostname2);
 	invitation = meshlink_invite(mesh_handle, NULL, "bar");
+	assert_non_null(invitation);
 
 	// Verify we have both the added addresses
 	assert_int_not_equal(strstr(invitation, hostname1), NULL);
 	assert_int_not_equal(strstr(invitation, hostname2), NULL);
 
+	free(invitation);
 	meshlink_close(mesh_handle);
-	meshlink_destroy("inviteconf");
+	assert_true(meshlink_destroy(nut_confbase));
 
 	return true;
 }
