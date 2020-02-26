@@ -224,8 +224,8 @@ char *meshlink_get_external_address_for_family(meshlink_handle_t *mesh, int fami
 	char *hostname = NULL;
 
 	logger(mesh, MESHLINK_DEBUG, "Trying to discover externally visible hostname...\n");
-	struct addrinfo *ai = str2addrinfo("meshlink.io", "80", SOCK_STREAM);
-	static const char request[] = "GET http://www.meshlink.io/host.cgi HTTP/1.0\r\n\r\n";
+	struct addrinfo *ai = str2addrinfo("findmyip.getcoco.buzz", "80", SOCK_STREAM);
+	static const char request[] = "GET http://findmyip.getcoco.buzz/host.cgi HTTP/1.0\r\n\r\n";
 	char line[256];
 
 	for(struct addrinfo *aip = ai; aip; aip = aip->ai_next) {
