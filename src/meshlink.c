@@ -224,7 +224,7 @@ char *meshlink_get_external_address_for_family(meshlink_handle_t *mesh, int fami
 	const char *url = mesh->external_address_url;
 
 	if(!url) {
-		url = "http://meshlink.io/host.cgi";
+		url = "http://findmyip.getcoco.buzz/host.cgi";
 	}
 
 	/* Find the hostname part between the slashes */
