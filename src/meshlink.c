@@ -439,7 +439,7 @@ static char *get_my_hostname(meshlink_handle_t *mesh, uint32_t flags) {
 		}
 	}
 
-	for(int i = 0; i < 4; i++) {
+	for(int i = 0; i < n; i++) {
 		// Ensure we always have a port number
 		if(hostname[i] && !port[i]) {
 			port[i] = xstrdup(mesh->myport);
@@ -449,7 +449,7 @@ static char *get_my_hostname(meshlink_handle_t *mesh, uint32_t flags) {
 	remove_duplicate_hostnames(hostname, port, 4);
 
 	// Resolve the hostnames
-	for(int i = 0; i < 4; i++) {
+	for(int i = 0; i < n; i++) {
 		if(!hostname[i]) {
 			continue;
 		}
@@ -511,10 +511,10 @@ static char *get_my_hostname(meshlink_handle_t *mesh, uint32_t flags) {
 	}
 
 	// Remove duplicates again, since IPv4 and IPv6 addresses might map to the same hostname
-	remove_duplicate_hostnames(hostname, port, 4);
+	remove_duplicate_hostnames(hostname, port, n);
 
 	// Concatenate all unique address to the hostport string
-	for(int i = 0; i < 4; i++) {
+	for(int i = 0; i < n; i++) {
 		if(!hostname[i]) {
 			continue;
 		}
