@@ -55,7 +55,6 @@ typedef struct listen_socket_t {
 	struct io_t udp;
 	sockaddr_t sa;
 	sockaddr_t broadcast_sa;
-	bool bindto;
 } listen_socket_t;
 
 typedef enum proxytype_t {
@@ -168,12 +167,14 @@ struct meshlink_handle {
 
 	bool default_blacklist;
 	bool discovery;         // Whether Catta is enabled or not
-
+	bool inviter_commits_first;
 
 	// Configuration
 	char *confbase;
 	FILE *lockfile;
 	void *config_key;
+	char *external_address_url;
+	struct list_t *invitation_addresses;
 
 	// Thread management
 	pthread_t thread;

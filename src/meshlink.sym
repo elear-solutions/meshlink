@@ -5,9 +5,11 @@ devtool_get_all_submeshes
 devtool_get_node_status
 devtool_keyrotate_probe
 devtool_open_in_netns
+devtool_set_inviter_commits_first
 devtool_trybind_probe
 meshlink_add_address
 meshlink_add_external_address
+meshlink_add_invitation_address
 meshlink_blacklist
 meshlink_blacklist_by_name
 meshlink_channel_aio_fd_receive
@@ -22,6 +24,7 @@ meshlink_channel_open
 meshlink_channel_open_ex
 meshlink_channel_send
 meshlink_channel_shutdown
+meshlink_clear_invitation_addresses
 meshlink_close
 meshlink_destroy
 meshlink_enable_discovery
@@ -69,7 +72,9 @@ meshlink_set_default_blacklist
 meshlink_set_dev_class_fast_retry_period
 meshlink_set_dev_class_timeouts
 meshlink_set_error_cb
+meshlink_set_external_address_discovery_url
 meshlink_set_invitation_timeout
+meshlink_set_inviter_commits_first
 meshlink_set_log_cb
 meshlink_set_node_channel_timeout
 meshlink_set_node_duplicate_cb

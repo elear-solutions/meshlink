@@ -43,8 +43,8 @@ int main() {
 
 	// Import and export both side's data
 
-	assert(meshlink_add_address(mesh1, "localhost"));
-	assert(meshlink_add_address(mesh2, "localhost"));
+	assert(meshlink_set_canonical_address(mesh1, meshlink_get_self(mesh1), "localhost", NULL));
+	assert(meshlink_set_canonical_address(mesh2, meshlink_get_self(mesh2), "localhost", NULL));
 
 	char *data = meshlink_export(mesh1);
 	assert(data);
@@ -56,7 +56,13 @@ int main() {
 	assert(data);
 
 	assert(meshlink_import(mesh1, data));
+
+	// Check that importing twice is fine
+	assert(meshlink_import(mesh1, data));
 	free(data);
+
+	// Check that importing garbage is not fine
+	assert(!meshlink_import(mesh1, "Garbage\n"));
 
 	// Check that foo knows bar, but that it is not reachable.
 
