@@ -1163,7 +1163,6 @@ static void *setup_network_in_netns_thread(void *arg) {
 	}
 
 	bool success = setup_network(mesh);
-	add_local_addresses(mesh);
 	return success ? arg : NULL;
 }
 #endif // HAVE_SETNS
@@ -1539,7 +1538,6 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 #endif // HAVE_SETNS
 	} else {
 		success = setup_network(mesh);
-		add_local_addresses(mesh);
 	}
 
 	if(!success) {
