@@ -534,7 +534,7 @@ static char *get_my_hostname(meshlink_handle_t *mesh, uint32_t flags) {
 	return hostport;
 }
 
-static bool try_bind(int port) {
+static bool try_bind(meshlink_handle_t *mesh, int port) {
 	struct addrinfo *ai = NULL;
 	struct addrinfo hint = {
 		.ai_flags = AI_PASSIVE,
@@ -550,33 +550,47 @@ static bool try_bind(int port) {
 		return false;
 	}
 
-	//while(ai) {
+	bool success = false;
+
 	for(struct addrinfo *aip = ai; aip; aip = aip->ai_next) {
-		int fd = socket(aip->ai_family, SOCK_STREAM, IPPROTO_TCP);
+		/* Try to bind to TCP. */
 
-		if(!fd) {
-			freeaddrinfo(ai);
-			return false;
+		int tcp_fd = setup_tcp_listen_socket(mesh, aip);
+
+		if(tcp_fd == -1) {
+			if(errno == EADDRINUSE) {
+				/* If this port is in use for any address family, avoid it. */
+				success = false;
+				break;
+			} else {
+				continue;
+			}
 		}
 
-		int result = bind(fd, aip->ai_addr, aip->ai_addrlen);
-		closesocket(fd);
+		/* If TCP worked, then we require that UDP works as well. */
 
-		if(result) {
-			freeaddrinfo(ai);
-			return false;
+		int udp_fd = setup_udp_listen_socket(mesh, aip);
+
+		if(udp_fd == -1) {
+			closesocket(tcp_fd);
+			success = false;
+			break;
 		}
+
+		closesocket(tcp_fd);
+		closesocket(udp_fd);
+		success = true;
 	}
 
 	freeaddrinfo(ai);
-	return true;
+	return success;
 }
 
 static int check_port(meshlink_handle_t *mesh) {
 	for(int i = 0; i < 1000; i++) {
 		int port = 0x1000 + prng(mesh, 0x8000);
 
-		if(try_bind(port)) {
+		if(try_bind(mesh, port)) {
 			free(mesh->myport);
 			xasprintf(&mesh->myport, "%d", port);
 			return port;
@@ -2444,7 +2458,7 @@ bool meshlink_set_port(meshlink_handle_t *mesh, int port) {
 		return true;
 	}
 
-	if(!try_bind(port)) {
+	if(!try_bind(mesh, port)) {
 		meshlink_errno = MESHLINK_ENETWORK;
 		return false;
 	}
