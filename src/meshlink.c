@@ -24,6 +24,7 @@
 #include "ecdsagen.h"
 #include "logger.h"
 #include "meshlink_internal.h"
+#include "net.h"
 #include "netutl.h"
 #include "node.h"
 #include "submesh.h"
@@ -442,11 +443,11 @@ static char *get_my_hostname(meshlink_handle_t *mesh, uint32_t flags) {
 	if(mesh->invitation_addresses) {
 		for list_each(char, combo, mesh->invitation_addresses) {
 			hostname[n] = xstrdup(combo);
-			char *colon = strchr(hostname[n], ':');
+			char *slash = strrchr(hostname[n], '/');
 
-			if(colon) {
-				*colon = 0;
-				port[n] = xstrdup(colon + 1);
+			if(slash) {
+				*slash = 0;
+				port[n] = xstrdup(slash + 1);
 			}
 
 			n++;
@@ -577,7 +578,7 @@ static char *get_my_hostname(meshlink_handle_t *mesh, uint32_t flags) {
 	return hostport;
 }
 
-static bool try_bind(int port) {
+static bool try_bind(meshlink_handle_t *mesh, int port) {
 	struct addrinfo *ai = NULL;
 	struct addrinfo hint = {
 		.ai_flags = AI_PASSIVE,
@@ -598,16 +599,9 @@ static bool try_bind(int port) {
 	for(struct addrinfo *aip = ai; aip; aip = aip->ai_next) {
 		/* Try to bind to TCP. */
 
-		int tcp_fd = socket(aip->ai_family, SOCK_STREAM, IPPROTO_TCP);
+		int tcp_fd = setup_tcp_listen_socket(mesh, aip);
 
 		if(tcp_fd == -1) {
-			continue;
-		}
-
-		int result = bind(tcp_fd, aip->ai_addr, aip->ai_addrlen);
-		closesocket(tcp_fd);
-
-		if(result) {
 			if(errno == EADDRINUSE) {
 				/* If this port is in use for any address family, avoid it. */
 				success = false;
@@ -619,21 +613,16 @@ static bool try_bind(int port) {
 
 		/* If TCP worked, then we require that UDP works as well. */
 
-		int udp_fd = socket(aip->ai_family, SOCK_DGRAM, IPPROTO_UDP);
+		int udp_fd = setup_udp_listen_socket(mesh, aip);
 
 		if(udp_fd == -1) {
+			closesocket(tcp_fd);
 			success = false;
 			break;
 		}
 
-		result = bind(udp_fd, aip->ai_addr, aip->ai_addrlen);
+		closesocket(tcp_fd);
 		closesocket(udp_fd);
-
-		if(result) {
-			success = false;
-			break;
-		}
-
 		success = true;
 	}
 
@@ -645,7 +634,7 @@ int check_port(meshlink_handle_t *mesh) {
 	for(int i = 0; i < 1000; i++) {
 		int port = 0x1000 + prng(mesh, 0x8000);
 
-		if(try_bind(port)) {
+		if(try_bind(mesh, port)) {
 			free(mesh->myport);
 			xasprintf(&mesh->myport, "%d", port);
 			return port;
@@ -1007,10 +996,18 @@ static bool ecdsa_keygen(meshlink_handle_t *mesh) {
 	return true;
 }
 
-static struct timeval idle(event_loop_t *loop, void *data) {
+static bool timespec_lt(const struct timespec *a, const struct timespec *b) {
+	if(a->tv_sec == b->tv_sec) {
+		return a->tv_nsec < b->tv_nsec;
+	} else {
+		return a->tv_sec < b->tv_sec;
+	}
+}
+
+static struct timespec idle(event_loop_t *loop, void *data) {
 	(void)loop;
 	meshlink_handle_t *mesh = data;
-	struct timeval t, tmin = {3600, 0};
+	struct timespec t, tmin = {3600, 0};
 
 	for splay_each(node_t, n, mesh->nodes) {
 		if(!n->utcp) {
@@ -1019,7 +1016,7 @@ static struct timeval idle(event_loop_t *loop, void *data) {
 
 		t = utcp_timeout(n->utcp);
 
-		if(timercmp(&t, &tmin, <)) {
+		if(timespec_lt(&t, &tmin)) {
 			tmin = t;
 		}
 	}
@@ -1173,7 +1170,6 @@ static void *setup_network_in_netns_thread(void *arg) {
 	}
 
 	bool success = setup_network(mesh);
-	add_local_addresses(mesh);
 	return success ? arg : NULL;
 }
 #endif // HAVE_SETNS
@@ -1461,6 +1457,7 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 	mesh->submeshes = NULL;
 	mesh->log_cb = global_log_cb;
 	mesh->log_level = global_log_level;
+	mesh->packet = xmalloc(sizeof(vpn_packet_t));
 
 	randomize(&mesh->prng_state, sizeof(mesh->prng_state));
 
@@ -1546,7 +1543,6 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 #endif // HAVE_SETNS
 	} else {
 		success = setup_network(mesh);
-		add_local_addresses(mesh);
 	}
 
 	if(!success) {
@@ -1811,6 +1807,7 @@ void meshlink_close(meshlink_handle_t *mesh) {
 	free(mesh->confbase);
 	free(mesh->config_key);
 	free(mesh->external_address_url);
+	free(mesh->packet);
 	ecdsa_free(mesh->private_key);
 
 	if(mesh->invitation_addresses) {
@@ -1968,20 +1965,10 @@ void meshlink_set_error_cb(struct meshlink_handle *mesh, meshlink_error_cb_t cb)
 	pthread_mutex_unlock(&mesh->mutex);
 }
 
-bool meshlink_send(meshlink_handle_t *mesh, meshlink_node_t *destination, const void *data, size_t len) {
+static bool prepare_packet(meshlink_handle_t *mesh, meshlink_node_t *destination, const void *data, size_t len, vpn_packet_t *packet) {
 	meshlink_packethdr_t *hdr;
 
-	// Validate arguments
-	if(!mesh || !destination || len >= MAXSIZE - sizeof(*hdr)) {
-		meshlink_errno = MESHLINK_EINVAL;
-		return false;
-	}
-
-	if(!len) {
-		return true;
-	}
-
-	if(!data) {
+	if(len >= MAXSIZE - sizeof(*hdr)) {
 		meshlink_errno = MESHLINK_EINVAL;
 		return false;
 	}
@@ -1995,13 +1982,6 @@ bool meshlink_send(meshlink_handle_t *mesh, meshlink_node_t *destination, const 
 	}
 
 	// Prepare the packet
-	vpn_packet_t *packet = malloc(sizeof(*packet));
-
-	if(!packet) {
-		meshlink_errno = MESHLINK_ENOMEM;
-		return false;
-	}
-
 	packet->probe = false;
 	packet->tcp = false;
 	packet->len = len + sizeof(*hdr);
@@ -2015,12 +1995,62 @@ bool meshlink_send(meshlink_handle_t *mesh, meshlink_node_t *destination, const 
 
 	memcpy(packet->data + sizeof(*hdr), data, len);
 
+	return true;
+}
+
+static bool meshlink_send_immediate(meshlink_handle_t *mesh, meshlink_node_t *destination, const void *data, size_t len) {
+	assert(mesh);
+	assert(destination);
+	assert(data);
+	assert(len);
+
+	// Prepare the packet
+	if(!prepare_packet(mesh, destination, data, len, mesh->packet)) {
+		return false;
+	}
+
+	// Send it immediately
+	route(mesh, mesh->self, mesh->packet);
+
+	return true;
+}
+
+bool meshlink_send(meshlink_handle_t *mesh, meshlink_node_t *destination, const void *data, size_t len) {
+	// Validate arguments
+	if(!mesh || !destination) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(!len) {
+		return true;
+	}
+
+	if(!data) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	// Prepare the packet
+	vpn_packet_t *packet = malloc(sizeof(*packet));
+
+	if(!packet) {
+		meshlink_errno = MESHLINK_ENOMEM;
+		return false;
+	}
+
+	if(!prepare_packet(mesh, destination, data, len, packet)) {
+		free(packet);
+	}
+
 	// Queue it
 	if(!meshlink_queue_push(&mesh->outpacketqueue, packet)) {
 		free(packet);
 		meshlink_errno = MESHLINK_ENOMEM;
 		return false;
 	}
+
+	logger(mesh, MESHLINK_DEBUG, "Adding packet of %zu bytes to packet queue", len);
 
 	// Notify event loop
 	signal_trigger(&mesh->loop, &mesh->datafromapp);
@@ -2031,17 +2061,16 @@ bool meshlink_send(meshlink_handle_t *mesh, meshlink_node_t *destination, const 
 void meshlink_send_from_queue(event_loop_t *loop, void *data) {
 	(void)loop;
 	meshlink_handle_t *mesh = data;
-	vpn_packet_t *packet = meshlink_queue_pop(&mesh->outpacketqueue);
 
-	if(!packet) {
-		return;
+	logger(mesh, MESHLINK_DEBUG, "Flushing the packet queue");
+
+	for(vpn_packet_t *packet; (packet = meshlink_queue_pop(&mesh->outpacketqueue));) {
+		logger(mesh, MESHLINK_DEBUG, "Removing packet of %d bytes from packet queue", packet->len);
+		mesh->self->in_packets++;
+		mesh->self->in_bytes += packet->len;
+		route(mesh, mesh->self, packet);
+		free(packet);
 	}
-
-	mesh->self->in_packets++;
-	mesh->self->in_bytes += packet->len;
-	route(mesh, mesh->self, packet);
-
-	free(packet);
 }
 
 ssize_t meshlink_get_pmtu(meshlink_handle_t *mesh, meshlink_node_t *destination) {
@@ -2469,11 +2498,7 @@ bool meshlink_add_invitation_address(struct meshlink_handle *mesh, const char *a
 	char *combo;
 
 	if(port) {
-		if(strchr(address, ':')) {
-			xasprintf(&combo, "[%s]:%s", address, port);
-		} else {
-			xasprintf(&combo, "%s:%s", address, port);
-		}
+		xasprintf(&combo, "%s/%s", address, port);
 	} else {
 		combo = xstrdup(address);
 	}
@@ -2558,7 +2583,7 @@ bool meshlink_set_port(meshlink_handle_t *mesh, int port) {
 		return true;
 	}
 
-	if(!try_bind(port)) {
+	if(!try_bind(mesh, port)) {
 		meshlink_errno = MESHLINK_ENETWORK;
 		return false;
 	}
@@ -3215,7 +3240,7 @@ static bool blacklist(meshlink_handle_t *mesh, node_t *n) {
 	n->status.udp_confirmed = false;
 
 	if(n->status.reachable) {
-		n->last_unreachable = mesh->loop.now.tv_sec;
+		n->last_unreachable = time(NULL);
 	}
 
 	/* Graph updates will suppress status updates for blacklisted nodes, so we need to
@@ -3289,7 +3314,7 @@ static bool whitelist(meshlink_handle_t *mesh, node_t *n) {
 	n->status.blacklisted = false;
 
 	if(n->status.reachable) {
-		n->last_reachable = mesh->loop.now.tv_sec;
+		n->last_reachable = time(NULL);
 		update_node_status(mesh, n);
 	}
 
@@ -3535,7 +3560,7 @@ static ssize_t channel_send(struct utcp *utcp, const void *data, size_t len) {
 	}
 
 	meshlink_handle_t *mesh = n->mesh;
-	return meshlink_send(mesh, (meshlink_node_t *)n, data, len) ? (ssize_t)len : -1;
+	return meshlink_send_immediate(mesh, (meshlink_node_t *)n, data, len) ? (ssize_t)len : -1;
 }
 
 void meshlink_set_channel_receive_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, meshlink_channel_receive_cb_t cb) {
@@ -3645,6 +3670,7 @@ void meshlink_set_channel_accept_cb(meshlink_handle_t *mesh, meshlink_channel_ac
 	for splay_each(node_t, n, mesh->nodes) {
 		if(!n->utcp && n != mesh->self) {
 			n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, n);
+			utcp_set_mtu(n->utcp, n->mtu - sizeof(meshlink_packethdr_t));
 		}
 	}
 
@@ -3693,6 +3719,7 @@ meshlink_channel_t *meshlink_channel_open_ex(meshlink_handle_t *mesh, meshlink_n
 
 	if(!n->utcp) {
 		n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, n);
+		utcp_set_mtu(n->utcp, n->mtu - sizeof(meshlink_packethdr_t));
 		mesh->receive_cb = channel_receive;
 
 		if(!n->utcp) {
@@ -3980,6 +4007,15 @@ size_t meshlink_channel_get_recvq(meshlink_handle_t *mesh, meshlink_channel_t *c
 	return utcp_get_recvq(channel->c);
 }
 
+size_t meshlink_channel_get_mss(meshlink_handle_t *mesh, meshlink_channel_t *channel) {
+	if(!mesh || !channel) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return -1;
+	}
+
+	return utcp_get_mss(channel->node->utcp);
+}
+
 void meshlink_set_node_channel_timeout(meshlink_handle_t *mesh, meshlink_node_t *node, int timeout) {
 	if(!mesh || !node) {
 		meshlink_errno = MESHLINK_EINVAL;
@@ -3992,6 +4028,7 @@ void meshlink_set_node_channel_timeout(meshlink_handle_t *mesh, meshlink_node_t 
 
 	if(!n->utcp) {
 		n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, n);
+		utcp_set_mtu(n->utcp, n->mtu - sizeof(meshlink_packethdr_t));
 	}
 
 	utcp_set_user_timeout(n->utcp, timeout);
@@ -4002,6 +4039,7 @@ void meshlink_set_node_channel_timeout(meshlink_handle_t *mesh, meshlink_node_t 
 void update_node_status(meshlink_handle_t *mesh, node_t *n) {
 	if(n->status.reachable && mesh->channel_accept_cb && !n->utcp) {
 		n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, n);
+		utcp_set_mtu(n->utcp, n->mtu - sizeof(meshlink_packethdr_t));
 	}
 
 	if(mesh->node_status_cb) {
@@ -4014,6 +4052,8 @@ void update_node_status(meshlink_handle_t *mesh, node_t *n) {
 }
 
 void update_node_pmtu(meshlink_handle_t *mesh, node_t *n) {
+	utcp_set_mtu(n->utcp, (n->minmtu > MINMTU ? n->minmtu : MINMTU) - sizeof(meshlink_packethdr_t));
+
 	if(mesh->node_pmtu_cb && !n->status.blacklisted) {
 		mesh->node_pmtu_cb(mesh, (meshlink_node_t *)n, n->minmtu);
 	}

@@ -251,13 +251,14 @@ static void discovery_resolve_callback(CattaSServiceResolver *resolver, CattaIfI
 					node_t *n = (node_t *)node;
 					connection_t *c = n->connection;
 
+					n->catta_address = naddress;
 					node_add_recent_address(mesh, n, &naddress);
 
 					if(c && c->outgoing && !c->status.active) {
 						c->outgoing->timeout = 0;
 
 						if(c->outgoing->ev.cb) {
-							timeout_set(&mesh->loop, &c->outgoing->ev, &(struct timeval) {
+							timeout_set(&mesh->loop, &c->outgoing->ev, &(struct timespec) {
 								0, 0
 							});
 						}
