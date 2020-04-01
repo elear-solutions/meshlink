@@ -785,11 +785,6 @@ static bool finalize_join(join_state_t *state, const void *buf, uint16_t len) {
 			return false;
 		}
 
-
-		/* Clear the reachability times, since we ourself have never seen these nodes yet */
-		n->last_reachable = 0;
-		n->last_unreachable = 0;
-
 		if(i == 0) {
 			/* The first host config file is of the inviter itself;
 			 * remember the address we are currently using for the invitation connection.
@@ -801,6 +796,10 @@ static bool finalize_join(join_state_t *state, const void *buf, uint16_t len) {
 				node_add_recent_address(mesh, n, &sa);
 			}
 		}
+
+		/* Clear the reachability times, since we ourself have never seen these nodes yet */
+		n->last_reachable = 0;
+		n->last_unreachable = 0;
 
 		if(!node_write_config(mesh, n)) {
 			free_node(n);
@@ -815,8 +814,8 @@ static bool finalize_join(join_state_t *state, const void *buf, uint16_t len) {
 		return false;
 	}
 
-	if (!mesh->inviter_commits_first) {
-        devtool_set_inviter_commits_first(false);
+	if(!mesh->inviter_commits_first) {
+		devtool_set_inviter_commits_first(false);
 	}
 
 	sptps_send_record(&state->sptps, 1, ecdsa_get_public_key(mesh->private_key), 32);
@@ -854,7 +853,7 @@ static bool invitation_receive(void *handle, uint8_t type, const void *msg, uint
 	if(mesh->inviter_commits_first) {
 		switch(type) {
 		case SPTPS_HANDSHAKE:
-			return 	;
+			return sptps_send_record(&state->sptps, 2, state->cookie, 18 + 32);
 
 		case 1:
 			break;
@@ -2682,7 +2681,7 @@ char *meshlink_invite_ex(meshlink_handle_t *mesh, meshlink_submesh_t *submesh, c
 	}
 
 	// Ensure no other nodes know about this name
-	if(meshlink_get_node(mesh, name)) {
+	if(lookup_node(mesh, name)) {
 		logger(mesh, MESHLINK_ERROR, "A node with name %s is already known!\n", name);
 		meshlink_errno = MESHLINK_EEXIST;
 		pthread_mutex_unlock(&mesh->mutex);
@@ -2811,8 +2810,7 @@ bool meshlink_join(meshlink_handle_t *mesh, const char *invitation) {
 	if(mesh->threadstarted) {
 		logger(mesh, MESHLINK_ERROR, "Cannot join while started\n");
 		meshlink_errno = MESHLINK_EINVAL;
-		pthread_mutex_unlock(&mesh->mutex);
-		return false;
+		goto exit;
 	}
 
 	// Refuse to join a mesh if we are already part of one. We are part of one if we know at least one other node.

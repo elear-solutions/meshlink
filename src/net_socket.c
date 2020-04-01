@@ -449,7 +449,6 @@ void setup_outgoing_connection(meshlink_handle_t *mesh, outgoing_t *outgoing) {
 		return;
 	}
 
-
 	reset_outgoing(outgoing);
 
 	if(outgoing->node->status.blacklisted) {

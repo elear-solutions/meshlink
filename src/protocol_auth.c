@@ -21,6 +21,7 @@
 
 #include "conf.h"
 #include "connection.h"
+#include "devtools.h"
 #include "ecdsa.h"
 #include "edge.h"
 #include "graph.h"
@@ -37,7 +38,6 @@
 #include "utils.h"
 #include "xalloc.h"
 #include "ed25519/sha512.h"
-#include "devtools.h"
 
 #include <assert.h>
 
@@ -233,8 +233,8 @@ static bool process_invitation(meshlink_handle_t *mesh, connection_t *c, const v
 		return false;
 	}
 
-	if (mesh->inviter_commits_first) {
-        devtool_set_inviter_commits_first(true);
+	if(mesh->inviter_commits_first) {
+		devtool_set_inviter_commits_first(true);
 	}
 
 	// Send the node the contents of the invitation file
