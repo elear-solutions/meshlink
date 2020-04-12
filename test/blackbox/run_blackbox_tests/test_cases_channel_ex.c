@@ -566,18 +566,7 @@ static bool test_steps_channel_ex_07(void) {
     meshlink_set_channel_poll_cb(mesh, channel, poll_cb);
     sleep(5);
 
-    /* 4. Sent data on the active channel with data length more than the obtained MSS value.
-            It's expected that peer node doesn't receive it if received then the MSS calculations might be wrong */
-
-    bzero(&recv_cb_data, sizeof(recv_cb_data));
-    send_size = mss_size + 100;
-    buffer = realloc(buffer, send_size);
-    assert_non_null(buffer);
-    assert_int_equal(meshlink_channel_send(mesh, channel, buffer, send_size), send_size);
-    sleep(5);
-    assert_int_equal(recv_cb_data.total_cb_count, 0);
-
-    /* 5. Sent the minimum data (here 1 byte) possible to the peer node via the active UDP channel */
+    /* 4. Sent the minimum data (here 1 byte) possible to the peer node via the active UDP channel */
 
     bzero(&recv_cb_data, sizeof(recv_cb_data));
     send_size = 1;
@@ -585,7 +574,7 @@ static bool test_steps_channel_ex_07(void) {
     assert_after((recv_cb_data.cb_total_data_len == send_size), 5);
     assert_int_equal(recv_cb_data.total_cb_count, 1);
 
-    /* 6. Sent more than maximum allowed data i.e, > UDP max length */
+    /* 5. Sent more than maximum allowed data i.e, > UDP max length */
 
     bzero(&recv_cb_data, sizeof(recv_cb_data));
     char udp_max[USHRT_MAX + 2];
@@ -594,21 +583,21 @@ static bool test_steps_channel_ex_07(void) {
     sleep(5);
     assert_int_equal(recv_cb_data.total_cb_count, 0);
 
-    /* 7. Pass get MSS API with NULL as mesh handle */
+    /* 6. Pass get MSS API with NULL as mesh handle */
 
     assert_int_equal(meshlink_channel_get_mss(NULL, channel), -1);
 
-    /* 8. Pass get MSS API with NULL as channel handle */
+    /* 7. Pass get MSS API with NULL as channel handle */
 
     assert_int_equal(meshlink_channel_get_mss(mesh, NULL), -1);
 
-    /* 9. Obtained MSS value should be less than PMTU value */
+    /* 8. Obtained MSS value should be less than PMTU value */
 
     ssize_t pmtu_size = meshlink_get_pmtu(mesh, node);
     assert_int_not_equal(pmtu_size, -1);
     assert_true(mss_size <= pmtu_size);
 
-    /* 10. Close/free the channel at the NUT's end, but when peer node still tries to send data on that channel
+    /* 9. Close/free the channel at the NUT's end, but when peer node still tries to send data on that channel
             meshlink should gracefully handle it */
 
     bzero(&recv_cb_data, sizeof(recv_cb_data));
@@ -624,7 +613,7 @@ static bool test_steps_channel_ex_07(void) {
     sleep(5);
     assert_int_equal(nut_recv_cb_data.total_cb_count, 0);
 
-    /* 11. Getting MSS value on a node which is closed by other node but not freed/closed by the host node */
+    /* 10. Getting MSS value on a node which is closed by other node but not freed/closed by the host node */
 
     assert_int_equal(meshlink_channel_get_mss(mesh_peer, channel_peer), -1);
 
