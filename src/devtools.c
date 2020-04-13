@@ -293,6 +293,22 @@ void devtool_get_node_status(meshlink_handle_t *mesh, meshlink_node_t *node, dev
 		status->udp_status = DEVTOOL_UDP_UNKNOWN;
 	}
 
+	status->reachable = internal->status.reachable;
+
+	connection_t *connection = internal->connection;
+	if(connection) {
+        if(connection->status.active) {
+            status->tcp_status = DEVTOOL_TCP_ACTIVE;
+        } else if(connection->status.connecting) {
+            status->tcp_status = DEVTOOL_TCP_CONNECTING;
+        } else {
+            status->tcp_status = DEVTOOL_TCP_FAILED;
+        }
+	} else {
+	    status->tcp_status = DEVTOOL_TCP_UNKNOWN;
+	}
+
+
 	pthread_mutex_unlock(&mesh->mutex);
 }
 

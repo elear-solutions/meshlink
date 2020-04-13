@@ -103,6 +103,13 @@ struct devtool_node_status {
 	uint64_t in_bytes;
 	uint64_t out_packets;
 	uint64_t out_bytes;
+	enum {
+		DEVTOOL_TCP_FAILED = -1,
+		DEVTOOL_TCP_UNKNOWN = 0,
+		DEVTOOL_TCP_CONNECTING,
+		DEVTOOL_TCP_ACTIVE
+	} tcp_status;
+	bool reachable;
 };
 
 /// Get the status of a node.
@@ -186,5 +193,15 @@ extern void (*devtool_sptps_renewal_probe)(meshlink_node_t *node);
  *  @param inviter_commited_first       true if inviter committed first else false if invitee committed first the other host file into the disk.
  */
 extern void (*devtool_set_inviter_commits_first)(bool inviter_commited_first);
+
+/// This function resets the last key request time of the meta-connection and UDP connection of a node
+/** This function resets the last key request time of the meta-connection and UDP connection of a node
+ *  hence it forces meshlink to renew the sptps key. If the @a devtool_set_inviter_commits_first @a is set
+ *  the it invokes that probe before doing sptps key rotation
+ *
+ *  @param mesh         A handle which represents an instance of MeshLink.
+ *  @param node         A pointer to a meshlink_node_t.
+ */
+void devtool_force_sptps_renewal(meshlink_handle_t *mesh, meshlink_node_t *node);
 
 #endif
