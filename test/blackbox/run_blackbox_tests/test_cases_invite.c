@@ -228,8 +228,8 @@ static bool test_invite_05(void) {
 	assert_int_not_equal(pid, -1);
 
 	if(!pid) {
-        assert(!close(pipefd[0]));
-	    meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
+		assert(!close(pipefd[0]));
+		meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
 		meshlink_handle_t *mesh = meshlink_open(nut_confbase, NUT, TEST_MESHLINK_INVITE, DEV_CLASS_STATIONARY);
 		assert(mesh);
 

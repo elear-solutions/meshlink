@@ -180,36 +180,37 @@ static void meshlink_node_reachable_status_cb(meshlink_handle_t *mesh, meshlink_
 
 	if(!strcasecmp(mesh->name, NUT)) {
 		if(!strcasecmp(node->name, PEER)) {
-            nut_status[0] = true;
-		} else if (!strcasecmp(node->name, RELAY)) {
-            nut_status[1] = true;
+			nut_status[0] = true;
+		} else if(!strcasecmp(node->name, RELAY)) {
+			nut_status[1] = true;
 		} else {
-            fail();
+			fail();
 		}
 	} else if(!strcasecmp(mesh->name, PEER)) {
 		if(!strcasecmp(node->name, NUT)) {
-            peer_status[0] = true;
-		} else if (!strcasecmp(node->name, RELAY)) {
-            peer_status[1] = true;
+			peer_status[0] = true;
+		} else if(!strcasecmp(node->name, RELAY)) {
+			peer_status[1] = true;
 		} else {
-            fail();
+			fail();
 		}
 	} else if(!strcasecmp(mesh->name, RELAY)) {
 		if(!strcasecmp(node->name, NUT)) {
-            relay_status[0] = true;
-		} else if (!strcasecmp(node->name, PEER)) {
-            relay_status[1] = true;
+			relay_status[0] = true;
+		} else if(!strcasecmp(node->name, PEER)) {
+			relay_status[1] = true;
 		} else {
-            fail();
+			fail();
 		}
 	} else {
-        fail();
+		fail();
 	}
 
 	if(nut_status[0] && nut_status[1] && peer_status[0] && peer_status[1] && relay_status[0] && relay_status[1]) {
-        set_sync_flag(&all_nodes_reachable_cond, true);
+		set_sync_flag(&all_nodes_reachable_cond, true);
 	}
-    return;
+
+	return;
 }
 
 /* Execute SubMesh Test Case # 5 - Test whether a node can get it's self submesh handle */
@@ -227,15 +228,15 @@ static bool test_steps_submesh_05(void) {
 
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
 	meshlink_handle_t *mesh = meshlink_open(nut_confbase, NUT, TEST_SUBMESH, DEV_CLASS_STATIONARY);
-    assert_non_null(mesh);
+	assert_non_null(mesh);
 	meshlink_handle_t *mesh_peer = meshlink_open(peer_confbase, PEER, TEST_SUBMESH, DEV_CLASS_STATIONARY);
-    assert_non_null(mesh_peer);
+	assert_non_null(mesh_peer);
 	meshlink_handle_t *mesh_relay = meshlink_open(relay_confbase, RELAY, TEST_SUBMESH, DEV_CLASS_BACKBONE);
-    assert_non_null(mesh_relay);
+	assert_non_null(mesh_relay);
 
-    meshlink_set_node_status_cb(mesh, meshlink_node_reachable_status_cb);
-    meshlink_set_node_status_cb(mesh_peer, meshlink_node_reachable_status_cb);
-    meshlink_set_node_status_cb(mesh_relay, meshlink_node_reachable_status_cb);
+	meshlink_set_node_status_cb(mesh, meshlink_node_reachable_status_cb);
+	meshlink_set_node_status_cb(mesh_peer, meshlink_node_reachable_status_cb);
+	meshlink_set_node_status_cb(mesh_relay, meshlink_node_reachable_status_cb);
 
 	link_meshlink_pair(mesh_relay, mesh_peer);
 
@@ -245,42 +246,42 @@ static bool test_steps_submesh_05(void) {
 	char *invitation = meshlink_invite(mesh_peer, submesh, NUT);
 	assert_non_null(invitation);
 
-    assert_true(meshlink_start(mesh_peer));
-    assert_true(meshlink_start(mesh_relay));
+	assert_true(meshlink_start(mesh_peer));
+	assert_true(meshlink_start(mesh_relay));
 
-    assert_true(meshlink_join(mesh, invitation));
+	assert_true(meshlink_join(mesh, invitation));
 
-    // Get submesh name of the self node
+	// Get submesh name of the self node
 
-    assert_non_null(meshlink_get_node_submesh(mesh, meshlink_get_self(mesh)));
-    assert_null(meshlink_get_node_submesh(mesh_peer, meshlink_get_self(mesh_peer)));
-    assert_null(meshlink_get_node_submesh(mesh_relay, meshlink_get_self(mesh_relay)));
-    assert_non_null(meshlink_get_node_submesh(mesh_peer, meshlink_get_node(mesh_peer, NUT)));
+	assert_non_null(meshlink_get_node_submesh(mesh, meshlink_get_self(mesh)));
+	assert_null(meshlink_get_node_submesh(mesh_peer, meshlink_get_self(mesh_peer)));
+	assert_null(meshlink_get_node_submesh(mesh_relay, meshlink_get_self(mesh_relay)));
+	assert_non_null(meshlink_get_node_submesh(mesh_peer, meshlink_get_node(mesh_peer, NUT)));
 
-    // Check whether all the node are reachable to each other in this topology
+	// Check whether all the node are reachable to each other in this topology
 
-    assert_true(meshlink_start(mesh));
-    assert_true(wait_sync_flag(&all_nodes_reachable_cond, 10));
+	assert_true(meshlink_start(mesh));
+	assert_true(wait_sync_flag(&all_nodes_reachable_cond, 10));
 
-    assert_non_null(meshlink_get_node_submesh(mesh_relay, meshlink_get_node(mesh_relay, NUT)));
+	assert_non_null(meshlink_get_node_submesh(mesh_relay, meshlink_get_node(mesh_relay, NUT)));
 
-    meshlink_set_node_status_cb(mesh, NULL);
-    meshlink_set_node_status_cb(mesh_peer, NULL);
-    meshlink_set_node_status_cb(mesh_relay, NULL);
+	meshlink_set_node_status_cb(mesh, NULL);
+	meshlink_set_node_status_cb(mesh_peer, NULL);
+	meshlink_set_node_status_cb(mesh_relay, NULL);
 
-    // Cleanup
+	// Cleanup
 
-    meshlink_close(mesh);
-    meshlink_close(mesh_peer);
-    meshlink_close(mesh_relay);
-    assert_true(meshlink_destroy(nut_confbase));
-    assert_true(meshlink_destroy(peer_confbase));
-    assert_true(meshlink_destroy(relay_confbase));
+	meshlink_close(mesh);
+	meshlink_close(mesh_peer);
+	meshlink_close(mesh_relay);
+	assert_true(meshlink_destroy(nut_confbase));
+	assert_true(meshlink_destroy(peer_confbase));
+	assert_true(meshlink_destroy(relay_confbase));
 	return true;
 }
 
 int test_cases_submesh04(void) {
-    int failed_test = 0;
+	int failed_test = 0;
 	const struct CMUnitTest blackbox_group0_tests[] = {
 		cmocka_unit_test_prestate_setup_teardown(test_case_submesh_04, setup_test, teardown_test,
 		                (void *)&test_case_submesh_4_state)

@@ -224,7 +224,7 @@ static bool test_steps_mesh_open_06(void) {
 	assert_int_not_equal(pid, -1);
 
 	if(!pid) {
-	    meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
+		meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
 		meshlink_handle_t *mesh = meshlink_open(nut_confbase, NUT, TEST_MESHLINK_OPEN, DEV_CLASS_STATIONARY);
 		assert(mesh);
 		raise(SIGINT);
@@ -274,9 +274,9 @@ static bool test_steps_mesh_open_07(void) {
 
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
 	meshlink_handle_t *mesh = meshlink_open(nut_confbase, NUT, TEST_MESHLINK_OPEN, DEV_CLASS_BACKBONE);
-    assert_non_null(mesh);
+	assert_non_null(mesh);
 	meshlink_handle_t *mesh_peer = meshlink_open(peer_confbase, PEER, TEST_MESHLINK_OPEN, DEV_CLASS_STATIONARY);
-    assert_non_null(mesh_peer);
+	assert_non_null(mesh_peer);
 
 	// Exporting and Importing mutually
 	char *export_data = meshlink_export(mesh);
@@ -298,7 +298,7 @@ static bool test_steps_mesh_open_07(void) {
 	assert_int_not_equal(pid, -1);
 
 	if(!pid) {
-	    meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
+		meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
 		meshlink_handle_t *mesh = meshlink_open(nut_confbase, NUT, TEST_MESHLINK_OPEN, DEV_CLASS_BACKBONE);
 		assert(mesh);
 		raise(SIGINT);

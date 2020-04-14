@@ -53,18 +53,19 @@ static struct sync_flag peer_key_renewed = {.mutex  = PTHREAD_MUTEX_INITIALIZER,
 static int sptps_renewal_probes = 0;
 
 static void sptps_renewal_probe(meshlink_node_t *node) {
-    static int total_sptps_renewal_probes_called;
+	static int total_sptps_renewal_probes_called;
 
-    if (!strcmp(node->name, PEER)) {
-        total_sptps_renewal_probes_called++;
-        if(total_sptps_renewal_probes_called == sptps_renewal_probes) {
-            set_sync_flag(&peer_key_renewed, true);
-        } else if (total_sptps_renewal_probes_called > sptps_renewal_probes) {
-            fail();
-        }
-    } else {
-        fail();
-    }
+	if(!strcmp(node->name, PEER)) {
+		total_sptps_renewal_probes_called++;
+
+		if(total_sptps_renewal_probes_called == sptps_renewal_probes) {
+			set_sync_flag(&peer_key_renewed, true);
+		} else if(total_sptps_renewal_probes_called > sptps_renewal_probes) {
+			fail();
+		}
+	} else {
+		fail();
+	}
 }
 
 /* Test Steps for SPTPS key rotation Test Case -
@@ -85,34 +86,36 @@ static void test_case_meshlink_sptps_key_rotation_01(void **state) {
 
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
 	meshlink_handle_t *mesh = meshlink_open(nut_confbase, NUT, TEST_MESHLINK_SPTPS_KEY_ROTATION, DEV_CLASS_STATIONARY);
-    assert_non_null(mesh);
+	assert_non_null(mesh);
 	meshlink_handle_t *mesh_peer = meshlink_open(peer_confbase, PEER, TEST_MESHLINK_SPTPS_KEY_ROTATION, DEV_CLASS_STATIONARY);
-    assert_non_null(mesh_peer);
-    devtool_sptps_renewal_probe = sptps_renewal_probe;
+	assert_non_null(mesh_peer);
+	devtool_sptps_renewal_probe = sptps_renewal_probe;
 
 	link_meshlink_pair(mesh, mesh_peer);
 	assert_true(meshlink_start(mesh));
 	assert_true(meshlink_start(mesh_peer));
 
-    meshlink_node_t *node = meshlink_get_node(mesh, PEER);
-    assert_non_null(node);
-    devtool_node_status_t node_status;
-    int timeout_value = TIMEOUT_SEC * 10;
-    for(int t = 0; t < timeout_value; t++) {
-        devtool_get_node_status(mesh, node, &node_status);
-        if(node_status.reachable && (node_status.tcp_status == DEVTOOL_TCP_ACTIVE) && (node_status.udp_status == DEVTOOL_UDP_WORKING)) {
-            break;
-        } else if(t == timeout_value - 1) {
-            fail();  // Timeout
-        } else {
-            assert_int_equal(usleep(100000), 0);
-        }
-    }
+	meshlink_node_t *node = meshlink_get_node(mesh, PEER);
+	assert_non_null(node);
+	devtool_node_status_t node_status;
+	int timeout_value = TIMEOUT_SEC * 10;
 
-    sptps_renewal_probes = 2;
-    devtool_force_sptps_renewal(mesh, node);
-    assert_true(wait_sync_flag(&peer_key_renewed, 10));
-    sleep(10);
+	for(int t = 0; t < timeout_value; t++) {
+		devtool_get_node_status(mesh, node, &node_status);
+
+		if(node_status.reachable && (node_status.tcp_status == DEVTOOL_TCP_ACTIVE) && (node_status.udp_status == DEVTOOL_UDP_WORKING)) {
+			break;
+		} else if(t == timeout_value - 1) {
+			fail();  // Timeout
+		} else {
+			assert_int_equal(usleep(100000), 0);
+		}
+	}
+
+	sptps_renewal_probes = 2;
+	devtool_force_sptps_renewal(mesh, node);
+	assert_true(wait_sync_flag(&peer_key_renewed, 10));
+	sleep(10);
 
 	// Cleanup
 

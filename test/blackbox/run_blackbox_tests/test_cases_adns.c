@@ -53,17 +53,17 @@ static struct sync_flag peer_reachable = {.mutex  = PTHREAD_MUTEX_INITIALIZER, .
 static int adns_probe_flag;
 
 static void simulate_timeout(void) {
-    adns_probe_flag++;
-    sleep(20);
+	adns_probe_flag++;
+	sleep(20);
 }
 
 static void no_op(void) {
-    return;
+	return;
 }
 
 static void meshlink_node_reachable_status_cb(meshlink_handle_t *mesh, meshlink_node_t *node, bool reachable_status) {
 	if(reachable_status && !strcasecmp(mesh->name, NUT) && !strcasecmp(node->name, PEER)) {
-        set_sync_flag(&peer_reachable, true);
+		set_sync_flag(&peer_reachable, true);
 	}
 }
 
@@ -85,12 +85,12 @@ static void test_case_meshlink_adns_01(void **state) {
 
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
 	meshlink_handle_t *mesh = meshlink_open(nut_confbase, NUT, TEST_MESHLINK_ADNS, DEV_CLASS_STATIONARY);
-    assert_non_null(mesh);
+	assert_non_null(mesh);
 	meshlink_handle_t *mesh_peer = meshlink_open(peer_confbase, PEER, TEST_MESHLINK_ADNS, DEV_CLASS_BACKBONE);
-    assert_non_null(mesh_peer);
+	assert_non_null(mesh_peer);
 
-    meshlink_enable_discovery(mesh, false);
-    meshlink_enable_discovery(mesh_peer, false);
+	meshlink_enable_discovery(mesh, false);
+	meshlink_enable_discovery(mesh_peer, false);
 
 	assert_true(meshlink_set_canonical_address(mesh_peer, meshlink_get_self(mesh_peer), "google.com", "443"));
 	meshlink_set_node_status_cb(mesh, meshlink_node_reachable_status_cb);
@@ -110,7 +110,7 @@ static void test_case_meshlink_adns_01(void **state) {
 	assert_true(meshlink_start(mesh));
 	assert_true(meshlink_start(mesh_peer));
 
-    assert_true(wait_sync_flag(&peer_reachable, 19));
+	assert_true(wait_sync_flag(&peer_reachable, 19));
 	assert_int_not_equal(adns_probe_flag, 0);
 
 	// Cleanup
@@ -146,12 +146,12 @@ static void test_case_meshlink_adns_02(void **state) {
 
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
 	meshlink_handle_t *mesh = meshlink_open(nut_confbase, NUT, TEST_MESHLINK_ADNS, DEV_CLASS_STATIONARY);
-    assert_non_null(mesh);
+	assert_non_null(mesh);
 	meshlink_handle_t *mesh_peer = meshlink_open(peer_confbase, PEER, TEST_MESHLINK_ADNS, DEV_CLASS_BACKBONE);
-    assert_non_null(mesh_peer);
+	assert_non_null(mesh_peer);
 
-    meshlink_enable_discovery(mesh, false);
-    meshlink_enable_discovery(mesh_peer, false);
+	meshlink_enable_discovery(mesh, false);
+	meshlink_enable_discovery(mesh_peer, false);
 
 	devtool_adns_resolve_probe = simulate_timeout;
 

@@ -73,28 +73,29 @@ static black_box_state_t test_case_set_port_04_state = {
 };
 
 static bool try_bind(int portno) {
-    int socket_fd = socket(AF_INET, SOCK_STREAM, 0);
+	int socket_fd = socket(AF_INET, SOCK_STREAM, 0);
 	assert_int_not_equal(socket_fd, -1);
 
-    struct sockaddr_in sin;
-    socklen_t len = sizeof(sin);
+	struct sockaddr_in sin;
+	socklen_t len = sizeof(sin);
 	bzero(&sin, len);
 
 	assert_int_not_equal(getsockname(socket_fd, (struct sockaddr *)&sin, &len), -1);
 	sin.sin_addr.s_addr = INADDR_ANY;
 	sin.sin_port = htons(portno);
 
-    errno = 0;
-    int bind_status = bind(socket_fd, (struct sockaddr *)&sin, len);
+	errno = 0;
+	int bind_status = bind(socket_fd, (struct sockaddr *)&sin, len);
 
-    // Exempt EADDRINUSE error only
+	// Exempt EADDRINUSE error only
 
-    if(bind_status) {
-        assert_int_equal(errno, EADDRINUSE);
-    }
-    assert_int_not_equal(close(socket_fd), -1);
+	if(bind_status) {
+		assert_int_equal(errno, EADDRINUSE);
+	}
 
-    return !bind_status;
+	assert_int_not_equal(close(socket_fd), -1);
+
+	return !bind_status;
 }
 
 static void wait_for_socket_free(int portno) {
@@ -102,12 +103,13 @@ static void wait_for_socket_free(int portno) {
 	// Wait upto 20 seconds and poll every second whether the port is freed or not
 
 	for(int i = 0; i < 20; i++) {
-        if(try_bind(portno)) {
-            return;
-        } else {
-            sleep(1);
-        }
+		if(try_bind(portno)) {
+			return;
+		} else {
+			sleep(1);
+		}
 	}
+
 	fail();
 }
 
@@ -115,11 +117,11 @@ static int get_free_port(void) {
 
 	// Get a free port
 
-    int socket_fd = socket(AF_INET, SOCK_STREAM, 0);
+	int socket_fd = socket(AF_INET, SOCK_STREAM, 0);
 	assert_int_not_equal(socket_fd, -1);
 
-    struct sockaddr_in sin;
-    socklen_t len = sizeof(sin);
+	struct sockaddr_in sin;
+	socklen_t len = sizeof(sin);
 	bzero(&sin, len);
 
 	assert_int_not_equal(getsockname(socket_fd, (struct sockaddr *)&sin, &len), -1);
@@ -246,7 +248,7 @@ static bool test_set_port_03(void) {
 	assert_int_not_equal(pid, -1);
 
 	if(!pid) {
-	    meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
+		meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
 		meshlink_handle_t *mesh = meshlink_open(nut_confbase, NUT, TEST_MESHLINK_SET_PORT, DEV_CLASS_STATIONARY);
 		assert(mesh);
 
@@ -261,9 +263,9 @@ static bool test_set_port_03(void) {
 	assert_int_equal(WTERMSIG(pid_status), SIGINT);
 
 	// Wait for the NUT's listening socket to be freed. (i.e, preventing meshlink from binding to a new port
-    // when NUT instance is reopened and the actual port is not freed due EADDRINUSE)
+	// when NUT instance is reopened and the actual port is not freed due EADDRINUSE)
 
-    wait_for_socket_free(new_port);
+	wait_for_socket_free(new_port);
 
 	// Reopen the NUT instance in the same test suite
 
@@ -282,7 +284,7 @@ static bool test_set_port_03(void) {
 
 	meshlink_close(mesh);
 
-    wait_for_socket_free(new_port);
+	wait_for_socket_free(new_port);
 
 	assert_true(meshlink_destroy(nut_confbase));
 	return true;
