@@ -84,6 +84,7 @@
 
 #include "test_cases_get_node_reachability.h"
 #include "test_cases_sptps_key_rotation.h"
+#include "test_cases_adns.h"
 
 #include "../common/containers.h"
 #include "../common/common_handlers.h"
@@ -163,6 +164,7 @@ int main(int argc, char *argv[]) {
 
 	failed_tests += test_get_node_reachability();
 	failed_tests += test_meshlink_sptps_key_rotation();
+	failed_tests += test_meshlink_adns();
 
 	printf("[ PASSED ] %d test(s).\n", total_tests - failed_tests);
 	printf("[ FAILED ] %d test(s).\n", failed_tests);
