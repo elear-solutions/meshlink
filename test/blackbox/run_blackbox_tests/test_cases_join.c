@@ -88,7 +88,7 @@ static void nut_started_user_signal_handler(int signum) {
     NUT joins peer using the invitation generated.
 */
 static void test_case_meshlink_join_01(void **state) {
-    (void) state;
+	(void) state;
 	char nut_confbase[PATH_MAX];
 	char peer_confbase[PATH_MAX];
 	create_path(nut_confbase, NUT, 1);
@@ -147,7 +147,7 @@ static void test_case_meshlink_join_01(void **state) {
     NUT joining fails when NULL is passed as mesh handle or node name argument
 */
 static void test_case_meshlink_join_02(void **state) {
-    (void) state;
+	(void) state;
 	char nut_confbase[PATH_MAX];
 	char peer_confbase[PATH_MAX];
 	create_path(nut_confbase, NUT, 2);
@@ -197,7 +197,7 @@ static void test_case_meshlink_join_02(void **state) {
 
 */
 static void test_case_meshlink_join_03(void **state) {
-    (void) state;
+	(void) state;
 	pid_t pid;
 	int pid_status;
 	char nut_confbase[PATH_MAX];
@@ -290,7 +290,7 @@ static void test_case_meshlink_join_03(void **state) {
 
 */
 static void test_case_meshlink_join_04(void **state) {
-    (void) state;
+	(void) state;
 	pid_t pid;
 	int pid_status;
 	char nut_confbase[PATH_MAX];
@@ -368,7 +368,7 @@ static void debug_probe(bool stage) {
 
 */
 static void test_case_meshlink_join_05(void **state) {
-    (void) state;
+	(void) state;
 	pid_t pid;
 	int pid_status;
 	char nut_confbase[PATH_MAX];
@@ -403,16 +403,16 @@ static void test_case_meshlink_join_05(void **state) {
 	if(!pid) {
 		meshlink_handle_t *mesh = meshlink_open(nut_confbase, NUT, TEST_MESHLINK_JOIN, DEV_CLASS_STATIONARY);
 		assert(mesh);
-        meshlink_set_inviter_commits_first(mesh_peer, false);
+		meshlink_set_inviter_commits_first(mesh_peer, false);
 		meshlink_set_log_cb(mesh, MESHLINK_DEBUG, log_cb);
 
-		meshlink_join(mesh, invitation);
+		assert_true(meshlink_join(mesh, invitation));
 
 		raise(SIGABRT);
 	}
 
 	// Wait for child exit and verify which signal terminated it
-printf("\n");
+	printf("\n");
 	assert_int_not_equal(waitpid(pid, &pid_status, 0), -1);
 	assert_int_equal(WIFSIGNALED(pid_status), true);
 	assert_int_equal(WTERMSIG(pid_status), SIGINT);
@@ -451,7 +451,7 @@ printf("\n");
 
 */
 static void test_case_meshlink_join_06(void **state) {
-    (void) state;
+	(void) state;
 	pid_t pid;
 	int pid_status;
 	char nut_confbase[PATH_MAX];
@@ -479,7 +479,7 @@ static void test_case_meshlink_join_06(void **state) {
 
 	sighandler_t usr2sighandler = signal(SIGUSR2, nut_started_user_signal_handler);
 	assert_int_not_equal(usr2sighandler, SIG_ERR);
-    set_sync_flag(&peer_reachable_status_cond, false);
+	set_sync_flag(&peer_reachable_status_cond, false);
 
 	// Fork a new process and run NUT in it which just waits for the peer node reachable status callback
 	// and terminates the process immediately.
@@ -492,7 +492,7 @@ static void test_case_meshlink_join_06(void **state) {
 
 		mesh = meshlink_open(nut_confbase, NUT, TEST_MESHLINK_JOIN, DEV_CLASS_STATIONARY);
 		assert(mesh);
-        meshlink_set_inviter_commits_first(mesh, true);
+		meshlink_set_inviter_commits_first(mesh, true);
 		meshlink_set_log_cb(mesh, MESHLINK_DEBUG, log_cb);
 		meshlink_set_node_status_cb(mesh, meshlink_node_reachable_status_cb);
 
@@ -558,7 +558,7 @@ static void test_case_meshlink_join_06(void **state) {
     NUT fails to join peer using the invitation generated.
 */
 static void test_case_meshlink_join_07(void **state) {
-    (void) state;
+	(void) state;
 	char nut_confbase[PATH_MAX];
 	char peer_confbase[PATH_MAX];
 	create_path(nut_confbase, NUT, 7);
@@ -610,7 +610,7 @@ static void test_case_meshlink_join_07(void **state) {
     NUT fails to join peer using the invitation generated.
 */
 static void test_case_meshlink_join_08(void **state) {
-    (void) state;
+	(void) state;
 	char nut_confbase[PATH_MAX];
 	char peer_confbase[PATH_MAX];
 	create_path(nut_confbase, NUT, 8);
@@ -660,7 +660,7 @@ static void test_case_meshlink_join_08(void **state) {
     NUT fails to join peer using the invitation generated.
 */
 static void test_case_meshlink_join_09(void **state) {
-    (void) state;
+	(void) state;
 	char nut_confbase[PATH_MAX];
 	char peer_confbase[PATH_MAX];
 	create_path(nut_confbase, NUT, 9);
@@ -712,7 +712,7 @@ static void test_case_meshlink_join_09(void **state) {
     NUT fails to join peer using the invitation generated.
 */
 static void test_case_meshlink_join_10(void **state) {
-    (void) state;
+	(void) state;
 	char nut_confbase[PATH_MAX];
 	char peer_confbase[PATH_MAX];
 	char peer_confbase2[PATH_MAX];
@@ -732,7 +732,7 @@ static void test_case_meshlink_join_10(void **state) {
 	assert_true(meshlink_start(mesh_peer));
 
 	meshlink_handle_t *mesh_peer2 = meshlink_open(peer_confbase2, PEER2, TEST_MESHLINK_JOIN,
-	                               DEV_CLASS_STATIONARY);
+	                                DEV_CLASS_STATIONARY);
 	assert_non_null(mesh_peer2);
 	meshlink_handle_t *mesh = meshlink_open(nut_confbase, NUT, TEST_MESHLINK_JOIN,
 	                                        DEV_CLASS_STATIONARY);

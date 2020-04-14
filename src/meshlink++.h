@@ -619,6 +619,18 @@ public:
 		meshlink_set_invitation_timeout(handle, timeout);
 	}
 
+	/// Set the scheduling granularity of the application
+	/** This should be set to the effective scheduling granularity for the application.
+	 *  This depends on the scheduling granularity of the operating system, the application's
+	 *  process priority and whether it is running as realtime or not.
+	 *  The default value is 10000 (10 milliseconds).
+	 *
+	 *  @param granularity  The scheduling granularity of the application in microseconds.
+	 */
+	void set_granularity(long granularity) {
+		meshlink_set_scheduling_granularity(handle, granularity);
+	}
+
 	/// Invite another node into the mesh.
 	/** This function generates an invitation that can be used by another node to join the same mesh as the local node.
 	 *  The generated invitation is a string containing a URL.
@@ -679,15 +691,85 @@ public:
 		return meshlink_import(handle, data);
 	}
 
+	/// Forget any information about a node.
+	/** This function allows the local node to forget any information it has about a node,
+	 *  and if possible will remove any data it has stored on disk about the node.
+	 *
+	 *  Any open channels to this node must be closed before calling this function.
+	 *
+	 *  After this call returns, the node handle is invalid and may no longer be used, regardless
+	 *  of the return value of this call.
+	 *
+	 *  Note that this function does not prevent MeshLink from actually forgetting about a node,
+	 *  or re-learning information about a node at a later point in time. It is merely a hint that
+	 *  the application does not care about this node anymore and that any resources kept could be
+	 *  cleaned up.
+	 *
+	 *  \memberof meshlink_node
+	 *  @param node         A pointer to a struct meshlink_node describing the node to be forgotten.
+	 *
+	 *  @return             This function returns true if all currently known data about the node has been forgotten, false otherwise.
+	 */
+	bool forget_node(node *node) {
+		return meshlink_forget_node(handle, node);
+	}
+
 	/// Blacklist a node from the mesh.
 	/** This function causes the local node to blacklist another node.
 	 *  The local node will drop any existing connections to that node,
 	 *  and will not send data to it nor accept any data received from it any more.
 	 *
 	 *  @param node         A pointer to a meshlink::node describing the node to be blacklisted.
+	 *
+	 *  @return             This function returns true if the node has been whitelisted, false otherwise.
 	 */
-	void blacklist(node *node) {
+	bool blacklist(node *node) {
 		return meshlink_blacklist(handle, node);
+	}
+
+	/// Blacklist a node from the mesh by name.
+	/** This function causes the local node to blacklist another node by name.
+	 *  The local node will drop any existing connections to that node,
+	 *  and will not send data to it nor accept any data received from it any more.
+	 *
+	 *  If no node by the given name is known, it is created.
+	 *
+	 *  @param name         The name of the node to blacklist.
+	 *
+	 *  @return             This function returns true if the node has been blacklisted, false otherwise.
+	 */
+	bool blacklist_by_name(const char *name) {
+		return meshlink_blacklist_by_name(handle, name);
+	}
+
+	/// Whitelist a node on the mesh.
+	/** This function causes the local node to whitelist another node.
+	 *  The local node will allow connections to and from that node,
+	 *  and will send data to it and accept any data received from it.
+	 *
+	 *  @param node         A pointer to a meshlink::node describing the node to be whitelisted.
+	 *
+	 *  @return             This function returns true if the node has been whitelisted, false otherwise.
+	 */
+	bool whitelist(node *node) {
+		return meshlink_whitelist(handle, node);
+	}
+
+	/// Whitelist a node on the mesh by name.
+	/** This function causes the local node to whitelist a node by name.
+	 *  The local node will allow connections to and from that node,
+	 *  and will send data to it and accept any data received from it.
+	 *
+	 *  If no node by the given name is known, it is created.
+	 *  This is useful if new nodes are blacklisted by default.
+	 *
+	 *  \memberof meshlink_node
+	 *  @param node         A pointer to a struct meshlink_node describing the node to be whitelisted.
+	 *
+	 *  @return             This function returns true if the node has been whitelisted, false otherwise.
+	 */
+	bool whitelist_by_name(const char *name) {
+		return meshlink_whitelist_by_name(handle, name);
 	}
 
 	/// Set the poll callback.
@@ -922,6 +1004,17 @@ public:
 	size_t channel_get_recvq(channel *channel) {
 		return meshlink_channel_get_recvq(handle, channel);
 	}
+
+	/// Get the maximum segment size of a channel.
+	/** This returns the amount of bytes that can be sent at once for channels with UDP semantics.
+	 *
+	 *  @param channel      A handle for the channel.
+	 *
+	 *  @return             The amount of bytes in the receive buffer.
+	 */
+	size_t channel_get_mss(channel *channel) {
+		return meshlink_channel_get_mss(handle, channel);
+	};
 
 	/// Enable or disable zeroconf discovery of local peers
 	/** This controls whether zeroconf discovery using the Catta library will be

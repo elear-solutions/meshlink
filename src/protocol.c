@@ -130,22 +130,6 @@ void forward_request(meshlink_handle_t *mesh, connection_t *from, submesh_t *s, 
 bool receive_request(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	assert(request);
 
-	if(c->outgoing && mesh->proxytype == PROXY_HTTP && c->allow_request == ID) {
-		if(!request[0] || request[0] == '\r') {
-			return true;
-		}
-
-		if(!strncasecmp(request, "HTTP/1.1 ", 9)) {
-			if(!strncmp(request + 9, "200", 3)) {
-				logger(mesh, MESHLINK_DEBUG, "Proxy request granted");
-				return true;
-			} else {
-				logger(mesh, MESHLINK_DEBUG, "Proxy request rejected: %s", request + 9);
-				return false;
-			}
-		}
-	}
-
 	int reqno = atoi(request);
 
 	if(reqno || *request == '0') {
@@ -207,7 +191,7 @@ static void age_past_requests(event_loop_t *loop, void *data) {
 	}
 
 	if(left) {
-		timeout_set(&mesh->loop, &mesh->past_request_timeout, &(struct timeval) {
+		timeout_set(&mesh->loop, &mesh->past_request_timeout, &(struct timespec) {
 			10, prng(mesh, TIMER_FUDGE)
 		});
 	}
@@ -228,7 +212,7 @@ bool seen_request(meshlink_handle_t *mesh, const char *request) {
 		new->firstseen = mesh->loop.now.tv_sec;
 
 		if(!mesh->past_request_tree->head) {
-			timeout_set(&mesh->loop, &mesh->past_request_timeout, &(struct timeval) {
+			timeout_set(&mesh->loop, &mesh->past_request_timeout, &(struct timespec) {
 				10, prng(mesh, TIMER_FUDGE)
 			});
 		}
@@ -242,7 +226,7 @@ void init_requests(meshlink_handle_t *mesh) {
 	assert(!mesh->past_request_tree);
 
 	mesh->past_request_tree = splay_alloc_tree((splay_compare_t) past_request_compare, (splay_action_t) free_past_request);
-	timeout_add(&mesh->loop, &mesh->past_request_timeout, age_past_requests, NULL, &(struct timeval) {
+	timeout_add(&mesh->loop, &mesh->past_request_timeout, age_past_requests, NULL, &(struct timespec) {
 		0, 0
 	});
 }

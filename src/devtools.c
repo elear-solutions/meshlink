@@ -30,7 +30,7 @@
 
 #include "devtools.h"
 
-static void trybind_nop_probe(void) {
+static void nop_probe(void) {
 	return;
 }
 
@@ -44,9 +44,16 @@ static void inviter_commits_first_nop_probe(bool stage) {
 	return;
 }
 
-void (*devtool_trybind_probe)(void) = trybind_nop_probe;
+static void sptps_renewal_nop_probe(meshlink_node_t *node) {
+	(void)node;
+	return;
+}
+
+void (*devtool_trybind_probe)(void) = nop_probe;
 void (*devtool_keyrotate_probe)(int stage) = keyrotate_nop_probe;
 void (*devtool_set_inviter_commits_first)(bool inviter_commited_first) = inviter_commits_first_nop_probe;
+void (*devtool_adns_resolve_probe)(void) = nop_probe;
+void (*devtool_sptps_renewal_probe)(meshlink_node_t *node) = sptps_renewal_nop_probe;
 
 /* Return an array of edges in the current network graph.
  * Data captures the current state and will not be updated.
@@ -286,6 +293,23 @@ void devtool_get_node_status(meshlink_handle_t *mesh, meshlink_node_t *node, dev
 		status->udp_status = DEVTOOL_UDP_UNKNOWN;
 	}
 
+	status->reachable = internal->status.reachable;
+
+	connection_t *connection = internal->connection;
+
+	if(connection) {
+		if(connection->status.active) {
+			status->tcp_status = DEVTOOL_TCP_ACTIVE;
+		} else if(connection->status.connecting) {
+			status->tcp_status = DEVTOOL_TCP_CONNECTING;
+		} else {
+			status->tcp_status = DEVTOOL_TCP_FAILED;
+		}
+	} else {
+		status->tcp_status = DEVTOOL_TCP_UNKNOWN;
+	}
+
+
 	pthread_mutex_unlock(&mesh->mutex);
 }
 
@@ -335,4 +359,20 @@ meshlink_handle_t *devtool_open_in_netns(const char *confbase, const char *name,
 	meshlink_open_params_free(params);
 
 	return handle;
+}
+
+void devtool_force_sptps_renewal(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	node_t *n = (node_t *)node;
+	connection_t *c = n->connection;
+
+	n->last_req_key = -3600;
+
+	if(c) {
+		c->last_key_renewal = -3600;
+	}
 }

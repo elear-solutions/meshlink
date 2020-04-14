@@ -251,18 +251,19 @@ static void discovery_resolve_callback(CattaSServiceResolver *resolver, CattaIfI
 					node_t *n = (node_t *)node;
 					connection_t *c = n->connection;
 
+					n->catta_address = naddress;
 					node_add_recent_address(mesh, n, &naddress);
 
 					if(c && c->outgoing && !c->status.active) {
 						c->outgoing->timeout = 0;
 
 						if(c->outgoing->ev.cb) {
-							timeout_set(&mesh->loop, &c->outgoing->ev, &(struct timeval) {
+							timeout_set(&mesh->loop, &c->outgoing->ev, &(struct timespec) {
 								0, 0
 							});
 						}
 
-						c->last_ping_time = 0;
+						c->last_ping_time = -3600;
 					}
 
 				} else {
@@ -397,7 +398,7 @@ static void *discovery_loop(void *userdata) {
 	/* Free the configuration data */
 	catta_server_config_free(&config);
 
-	/* Check wether creating the server object succeeded */
+	/* Check whether creating the server object succeeded */
 	if(!mesh->catta_server) {
 		logger(mesh, MESHLINK_ERROR, "Failed to create discovery server: %s\n", catta_strerror(error));
 		goto fail;

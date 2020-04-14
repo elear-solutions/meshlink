@@ -64,7 +64,7 @@ static black_box_state_t test_case_set_rec_cb_03_state = {
 static bool received;
 
 /* mutex for the common variable */
-pthread_mutex_t lock;
+static pthread_mutex_t lock;
 
 /* receive callback function */
 static void rec_cb(meshlink_handle_t *mesh, meshlink_node_t *source, const void *data, size_t len) {
@@ -121,7 +121,7 @@ static bool test_set_rec_cb_01(void) {
 	pthread_mutex_unlock(&lock);
 
 	meshlink_close(mesh_handle);
-	meshlink_destroy("set_receive_cb_conf");
+	assert(meshlink_destroy("set_receive_cb_conf"));
 	return true;
 }
 
@@ -189,7 +189,7 @@ static bool test_set_rec_cb_03(void) {
 	pthread_mutex_unlock(&lock);
 
 	meshlink_close(mesh_handle);
-	meshlink_destroy("set_receive_cb_conf");
+	assert(meshlink_destroy("set_receive_cb_conf"));
 	return true;
 }
 

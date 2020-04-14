@@ -148,13 +148,13 @@ static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 	n->status.broadcast = false;
 
 end:
-	timeout_set(&mesh->loop, &n->mtutimeout, &(struct timeval) {
+	timeout_set(&mesh->loop, &n->mtutimeout, &(struct timespec) {
 		timeout, prng(mesh, TIMER_FUDGE)
 	});
 }
 
 void send_mtu_probe(meshlink_handle_t *mesh, node_t *n) {
-	timeout_add(&mesh->loop, &n->mtutimeout, send_mtu_probe_handler, n, &(struct timeval) {
+	timeout_add(&mesh->loop, &n->mtutimeout, send_mtu_probe_handler, n, &(struct timespec) {
 		1, 0
 	});
 	send_mtu_probe_handler(&mesh->loop, n);
@@ -256,7 +256,9 @@ static void receive_udppacket(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *
 		return;
 	}
 
-	sptps_receive_data(&n->sptps, inpkt->data, inpkt->len);
+	if(!sptps_receive_data(&n->sptps, inpkt->data, inpkt->len)) {
+		logger(mesh, MESHLINK_ERROR, "Could not process SPTPS data from %s: %s", n->name, strerror(errno));
+	}
 }
 
 static void send_sptps_packet(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *origpkt) {
@@ -306,6 +308,12 @@ static void choose_udp_address(meshlink_handle_t *mesh, const node_t *n, const s
 		return;
 	}
 
+	/* If we have learned an address via Catta, try this once every batch */
+	if(mesh->udp_choice == 1 && n->catta_address.sa.sa_family != AF_UNSPEC) {
+		*sa = &n->catta_address;
+		goto check_socket;
+	}
+
 	/* Otherwise, address are found in edges to this node.
 	   So we pick a random edge and a random socket. */
 
@@ -324,6 +332,8 @@ static void choose_udp_address(meshlink_handle_t *mesh, const node_t *n, const s
 		*sa = &candidate->address;
 		*sock = prng(mesh, mesh->listen_sockets);
 	}
+
+check_socket:
 
 	/* Make sure we have a suitable socket for the chosen address */
 	if(mesh->listen_socket[*sock].sa.sa.sa_family != (*sa)->sa.sa_family) {
@@ -368,7 +378,7 @@ bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 
 	/* Send it via TCP if it is a handshake packet, TCPOnly is in use, or this packet is larger than the MTU. */
 
-	if(type >= SPTPS_HANDSHAKE || (type != PKT_PROBE && len > to->minmtu)) {
+	if(type >= SPTPS_HANDSHAKE || (type != PKT_PROBE && (len - 21) > to->minmtu)) {
 		char buf[len * 4 / 3 + 5];
 		b64encode(data, buf, len);
 
@@ -431,8 +441,8 @@ bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t
 		return true;
 	}
 
-	if(len > MTU) {
-		logger(mesh, MESHLINK_ERROR, "Packet from %s larger than maximum supported size (%d > %d)", from->name, len, MTU);
+	if(len > MAXSIZE) {
+		logger(mesh, MESHLINK_ERROR, "Packet from %s larger than maximum supported size (%d > %d)", from->name, len, MAXSIZE);
 		return false;
 	}
 
@@ -557,7 +567,7 @@ void handle_incoming_vpn_data(event_loop_t *loop, void *data, int flags) {
 
 		if(n) {
 			update_node_udp(mesh, n, &from);
-		} else if(mesh->log_level >= MESHLINK_WARNING) {
+		} else if(mesh->log_level <= MESHLINK_WARNING) {
 			hostname = sockaddr2hostname(&from);
 			logger(mesh, MESHLINK_WARNING, "Received UDP packet from unknown source %s", hostname);
 			free(hostname);

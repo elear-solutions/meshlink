@@ -1,9 +1,9 @@
-#ifndef MESHLINK_SYSTEM_H
-#define MESHLINK_SYSTEM_H
+#ifndef MESHLINK_ADNS_H
+#define MESHLINK_ADNS_H
 
 /*
-    system.h -- system headers
-    Copyright (C) 2014, 2017 Guus Sliepen <guus@meshlink.io>
+    adns.h -- header file for adns.c
+    Copyright (C) 2019 Guus Sliepen <guus@meshlink.io>
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -20,16 +20,13 @@
     51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */
 
-#include "../config.h"
+#include "meshlink_internal.h"
 
-#include "have.h"
+typedef void (*adns_cb_t)(meshlink_handle_t *mesh, char *host, char *serv, void *data, struct addrinfo *ai, int err);
 
-#ifndef HAVE_STRSIGNAL
-# define strsignal(p) ""
-#endif
-
-/* Other functions */
-
-#include "dropin.h"
+extern void init_adns(meshlink_handle_t *mesh);
+extern void exit_adns(meshlink_handle_t *mesh);
+extern void adns_queue(meshlink_handle_t *mesh, char *host, char *serv, adns_cb_t cb, void *data, int timeout);
+extern struct addrinfo *adns_blocking_request(meshlink_handle_t *mesh, char *host, char *serv, int timeout);
 
 #endif

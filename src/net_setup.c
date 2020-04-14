@@ -127,7 +127,6 @@ bool node_read_public_key(meshlink_handle_t *mesh, node_t *n) {
 		n->last_unreachable = last_unreachable;
 	}
 
-
 	config_free(&config);
 	return true;
 }
@@ -250,6 +249,7 @@ bool node_write_config(meshlink_handle_t *mesh, node_t *n) {
 	packmsg_add_int64(&out, n->last_unreachable);
 
 	if(!packmsg_output_ok(&out)) {
+		meshlink_errno = MESHLINK_EINTERNAL;
 		return false;
 	}
 
@@ -422,7 +422,7 @@ static bool add_listen_sockets(meshlink_handle_t *mesh) {
 		.ai_family = AF_UNSPEC,
 		.ai_socktype = SOCK_STREAM,
 		.ai_protocol = IPPROTO_TCP,
-		.ai_flags = AI_PASSIVE,
+		.ai_flags = AI_PASSIVE | AI_NUMERICSERV,
 	};
 
 	int err = getaddrinfo(NULL, mesh->myport, &hint, &ai);
@@ -481,7 +481,7 @@ static bool add_listen_sockets(meshlink_handle_t *mesh) {
 		io_add(&mesh->loop, &mesh->listen_socket[mesh->listen_sockets].tcp, handle_new_meta_connection, &mesh->listen_socket[mesh->listen_sockets], tcp_fd, IO_READ);
 		io_add(&mesh->loop, &mesh->listen_socket[mesh->listen_sockets].udp, handle_incoming_vpn_data, &mesh->listen_socket[mesh->listen_sockets], udp_fd, IO_READ);
 
-		if(mesh->log_level >= MESHLINK_INFO) {
+		if(mesh->log_level <= MESHLINK_INFO) {
 			char *hostname = sockaddr2hostname((sockaddr_t *) aip->ai_addr);
 			logger(mesh, MESHLINK_INFO, "Listening on %s", hostname);
 			free(hostname);
@@ -532,7 +532,9 @@ bool setup_myself(meshlink_handle_t *mesh) {
 
 	node_add(mesh, mesh->self);
 
-	config_scan_all(mesh, "current", "hosts", load_node, NULL);
+	if(!config_scan_all(mesh, "current", "hosts", load_node, NULL)) {
+		logger(mesh, MESHLINK_WARNING, "Could not scan all host config files");
+	}
 
 	/* Open sockets */
 
@@ -563,7 +565,6 @@ bool setup_myself(meshlink_handle_t *mesh) {
 
 	/* Done. */
 
-	mesh->last_config_check = mesh->loop.now.tv_sec;
 	mesh->last_unreachable = mesh->loop.now.tv_sec;
 
 	return true;

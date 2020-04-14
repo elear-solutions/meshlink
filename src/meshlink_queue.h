@@ -49,7 +49,7 @@ static inline void meshlink_queue_exit(meshlink_queue_t *queue) {
 	pthread_mutex_destroy(&queue->mutex);
 }
 
-static inline bool meshlink_queue_push(meshlink_queue_t *queue, void *data) {
+static inline __attribute__((__warn_unused_result__)) bool meshlink_queue_push(meshlink_queue_t *queue, void *data) {
 	meshlink_queue_item_t *item = malloc(sizeof(*item));
 
 	if(!item) {
@@ -70,9 +70,9 @@ static inline bool meshlink_queue_push(meshlink_queue_t *queue, void *data) {
 	return true;
 }
 
-static inline void *meshlink_queue_pop(meshlink_queue_t *queue) {
+static inline __attribute__((__warn_unused_result__)) void *meshlink_queue_pop(meshlink_queue_t *queue) {
 	meshlink_queue_item_t *item;
-	void *data;
+
 	pthread_mutex_lock(&queue->mutex);
 
 	if((item = queue->head)) {
@@ -84,7 +84,31 @@ static inline void *meshlink_queue_pop(meshlink_queue_t *queue) {
 	}
 
 	pthread_mutex_unlock(&queue->mutex);
-	data = item ? item->data : NULL;
+
+	void *data = item ? item->data : NULL;
+	free(item);
+	return data;
+}
+
+static inline __attribute__((__warn_unused_result__)) void *meshlink_queue_pop_cond(meshlink_queue_t *queue, pthread_cond_t *cond) {
+	meshlink_queue_item_t *item;
+
+	pthread_mutex_lock(&queue->mutex);
+
+	while(!queue->head) {
+		pthread_cond_wait(cond, &queue->mutex);
+	}
+
+	item = queue->head;
+	queue->head = item->next;
+
+	if(!queue->head) {
+		queue->tail = NULL;
+	}
+
+	pthread_mutex_unlock(&queue->mutex);
+
+	void *data = item->data;
 	free(item);
 	return data;
 }

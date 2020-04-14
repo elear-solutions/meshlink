@@ -57,14 +57,6 @@ typedef struct listen_socket_t {
 	sockaddr_t broadcast_sa;
 } listen_socket_t;
 
-typedef enum proxytype_t {
-	PROXY_NONE = 0,
-	PROXY_SOCKS4,
-	PROXY_SOCKS4A,
-	PROXY_SOCKS5,
-	PROXY_HTTP,
-} proxytype_t;
-
 struct meshlink_open_params {
 	char *confbase;
 	char *appname;
@@ -99,6 +91,7 @@ struct meshlink_handle {
 	struct node_t *self;
 	meshlink_log_cb_t log_cb;
 	meshlink_log_level_t log_level;
+	void *packet;
 
 	// The most important network-related members come first
 	int reachable;
@@ -127,7 +120,6 @@ struct meshlink_handle {
 	int contradicting_del_edge;
 	int sleeptime;
 	time_t connection_burst_time;
-	time_t last_config_check;
 	time_t last_hard_try;
 	time_t last_unreachable;
 	timeout_t pingtimer;
@@ -167,12 +159,11 @@ struct meshlink_handle {
 
 	bool default_blacklist;
 	bool discovery;         // Whether Catta is enabled or not
-
 	bool inviter_commits_first;
 
 	// Configuration
 	char *confbase;
-	FILE *conffile;
+	FILE *lockfile;
 	void *config_key;
 	char *external_address_url;
 	struct list_t *invitation_addresses;
@@ -194,12 +185,12 @@ struct meshlink_handle {
 	char *catta_servicetype;
 	unsigned int catta_interfaces;
 
-	// Proxy configuration, currently not exposed.
-	char *proxyhost;
-	char *proxyport;
-	char *proxyuser;
-	char *proxypass;
-	proxytype_t proxytype;
+	// ADNS
+	pthread_t adns_thread;
+	pthread_cond_t adns_cond;
+	meshlink_queue_t adns_queue;
+	meshlink_queue_t adns_done_queue;
+	signal_t adns_signal;
 };
 
 /// A handle for a MeshLink node.
@@ -261,6 +252,6 @@ static inline int prng(meshlink_handle_t *mesh, uint64_t max) {
 }
 
 /// Fudge value of ~0.1 seconds, in microseconds.
-static const unsigned int TIMER_FUDGE = 0x20000;
+static const unsigned int TIMER_FUDGE = 0x8000000;
 
 #endif

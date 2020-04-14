@@ -143,7 +143,7 @@ void test_case_mesh_random_port_bindings_01(void **state) {
 */
 bool test_steps_mesh_random_port_bindings_01(void) {
 	meshlink_handle_t *relay = NULL;
-	meshlink_destroy("relay_conf");
+	assert(meshlink_destroy("relay_conf"));
 
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_message);
 
@@ -171,7 +171,7 @@ bool test_steps_mesh_random_port_bindings_01(void) {
 	ipv6_fd = -1;
 
 	meshlink_close(relay);
-	meshlink_destroy("relay_conf");
+	assert(meshlink_destroy("relay_conf"));
 
 	return true;
 }
@@ -186,14 +186,14 @@ void test_case_mesh_random_port_bindings_02(void **state) {
     Test Steps:
     1. Open a node and start the instance.
     2. Call meshlink_set_port() with port 10000
-    3. When try bind succeds block the port using devtool_trybind_probe() callback.
+    3. When try bind succeeds block the port using devtool_trybind_probe() callback.
 
     Expected Result:
     The meshlink_set_port() API should fail.
 */
 bool test_steps_mesh_random_port_bindings_02(void) {
 	meshlink_handle_t *relay = NULL;
-	meshlink_destroy("relay_conf");
+	assert(meshlink_destroy("relay_conf"));
 
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_message);
 
@@ -220,7 +220,7 @@ bool test_steps_mesh_random_port_bindings_02(void) {
 	ipv6_fd = -1;
 
 	meshlink_close(relay);
-	meshlink_destroy("relay_conf");
+	assert(meshlink_destroy("relay_conf"));
 	return true;
 }
 
@@ -244,7 +244,7 @@ void test_case_mesh_random_port_bindings_03(void **state) {
 bool test_steps_mesh_random_port_bindings_03(void) {
 	int port, new_port;
 	meshlink_handle_t *relay = NULL;
-	meshlink_destroy("relay_conf");
+	assert(meshlink_destroy("relay_conf"));
 
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_message);
 
@@ -282,7 +282,7 @@ bool test_steps_mesh_random_port_bindings_03(void) {
 	ipv6_fd = -1;
 
 	meshlink_close(relay);
-	meshlink_destroy("relay_conf");
+	assert(meshlink_destroy("relay_conf"));
 	return true;
 }
 

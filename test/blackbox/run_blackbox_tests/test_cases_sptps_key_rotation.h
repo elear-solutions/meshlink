@@ -1,9 +1,9 @@
-#ifndef MESHLINK_SYSTEM_H
-#define MESHLINK_SYSTEM_H
+#ifndef TEST_CASES_SPTPS_KEY_ROTATION_H
+#define TEST_CASES_SPTPS_KEY_ROTATION_H
 
 /*
-    system.h -- system headers
-    Copyright (C) 2014, 2017 Guus Sliepen <guus@meshlink.io>
+    test_cases_sptps_key_rotation.h -- Declarations for Individual Test Case implementation functions
+    Copyright (C) 2020  Guus Sliepen <guus@meshlink.io>
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -20,16 +20,10 @@
     51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */
 
-#include "../config.h"
+#include <stdbool.h>
 
-#include "have.h"
+extern int test_meshlink_sptps_key_rotation(void);
+extern int total_tests;
 
-#ifndef HAVE_STRSIGNAL
-# define strsignal(p) ""
-#endif
 
-/* Other functions */
-
-#include "dropin.h"
-
-#endif
+#endif // TEST_CASES_SPTPS_KEY_ROTATION_H

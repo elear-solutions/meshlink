@@ -85,7 +85,8 @@ typedef struct node_t {
 	time_t last_successfull_connection;
 
 	char *canonical_address;                /* The canonical address of this node, if known */
-	sockaddr_t recent[MAX_RECENT];                   /* Recently seen addresses */
+	sockaddr_t recent[MAX_RECENT];          /* Recently seen addresses */
+	sockaddr_t catta_address;               /* Latest address seen by Catta */
 
 	// Graph-related member variables
 	time_t last_reachable;
@@ -104,8 +105,8 @@ extern node_t *new_node(void) __attribute__((__malloc__));
 extern void free_node(node_t *n);
 extern void node_add(struct meshlink_handle *mesh, node_t *n);
 extern void node_del(struct meshlink_handle *mesh, node_t *n);
-extern node_t *lookup_node(struct meshlink_handle *mesh, const char *name);
-extern node_t *lookup_node_udp(struct meshlink_handle *mesh, const sockaddr_t *sa);
+extern node_t *lookup_node(struct meshlink_handle *mesh, const char *name) __attribute__((__warn_unused_result__));
+extern node_t *lookup_node_udp(struct meshlink_handle *mesh, const sockaddr_t *sa) __attribute__((__warn_unused_result__));
 extern void update_node_udp(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *sa);
 extern bool node_add_recent_address(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *addr);
 
