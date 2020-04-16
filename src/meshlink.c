@@ -1596,10 +1596,13 @@ static void *meshlink_main_loop(void *arg) {
 
 	pthread_mutex_lock(&mesh->mutex);
 
-	logger(mesh, MESHLINK_DEBUG, "Starting main_loop...\n");
+	logger(mesh, MESHLINK_INFO, "Starting main_loop...\n");
 	pthread_cond_broadcast(&mesh->cond);
+	logger(mesh, MESHLINK_INFO, "Sleeping before main_loop.\n");
+sleep(2);
+	logger(mesh, MESHLINK_INFO, "Slept before main_loop and entering into main loop\n");
 	main_loop(mesh);
-	logger(mesh, MESHLINK_DEBUG, "main_loop returned.\n");
+	logger(mesh, MESHLINK_INFO, "main_loop returned.\n");
 
 	pthread_mutex_unlock(&mesh->mutex);
 
@@ -1621,46 +1624,58 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 		return false;
 	}
 
-	logger(mesh, MESHLINK_DEBUG, "meshlink_start called\n");
+	logger(mesh, MESHLINK_INFO, "meshlink_start called\n");
 
 	pthread_mutex_lock(&mesh->mutex);
+	logger(mesh, MESHLINK_INFO, "pthread mutex locked\nasserting on mesh->self \n");
 
 	assert(mesh->self);
+	logger(mesh, MESHLINK_INFO, "Asserting on mesh->private_key \n");
 	assert(mesh->private_key);
+	logger(mesh, MESHLINK_INFO, "Asserting on mesh->self->ecdsa \n");
 	assert(mesh->self->ecdsa);
+	logger(mesh, MESHLINK_INFO, "Asserting on memcmp \n");
 	assert(!memcmp((uint8_t *)mesh->self->ecdsa + 64, (uint8_t *)mesh->private_key + 64, 32));
 
+	logger(mesh, MESHLINK_INFO, "mesh->threadstarted validation \n");
 	if(mesh->threadstarted) {
-		logger(mesh, MESHLINK_DEBUG, "thread was already running\n");
+		logger(mesh, MESHLINK_INFO, "thread was already running\n");
 		pthread_mutex_unlock(&mesh->mutex);
 		return true;
 	}
 
+	logger(mesh, MESHLINK_INFO, "Validating listening socket \n");
 	if(mesh->listen_socket[0].tcp.fd < 0) {
-		logger(mesh, MESHLINK_ERROR, "Listening socket not open\n");
+		logger(mesh, MESHLINK_INFO, "Listening socket not open\n");
 		meshlink_errno = MESHLINK_ENETWORK;
 		return false;
 	}
 
 	// TODO: open listening sockets first
 
+	logger(mesh, MESHLINK_INFO, "Check mesh->name \n");
 	//Check that a valid name is set
 	if(!mesh->name) {
-		logger(mesh, MESHLINK_DEBUG, "No name given!\n");
+		logger(mesh, MESHLINK_INFO, "No name given!\n");
 		meshlink_errno = MESHLINK_EINVAL;
 		pthread_mutex_unlock(&mesh->mutex);
 		return false;
 	}
 
+	logger(mesh, MESHLINK_INFO, "Before init outgoings \n");
 	init_outgoings(mesh);
+	logger(mesh, MESHLINK_INFO, "After init outgoings\nBefore init adns\n");
 	init_adns(mesh);
+	logger(mesh, MESHLINK_INFO, "After ADNS\n");
 
 	// Start the main thread
 
+	logger(mesh, MESHLINK_INFO, "Setting event loop start flag\n");
 	event_loop_start(&mesh->loop);
+	logger(mesh, MESHLINK_INFO, " event loop start flag set\n");
 
 	if(pthread_create(&mesh->thread, NULL, meshlink_main_loop, mesh) != 0) {
-		logger(mesh, MESHLINK_DEBUG, "Could not start thread: %s\n", strerror(errno));
+		logger(mesh, MESHLINK_INFO, "Could not start thread: %s\n", strerror(errno));
 		memset(&mesh->thread, 0, sizeof(mesh)->thread);
 		meshlink_errno = MESHLINK_EINTERNAL;
 		event_loop_stop(&mesh->loop);
@@ -1668,13 +1683,18 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 		return false;
 	}
 
+	logger(mesh, MESHLINK_INFO, "Pthread create called and waiting for pthread cond\n");
 	pthread_cond_wait(&mesh->cond, &mesh->mutex);
+	logger(mesh, MESHLINK_INFO, "Pthread condition wait is being signaled and setting threadstarted flag\n");
 	mesh->threadstarted = true;
 
+	logger(mesh, MESHLINK_INFO, "threadstarted flag was set\n updating the graph\n");
 	// Ensure we are considered reachable
 	graph(mesh);
+	logger(mesh, MESHLINK_INFO, "Graph was updated\n");
 
 	pthread_mutex_unlock(&mesh->mutex);
+	logger(mesh, MESHLINK_INFO, "Unlocking the mutex\n");
 	return true;
 }
 

@@ -718,17 +718,21 @@ void retry(meshlink_handle_t *mesh) {
   this is where it all happens...
 */
 void main_loop(meshlink_handle_t *mesh) {
+	logger(mesh, MESHLINK_INFO, "Before time add timeout_handler\n");
 	timeout_add(&mesh->loop, &mesh->pingtimer, timeout_handler, &mesh->pingtimer, &(struct timespec) {
 		1, prng(mesh, TIMER_FUDGE)
 	});
+	logger(mesh, MESHLINK_INFO, "Before time add periodic_handler\n");
 	timeout_add(&mesh->loop, &mesh->periodictimer, periodic_handler, &mesh->periodictimer, &(struct timespec) {
 		0, 0
 	});
 
 	//Add signal handler
 	mesh->datafromapp.signum = 0;
+	logger(mesh, MESHLINK_INFO, "Before signal add meshlink_send_from_queue\n");
 	signal_add(&mesh->loop, &mesh->datafromapp, meshlink_send_from_queue, mesh, mesh->datafromapp.signum);
 
+	logger(mesh, MESHLINK_INFO, "Before event loop run\n");
 	if(!event_loop_run(&mesh->loop, &mesh->mutex)) {
 		logger(mesh, MESHLINK_ERROR, "Error while waiting for input: %s", strerror(errno));
 		call_error_cb(mesh, MESHLINK_ENETWORK);

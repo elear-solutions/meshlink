@@ -240,6 +240,9 @@ static void check_reachability(meshlink_handle_t *mesh) {
 }
 
 void graph(meshlink_handle_t *mesh) {
+	logger(mesh, MESHLINK_INFO, "Before sssp_bfs\n");
 	sssp_bfs(mesh);
+	logger(mesh, MESHLINK_INFO, "After sssp_bfs\nCheck reachability\n");
 	check_reachability(mesh);
+	logger(mesh, MESHLINK_INFO, "Checking reachability is done\n");
 }
