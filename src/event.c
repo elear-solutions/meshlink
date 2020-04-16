@@ -275,13 +275,10 @@ bool event_loop_run(event_loop_t *loop, pthread_mutex_t *mutex) {
 	fd_set readable;
 	fd_set writable;
 
-	logger(mesh, MESHLINK_INFO, "Before entering while loop\n");
 	while(loop->running) {
-	logger(mesh, MESHLINK_INFO, "Before EVENT_CLOCK loop now\n");
 		clock_gettime(EVENT_CLOCK, &loop->now);
 		struct timespec it, ts = {3600, 0};
 
-	logger(mesh, MESHLINK_INFO, "Before while loop timeouts head\n");
 		while(loop->timeouts.head) {
 			timeout_t *timeout = loop->timeouts.head->data;
 
