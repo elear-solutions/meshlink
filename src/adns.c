@@ -144,22 +144,28 @@ struct adns_blocking_info {
 void *adns_blocking_handler(void *data) {
 	struct adns_blocking_info *info = data;
 
-	logger(info->mesh, MESHLINK_DEBUG, "Resolving %s port %s", info->host, info->serv);
+	logger(info->mesh, MESHLINK_ERROR, "Resolving %s port %s", info->host, info->serv);
 	devtool_adns_resolve_probe();
+	logger(info->mesh, MESHLINK_ERROR, "After probe Resolving %s port %s", info->host, info->serv);
 
 	if(getaddrinfo(info->host, info->serv, NULL, &info->ai)) {
+	logger(info->mesh, MESHLINK_ERROR, "info->ai = NULL");
 		info->ai = NULL;
 	}
+	logger(info->mesh, MESHLINK_ERROR, "info->ai = non-null");
 
 	pthread_mutex_lock(&info->mutex);
+	logger(info->mesh, MESHLINK_ERROR, "pthread lock");
 
 	bool cleanup = info->done;
 
 	if(!info->done) {
 		info->done = true;
+	logger(info->mesh, MESHLINK_ERROR, "pthread signal");
 		pthread_cond_signal(&info->cond);
 	}
 
+	logger(info->mesh, MESHLINK_ERROR, "pthread unlock");
 	pthread_mutex_unlock(&info->mutex);
 
 	if(cleanup) {
@@ -167,6 +173,7 @@ void *adns_blocking_handler(void *data) {
 		free(info->serv);
 		free(info);
 	}
+	logger(info->mesh, MESHLINK_ERROR, " adns_blocking_handler returning");
 
 	return NULL;
 }
@@ -184,6 +191,7 @@ struct addrinfo *adns_blocking_request(meshlink_handle_t *mesh, char *host, char
 
 	pthread_t thread;
 
+logger(mesh, MESHLINK_ERROR, "Before pthread create\n");
 	if(pthread_create(&thread, NULL, adns_blocking_handler, info)) {
 		free(info->host);
 		free(info->serv);
@@ -193,8 +201,11 @@ struct addrinfo *adns_blocking_request(meshlink_handle_t *mesh, char *host, char
 		pthread_detach(thread);
 	}
 
+logger(mesh, MESHLINK_ERROR, "Before pthread lock\n");
 	pthread_mutex_lock(&info->mutex);
+logger(mesh, MESHLINK_ERROR, "After pthread lock\n");
 	pthread_cond_timedwait(&info->cond, &info->mutex, &deadline);
+logger(mesh, MESHLINK_ERROR, "Before pthread cond wait\n");
 
 	struct addrinfo *result = NULL;
 	bool cleanup = info->done;
@@ -202,7 +213,7 @@ struct addrinfo *adns_blocking_request(meshlink_handle_t *mesh, char *host, char
 	if(info->done) {
 		result = info->ai;
 	} else {
-		logger(mesh, MESHLINK_WARNING, "Deadline passed for DNS request %s port %s", host, serv);
+		logger(mesh, MESHLINK_ERROR, "Deadline passed for DNS request %s port %s", host, serv);
 		info->done = true;
 	}
 
