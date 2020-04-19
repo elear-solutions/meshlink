@@ -1583,6 +1583,7 @@ meshlink_submesh_t *meshlink_submesh_open(meshlink_handle_t  *mesh, const char *
 static void *meshlink_main_loop(void *arg) {
 	meshlink_handle_t *mesh = arg;
 
+	logger(mesh, MESHLINK_INFO, "%s.%d mesh->netns != -1\n", __func__, __LINE__);
 	if(mesh->netns != -1) {
 #ifdef HAVE_SETNS
 
@@ -1592,23 +1593,30 @@ static void *meshlink_main_loop(void *arg) {
 		}
 
 #else
+	logger(mesh, MESHLINK_INFO, "%s.%d pthread_cond_signal\n", __func__, __LINE__);
 		pthread_cond_signal(&mesh->cond);
+	logger(mesh, MESHLINK_INFO, "%s.%d return NULL\n", __func__, __LINE__);
 		return NULL;
 #endif // HAVE_SETNS
 	}
 
 #if HAVE_CATTA
 
+	logger(mesh, MESHLINK_INFO, "%s.%d if mesh->discovery\n", __func__, __LINE__);
 	if(mesh->discovery) {
+	logger(mesh, MESHLINK_INFO, "%s.%d calling discovery start\n", __func__, __LINE__);
 		discovery_start(mesh);
+	logger(mesh, MESHLINK_INFO, "%s.%d returned discovery start\n", __func__, __LINE__);
 	}
 
 #endif
 
+	logger(mesh, MESHLINK_INFO, "%s.%d pthread_mutex_lock\n", __func__, __LINE__);
 	pthread_mutex_lock(&mesh->mutex);
 
-	logger(mesh, MESHLINK_DEBUG, "Starting main_loop...\n");
+	logger(mesh, MESHLINK_INFO, "%s.%d Starting main_loop...\n", __func__, __LINE__);
 	pthread_cond_broadcast(&mesh->cond);
+	logger(mesh, MESHLINK_INFO, "%s.%d Before main_loop\n", __func__, __LINE__);
 	main_loop(mesh);
 	logger(mesh, MESHLINK_DEBUG, "main_loop returned.\n");
 
@@ -1617,74 +1625,105 @@ static void *meshlink_main_loop(void *arg) {
 #if HAVE_CATTA
 
 	// Stop discovery
+	logger(mesh, MESHLINK_INFO, "%s.%d if mesh->discovry\n", __func__, __LINE__);
 	if(mesh->discovery) {
+	logger(mesh, MESHLINK_INFO, "%s.%d calling disc stop\n", __func__, __LINE__);
 		discovery_stop(mesh);
+	logger(mesh, MESHLINK_INFO, "%s.%d done with disc stop\n", __func__, __LINE__);
 	}
 
 #endif
 
+	logger(mesh, MESHLINK_INFO, "%s.%d returning from meshlink thread\n", __func__, __LINE__);
 	return NULL;
 }
 
 bool meshlink_start(meshlink_handle_t *mesh) {
+	logger(mesh, MESHLINK_INFO, "%s.%d meshlink_start started\n", __func__, __LINE__);
 	if(!mesh) {
+	logger(mesh, MESHLINK_INFO, "%s.%d meshlink_start mesh = NULL\n", __func__, __LINE__);
 		meshlink_errno = MESHLINK_EINVAL;
+	logger(mesh, MESHLINK_INFO, "%s.%d meshlink_start returning false\n", __func__, __LINE__);
 		return false;
 	}
 
-	logger(mesh, MESHLINK_DEBUG, "meshlink_start called\n");
+	logger(mesh, MESHLINK_INFO, "%s.%d meshlink_start called\n", __func__, __LINE__);
 
 	pthread_mutex_lock(&mesh->mutex);
 
+	logger(mesh, MESHLINK_INFO, "%s.%d mesh->self\n", __func__, __LINE__);
 	assert(mesh->self);
+	logger(mesh, MESHLINK_INFO, "%s.%d mesh->private_key\n", __func__, __LINE__);
 	assert(mesh->private_key);
+	logger(mesh, MESHLINK_INFO, "%s.%d mesh->self->ecdsa\n", __func__, __LINE__);
 	assert(mesh->self->ecdsa);
+	logger(mesh, MESHLINK_INFO, "%s.%d memcmp\n", __func__, __LINE__);
 	assert(!memcmp((uint8_t *)mesh->self->ecdsa + 64, (uint8_t *)mesh->private_key + 64, 32));
 
+	logger(mesh, MESHLINK_INFO, "%s.%d mesh->threadstarted\n", __func__, __LINE__);
 	if(mesh->threadstarted) {
-		logger(mesh, MESHLINK_DEBUG, "thread was already running\n");
+	logger(mesh, MESHLINK_INFO, "%s.%d thread was already running\n", __func__, __LINE__);
 		pthread_mutex_unlock(&mesh->mutex);
+	logger(mesh, MESHLINK_INFO, "%s.%d start returning as start called twice\n", __func__, __LINE__);
 		return true;
 	}
 
+	logger(mesh, MESHLINK_INFO, "%s.%d mesh->listen_socket[0].tcp.fd < 0\n", __func__, __LINE__);
 	if(mesh->listen_socket[0].tcp.fd < 0) {
-		logger(mesh, MESHLINK_ERROR, "Listening socket not open\n");
+	logger(mesh, MESHLINK_INFO, "%s.%d Listening socket not open\n", __func__, __LINE__);
 		meshlink_errno = MESHLINK_ENETWORK;
+	logger(mesh, MESHLINK_INFO, "%s.%d returning from meshlink start\n", __func__, __LINE__);
 		return false;
 	}
 
 	// TODO: open listening sockets first
 
 	//Check that a valid name is set
+	logger(mesh, MESHLINK_INFO, "%s.%d Check that a valid name is set\n", __func__, __LINE__);
 	if(!mesh->name) {
-		logger(mesh, MESHLINK_DEBUG, "No name given!\n");
+	logger(mesh, MESHLINK_INFO, "%s.%d No name given!\n", __func__, __LINE__);
 		meshlink_errno = MESHLINK_EINVAL;
 		pthread_mutex_unlock(&mesh->mutex);
+	logger(mesh, MESHLINK_INFO, "%s.%d returning from start\n", __func__, __LINE__);
 		return false;
 	}
 
+	logger(mesh, MESHLINK_INFO, "%s.%d calling init_outgoings(mesh)\n", __func__, __LINE__);
 	init_outgoings(mesh);
+	logger(mesh, MESHLINK_INFO, "%s.%d returned from init_outgoings(mesh)\n", __func__, __LINE__);
 
 	// Start the main thread
 
+	logger(mesh, MESHLINK_INFO, "%s.%d Start the main thread\n", __func__, __LINE__);
 	event_loop_start(&mesh->loop);
+	logger(mesh, MESHLINK_INFO, "%s.%d Start the main thread flag set\n", __func__, __LINE__);
 
+	logger(mesh, MESHLINK_INFO, "%s.%d pthread create\n", __func__, __LINE__);
 	if(pthread_create(&mesh->thread, NULL, meshlink_main_loop, mesh) != 0) {
-		logger(mesh, MESHLINK_DEBUG, "Could not start thread: %s\n", strerror(errno));
+	logger(mesh, MESHLINK_INFO, "%s.%d Could not start thread\n", __func__, __LINE__);
 		memset(&mesh->thread, 0, sizeof(mesh)->thread);
+	logger(mesh, MESHLINK_INFO, "%s.%d cleared mesh->thread\n", __func__, __LINE__);
 		meshlink_errno = MESHLINK_EINTERNAL;
+	logger(mesh, MESHLINK_INFO, "%s.%d calling event_loop_stop\n", __func__, __LINE__);
 		event_loop_stop(&mesh->loop);
+	logger(mesh, MESHLINK_INFO, "%s.%d unloking mutex\n", __func__, __LINE__);
 		pthread_mutex_unlock(&mesh->mutex);
+	logger(mesh, MESHLINK_INFO, "%s.%d returning from start\n", __func__, __LINE__);
 		return false;
 	}
 
+	logger(mesh, MESHLINK_INFO, "%s.%d Waiting for mesh->cond\n", __func__, __LINE__);
 	pthread_cond_wait(&mesh->cond, &mesh->mutex);
+	logger(mesh, MESHLINK_INFO, "%s.%d mesh->threadstarted = true\n", __func__, __LINE__);
 	mesh->threadstarted = true;
 
 	// Ensure we are considered reachable
+	logger(mesh, MESHLINK_INFO, "%s.%d Ensure we are considered reachable\n", __func__, __LINE__);
 	graph(mesh);
 
+	logger(mesh, MESHLINK_INFO, "%s.%d Unlocking mutex before returning from start\n", __func__, __LINE__);
 	pthread_mutex_unlock(&mesh->mutex);
+	logger(mesh, MESHLINK_INFO, "%s.%d returning from start\n", __func__, __LINE__);
 	return true;
 }
 

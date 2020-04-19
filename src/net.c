@@ -691,17 +691,22 @@ void retry(meshlink_handle_t *mesh) {
   this is where it all happens...
 */
 int main_loop(meshlink_handle_t *mesh) {
+	logger(mesh, MESHLINK_INFO, "%s.%d timeout_add timeout handler\n", __func__, __LINE__);
 	timeout_add(&mesh->loop, &mesh->pingtimer, timeout_handler, &mesh->pingtimer, &(struct timeval) {
 		1, prng(mesh, TIMER_FUDGE)
 	});
+	logger(mesh, MESHLINK_INFO, "%s.%d timeout_add periodic handler\n", __func__, __LINE__);
 	timeout_add(&mesh->loop, &mesh->periodictimer, periodic_handler, &mesh->periodictimer, &(struct timeval) {
 		0, 0
 	});
 
 	//Add signal handler
+	logger(mesh, MESHLINK_INFO, "%s.%d mesh->datafromapp.signum = 0\n", __func__, __LINE__);
 	mesh->datafromapp.signum = 0;
+	logger(mesh, MESHLINK_INFO, "%s.%d signal_add\n", __func__, __LINE__);
 	signal_add(&mesh->loop, &mesh->datafromapp, meshlink_send_from_queue, mesh, mesh->datafromapp.signum);
 
+	logger(mesh, MESHLINK_INFO, "%s.%d before event loop run\n", __func__, __LINE__);
 	if(!event_loop_run(&mesh->loop, &mesh->mutex)) {
 		logger(mesh, MESHLINK_ERROR, "Error while waiting for input: %s", strerror(errno));
 		abort();
@@ -712,9 +717,13 @@ int main_loop(meshlink_handle_t *mesh) {
 		return 1;
 	}
 
+	logger(mesh, MESHLINK_INFO, "%s.%d deleting handler\n", __func__, __LINE__);
 	signal_del(&mesh->loop, &mesh->datafromapp);
+	logger(mesh, MESHLINK_INFO, "%s.%d deleting handler\n", __func__, __LINE__);
 	timeout_del(&mesh->loop, &mesh->periodictimer);
+	logger(mesh, MESHLINK_INFO, "%s.%d deleting handler\n", __func__, __LINE__);
 	timeout_del(&mesh->loop, &mesh->pingtimer);
+	logger(mesh, MESHLINK_INFO, "%s.%d main loop returning\n", __func__, __LINE__);
 
 	return 0;
 }

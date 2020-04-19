@@ -565,7 +565,9 @@ static void free_outgoing(outgoing_t *outgoing) {
 }
 
 void init_outgoings(meshlink_handle_t *mesh) {
+	logger(mesh, MESHLINK_INFO, "%s.%d before mesh->outgoings = list_alloc\n", __func__, __LINE__);
 	mesh->outgoings = list_alloc((list_action_t)free_outgoing);
+	logger(mesh, MESHLINK_INFO, "%s.%d after mesh->outgoings = list_alloc\n", __func__, __LINE__);
 }
 
 void exit_outgoings(meshlink_handle_t *mesh) {

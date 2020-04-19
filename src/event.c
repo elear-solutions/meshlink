@@ -25,6 +25,7 @@
 #include "splay_tree.h"
 #include "utils.h"
 #include "xalloc.h"
+#include "logger.h"
 
 static int io_compare(const io_t *a, const io_t *b) {
 	return a->fd - b->fd;
@@ -241,51 +242,75 @@ bool event_loop_run(event_loop_t *loop, pthread_mutex_t *mutex) {
 	fd_set readable;
 	fd_set writable;
 
+	logger(NULL, MESHLINK_INFO, "%s.%d before entering while loop\n", __func__, __LINE__);
 	while(loop->running) {
+	logger(NULL, MESHLINK_INFO, "%s.%d gettimeoftheday\n", __func__, __LINE__);
 		gettimeofday(&loop->now, NULL);
 		struct timeval diff, it, *tv = NULL;
 
+	logger(NULL, MESHLINK_INFO, "%s.%d while loop->timeouts.head\n", __func__, __LINE__);
 		while(loop->timeouts.head) {
+	logger(NULL, MESHLINK_INFO, "%s.%d timeout = loop->timeouts.head->data\n", __func__, __LINE__);
 			timeout_t *timeout = loop->timeouts.head->data;
+	logger(NULL, MESHLINK_INFO, "%s.%d timersub\n", __func__, __LINE__);
 			timersub(&timeout->tv, &loop->now, &diff);
 
+	logger(NULL, MESHLINK_INFO, "%s.%d if diff.tv_sec < 0\n", __func__, __LINE__);
 			if(diff.tv_sec < 0) {
+	logger(NULL, MESHLINK_INFO, "%s.%d timeout_disable\n", __func__, __LINE__);
 				timeout_disable(loop, timeout);
+	logger(NULL, MESHLINK_INFO, "%s.%d invoking timeout callback\n", __func__, __LINE__);
 				timeout->cb(loop, timeout->data);
+	logger(NULL, MESHLINK_INFO, "%s.%d invoked timeout callback\n", __func__, __LINE__);
 			} else {
 				tv = &diff;
 				break;
 			}
+	logger(NULL, MESHLINK_INFO, "%s.%d end of the timeouts while loop\n", __func__, __LINE__);
 		}
 
+	logger(NULL, MESHLINK_INFO, "%s.%d if loop->idle_cb\n", __func__, __LINE__);
 		if(loop->idle_cb) {
+	logger(NULL, MESHLINK_INFO, "%s.%d it = loop->idle_cb\n", __func__, __LINE__);
 			it = loop->idle_cb(loop, loop->idle_data);
 
+	logger(NULL, MESHLINK_INFO, "%s.%dit.tv_sec >= 0\n", __func__, __LINE__);
 			if(it.tv_sec >= 0 && (!tv || timercmp(&it, tv, <))) {
 				tv = &it;
 			}
 		}
 
+	logger(NULL, MESHLINK_INFO, "%s.%d memcpy readble\n", __func__, __LINE__);
 		memcpy(&readable, &loop->readfds, sizeof(readable));
+	logger(NULL, MESHLINK_INFO, "%s.%d memcpy writedble\n", __func__, __LINE__);
 		memcpy(&writable, &loop->writefds, sizeof(writable));
 
 		int fds = 0;
 
+	logger(NULL, MESHLINK_INFO, "%s.%d if loop->ios.tail\n", __func__, __LINE__);
 		if(loop->ios.tail) {
+	logger(NULL, MESHLINK_INFO, "%s.%d last = loop->ios.tail\n", __func__, __LINE__);
 			io_t *last = loop->ios.tail->data;
+	logger(NULL, MESHLINK_INFO, "%s.%d last->fd + 1\n", __func__, __LINE__);
 			fds = last->fd + 1;
 		}
 
 		// release mesh mutex during select
+	logger(NULL, MESHLINK_INFO, "%s.%d pthread_mutex_unlock\n", __func__, __LINE__);
 		pthread_mutex_unlock(mutex);
 
+	logger(NULL, MESHLINK_INFO, "%s.%d select\n", __func__, __LINE__);
 		int n = select(fds, &readable, &writable, NULL, tv);
 
+	logger(NULL, MESHLINK_INFO, "%s.%d pthread_mutex_lock\n", __func__, __LINE__);
 		pthread_mutex_lock(mutex);
 
+	logger(NULL, MESHLINK_INFO, "%s.%d gettimeofday\n", __func__, __LINE__);
 		gettimeofday(&loop->now, NULL);
 
+	logger(NULL, MESHLINK_INFO, "%s.%d if n < 0\n", __func__, __LINE__);
 		if(n < 0) {
+	logger(NULL, MESHLINK_INFO, "%s.%d if sockwouldblock\n", __func__, __LINE__);
 			if(sockwouldblock(errno)) {
 				continue;
 			} else {
@@ -301,27 +326,40 @@ bool event_loop_run(event_loop_t *loop, pthread_mutex_t *mutex) {
 		// it can be that one io callback triggers the deletion of another io,
 		// so we have to detect this and break the loop.
 
+	logger(NULL, MESHLINK_INFO, "%s.%d loop->deletion = false\n", __func__, __LINE__);
 		loop->deletion = false;
 
+	logger(NULL, MESHLINK_INFO, "%s.%d spley each io\n", __func__, __LINE__);
 		for splay_each(io_t, io, &loop->ios) {
+	logger(NULL, MESHLINK_INFO, "%s.%d if FD_ISSET\n", __func__, __LINE__);
 			if(FD_ISSET(io->fd, &writable) && io->cb) {
+	logger(NULL, MESHLINK_INFO, "%s.%d before io->cb\n", __func__, __LINE__);
 				io->cb(loop, io->data, IO_WRITE);
+	logger(NULL, MESHLINK_INFO, "%s.%d io->cb done\n", __func__, __LINE__);
 			}
 
+	logger(NULL, MESHLINK_INFO, "%s.%d loop->deletion\n", __func__, __LINE__);
 			if(loop->deletion) {
+	logger(NULL, MESHLINK_INFO, "%s.%d break\n", __func__, __LINE__);
 				break;
 			}
 
+	logger(NULL, MESHLINK_INFO, "%s.%d if FD_ISSET\n", __func__, __LINE__);
 			if(FD_ISSET(io->fd, &readable) && io->cb) {
+	logger(NULL, MESHLINK_INFO, "%s.%d before io->cb\n", __func__, __LINE__);
 				io->cb(loop, io->data, IO_READ);
+	logger(NULL, MESHLINK_INFO, "%s.%d io->cb done\n", __func__, __LINE__);
 			}
 
+	logger(NULL, MESHLINK_INFO, "%s.%d loop->deletion\n", __func__, __LINE__);
 			if(loop->deletion) {
+	logger(NULL, MESHLINK_INFO, "%s.%d break\n", __func__, __LINE__);
 				break;
 			}
 		}
 	}
 
+	logger(NULL, MESHLINK_INFO, "%s.%d returnig event\n", __func__, __LINE__);
 	return true;
 }
 
