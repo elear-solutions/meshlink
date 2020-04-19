@@ -329,6 +329,9 @@ static void check_reachability(meshlink_handle_t *mesh) {
 void graph(meshlink_handle_t *mesh) {
 	logger(mesh, MESHLINK_INFO, "%s.%d sssp_bfs(mesh)", __func__, __LINE__);
 	sssp_bfs(mesh);
+	logger(NULL, MESHLINK_INFO, "%s.%d Before sleeping in graph\n", __func__, __LINE__);
+	sleep(2);
+	logger(NULL, MESHLINK_INFO, "%s.%d After sleeping in graph\n", __func__, __LINE__);
 	logger(mesh, MESHLINK_INFO, "%s.%d check_reachability(mesh)", __func__, __LINE__);
 	check_reachability(mesh);
 	logger(mesh, MESHLINK_INFO, "%s.%d returning from graph()", __func__, __LINE__);

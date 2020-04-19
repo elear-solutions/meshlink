@@ -1719,6 +1719,9 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 
 	// Ensure we are considered reachable
 	logger(mesh, MESHLINK_INFO, "%s.%d Ensure we are considered reachable\n", __func__, __LINE__);
+	logger(NULL, MESHLINK_INFO, "%s.%d Before sleeping in meshlink start app\n", __func__, __LINE__);
+	sleep(2);
+	logger(NULL, MESHLINK_INFO, "%s.%d After sleeping in meshlink start app\n", __func__, __LINE__);
 	graph(mesh);
 
 	logger(mesh, MESHLINK_INFO, "%s.%d Unlocking mutex before returning from start\n", __func__, __LINE__);

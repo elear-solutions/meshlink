@@ -26,6 +26,7 @@
 #include "utils.h"
 #include "xalloc.h"
 #include "logger.h"
+#include "meshlink.h"
 
 static int io_compare(const io_t *a, const io_t *b) {
 	return a->fd - b->fd;
@@ -115,23 +116,36 @@ void timeout_add(event_loop_t *loop, timeout_t *timeout, timeout_cb_t cb, void *
 }
 
 void timeout_set(event_loop_t *loop, timeout_t *timeout, struct timeval *tv) {
+	logger(NULL, MESHLINK_INFO, "%s.%d In timeout_set\n", __func__, __LINE__);
+	logger(NULL, MESHLINK_INFO, "%s.%d assert timeout->cb\n", __func__, __LINE__);
 	assert(timeout->cb);
 
+	logger(NULL, MESHLINK_INFO, "%s.%d if timerisset\n", __func__, __LINE__);
 	if(timerisset(&timeout->tv)) {
+	logger(NULL, MESHLINK_INFO, "%s.%d splay_unlink_node\n", __func__, __LINE__);
 		splay_unlink_node(&loop->timeouts, &timeout->node);
+	logger(NULL, MESHLINK_INFO, "%s.%d splay_unlink_node done\n", __func__, __LINE__);
 	}
 
+	logger(NULL, MESHLINK_INFO, "%s.%d loop->now.tv_sec\n", __func__, __LINE__);
 	if(!loop->now.tv_sec) {
+	logger(NULL, MESHLINK_INFO, "%s.%d gettimeofday\n", __func__, __LINE__);
 		gettimeofday(&loop->now, NULL);
 	}
 
+	logger(NULL, MESHLINK_INFO, "%s.%d before timeradd\n", __func__, __LINE__);
 	timeradd(&loop->now, tv, &timeout->tv);
+	logger(NULL, MESHLINK_INFO, "%s.%d after timeradd\n", __func__, __LINE__);
 
+	logger(NULL, MESHLINK_INFO, "%s.%d before splay_insert_node\n", __func__, __LINE__);
 	if(!splay_insert_node(&loop->timeouts, &timeout->node)) {
+	logger(NULL, MESHLINK_INFO, "%s.%d aborting\n", __func__, __LINE__);
 		abort();
 	}
 
+	logger(NULL, MESHLINK_INFO, "%s.%d loop->deletion = true\n", __func__, __LINE__);
 	loop->deletion = true;
+	logger(NULL, MESHLINK_INFO, "%s.%d returning from timeout_set\n", __func__, __LINE__);
 }
 
 static void timeout_disable(event_loop_t *loop, timeout_t *timeout) {
@@ -241,6 +255,10 @@ bool event_loop_run(event_loop_t *loop, pthread_mutex_t *mutex) {
 
 	fd_set readable;
 	fd_set writable;
+
+	logger(NULL, MESHLINK_INFO, "%s.%d Before sleeping in meshlink event loop\n", __func__, __LINE__);
+	sleep(2);
+	logger(NULL, MESHLINK_INFO, "%s.%d After sleeping in meshlink event loop\n", __func__, __LINE__);
 
 	logger(NULL, MESHLINK_INFO, "%s.%d before entering while loop\n", __func__, __LINE__);
 	while(loop->running) {
