@@ -53,6 +53,8 @@ static splay_node_t *splay_top_down(splay_tree_t *tree, const void *data, int *r
 		return NULL;
 	}
 	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
+	logger(NULL, MESHLINK_INFO, "%s.%d tree->compare: %p\n", __func__, __LINE__, (void *)tree->compare);
+	logger(NULL, MESHLINK_INFO, "%s.%d data: %p root->data: %p\n", __func__, __LINE__, (void *)data, (void *)root->data);
 
 	while((c = tree->compare(data, root->data))) {
 	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);

@@ -26,40 +26,52 @@
 #include "utils.h"
 #include "xalloc.h"
 #include "logger.h"
-#include "meshlink.h"
 
 static int io_compare(const io_t *a, const io_t *b) {
 	return a->fd - b->fd;
 }
 
 static int timeout_compare(const timeout_t *a, const timeout_t *b) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Started timeout_compare\n", __func__, __LINE__);
 	struct timeval diff;
+	logger(NULL, MESHLINK_INFO, "%s.%d before timersub\n", __func__, __LINE__);
+	logger(NULL, MESHLINK_INFO, "%s.%d a: %p b: %p\n", __func__, __LINE__, a, b);
+	logger(NULL, MESHLINK_INFO, "%s.%d a->tv.sec: %ld b->tv.sec: %ld a->tv.usec: %ld b->tv.usec: %ld\n", __func__, __LINE__, (a->tv).tv_sec, (b->tv).tv_sec, (a->tv).tv_usec, (b->tv).tv_usec);
 	timersub(&a->tv, &b->tv, &diff);
+	logger(NULL, MESHLINK_INFO, "%s.%d after timersub\n", __func__, __LINE__);
+	logger(NULL, MESHLINK_INFO, "%s.%d diff.sec: %ld diff.usec: %ld\n", __func__, __LINE__, diff.tv_sec, diff.tv_usec);
 
 	if(diff.tv_sec < 0) {
+	logger(NULL, MESHLINK_INFO, "%s.%d diff.tv_sec < 0 ret -1\n", __func__, __LINE__);
 		return -1;
 	}
 
 	if(diff.tv_sec > 0) {
+	logger(NULL, MESHLINK_INFO, "%s.%d diff.tv_sec > 0 ret 1\n", __func__, __LINE__);
 		return 1;
 	}
 
 	if(diff.tv_usec < 0) {
+	logger(NULL, MESHLINK_INFO, "%s.%d diff.tv_usec < 0 ret -1\n", __func__, __LINE__);
 		return -1;
 	}
 
 	if(diff.tv_usec > 0) {
+	logger(NULL, MESHLINK_INFO, "%s.%d diff.tv_usec > 0 ret 1\n", __func__, __LINE__);
 		return 1;
 	}
 
 	if(a < b) {
+	logger(NULL, MESHLINK_INFO, "%s.%d a < b ret -1\n", __func__, __LINE__);
 		return -1;
 	}
 
 	if(a > b) {
+	logger(NULL, MESHLINK_INFO, "%s.%d a > b ret 1\n", __func__, __LINE__);
 		return 1;
 	}
 
+	logger(NULL, MESHLINK_INFO, "%s.%d return 0\n", __func__, __LINE__);
 	return 0;
 }
 
