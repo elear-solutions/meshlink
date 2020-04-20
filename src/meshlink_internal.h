@@ -258,7 +258,6 @@ extern void call_error_cb(meshlink_handle_t *mesh, meshlink_errno_t meshlink_err
 
 /// Per-instance PRNG
 static inline int prng(meshlink_handle_t *mesh, uint64_t max) {
-	logger(NULL, MESHLINK_INFO, "%s.%d before xoshiro\n", __func__, __LINE__);
 	return xoshiro(mesh->prng_state) % max;
 }
 
