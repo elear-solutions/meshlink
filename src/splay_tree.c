@@ -26,147 +26,248 @@
 /* Splay operation */
 
 static splay_node_t *splay_top_down(splay_tree_t *tree, const void *data, int *result) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	splay_node_t left, right;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	splay_node_t *leftbottom = &left, *rightbottom = &right, *child, *grandchild;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	splay_node_t *root = tree->root;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	int c;
 
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	memset(&left, 0, sizeof(left));
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	memset(&right, 0, sizeof(right));
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	if(!root) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		if(result) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 			*result = 0;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		}
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 		return NULL;
 	}
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	while((c = tree->compare(data, root->data))) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		if(c < 0 && (child = root->left)) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 			c = tree->compare(data, child->data);
-
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 			if(c < 0 && (grandchild = child->left)) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				rightbottom->left = child;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				child->parent = rightbottom;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				rightbottom = child;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 				if((root->left = child->right)) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 					child->right->parent = root;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				}
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 				child->right = root;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				root->parent = child;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 				child->left = NULL;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				grandchild->parent = NULL;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 				root = grandchild;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 			} else if(c > 0 && (grandchild = child->right)) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				leftbottom->right = child;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				child->parent = leftbottom;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				leftbottom = child;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 				child->right = NULL;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				grandchild->parent = NULL;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 				rightbottom->left = root;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				root->parent = rightbottom;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				rightbottom = root;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 				root->left = NULL;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 				root = grandchild;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 			} else {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				rightbottom->left = root;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				root->parent = rightbottom;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				rightbottom = root;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 				root->left = NULL;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				child->parent = NULL;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 				root = child;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				break;
 			}
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		} else if(c > 0 && (child = root->right)) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 			c = tree->compare(data, child->data);
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 			if(c > 0 && (grandchild = child->right)) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				leftbottom->right = child;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				child->parent = leftbottom;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				leftbottom = child;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 				if((root->right = child->left)) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 					child->left->parent = root;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				}
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 				child->left = root;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				root->parent = child;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 				child->right = NULL;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				grandchild->parent = NULL;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 				root = grandchild;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 			} else if(c < 0 && (grandchild = child->left)) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				rightbottom->left = child;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				child->parent = rightbottom;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				rightbottom = child;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 				child->left = NULL;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				grandchild->parent = NULL;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 				leftbottom->right = root;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				root->parent = leftbottom;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				leftbottom = root;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 				root->right = NULL;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 				root = grandchild;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 			} else {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				leftbottom->right = root;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				root->parent = leftbottom;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				leftbottom = root;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 				root->right = NULL;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				child->parent = NULL;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 				root = child;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				break;
 			}
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		} else {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 			break;
 		}
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	}
 
 	/* Merge trees */
 
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	if(left.right) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		if(root->left) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 			leftbottom->right = root->left;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 			root->left->parent = leftbottom;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		}
 
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		root->left = left.right;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		left.right->parent = root;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	}
 
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	if(right.left) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		if(root->right) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 			rightbottom->left = root->right;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 			root->right->parent = rightbottom;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		}
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 		root->right = right.left;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		right.left->parent = root;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	}
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	/* Return result */
 
 	tree->root = root;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	if(result) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		*result = c;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	}
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	return tree->root;
 }
@@ -343,23 +444,33 @@ static void splay_bottom_up(splay_tree_t *tree, splay_node_t *node) {
 /* (De)constructors */
 
 splay_tree_t *splay_alloc_tree(splay_compare_t compare, splay_action_t delete) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	splay_tree_t *tree;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	tree = xzalloc(sizeof(splay_tree_t));
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	tree->compare = compare;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	tree->delete = delete;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	return tree;
 }
 
 splay_node_t *splay_alloc_node(void) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	return xzalloc(sizeof(splay_node_t));
 }
 
 void splay_free_node(splay_tree_t *tree, splay_node_t *node) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	if(node->data && tree->delete) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		tree->delete(node->data);
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	}
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	free(node);
 }
@@ -367,25 +478,34 @@ void splay_free_node(splay_tree_t *tree, splay_node_t *node) {
 /* Searching */
 
 void *splay_search(splay_tree_t *tree, const void *data) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	splay_node_t *node;
 
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	node = splay_search_node(tree, data);
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	return node ? node->data : NULL;
 }
 
 void *splay_search_closest(splay_tree_t *tree, const void *data, int *result) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	splay_node_t *node;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	node = splay_search_closest_node(tree, data, result);
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	return node ? node->data : NULL;
 }
 
 void *splay_search_closest_smaller(splay_tree_t *tree, const void *data) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	splay_node_t *node;
 
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	node = splay_search_closest_smaller_node(tree, data);
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	return node ? node->data : NULL;
 }
@@ -393,87 +513,135 @@ void *splay_search_closest_smaller(splay_tree_t *tree, const void *data) {
 void *splay_search_closest_greater(splay_tree_t *tree, const void *data) {
 	splay_node_t *node;
 
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	node = splay_search_closest_greater_node(tree, data);
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	return node ? node->data : NULL;
 }
 
 splay_node_t *splay_search_node(splay_tree_t *tree, const void *data) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	splay_node_t *node;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	int result;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	node = splay_search_closest_node(tree, data, &result);
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	return result ? NULL : node;
 }
 
 splay_node_t *splay_search_closest_node_nosplay(const splay_tree_t *tree, const void *data, int *result) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	splay_node_t *node;
 	int c;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	node = tree->root;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	if(!node) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		if(result) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 			*result = 0;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		}
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 		return NULL;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	}
 
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	for(;;) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		c = tree->compare(data, node->data);
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 		if(c < 0) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 			if(node->left) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				node = node->left;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 			} else {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				break;
 			}
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		} else if(c > 0) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 			if(node->right) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				node = node->right;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 			} else {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 				break;
 			}
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		} else {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 			break;
 		}
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	}
 
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	if(result) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		*result = c;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	}
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	return node;
 }
 
 splay_node_t *splay_search_closest_node(splay_tree_t *tree, const void *data, int *result) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	return splay_top_down(tree, data, result);
 }
 
 splay_node_t *splay_search_closest_smaller_node(splay_tree_t *tree, const void *data) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	splay_node_t *node;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	int result;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	node = splay_search_closest_node(tree, data, &result);
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	if(result < 0) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		node = node->prev;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	}
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	return node;
 }
 
 splay_node_t *splay_search_closest_greater_node(splay_tree_t *tree, const void *data) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	splay_node_t *node;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	int result;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	node = splay_search_closest_node(tree, data, &result);
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	if(result > 0) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		node = node->next;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	}
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	return node;
 }
@@ -493,104 +661,174 @@ static void splay_insert_top(splay_tree_t *tree, splay_node_t *node) {
 static void splay_insert_after(splay_tree_t *tree, splay_node_t *after, splay_node_t *node);
 
 static void splay_insert_before(splay_tree_t *tree, splay_node_t *before, splay_node_t *node) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Started\n", __func__, __LINE__);
 	if(!before) {
+	logger(NULL, MESHLINK_INFO, "%s.%d if tree->tail\n", __func__, __LINE__);
 		if(tree->tail) {
+	logger(NULL, MESHLINK_INFO, "%s.%d before splay_insert_after\n", __func__, __LINE__);
 			splay_insert_after(tree, tree->tail, node);
+	logger(NULL, MESHLINK_INFO, "%s.%d after splay_insert_after\n", __func__, __LINE__);
 		} else {
+	logger(NULL, MESHLINK_INFO, "%s.%d before splay_insert_top\n", __func__, __LINE__);
 			splay_insert_top(tree, node);
+	logger(NULL, MESHLINK_INFO, "%s.%d after splay_insert_top\n", __func__, __LINE__);
 		}
 
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		return;
 	}
 
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	node->next = before;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	if((node->prev = before->prev)) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		before->prev->next = node;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	} else {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		tree->head = node;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	}
 
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	before->prev = node;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	splay_bottom_up(tree, before);
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	node->right = before;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	before->parent = node;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	if((node->left = before->left)) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		before->left->parent = node;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	}
 
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	before->left = NULL;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	node->parent = NULL;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	tree->root = node;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	tree->count++;
+	logger(NULL, MESHLINK_INFO, "%s.%d DONE\n", __func__, __LINE__);
 }
 
 static void splay_insert_after(splay_tree_t *tree, splay_node_t *after, splay_node_t *node) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	if(!after) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		if(tree->head) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 			splay_insert_before(tree, tree->head, node);
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		} else {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 			splay_insert_top(tree, node);
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		}
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 		return;
 	}
 
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	node->prev = after;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	if((node->next = after->next)) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		after->next->prev = node;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	} else {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		tree->tail = node;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	}
 
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	after->next = node;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	splay_bottom_up(tree, after);
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	node->left = after;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	after->parent = node;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	if((node->right = after->right)) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		after->right->parent = node;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	}
 
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	after->right = NULL;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	node->parent = NULL;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	tree->root = node;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	tree->count++;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 }
 
 splay_node_t *splay_insert(splay_tree_t *tree, void *data) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	splay_node_t *closest, *new;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	int result;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	if(!tree->root) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		new = splay_alloc_node();
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		new->data = data;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		splay_insert_top(tree, new);
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	} else {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		closest = splay_search_closest_node(tree, data, &result);
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 		if(!result) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 			return NULL;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		}
 
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		new = splay_alloc_node();
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		new->data = data;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 		if(result < 0) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 			splay_insert_before(tree, closest, new);
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		} else {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 			splay_insert_after(tree, closest, new);
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		}
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	}
 
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	return new;
 }
 
@@ -635,13 +873,19 @@ splay_node_t *splay_insert_node(splay_tree_t *tree, splay_node_t *node) {
 }
 
 splay_node_t *splay_unlink(splay_tree_t *tree, void *data) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	splay_node_t *node;
 
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	node = splay_search_node(tree, data);
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	if(node) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		splay_unlink_node(tree, node);
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	}
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	return node;
 }
@@ -709,45 +953,72 @@ void splay_unlink_node(splay_tree_t *tree, splay_node_t *node) {
 }
 
 void splay_delete_node(splay_tree_t *tree, splay_node_t *node) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	splay_unlink_node(tree, node);
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	splay_free_node(tree, node);
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 }
 
 void splay_delete(splay_tree_t *tree, void *data) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	splay_node_t *node;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	node = splay_search_node(tree, data);
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	if(node) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		splay_delete_node(tree, node);
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	}
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 }
 
 /* Fast tree cleanup */
 
 void splay_delete_tree(splay_tree_t *tree) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	for(splay_node_t *node = tree->head, *next; node; node = next) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		next = node->next;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		splay_free_node(tree, node);
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		tree->count--;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	}
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 
 	assert(!tree->count);
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	free(tree);
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 }
 
 /* Tree walking */
 
 void splay_foreach(const splay_tree_t *tree, splay_action_t action) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	for(splay_node_t *node = tree->head, *next; node; node = next) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		next = node->next;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		action(node->data);
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	}
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 }
 
 void splay_foreach_node(const splay_tree_t *tree, splay_action_t action) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	for(splay_node_t *node = tree->head, *next; node; node = next) {
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		next = node->next;
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 		action(node);
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 	}
+	logger(NULL, MESHLINK_INFO, "%s.%d Chck\n", __func__, __LINE__);
 }
