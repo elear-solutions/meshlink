@@ -1780,7 +1780,7 @@ void meshlink_stop(meshlink_handle_t *mesh) {
 
 	// Ensure we are considered unreachable
 	if(mesh->nodes) {
-		graph(mesh);
+		//graph(mesh);
 	}
 
 	// Try to write out any changed node config files, ignore errors at this point.

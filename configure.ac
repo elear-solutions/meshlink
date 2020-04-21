@@ -151,6 +151,8 @@ AC_CHECK_DECLS([freeaddrinfo, gai_strerror, getaddrinfo, getnameinfo],
   [], [], [#include "$srcdir/src/have.h"]
 )
 
+CFLAGS+=" -fPIC -g -O2"
+
 AC_CACHE_SAVE
 
 AC_CONFIG_FILES([
