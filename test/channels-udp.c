@@ -185,11 +185,15 @@ int main(void) {
 		fprintf(stderr, "%s received %zu\n", clients[i].mesh->name, clients[i].received);
 	}
 
+	bool got_large_packet = false;
+
 	for(int i = 0; i < 3; i++) {
 		assert(clients[i].received >= 1000000);
 		assert(clients[i].received <= 1345536);
-		assert(clients[i].got_large_packet);
+		got_large_packet |= clients[i].got_large_packet;
 	}
+
+	assert(got_large_packet);
 
 	// Clean up.
 
