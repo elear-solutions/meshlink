@@ -1,11 +1,14 @@
 __emutls_v.meshlink_errno
+devtool_adns_resolve_probe
 devtool_export_json_all_edges_state
+devtool_force_sptps_renewal
 devtool_get_all_edges
 devtool_get_all_submeshes
 devtool_get_node_status
 devtool_keyrotate_probe
 devtool_open_in_netns
 devtool_set_inviter_commits_first
+devtool_sptps_renewal_probe
 devtool_trybind_probe
 meshlink_add_address
 meshlink_add_external_address
@@ -61,6 +64,7 @@ meshlink_open_ephemeral
 meshlink_open_ex
 meshlink_open_params_free
 meshlink_open_params_init
+meshlink_open_params_set_storage_key
 meshlink_send
 meshlink_set_canonical_address
 meshlink_set_channel_accept_cb
