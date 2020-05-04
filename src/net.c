@@ -22,6 +22,7 @@
 #include "utils.h"
 #include "conf.h"
 #include "connection.h"
+#include "devtools.h"
 #include "graph.h"
 #include "logger.h"
 #include "meshlink_internal.h"
@@ -92,13 +93,6 @@ void terminate_connection(meshlink_handle_t *mesh, connection_t *c, bool report)
 	if(outgoing) {
 		do_outgoing_connection(mesh, outgoing);
 	}
-
-#ifndef HAVE_MINGW
-	/* Clean up dead proxy processes */
-
-	while(waitpid(-1, NULL, WNOHANG) > 0);
-
-#endif
 }
 
 /*
@@ -127,6 +121,18 @@ static void timeout_handler(event_loop_t *loop, void *data) {
 		if(c->node) {
 			if(c->node->status.waitingforkey && c->node->last_req_key + pingtimeout <= mesh->loop.now.tv_sec) {
 				send_req_key(mesh, c->node);
+			}
+		}
+
+		if(c->status.active && c->last_key_renewal + 3600 < mesh->loop.now.tv_sec) {
+			devtool_sptps_renewal_probe((meshlink_node_t *)c->node);
+
+			if(!sptps_force_kex(&c->sptps)) {
+				logger(mesh, MESHLINK_ERROR, "SPTPS key renewal for connection with %s failed", c->name);
+				terminate_connection(mesh, c, true);
+				continue;
+			} else {
+				c->last_key_renewal = mesh->loop.now.tv_sec;
 			}
 		}
 
@@ -348,7 +354,7 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 	if(mesh->contradicting_del_edge > 100 && mesh->contradicting_add_edge > 100) {
 		logger(mesh, MESHLINK_WARNING, "Possible node with same Name as us! Sleeping %d seconds.", mesh->sleeptime);
 		struct timespec ts = {mesh->sleeptime, 0};
-		clock_nanosleep(CLOCK_MONOTONIC, 0, &ts, NULL);
+		nanosleep(&ts, NULL);
 		mesh->sleeptime *= 2;
 
 		if(mesh->sleeptime < 0) {
@@ -610,7 +616,7 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 
 	for splay_each(node_t, n, mesh->nodes) {
 		if(n->status.dirty) {
-			if(node_write_config(mesh, n)) {
+			if(!node_write_config(mesh, n)) {
 				logger(mesh, MESHLINK_DEBUG, "Could not update %s", n->name);
 			}
 
@@ -619,13 +625,14 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 
 		if(n->status.validkey && n->last_req_key + 3600 < mesh->loop.now.tv_sec) {
 			logger(mesh, MESHLINK_DEBUG, "SPTPS key renewal for node %s", n->name);
+			devtool_sptps_renewal_probe((meshlink_node_t *)n);
 
 			if(!sptps_force_kex(&n->sptps)) {
 				logger(mesh, MESHLINK_ERROR, "SPTPS key renewal for node %s failed", n->name);
 				n->status.validkey = false;
 				sptps_stop(&n->sptps);
 				n->status.waitingforkey = false;
-				n->last_req_key = 0;
+				n->last_req_key = -3600;
 			} else {
 				n->last_req_key = mesh->loop.now.tv_sec;
 			}
@@ -664,7 +671,7 @@ void retry(meshlink_handle_t *mesh) {
 		}
 
 		if(!c->status.pinged) {
-			c->last_ping_time = 0;
+			c->last_ping_time = -3600;
 		}
 
 		sockaddr_t sa;

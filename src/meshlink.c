@@ -20,6 +20,7 @@
 #include "system.h"
 #include <pthread.h>
 
+#include "adns.h"
 #include "crypto.h"
 #include "ecdsagen.h"
 #include "logger.h"
@@ -172,6 +173,7 @@ static bool getlocaladdr(char *destaddr, sockaddr_t *sa, socklen_t *salen, int n
 		.ai_family = AF_UNSPEC,
 		.ai_socktype = SOCK_DGRAM,
 		.ai_protocol = IPPROTO_UDP,
+		.ai_flags = AI_NUMERICHOST | AI_NUMERICSERV,
 	};
 
 	if(getaddrinfo(destaddr, "80", &hint, &rai) || !rai) {
@@ -255,7 +257,7 @@ char *meshlink_get_external_address_for_family(meshlink_handle_t *mesh, int fami
 	}
 
 	logger(mesh, MESHLINK_DEBUG, "Trying to discover externally visible hostname...\n");
-	struct addrinfo *ai = str2addrinfo(host, port ? port : "80", SOCK_STREAM);
+	struct addrinfo *ai = adns_blocking_request(mesh, xstrdup(host), xstrdup(port ? port : "80"), 5);
 	char line[256];
 	char *hostname = NULL;
 
@@ -499,15 +501,9 @@ static char *get_my_hostname(meshlink_handle_t *mesh, uint32_t flags) {
 		}
 
 		// Convert what we have to a sockaddr
-		struct addrinfo *ai_in, *ai_out;
-		struct addrinfo hint = {
-			.ai_family = AF_UNSPEC,
-			.ai_flags = AI_NUMERICSERV,
-			.ai_socktype = SOCK_STREAM,
-		};
-		int err = getaddrinfo(hostname[i], port[i], &hint, &ai_in);
+		struct addrinfo *ai_in = adns_blocking_request(mesh, xstrdup(hostname[i]), xstrdup(port[i]), 5);
 
-		if(err || !ai_in) {
+		if(!ai_in) {
 			continue;
 		}
 
@@ -516,44 +512,8 @@ static char *get_my_hostname(meshlink_handle_t *mesh, uint32_t flags) {
 			node_add_recent_address(mesh, mesh->self, (sockaddr_t *)aip->ai_addr);
 		}
 
-		if(flags & MESHLINK_INVITE_NUMERIC) {
-			// We don't need to do any further conversion
-			freeaddrinfo(ai_in);
-			continue;
-		}
-
-		// Convert it to a hostname
-		char resolved_host[NI_MAXHOST];
-		char resolved_port[NI_MAXSERV];
-		err = getnameinfo(ai_in->ai_addr, ai_in->ai_addrlen, resolved_host, sizeof resolved_host, resolved_port, sizeof resolved_port, NI_NUMERICSERV);
-
-		if(err || !is_valid_hostname(resolved_host)) {
-			freeaddrinfo(ai_in);
-			continue;
-		}
-
-		// Convert the hostname back to a sockaddr
-		hint.ai_family = ai_in->ai_family;
-		err = getaddrinfo(resolved_host, resolved_port, &hint, &ai_out);
-
-		if(err || !ai_out) {
-			freeaddrinfo(ai_in);
-			continue;
-		}
-
-		// Check if it's still the same sockaddr
-		if(ai_in->ai_addrlen != ai_out->ai_addrlen || memcmp(ai_in->ai_addr, ai_out->ai_addr, ai_in->ai_addrlen)) {
-			freeaddrinfo(ai_in);
-			freeaddrinfo(ai_out);
-			continue;
-		}
-
-		// Yes: replace the hostname with the resolved one
-		free(hostname[i]);
-		hostname[i] = xstrdup(resolved_host);
-
 		freeaddrinfo(ai_in);
-		freeaddrinfo(ai_out);
+		continue;
 	}
 
 	// Remove duplicates again, since IPv4 and IPv6 addresses might map to the same hostname
@@ -705,24 +665,28 @@ static bool finalize_join(join_state_t *state, const void *buf, uint16_t len) {
 	}
 
 	char *name = packmsg_get_str_dup(&in);
-	packmsg_skip_element(&in); /* submesh */
+	char *submesh_name = packmsg_get_str_dup(&in);
 	dev_class_t devclass = packmsg_get_int32(&in);
 	uint32_t count = packmsg_get_array(&in);
 
-	if(!name) {
-		logger(mesh, MESHLINK_DEBUG, "No Name found in invitation!\n");
+	if(!name || !check_id(name)) {
+		logger(mesh, MESHLINK_DEBUG, "No valid Name found in invitation!\n");
+		free(name);
+		free(submesh_name);
 		return false;
 	}
 
-	if(!check_id(name)) {
-		logger(mesh, MESHLINK_DEBUG, "Invalid Name found in invitation: %s!\n", name);
+	if(!submesh_name || (strcmp(submesh_name, CORE_MESH) && !check_id(submesh_name))) {
+		logger(mesh, MESHLINK_DEBUG, "No valid Submesh found in invitation!\n");
 		free(name);
+		free(submesh_name);
 		return false;
 	}
 
 	if(!count) {
 		logger(mesh, MESHLINK_ERROR, "Incomplete invitation file!\n");
 		free(name);
+		free(submesh_name);
 		return false;
 	}
 
@@ -730,6 +694,8 @@ static bool finalize_join(join_state_t *state, const void *buf, uint16_t len) {
 	free(mesh->self->name);
 	mesh->name = name;
 	mesh->self->name = xstrdup(name);
+	mesh->self->submesh = strcmp(submesh_name, CORE_MESH) ? lookup_or_create_submesh(mesh, submesh_name) : NULL;
+	free(submesh_name);
 	mesh->self->devclass = devclass == DEV_CLASS_UNKNOWN ? mesh->devclass : devclass;
 
 	// Initialize configuration directory
@@ -1123,9 +1089,6 @@ static bool meshlink_read_config(meshlink_handle_t *mesh) {
 		return false;
 	}
 
-#if 0
-
-	// TODO: check this?
 	if(mesh->name && strcmp(mesh->name, name)) {
 		logger(NULL, MESHLINK_ERROR, "Configuration is for a different name (%s)!", name);
 		meshlink_errno = MESHLINK_ESTORAGE;
@@ -1133,8 +1096,6 @@ static bool meshlink_read_config(meshlink_handle_t *mesh) {
 		config_free(&config);
 		return false;
 	}
-
-#endif
 
 	free(mesh->name);
 	mesh->name = name;
@@ -1193,13 +1154,7 @@ meshlink_open_params_t *meshlink_open_params_init(const char *confbase, const ch
 		return NULL;
 	}
 
-	if(!name || !*name) {
-		logger(NULL, MESHLINK_ERROR, "No name given!\n");
-		meshlink_errno = MESHLINK_EINVAL;
-		return NULL;
-	};
-
-	if(!check_id(name)) {
+	if(name && !check_id(name)) {
 		logger(NULL, MESHLINK_ERROR, "Invalid name given!\n");
 		meshlink_errno = MESHLINK_EINVAL;
 		return NULL;
@@ -1214,7 +1169,7 @@ meshlink_open_params_t *meshlink_open_params_init(const char *confbase, const ch
 	meshlink_open_params_t *params = xzalloc(sizeof * params);
 
 	params->confbase = xstrdup(confbase);
-	params->name = xstrdup(name);
+	params->name = name ? xstrdup(name) : NULL;
 	params->appname = xstrdup(appname);
 	params->devclass = devclass;
 	params->netns = -1;
@@ -1387,6 +1342,36 @@ meshlink_handle_t *meshlink_open_encrypted(const char *confbase, const char *nam
 }
 
 meshlink_handle_t *meshlink_open_ephemeral(const char *name, const char *appname, dev_class_t devclass) {
+	if(!name) {
+		logger(NULL, MESHLINK_ERROR, "No name given!\n");
+		meshlink_errno = MESHLINK_EINVAL;
+		return NULL;
+	}
+
+	if(!check_id(name)) {
+		logger(NULL, MESHLINK_ERROR, "Invalid name given!\n");
+		meshlink_errno = MESHLINK_EINVAL;
+		return NULL;
+	}
+
+	if(!appname || !*appname) {
+		logger(NULL, MESHLINK_ERROR, "No appname given!\n");
+		meshlink_errno = MESHLINK_EINVAL;
+		return NULL;
+	}
+
+	if(strchr(appname, ' ')) {
+		logger(NULL, MESHLINK_ERROR, "Invalid appname given!\n");
+		meshlink_errno = MESHLINK_EINVAL;
+		return NULL;
+	}
+
+	if(devclass < 0 || devclass >= DEV_CLASS_COUNT) {
+		logger(NULL, MESHLINK_ERROR, "Invalid devclass given!\n");
+		meshlink_errno = MESHLINK_EINVAL;
+		return NULL;
+	}
+
 	/* Create a temporary struct on the stack, to avoid allocating and freeing one. */
 	meshlink_open_params_t params;
 	memset(&params, 0, sizeof(params));
@@ -1400,11 +1385,9 @@ meshlink_handle_t *meshlink_open_ephemeral(const char *name, const char *appname
 }
 
 meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
-	// Validate arguments provided by the application
-	bool usingname = false;
-
 	logger(NULL, MESHLINK_DEBUG, "meshlink_open called\n");
 
+	// Validate arguments provided by the application
 	if(!params->appname || !*params->appname) {
 		logger(NULL, MESHLINK_ERROR, "No appname given!\n");
 		meshlink_errno = MESHLINK_EINVAL;
@@ -1417,18 +1400,10 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 		return NULL;
 	}
 
-	if(!params->name || !*params->name) {
-		logger(NULL, MESHLINK_ERROR, "No name given!\n");
-		//return NULL;
-	} else { //check name only if there is a name != NULL
-
-		if(!check_id(params->name)) {
-			logger(NULL, MESHLINK_ERROR, "Invalid name given!\n");
-			meshlink_errno = MESHLINK_EINVAL;
-			return NULL;
-		} else {
-			usingname = true;
-		}
+	if(params->name && !check_id(params->name)) {
+		logger(NULL, MESHLINK_ERROR, "Invalid name given!\n");
+		meshlink_errno = MESHLINK_EINVAL;
+		return NULL;
 	}
 
 	if(params->devclass < 0 || params->devclass >= DEV_CLASS_COUNT) {
@@ -1467,9 +1442,7 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 
 	memcpy(mesh->dev_class_traits, default_class_traits, sizeof(default_class_traits));
 
-	if(usingname) {
-		mesh->name = xstrdup(params->name);
-	}
+	mesh->name = params->name ? xstrdup(params->name) : NULL;
 
 	// Hash the key
 	if(params->key) {
@@ -1504,6 +1477,13 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 	// If no configuration exists yet, create it.
 
 	if(!meshlink_confbase_exists(mesh)) {
+		if(!mesh->name) {
+			logger(NULL, MESHLINK_ERROR, "No configuration files found!\n");
+			meshlink_close(mesh);
+			meshlink_errno = MESHLINK_ESTORAGE;
+			return NULL;
+		}
+
 		if(!meshlink_setup(mesh)) {
 			logger(NULL, MESHLINK_ERROR, "Cannot create initial configuration\n");
 			meshlink_close(mesh);
@@ -1673,6 +1653,7 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 	}
 
 	init_outgoings(mesh);
+	init_adns(mesh);
 
 	// Start the main thread
 
@@ -1743,6 +1724,7 @@ void meshlink_stop(meshlink_handle_t *mesh) {
 		}
 	}
 
+	exit_adns(mesh);
 	exit_outgoings(mesh);
 
 	// Ensure we are considered unreachable
@@ -1968,7 +1950,7 @@ void meshlink_set_error_cb(struct meshlink_handle *mesh, meshlink_error_cb_t cb)
 static bool prepare_packet(meshlink_handle_t *mesh, meshlink_node_t *destination, const void *data, size_t len, vpn_packet_t *packet) {
 	meshlink_packethdr_t *hdr;
 
-	if(len >= MAXSIZE - sizeof(*hdr)) {
+	if(len > MAXSIZE - sizeof(*hdr)) {
 		meshlink_errno = MESHLINK_EINVAL;
 		return false;
 	}
@@ -1990,8 +1972,8 @@ static bool prepare_packet(meshlink_handle_t *mesh, meshlink_node_t *destination
 	memset(hdr, 0, sizeof(*hdr));
 	// leave the last byte as 0 to make sure strings are always
 	// null-terminated if they are longer than the buffer
-	strncpy((char *)hdr->destination, destination->name, (sizeof(hdr)->destination) - 1);
-	strncpy((char *)hdr->source, mesh->self->name, (sizeof(hdr)->source) - 1);
+	strncpy((char *)hdr->destination, destination->name, sizeof(hdr->destination) - 1);
+	strncpy((char *)hdr->source, mesh->self->name, sizeof(hdr->source) - 1);
 
 	memcpy(packet->data + sizeof(*hdr), data, len);
 
@@ -2041,6 +2023,7 @@ bool meshlink_send(meshlink_handle_t *mesh, meshlink_node_t *destination, const 
 
 	if(!prepare_packet(mesh, destination, data, len, packet)) {
 		free(packet);
+		return false;
 	}
 
 	// Queue it
@@ -2442,13 +2425,20 @@ bool meshlink_set_canonical_address(meshlink_handle_t *mesh, meshlink_node_t *no
 	}
 
 	if(!is_valid_hostname(address)) {
-		logger(mesh, MESHLINK_DEBUG, "Invalid character in address: %s\n", address);
+		logger(mesh, MESHLINK_DEBUG, "Invalid character in address: %s", address);
 		meshlink_errno = MESHLINK_EINVAL;
 		return false;
 	}
 
+	if((node_t *)node != mesh->self && !port) {
+		logger(mesh, MESHLINK_DEBUG, "Missing port number!");
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+
+	}
+
 	if(port && !is_valid_port(port)) {
-		logger(mesh, MESHLINK_DEBUG, "Invalid character in port: %s\n", address);
+		logger(mesh, MESHLINK_DEBUG, "Invalid character in port: %s", address);
 		meshlink_errno = MESHLINK_EINVAL;
 		return false;
 	}
@@ -2892,7 +2882,7 @@ bool meshlink_join(meshlink_handle_t *mesh, const char *invitation) {
 		}
 
 		// Connect to the meshlink daemon mentioned in the URL.
-		struct addrinfo *ai = str2addrinfo(address, port, SOCK_STREAM);
+		struct addrinfo *ai = adns_blocking_request(mesh, xstrdup(address), xstrdup(port), 5);
 
 		if(ai) {
 			for(struct addrinfo *aip = ai; aip; aip = aip->ai_next) {
@@ -3060,7 +3050,15 @@ char *meshlink_export(meshlink_handle_t *mesh) {
 	packmsg_add_int32(&out, mesh->self->devclass);
 	packmsg_add_bool(&out, mesh->self->status.blacklisted);
 	packmsg_add_bin(&out, ecdsa_get_public_key(mesh->private_key), 32);
-	packmsg_add_str(&out, mesh->self->canonical_address ? mesh->self->canonical_address : "");
+
+	if(mesh->self->canonical_address && !strchr(mesh->self->canonical_address, ' ')) {
+		char *canonical_address = NULL;
+		xasprintf(&canonical_address, "%s %s", mesh->self->canonical_address, mesh->myport);
+		packmsg_add_str(&out, canonical_address);
+		free(canonical_address);
+	} else {
+		packmsg_add_str(&out, mesh->self->canonical_address ? mesh->self->canonical_address : "");
+	}
 
 	uint32_t count = 0;
 
@@ -3469,6 +3467,15 @@ static void aio_signal(meshlink_handle_t *mesh, meshlink_channel_t *channel, mes
 	}
 }
 
+static void aio_abort(meshlink_handle_t *mesh, meshlink_channel_t *channel, meshlink_aio_buffer_t **aio) {
+	while(*aio) {
+		meshlink_aio_buffer_t *next = (*aio)->next;
+		aio_signal(mesh, channel, *aio);
+		free(*aio);
+		*aio = next;
+	}
+}
+
 static ssize_t channel_recv(struct utcp_connection *connection, const void *data, size_t len) {
 	meshlink_channel_t *channel = connection->priv;
 
@@ -3488,6 +3495,12 @@ static ssize_t channel_recv(struct utcp_connection *connection, const void *data
 	size_t left = len;
 
 	while(channel->aio_receive) {
+		if(!len) {
+			/* This receive callback signalled an error, abort all outstanding AIO buffers. */
+			aio_abort(mesh, channel, &channel->aio_receive);
+			break;
+		}
+
 		meshlink_aio_buffer_t *aio = channel->aio_receive;
 		size_t todo = aio->len - aio->done;
 
@@ -3500,12 +3513,21 @@ static ssize_t channel_recv(struct utcp_connection *connection, const void *data
 		} else {
 			ssize_t result = write(aio->fd, p, todo);
 
-			if(result > 0) {
-				todo = result;
+			if(result <= 0) {
+				/* Writing to fd failed, cancel just this AIO buffer. */
+				logger(mesh, MESHLINK_ERROR, "Writing to AIO fd %d failed: %s", aio->fd, strerror(errno));
+				channel->aio_receive = aio->next;
+				aio_signal(mesh, channel, aio);
+				free(aio);
+				continue;
 			}
+
+			todo = result;
 		}
 
 		aio->done += todo;
+		p += todo;
+		left -= todo;
 
 		if(aio->done == aio->len) {
 			channel->aio_receive = aio->next;
@@ -3513,10 +3535,7 @@ static ssize_t channel_recv(struct utcp_connection *connection, const void *data
 			free(aio);
 		}
 
-		p += todo;
-		left -= todo;
-
-		if(!left && len) {
+		if(!left) {
 			return len;
 		}
 	}
@@ -3549,6 +3568,17 @@ static void channel_accept(struct utcp_connection *utcp_connection, uint16_t por
 		utcp_accept(utcp_connection, channel_recv, channel);
 	} else {
 		free(channel);
+	}
+}
+
+static void channel_retransmit(struct utcp_connection *utcp_connection) {
+	node_t *n = utcp_connection->utcp->priv;
+	meshlink_handle_t *mesh = n->mesh;
+
+	if(n->mtuprobes == 31) {
+		timeout_set(&mesh->loop, &n->mtutimeout, &(struct timespec) {
+			0, 0
+		});
 	}
 }
 
@@ -3592,56 +3622,78 @@ static void channel_poll(struct utcp_connection *connection, size_t len) {
 
 	node_t *n = channel->node;
 	meshlink_handle_t *mesh = n->mesh;
-	meshlink_aio_buffer_t *aio = channel->aio_send;
 
-	if(aio) {
-		/* We at least one AIO buffer. Send as much as possible form the first buffer. */
-		size_t left = aio->len - aio->done;
+	while(channel->aio_send) {
+		if(!len) {
+			/* This poll callback signalled an error, abort all outstanding AIO buffers. */
+			aio_abort(mesh, channel, &channel->aio_send);
+			break;
+		}
+
+		/* We have at least one AIO buffer. Send as much as possible from the buffers. */
+		meshlink_aio_buffer_t *aio = channel->aio_send;
+		size_t todo = aio->len - aio->done;
 		ssize_t sent;
 
-		if(len > left) {
-			len = left;
+		if(todo > len) {
+			todo = len;
 		}
 
 		if(aio->data) {
-			sent = utcp_send(connection, (char *)aio->data + aio->done, len);
+			sent = utcp_send(connection, (char *)aio->data + aio->done, todo);
 		} else {
-			char buf[65536];
-			size_t todo = utcp_get_sndbuf_free(connection);
-
-			if(todo > left) {
-				todo = left;
-			}
-
-			if(todo > sizeof(buf)) {
-				todo = sizeof(buf);
-			}
-
+			char buf[todo];
 			ssize_t result = read(aio->fd, buf, todo);
 
 			if(result > 0) {
-				sent = utcp_send(connection, buf, result);
+				todo = result;
+				sent = utcp_send(connection, buf, todo);
 			} else {
-				sent = result;
+				/* Reading from fd failed, cancel just this AIO buffer. */
+				if(result != 0) {
+					logger(mesh, MESHLINK_ERROR, "Reading from AIO fd %d failed: %s", aio->fd, strerror(errno));
+				}
+
+				channel->aio_send = aio->next;
+				aio_signal(mesh, channel, aio);
+				free(aio);
+				aio = channel->aio_send;
+				continue;
 			}
 		}
 
-		if(sent >= 0) {
-			aio->done += sent;
+		if(sent != (ssize_t)todo) {
+			/* We should never get a partial send at this point */
+			assert(sent < 0);
+
+			/* Sending failed, abort all outstanding AIO buffers and send a poll callback. */
+			aio_abort(mesh, channel, &channel->aio_send);
+			len = 0;
+			break;
 		}
 
-		/* If the buffer is now completely sent, call the callback and dispose of it. */
-		if(aio->done >= aio->len) {
-			channel->aio_send = aio->next;
-			aio_signal(mesh, channel, aio);
-			free(aio);
+		aio->done += sent;
+		len -= sent;
+
+		/* If we didn't finish this buffer, exit early. */
+		if(aio->done < aio->len) {
+			return;
 		}
+
+		/* Signal completion of this buffer, and go to the next one. */
+		channel->aio_send = aio->next;
+		aio_signal(mesh, channel, aio);
+		free(aio);
+
+		if(!len) {
+			return;
+		}
+	}
+
+	if(channel->poll_cb) {
+		channel->poll_cb(mesh, channel, len);
 	} else {
-		if(channel->poll_cb) {
-			channel->poll_cb(mesh, channel, len);
-		} else {
-			utcp_set_poll_cb(connection, NULL);
-		}
+		utcp_set_poll_cb(connection, NULL);
 	}
 }
 
@@ -3671,6 +3723,7 @@ void meshlink_set_channel_accept_cb(meshlink_handle_t *mesh, meshlink_channel_ac
 		if(!n->utcp && n != mesh->self) {
 			n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, n);
 			utcp_set_mtu(n->utcp, n->mtu - sizeof(meshlink_packethdr_t));
+			utcp_set_retransmit_cb(n->utcp, channel_retransmit);
 		}
 	}
 
@@ -3720,6 +3773,7 @@ meshlink_channel_t *meshlink_channel_open_ex(meshlink_handle_t *mesh, meshlink_n
 	if(!n->utcp) {
 		n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, n);
 		utcp_set_mtu(n->utcp, n->mtu - sizeof(meshlink_packethdr_t));
+		utcp_set_retransmit_cb(n->utcp, channel_retransmit);
 		mesh->receive_cb = channel_receive;
 
 		if(!n->utcp) {
@@ -3783,17 +3837,8 @@ void meshlink_channel_close(meshlink_handle_t *mesh, meshlink_channel_t *channel
 	utcp_close(channel->c);
 
 	/* Clean up any outstanding AIO buffers. */
-	for(meshlink_aio_buffer_t *aio = channel->aio_send, *next; aio; aio = next) {
-		next = aio->next;
-		aio_signal(mesh, channel, aio);
-		free(aio);
-	}
-
-	for(meshlink_aio_buffer_t *aio = channel->aio_receive, *next; aio; aio = next) {
-		next = aio->next;
-		aio_signal(mesh, channel, aio);
-		free(aio);
-	}
+	aio_abort(mesh, channel, &channel->aio_send);
+	aio_abort(mesh, channel, &channel->aio_receive);
 
 	pthread_mutex_unlock(&mesh->mutex);
 
@@ -3870,7 +3915,11 @@ bool meshlink_channel_aio_send(meshlink_handle_t *mesh, meshlink_channel_t *chan
 
 	/* Ensure the poll callback is set, and call it right now to push data if possible */
 	utcp_set_poll_cb(channel->c, channel_poll);
-	channel_poll(channel->c, len);
+	size_t todo = MIN(len, utcp_get_rcvbuf_free(channel->c));
+
+	if(todo) {
+		channel_poll(channel->c, todo);
+	}
 
 	pthread_mutex_unlock(&mesh->mutex);
 
@@ -3907,7 +3956,11 @@ bool meshlink_channel_aio_fd_send(meshlink_handle_t *mesh, meshlink_channel_t *c
 
 	/* Ensure the poll callback is set, and call it right now to push data if possible */
 	utcp_set_poll_cb(channel->c, channel_poll);
-	channel_poll(channel->c, len);
+	size_t left = utcp_get_rcvbuf_free(channel->c);
+
+	if(left) {
+		channel_poll(channel->c, left);
+	}
 
 	pthread_mutex_unlock(&mesh->mutex);
 
@@ -4029,6 +4082,7 @@ void meshlink_set_node_channel_timeout(meshlink_handle_t *mesh, meshlink_node_t 
 	if(!n->utcp) {
 		n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, n);
 		utcp_set_mtu(n->utcp, n->mtu - sizeof(meshlink_packethdr_t));
+		utcp_set_retransmit_cb(n->utcp, channel_retransmit);
 	}
 
 	utcp_set_user_timeout(n->utcp, timeout);
@@ -4040,6 +4094,7 @@ void update_node_status(meshlink_handle_t *mesh, node_t *n) {
 	if(n->status.reachable && mesh->channel_accept_cb && !n->utcp) {
 		n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, n);
 		utcp_set_mtu(n->utcp, n->mtu - sizeof(meshlink_packethdr_t));
+		utcp_set_retransmit_cb(n->utcp, channel_retransmit);
 	}
 
 	if(mesh->node_status_cb) {
@@ -4162,6 +4217,15 @@ void meshlink_set_external_address_discovery_url(struct meshlink_handle *mesh, c
 	pthread_mutex_unlock(&mesh->mutex);
 }
 
+void meshlink_set_scheduling_granularity(struct meshlink_handle *mesh, long granularity) {
+	if(!mesh || granularity < 0) {
+		meshlink_errno = EINVAL;
+		return;
+	}
+
+	utcp_set_clock_granularity(granularity);
+}
+
 void handle_network_change(meshlink_handle_t *mesh, bool online) {
 	(void)online;
 
@@ -4189,6 +4253,7 @@ void call_error_cb(meshlink_handle_t *mesh, meshlink_errno_t meshlink_errno) {
 
 static void __attribute__((constructor)) meshlink_init(void) {
 	crypto_init();
+	utcp_set_clock_granularity(10000);
 }
 
 static void __attribute__((destructor)) meshlink_exit(void) {

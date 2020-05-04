@@ -19,6 +19,7 @@
 
 #include "system.h"
 
+#include "adns.h"
 #include "conf.h"
 #include "connection.h"
 #include "list.h"
@@ -240,25 +241,26 @@ static void free_known_addresses(struct addrinfo *ai) {
 	}
 }
 
-static struct addrinfo *get_canonical_address(node_t *n) {
-	if(!n->canonical_address) {
-		return false;
+static void canonical_resolve_cb(meshlink_handle_t *mesh, char *host, char *serv, void *data, struct addrinfo *ai, int err) {
+	(void)serv;
+	(void)err;
+	node_t *n = data;
+
+	free(host);
+	free(serv);
+
+	for list_each(outgoing_t, outgoing, mesh->outgoings) {
+		if(outgoing->node == n) {
+			if(outgoing->state == OUTGOING_CANONICAL_RESOLVE) {
+				outgoing->ai = ai;
+				outgoing->aip = NULL;
+				outgoing->state = OUTGOING_CANONICAL;
+				do_outgoing_connection(mesh, outgoing);
+			}
+
+			return;
+		}
 	}
-
-	char *address = xstrdup(n->canonical_address);
-	char *port = strchr(address, ' ');
-
-	if(!port) {
-		free(address);
-		return false;
-	}
-
-	*port++ = 0;
-
-	struct addrinfo *ai = str2addrinfo(address, port, SOCK_STREAM);
-	free(address);
-
-	return ai;
 }
 
 static bool get_next_outgoing_address(meshlink_handle_t *mesh, outgoing_t *outgoing) {
@@ -268,12 +270,34 @@ static bool get_next_outgoing_address(meshlink_handle_t *mesh, outgoing_t *outgo
 
 	if(outgoing->state == OUTGOING_START) {
 		start = true;
-		outgoing->state = OUTGOING_CANONICAL;
+		outgoing->state = OUTGOING_CANONICAL_RESOLVE;
+	}
+
+	if(outgoing->state == OUTGOING_CANONICAL_RESOLVE) {
+		node_t *n = outgoing->node;
+
+		if(n->canonical_address) {
+			char *address = xstrdup(n->canonical_address);
+			char *port = strchr(address, ' ');
+
+			if(port) {
+				*port++ = 0;
+				port = xstrdup(port);
+				adns_queue(mesh, address, port, canonical_resolve_cb, outgoing->node, 2);
+				return false;
+			} else {
+				logger(mesh, MESHLINK_ERROR, "Canonical address for %s is missing port number", n->name);
+				free(address);
+				outgoing->state = OUTGOING_RECENT;
+			}
+
+		} else {
+			outgoing->state = OUTGOING_RECENT;
+		}
 	}
 
 	if(outgoing->state == OUTGOING_CANONICAL) {
 		if(!outgoing->aip) {
-			outgoing->ai = get_canonical_address(outgoing->node);
 			outgoing->aip = outgoing->ai;
 		} else {
 			outgoing->aip = outgoing->aip->ai_next;
@@ -283,7 +307,10 @@ static bool get_next_outgoing_address(meshlink_handle_t *mesh, outgoing_t *outgo
 			return true;
 		}
 
-		freeaddrinfo(outgoing->ai);
+		if(outgoing->ai) {
+			freeaddrinfo(outgoing->ai);
+		}
+
 		outgoing->ai = NULL;
 		outgoing->aip = NULL;
 		outgoing->state = OUTGOING_RECENT;
@@ -333,13 +360,12 @@ static bool get_next_outgoing_address(meshlink_handle_t *mesh, outgoing_t *outgo
 }
 
 void do_outgoing_connection(meshlink_handle_t *mesh, outgoing_t *outgoing) {
-	struct addrinfo *proxyai = NULL;
-	int result;
-
 begin:
 
 	if(!get_next_outgoing_address(mesh, outgoing)) {
-		if(outgoing->state == OUTGOING_NO_KNOWN_ADDRESSES) {
+		if(outgoing->state == OUTGOING_CANONICAL_RESOLVE) {
+			/* We are waiting for a callback from the ADNS thread */
+		} else if(outgoing->state == OUTGOING_NO_KNOWN_ADDRESSES) {
 			logger(mesh, MESHLINK_ERROR, "No known addresses for %s", outgoing->node->name);
 		} else {
 			logger(mesh, MESHLINK_ERROR, "Could not set up a meta connection to %s", outgoing->node->name);
@@ -354,35 +380,26 @@ begin:
 
 	memcpy(&c->address, outgoing->aip->ai_addr, outgoing->aip->ai_addrlen);
 
-	char *hostname = sockaddr2hostname(&c->address);
-
-	logger(mesh, MESHLINK_INFO, "Trying to connect to %s at %s", outgoing->node->name, hostname);
-
-	if(!mesh->proxytype) {
-		c->socket = socket(c->address.sa.sa_family, SOCK_STREAM, IPPROTO_TCP);
-		configure_tcp(c);
-	} else {
-		proxyai = str2addrinfo(mesh->proxyhost, mesh->proxyport, SOCK_STREAM);
-
-		if(!proxyai) {
-			free_connection(c);
-			free(hostname);
-			goto begin;
-		}
-
-		logger(mesh, MESHLINK_INFO, "Using proxy at %s port %s", mesh->proxyhost, mesh->proxyport);
-		c->socket = socket(proxyai->ai_family, SOCK_STREAM, IPPROTO_TCP);
-		configure_tcp(c);
+	if(mesh->log_level <= MESHLINK_INFO) {
+		char *hostname = sockaddr2hostname(&c->address);
+		logger(mesh, MESHLINK_INFO, "Trying to connect to %s at %s", outgoing->node->name, hostname);
+		free(hostname);
 	}
 
+	c->socket = socket(c->address.sa.sa_family, SOCK_STREAM, IPPROTO_TCP);
+
 	if(c->socket == -1) {
-		logger(mesh, MESHLINK_ERROR, "Creating socket for %s at %s failed: %s", c->name, hostname, sockstrerror(sockerrno));
+		if(mesh->log_level <= MESHLINK_ERROR) {
+			char *hostname = sockaddr2hostname(&c->address);
+			logger(mesh, MESHLINK_ERROR, "Creating socket for %s at %s failed: %s", c->name, hostname, sockstrerror(sockerrno));
+			free(hostname);
+		}
+
 		free_connection(c);
-		free(hostname);
 		goto begin;
 	}
 
-	free(hostname);
+	configure_tcp(c);
 
 #ifdef FD_CLOEXEC
 	fcntl(c->socket, F_SETFD, FD_CLOEXEC);
@@ -399,17 +416,16 @@ begin:
 
 	/* Connect */
 
-	if(!mesh->proxytype) {
-		result = connect(c->socket, &c->address.sa, SALEN(c->address.sa));
-	} else {
-		result = connect(c->socket, proxyai->ai_addr, proxyai->ai_addrlen);
-		freeaddrinfo(proxyai);
-	}
+	int result = connect(c->socket, &c->address.sa, SALEN(c->address.sa));
 
 	if(result == -1 && !sockinprogress(sockerrno)) {
-		logger(mesh, MESHLINK_ERROR, "Could not connect to %s: %s", outgoing->node->name, sockstrerror(sockerrno));
-		free_connection(c);
+		if(mesh->log_level <= MESHLINK_ERROR) {
+			char *hostname = sockaddr2hostname(&c->address);
+			logger(mesh, MESHLINK_ERROR, "Could not connect to %s: %s", outgoing->node->name, sockstrerror(sockerrno));
+			free(hostname);
+		}
 
+		free_connection(c);
 		goto begin;
 	}
 

@@ -151,6 +151,7 @@ extern const char *meshlink_strerror(meshlink_errno_t err) __attribute__((__warn
  *                  After the function returns, the application is free to overwrite or free @a confbase.
  *  @param name     The name which this instance of the application will use in the mesh.
  *                  After the function returns, the application is free to overwrite or free @a name.
+ *                  If NULL is passed as the name, the name used last time the MeshLink instance was initialized is used.
  *  @param appname  The application name which will be used in the mesh.
  *                  After the function returns, the application is free to overwrite or free @a name.
  *  @param devclass The device class which will be used in the mesh.
@@ -228,6 +229,7 @@ extern struct meshlink_handle *meshlink_open_ex(const meshlink_open_params_t *pa
  *                  After the function returns, the application is free to overwrite or free @a confbase.
  *  @param name     The name which this instance of the application will use in the mesh.
  *                  After the function returns, the application is free to overwrite or free @a name.
+ *                  If NULL is passed as the name, the name used last time the MeshLink instance was initialized is used.
  *  @param appname  The application name which will be used in the mesh.
  *                  After the function returns, the application is free to overwrite or free @a name.
  *  @param devclass The device class which will be used in the mesh.
@@ -257,6 +259,7 @@ extern struct meshlink_handle *meshlink_open(const char *confbase, const char *n
  *                  After the function returns, the application is free to overwrite or free @a confbase.
  *  @param name     The name which this instance of the application will use in the mesh.
  *                  After the function returns, the application is free to overwrite or free @a name.
+ *                  If NULL is passed as the name, the name used last time the MeshLink instance was initialized is used.
  *  @param appname  The application name which will be used in the mesh.
  *                  After the function returns, the application is free to overwrite or free @a name.
  *  @param devclass The device class which will be used in the mesh.
@@ -1607,6 +1610,18 @@ extern void meshlink_set_inviter_commits_first(struct meshlink_handle *mesh, boo
  *  @param url   The URL to use for external address queries, or NULL to revert back to the default URL.
  */
 extern void meshlink_set_external_address_discovery_url(struct meshlink_handle *mesh, const char *url);
+
+/// Set the scheduling granularity of the application
+/** This should be set to the effective scheduling granularity for the application.
+ *  This depends on the scheduling granularity of the operating system, the application's
+ *  process priority and whether it is running as realtime or not.
+ *  The default value is 10000 (10 milliseconds).
+ *
+ *  \memberof meshlink_handle
+ *  @param mesh         A handle which represents an instance of MeshLink.
+ *  @param granularity  The scheduling granularity of the application in microseconds.
+ */
+extern void meshlink_set_scheduling_granularity(struct meshlink_handle *mesh, long granularity);
 
 #ifdef __cplusplus
 }

@@ -158,7 +158,7 @@ static void check_reachability(meshlink_handle_t *mesh) {
 				n->status.validkey = false;
 				sptps_stop(&n->sptps);
 				n->status.waitingforkey = false;
-				n->last_req_key = 0;
+				n->last_req_key = -3600;
 
 				n->status.udp_confirmed = false;
 				n->maxmtu = MTU;
@@ -196,7 +196,7 @@ static void check_reachability(meshlink_handle_t *mesh) {
 			n->status.validkey = false;
 			sptps_stop(&n->sptps);
 			n->status.waitingforkey = false;
-			n->last_req_key = 0;
+			n->last_req_key = -3600;
 
 			n->status.udp_confirmed = false;
 			n->maxmtu = MTU;
@@ -228,7 +228,7 @@ static void check_reachability(meshlink_handle_t *mesh) {
 		if(!reachable) {
 			mesh->last_unreachable = mesh->loop.now.tv_sec;
 
-			if(mesh->threadstarted) {
+			if(mesh->threadstarted && mesh->periodictimer.cb) {
 				timeout_set(&mesh->loop, &mesh->periodictimer, &(struct timespec) {
 					0, prng(mesh, TIMER_FUDGE)
 				});

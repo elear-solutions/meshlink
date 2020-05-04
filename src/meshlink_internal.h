@@ -57,14 +57,6 @@ typedef struct listen_socket_t {
 	sockaddr_t broadcast_sa;
 } listen_socket_t;
 
-typedef enum proxytype_t {
-	PROXY_NONE = 0,
-	PROXY_SOCKS4,
-	PROXY_SOCKS4A,
-	PROXY_SOCKS5,
-	PROXY_HTTP,
-} proxytype_t;
-
 struct meshlink_open_params {
 	char *confbase;
 	char *appname;
@@ -193,12 +185,12 @@ struct meshlink_handle {
 	char *catta_servicetype;
 	unsigned int catta_interfaces;
 
-	// Proxy configuration, currently not exposed.
-	char *proxyhost;
-	char *proxyport;
-	char *proxyuser;
-	char *proxypass;
-	proxytype_t proxytype;
+	// ADNS
+	pthread_t adns_thread;
+	pthread_cond_t adns_cond;
+	meshlink_queue_t adns_queue;
+	meshlink_queue_t adns_done_queue;
+	signal_t adns_signal;
 };
 
 /// A handle for a MeshLink node.
