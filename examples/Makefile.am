@@ -1,4 +1,4 @@
-noinst_PROGRAMS = meshlinkapp chat chatpp manynodes channels groupchat
+noinst_PROGRAMS = meshlinkapp chat manynodes channels groupchat
 
 AM_CPPFLAGS = $(PTHREAD_CFLAGS) -I${top_srcdir}/src -iquote. -Wall
 AM_LDFLAGS = $(PTHREAD_LIBS)
@@ -9,9 +9,9 @@ meshlinkapp_LDADD = ${top_builddir}/src/libmeshlink.la ${top_builddir}/catta/src
 chat_SOURCES = chat.c
 chat_LDADD = ${top_builddir}/src/libmeshlink.la ${top_builddir}/catta/src/libcatta.la
 
-noinst_PROGRAMS += chatpp
-chatpp_SOURCES = chatpp.cc
-chatpp_LDADD = ${top_builddir}/src/libmeshlink.la ${top_builddir}/catta/src/libcatta.la
+#noinst_PROGRAMS += chatpp
+#chatpp_SOURCES = chatpp.cc
+#chatpp_LDADD = ${top_builddir}/src/libmeshlink.la ${top_builddir}/catta/src/libcatta.la
 
 manynodes_SOURCES = manynodes.c
 manynodes_LDADD = ${top_builddir}/src/libmeshlink.la ${top_builddir}/catta/src/libcatta.la
