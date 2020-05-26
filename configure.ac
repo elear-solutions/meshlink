@@ -2,6 +2,8 @@ dnl Process this file with autoconf to produce a configure script.
 
 AC_PREREQ(2.61)
 AC_INIT([MeshLink], [0.1])
+DX_PS_FEATURE(OFF)
+DX_INIT_DOXYGEN([MeshLink], [$(top_srcdir)/Doxyfile])
 AM_INIT_AUTOMAKE([std-options subdir-objects nostdinc silent-rules -Wall])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_MACRO_DIR([m4])
@@ -73,6 +75,7 @@ AS_IF([test "x$enable_hardening" != "xno"],
    esac
    AX_CHECK_LINK_FLAG([-Wl,-z,relro], [LDFLAGS="$LDFLAGS -Wl,-z,relro"])
    AX_CHECK_LINK_FLAG([-Wl,-z,now], [LDFLAGS="$LDFLAGS -Wl,-z,now"])
+   AX_CHECK_COMPILE_FLAG([-Wextra -pedantic -Wreturn-type -Wold-style-definition -Wmissing-declarations -Wmissing-prototypes -Wstrict-prototypes -Wredundant-decls -Wshadow -Wbad-function-cast -Wwrite-strings -fdiagnostics-show-option -fstrict-aliasing -Wmissing-noreturn], [CPPFLAGS="$CPPFLAGS -Wextra -pedantic -Wreturn-type -Wold-style-definition -Wmissing-declarations -Wmissing-prototypes -Wstrict-prototypes -Wredundant-decls -Wshadow -Wbad-function-cast -Wwrite-strings -fdiagnostics-show-option -fstrict-aliasing -Wmissing-noreturn"])
   ]
 );
 
@@ -124,17 +127,9 @@ dnl Checks for typedefs, structures, and compiler characteristics.
 MeshLink_ATTRIBUTE(__malloc__)
 MeshLink_ATTRIBUTE(__warn_unused_result__)
 
-AC_CHECK_TYPES([socklen_t, struct addrinfo, struct sockaddr_in6], , ,
-  [#include "$srcdir/src/have.h"]
-)
-
-AC_CHECK_TYPES([struct sockaddr_storage], ,AC_MSG_ERROR([System must support struct sockaddr_storage.]),
-  [#include "$srcdir/src/have.h"]
-)
-
 dnl Checks for library functions.
 AC_TYPE_SIGNAL
-AC_CHECK_FUNCS([asprintf fchmod fork gettimeofday random select setns strdup usleep getifaddrs freeifaddrs],
+AC_CHECK_FUNCS([asprintf fchmod fork gettimeofday random pselect select setns strdup usleep getifaddrs freeifaddrs],
   [], [], [#include "$srcdir/src/have.h"]
 )
 
@@ -143,20 +138,12 @@ dnl Support for SunOS
 AC_CHECK_FUNC(socket, [], [
   AC_CHECK_LIB(socket, connect)
 ])
-AC_CHECK_FUNC(gethostbyname, [], [
-  AC_CHECK_LIB(nsl, gethostbyname)
-])
-
-AC_CHECK_DECLS([freeaddrinfo, gai_strerror, getaddrinfo, getnameinfo],
-  [], [], [#include "$srcdir/src/have.h"]
-)
 
 AC_CACHE_SAVE
 
 AC_CONFIG_FILES([
 	 Makefile
 	 src/Makefile
-	 doc/Makefile
 	 test/Makefile
 	 test/blackbox/Makefile
 	 test/blackbox/run_blackbox_tests/Makefile

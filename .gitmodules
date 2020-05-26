@@ -2,7 +2,3 @@
 	path = catta
 	url = https://github.com/elear-solutions/catta.git
 	branch = develop-twin
-[submodule "src/utcp"]
-	path = src/utcp
-	url = https://github.com/elear-solutions/utcp.git
-	branch = develop-twin
