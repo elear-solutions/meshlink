@@ -850,7 +850,7 @@ bool meshlink_add_address(struct meshlink_handle *mesh, const char *address) __a
 
 /// Try to discover the external address for the local node.
 /** This function performs tries to discover the local node's external address
- *  by contacting the meshlink.io server. If a reverse lookup of the address works,
+ *  by contacting the findmyip.getcoco.buzz server. If a reverse lookup of the address works,
  *  the FQDN associated with the address will be returned.
  *
  *  Please note that this is function only returns a single address,
@@ -874,7 +874,7 @@ char *meshlink_get_external_address(struct meshlink_handle *mesh) __attribute__(
 
 /// Try to discover the external address for the local node.
 /** This function performs tries to discover the local node's external address
- *  by contacting the meshlink.io server. If a reverse lookup of the address works,
+ *  by contacting the findmyip.getcoco.buzz server. If a reverse lookup of the address works,
  *  the FQDN associated with the address will be returned.
  *
  *  Please note that this is function only returns a single address,
@@ -1602,7 +1602,7 @@ void meshlink_set_inviter_commits_first(struct meshlink_handle *mesh, bool invit
 
 /// Set the URL used to discover the host's external address
 /** For generating invitation URLs, MeshLink can look up the externally visible address of the local node.
- *  It does so by querying an external service. By default, this is http://meshlink.io/host.cgi.
+ *  It does so by querying an external service. By default, this is http://findmyip.getcoco.buzz/host.cgi.
  *  Only URLs starting with http:// are supported.
  *
  *  \memberof meshlink_handle
