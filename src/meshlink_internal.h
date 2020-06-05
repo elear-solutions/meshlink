@@ -57,14 +57,6 @@ typedef struct listen_socket_t {
 	sockaddr_t broadcast_sa;
 } listen_socket_t;
 
-typedef enum proxytype_t {
-	PROXY_NONE = 0,
-	PROXY_SOCKS4,
-	PROXY_SOCKS4A,
-	PROXY_SOCKS5,
-	PROXY_HTTP,
-} proxytype_t;
-
 struct meshlink_open_params {
 	char *confbase;
 	char *appname;
@@ -99,6 +91,7 @@ struct meshlink_handle {
 	struct node_t *self;
 	meshlink_log_cb_t log_cb;
 	meshlink_log_level_t log_level;
+	void *packet;
 
 	// The most important network-related members come first
 	int reachable;
@@ -127,7 +120,6 @@ struct meshlink_handle {
 	int contradicting_del_edge;
 	int sleeptime;
 	time_t connection_burst_time;
-	time_t last_config_check;
 	time_t last_hard_try;
 	time_t last_unreachable;
 	timeout_t pingtimer;
@@ -193,12 +185,12 @@ struct meshlink_handle {
 	char *catta_servicetype;
 	unsigned int catta_interfaces;
 
-	// Proxy configuration, currently not exposed.
-	char *proxyhost;
-	char *proxyport;
-	char *proxyuser;
-	char *proxypass;
-	proxytype_t proxytype;
+	// ADNS
+	pthread_t adns_thread;
+	pthread_cond_t adns_cond;
+	meshlink_queue_t adns_queue;
+	meshlink_queue_t adns_done_queue;
+	signal_t adns_signal;
 };
 
 /// A handle for a MeshLink node.
@@ -231,6 +223,7 @@ typedef struct meshlink_aio_buffer {
 struct meshlink_channel {
 	struct node_t *node;
 	void *priv;
+	bool in_callback;
 
 	struct utcp_connection *c;
 	meshlink_aio_buffer_t *aio_send;
@@ -245,14 +238,14 @@ typedef struct meshlink_packethdr {
 	uint8_t source[16];
 } __attribute__((__packed__)) meshlink_packethdr_t;
 
-extern void meshlink_send_from_queue(event_loop_t *loop, void *mesh);
-extern void update_node_status(meshlink_handle_t *mesh, struct node_t *n);
-extern void update_node_pmtu(meshlink_handle_t *mesh, struct node_t *n);
+void meshlink_send_from_queue(event_loop_t *loop, void *mesh);
+void update_node_status(meshlink_handle_t *mesh, struct node_t *n);
+void update_node_pmtu(meshlink_handle_t *mesh, struct node_t *n);
 extern meshlink_log_level_t global_log_level;
 extern meshlink_log_cb_t global_log_cb;
-extern void handle_duplicate_node(meshlink_handle_t *mesh, struct node_t *n);
-extern void handle_network_change(meshlink_handle_t *mesh, bool online);
-extern void call_error_cb(meshlink_handle_t *mesh, meshlink_errno_t meshlink_errno);
+void handle_duplicate_node(meshlink_handle_t *mesh, struct node_t *n);
+void handle_network_change(meshlink_handle_t *mesh, bool online);
+void call_error_cb(meshlink_handle_t *mesh, meshlink_errno_t meshlink_errno);
 
 /// Per-instance PRNG
 static inline int prng(meshlink_handle_t *mesh, uint64_t max) {
@@ -260,6 +253,6 @@ static inline int prng(meshlink_handle_t *mesh, uint64_t max) {
 }
 
 /// Fudge value of ~0.1 seconds, in microseconds.
-static const unsigned int TIMER_FUDGE = 0x20000;
+static const unsigned int TIMER_FUDGE = 0x8000000;
 
 #endif

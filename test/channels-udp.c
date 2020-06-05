@@ -20,6 +20,7 @@ struct client {
 	meshlink_handle_t *mesh;
 	meshlink_channel_t *channel;
 	size_t received;
+	bool got_large_packet;
 };
 
 static void server_receive_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, const void *data, size_t len) {
@@ -52,10 +53,14 @@ static void client_receive_cb(meshlink_handle_t *mesh, meshlink_channel_t *chann
 	(void)data;
 
 	// We expect always the same amount of data from the server.
-	assert(len == 1000);
 	assert(mesh->priv);
 	struct client *client = mesh->priv;
+	assert(len == 512 || len == 65536);
 	client->received += len;
+
+	if(len == 65536) {
+		client->got_large_packet = true;
+	}
 }
 
 static void status_cb(meshlink_handle_t *mesh, meshlink_node_t *node, bool reachable) {
@@ -95,7 +100,7 @@ static bool accept_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, uint
 	return false;
 }
 
-int main() {
+int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_WARNING, log_cb);
 
 	// Open four new meshlink instance, the server and three peers.
@@ -135,9 +140,22 @@ int main() {
 		assert(clients[i].channel);
 	}
 
+	// Check that we can send up to 65535 bytes without errors
+
+	char large_data[65536] = "";
+
+	for(int i = 0; i < 3; i++) {
+		assert(meshlink_channel_send(server, channels[i], large_data, sizeof(large_data) + 1) == -1);
+		assert(meshlink_channel_send(server, channels[i], large_data, sizeof(large_data)) == sizeof(large_data));
+	}
+
+	// Assert that packets larger than 64 kiB are not allowed
+
+	assert(meshlink_channel_send(server, channels[0], large_data, 65537) == -1);
+
 	// Stream packets from server to clients for 5 seconds at 40 Mbps (1 kB * 500 Hz)
 
-	char data[1000];
+	char data[512];
 	memset(data, 'U', sizeof(data));
 
 	for(int j = 0; j < 2500; j++) {
@@ -165,8 +183,9 @@ int main() {
 	}
 
 	for(int i = 0; i < 3; i++) {
-		assert(clients[i].received >= 2400000);
-		assert(clients[i].received <= 2500000);
+		assert(clients[i].received >= 1000000);
+		assert(clients[i].received <= 1345536);
+		assert(clients[i].got_large_packet);
 	}
 
 	// Clean up.
