@@ -138,16 +138,22 @@ struct adns_blocking_info {
 	char *host;
 	char *serv;
 	struct addrinfo *ai;
+	int socktype;
 	bool done;
 };
 
-void *adns_blocking_handler(void *data) {
+static void *adns_blocking_handler(void *data) {
 	struct adns_blocking_info *info = data;
 
 	logger(info->mesh, MESHLINK_DEBUG, "Resolving %s port %s", info->host, info->serv);
 	devtool_adns_resolve_probe();
 
-	if(getaddrinfo(info->host, info->serv, NULL, &info->ai)) {
+	struct addrinfo hint = {
+		.ai_family = AF_UNSPEC,
+		.ai_socktype = info->socktype,
+	};
+
+	if(getaddrinfo(info->host, info->serv, &hint, &info->ai)) {
 		info->ai = NULL;
 	}
 
@@ -171,12 +177,13 @@ void *adns_blocking_handler(void *data) {
 	return NULL;
 }
 
-struct addrinfo *adns_blocking_request(meshlink_handle_t *mesh, char *host, char *serv, int timeout) {
+struct addrinfo *adns_blocking_request(meshlink_handle_t *mesh, char *host, char *serv, int socktype, int timeout) {
 	struct adns_blocking_info *info = xzalloc(sizeof(*info));
 
 	info->mesh = mesh;
 	info->host = host;
 	info->serv = serv;
+	info->socktype = socktype;
 
 	struct timespec deadline;
 	clock_gettime(CLOCK_REALTIME, &deadline);
