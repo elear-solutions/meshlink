@@ -41,6 +41,8 @@
 #include "devtools.h"
 #include "graph.h"
 
+#define MESH_VERSION "0.2.7"
+
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
 #endif
@@ -1417,7 +1419,7 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 		meshlink_errno = MESHLINK_EINVAL;
 		return NULL;
 	}
-
+logger(NULL, MESHLINK_ERROR, "Mesh_VERSION:" MESH_VERSION "\n");
 	meshlink_handle_t *mesh = xzalloc(sizeof(meshlink_handle_t));
 
 	if(params->confbase) {
