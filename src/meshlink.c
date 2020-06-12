@@ -1464,6 +1464,7 @@ logger(NULL, MESHLINK_ERROR, "Mesh_VERSION:" MESH_VERSION "\n");
 	assert(pthread_mutexattr_init(&attr) == 0);
 	assert(pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE) == 0);
 	assert(pthread_mutex_init(&mesh->mutex, &attr) == 0);
+	assert(pthread_cond_init(&mesh->cond, NULL) == 0);
 
 	assert(pthread_mutex_init(&mesh->discovery_mutex, NULL) == 0);
 	assert(pthread_cond_init(&mesh->discovery_cond, NULL) == 0);
