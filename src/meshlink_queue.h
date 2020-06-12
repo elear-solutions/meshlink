@@ -58,7 +58,11 @@ static inline __attribute__((__warn_unused_result__)) bool meshlink_queue_push(m
 
 	item->data = data;
 	item->next = NULL;
-	assert(pthread_mutex_lock(&queue->mutex) == 0);
+	errno = 0;
+	if(pthread_mutex_lock(&queue->mutex) != 0) {
+    fprintf(stderr, "pthread_mutex_lock failed: %s\n", strerror(errno));
+    abort();
+	}
 
 	if(!queue->tail) {
 		queue->head = queue->tail = item;
