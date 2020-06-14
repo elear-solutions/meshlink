@@ -41,7 +41,7 @@
 #include "devtools.h"
 #include "graph.h"
 
-#define MESH_VERSION "0.2.11"
+#define MESH_VERSION "0.2.13"
 
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
