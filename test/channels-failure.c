@@ -43,7 +43,10 @@ static void receive_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, con
 	set_sync_flag(&receive_flag, true);
 }
 
-int main() {
+int main(void) {
+	init_sync_flag(&poll_flag);
+	init_sync_flag(&receive_flag);
+
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
 
 	// Open two meshlink instances.

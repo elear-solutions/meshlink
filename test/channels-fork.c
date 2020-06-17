@@ -91,7 +91,7 @@ static int main1(int rfd, int wfd) {
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
 
 	assert(meshlink_destroy("channels_fork_conf.1"));
-	meshlink_handle_t *mesh = meshlink_open("channels_fork_conf.1", "foo", "channels", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *mesh = meshlink_open("channels_fork_conf.1", "foo", "channels-fork", DEV_CLASS_BACKBONE);
 	assert(mesh);
 
 	meshlink_enable_discovery(mesh, false);
@@ -147,7 +147,7 @@ static int main2(int rfd, int wfd) {
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
 
 	assert(meshlink_destroy("channels_fork_conf.2"));
-	meshlink_handle_t *mesh = meshlink_open("channels_fork_conf.2", "bar", "channels", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *mesh = meshlink_open("channels_fork_conf.2", "bar", "channels-fork", DEV_CLASS_BACKBONE);
 	assert(mesh);
 
 	meshlink_enable_discovery(mesh, false);
@@ -186,11 +186,15 @@ static void alarm_handler(int sig) {
 	assert(0);
 }
 
-int main() {
+int main(void) {
+	init_sync_flag(&bar_responded);
+	init_sync_flag(&foo_connected);
+	init_sync_flag(&foo_gone);
+
 	int fda[2], fdb[2];
 
-	assert(pipe2(fda, 0) != -1);
-	assert(pipe2(fdb, 0) != -1);
+	assert(pipe(fda) != -1);
+	assert(pipe(fdb) != -1);
 
 	if(!fork()) {
 		return main2(fdb[0], fda[1]);

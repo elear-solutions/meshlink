@@ -422,7 +422,7 @@ static bool add_listen_sockets(meshlink_handle_t *mesh) {
 		.ai_family = AF_UNSPEC,
 		.ai_socktype = SOCK_STREAM,
 		.ai_protocol = IPPROTO_TCP,
-		.ai_flags = AI_PASSIVE,
+		.ai_flags = AI_PASSIVE | AI_NUMERICSERV,
 	};
 
 	int err = getaddrinfo(NULL, mesh->myport, &hint, &ai);
@@ -521,7 +521,7 @@ static bool add_listen_sockets(meshlink_handle_t *mesh) {
 /*
   Configure node_t mesh->self and set up the local sockets (listen only)
 */
-bool setup_myself(meshlink_handle_t *mesh) {
+static bool setup_myself(meshlink_handle_t *mesh) {
 	/* Set some defaults */
 
 	mesh->maxtimeout = 900;
@@ -565,7 +565,6 @@ bool setup_myself(meshlink_handle_t *mesh) {
 
 	/* Done. */
 
-	mesh->last_config_check = mesh->loop.now.tv_sec;
 	mesh->last_unreachable = mesh->loop.now.tv_sec;
 
 	return true;

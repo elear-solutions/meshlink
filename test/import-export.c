@@ -12,9 +12,9 @@
 #include "meshlink.h"
 #include "utils.h"
 
-struct sync_flag bar_reachable;
+static struct sync_flag bar_reachable;
 
-void status_cb(meshlink_handle_t *mesh, meshlink_node_t *node, bool reachable) {
+static void status_cb(meshlink_handle_t *mesh, meshlink_node_t *node, bool reachable) {
 	(void)mesh;
 
 	if(reachable && !strcmp(node->name, "bar")) {
@@ -22,7 +22,9 @@ void status_cb(meshlink_handle_t *mesh, meshlink_node_t *node, bool reachable) {
 	}
 }
 
-int main() {
+int main(void) {
+	init_sync_flag(&bar_reachable);
+
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
 
 	// Open two new meshlink instance.

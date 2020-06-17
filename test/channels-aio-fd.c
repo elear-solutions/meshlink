@@ -7,7 +7,7 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/time.h>
+#include <time.h>
 #include <limits.h>
 
 #include "meshlink.h"
@@ -19,7 +19,7 @@ static const size_t nchannels = 4; // number of simultaneous channels
 struct aio_info {
 	int callbacks;
 	size_t size;
-	struct timeval tv;
+	struct timespec ts;
 	struct sync_flag flag;
 };
 
@@ -35,7 +35,7 @@ static void aio_fd_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, int 
 	(void)len;
 
 	struct aio_info *info = priv;
-	gettimeofday(&info->tv, NULL);
+	clock_gettime(CLOCK_MONOTONIC, &info->ts);
 	info->callbacks++;
 	info->size += len;
 	set_sync_flag(&info->flag, true);
@@ -65,10 +65,7 @@ static bool accept_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, uint
 	return true;
 }
 
-int main(int argc, char *argv[]) {
-	(void)argc;
-	(void)argv;
-
+int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_WARNING, log_cb);
 
 	// Prepare file
@@ -93,6 +90,11 @@ int main(int argc, char *argv[]) {
 	memset(out_infos, 0, sizeof(out_infos));
 
 	for(size_t i = 0; i < nchannels; i++) {
+		init_sync_flag(&in_infos[i].aio_infos[0].flag);
+		init_sync_flag(&in_infos[i].aio_infos[1].flag);
+		init_sync_flag(&out_infos[i].aio_infos[0].flag);
+		init_sync_flag(&out_infos[i].aio_infos[1].flag);
+
 		char filename[PATH_MAX];
 		snprintf(filename, sizeof(filename), "channels_aio_fd.out%d", (int)i);
 		in_infos[i].file = fopen(filename, "w");
@@ -168,8 +170,8 @@ int main(int argc, char *argv[]) {
 
 		// First batch of data should all be sent and received before the second batch
 		for(size_t j = 0; j < nchannels; j++) {
-			assert(timercmp(&out_infos[i].aio_infos[0].tv, &out_infos[j].aio_infos[1].tv, <=));
-			assert(timercmp(&in_infos[i].aio_infos[0].tv, &in_infos[j].aio_infos[1].tv, <=));
+			assert(timespec_lt(&out_infos[i].aio_infos[0].ts, &out_infos[j].aio_infos[1].ts));
+			assert(timespec_lt(&in_infos[i].aio_infos[0].ts, &in_infos[j].aio_infos[1].ts));
 		}
 
 		// Files should be identical

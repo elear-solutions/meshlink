@@ -79,7 +79,7 @@ static void poll_cb2(meshlink_handle_t *mesh, meshlink_channel_t *channel, size_
 	set_sync_flag(channel->priv, true);
 }
 
-int main() {
+int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
 
 	meshlink_handle_t *a, *b;
@@ -96,6 +96,7 @@ int main() {
 	assert(nb);
 
 	struct sync_flag channel_opened = {.flag = false};
+	init_sync_flag(&channel_opened);
 
 	meshlink_channel_t *channel = meshlink_channel_open(a, nb, 7, a_receive_cb, &channel_opened, 0);
 	assert(channel);
@@ -136,6 +137,7 @@ int main() {
 	// Send a message to b
 
 	struct sync_flag channel_closed = {.flag = false};
+	init_sync_flag(&channel_closed);
 	channel->priv = &channel_closed;
 
 	assert(meshlink_channel_send(a, channel, "Hello", 5) == 5);
@@ -146,6 +148,7 @@ int main() {
 	// Try to create a second channel
 
 	struct sync_flag channel_polled = {.flag = false};
+	init_sync_flag(&channel_polled);
 
 	meshlink_channel_t *channel2 = meshlink_channel_open(a, nb, 7, a_receive_cb, &channel_polled, 0);
 	assert(channel2);

@@ -20,10 +20,12 @@
 #include "system.h"
 #include <pthread.h>
 
+#include "adns.h"
 #include "crypto.h"
 #include "ecdsagen.h"
 #include "logger.h"
 #include "meshlink_internal.h"
+#include "net.h"
 #include "netutl.h"
 #include "node.h"
 #include "submesh.h"
@@ -152,7 +154,7 @@ static int socket_in_netns(int domain, int type, int protocol, int netns) {
 	pthread_t thr;
 
 	if(pthread_create(&thr, NULL, socket_in_netns_thread, &params) == 0) {
-		pthread_join(thr, NULL);
+		assert(pthread_join(thr, NULL) == 0);
 	}
 
 	return params.fd;
@@ -165,12 +167,13 @@ static int socket_in_netns(int domain, int type, int protocol, int netns) {
 // Find out what local address a socket would use if we connect to the given address.
 // We do this using connect() on a UDP socket, so the kernel has to resolve the address
 // of both endpoints, but this will actually not send any UDP packet.
-static bool getlocaladdr(char *destaddr, sockaddr_t *sa, socklen_t *salen, int netns) {
+static bool getlocaladdr(const char *destaddr, sockaddr_t *sa, socklen_t *salen, int netns) {
 	struct addrinfo *rai = NULL;
 	const struct addrinfo hint = {
 		.ai_family = AF_UNSPEC,
 		.ai_socktype = SOCK_DGRAM,
 		.ai_protocol = IPPROTO_UDP,
+		.ai_flags = AI_NUMERICHOST | AI_NUMERICSERV,
 	};
 
 	if(getaddrinfo(destaddr, "80", &hint, &rai) || !rai) {
@@ -201,7 +204,7 @@ static bool getlocaladdr(char *destaddr, sockaddr_t *sa, socklen_t *salen, int n
 	return true;
 }
 
-static bool getlocaladdrname(char *destaddr, char *host, socklen_t hostlen, int netns) {
+static bool getlocaladdrname(const char *destaddr, char *host, socklen_t hostlen, int netns) {
 	sockaddr_t sa;
 	socklen_t salen = sizeof(sa);
 
@@ -254,7 +257,7 @@ char *meshlink_get_external_address_for_family(meshlink_handle_t *mesh, int fami
 	}
 
 	logger(mesh, MESHLINK_DEBUG, "Trying to discover externally visible hostname...\n");
-	struct addrinfo *ai = str2addrinfo(host, port ? port : "80", SOCK_STREAM);
+	struct addrinfo *ai = adns_blocking_request(mesh, xstrdup(host), xstrdup(port ? port : "80"), SOCK_STREAM, 5);
 	char line[256];
 	char *hostname = NULL;
 
@@ -264,6 +267,11 @@ char *meshlink_get_external_address_for_family(meshlink_handle_t *mesh, int fami
 		}
 
 		int s = socket_in_netns(aip->ai_family, aip->ai_socktype, aip->ai_protocol, mesh->netns);
+
+#ifdef SO_NOSIGPIPE
+		int nosigpipe = 1;
+		setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, sizeof(nosigpipe));
+#endif
 
 		if(s >= 0) {
 			set_timeout(s, 5000);
@@ -383,7 +391,7 @@ char *meshlink_get_local_address_for_family(meshlink_handle_t *mesh, int family)
 	return xstrdup(localaddr);
 }
 
-void remove_duplicate_hostnames(char *host[], char *port[], int n) {
+static void remove_duplicate_hostnames(char *host[], char *port[], int n) {
 	for(int i = 0; i < n; i++) {
 		if(!host[i]) {
 			continue;
@@ -498,15 +506,9 @@ static char *get_my_hostname(meshlink_handle_t *mesh, uint32_t flags) {
 		}
 
 		// Convert what we have to a sockaddr
-		struct addrinfo *ai_in, *ai_out;
-		struct addrinfo hint = {
-			.ai_family = AF_UNSPEC,
-			.ai_flags = AI_NUMERICSERV,
-			.ai_socktype = SOCK_STREAM,
-		};
-		int err = getaddrinfo(hostname[i], port[i], &hint, &ai_in);
+		struct addrinfo *ai_in = adns_blocking_request(mesh, xstrdup(hostname[i]), xstrdup(port[i]), SOCK_STREAM, 5);
 
-		if(err || !ai_in) {
+		if(!ai_in) {
 			continue;
 		}
 
@@ -515,44 +517,8 @@ static char *get_my_hostname(meshlink_handle_t *mesh, uint32_t flags) {
 			node_add_recent_address(mesh, mesh->self, (sockaddr_t *)aip->ai_addr);
 		}
 
-		if(flags & MESHLINK_INVITE_NUMERIC) {
-			// We don't need to do any further conversion
-			freeaddrinfo(ai_in);
-			continue;
-		}
-
-		// Convert it to a hostname
-		char resolved_host[NI_MAXHOST];
-		char resolved_port[NI_MAXSERV];
-		err = getnameinfo(ai_in->ai_addr, ai_in->ai_addrlen, resolved_host, sizeof resolved_host, resolved_port, sizeof resolved_port, NI_NUMERICSERV);
-
-		if(err || !is_valid_hostname(resolved_host)) {
-			freeaddrinfo(ai_in);
-			continue;
-		}
-
-		// Convert the hostname back to a sockaddr
-		hint.ai_family = ai_in->ai_family;
-		err = getaddrinfo(resolved_host, resolved_port, &hint, &ai_out);
-
-		if(err || !ai_out) {
-			freeaddrinfo(ai_in);
-			continue;
-		}
-
-		// Check if it's still the same sockaddr
-		if(ai_in->ai_addrlen != ai_out->ai_addrlen || memcmp(ai_in->ai_addr, ai_out->ai_addr, ai_in->ai_addrlen)) {
-			freeaddrinfo(ai_in);
-			freeaddrinfo(ai_out);
-			continue;
-		}
-
-		// Yes: replace the hostname with the resolved one
-		free(hostname[i]);
-		hostname[i] = xstrdup(resolved_host);
-
 		freeaddrinfo(ai_in);
-		freeaddrinfo(ai_out);
+		continue;
 	}
 
 	// Remove duplicates again, since IPv4 and IPv6 addresses might map to the same hostname
@@ -704,24 +670,28 @@ static bool finalize_join(join_state_t *state, const void *buf, uint16_t len) {
 	}
 
 	char *name = packmsg_get_str_dup(&in);
-	packmsg_skip_element(&in); /* submesh */
+	char *submesh_name = packmsg_get_str_dup(&in);
 	dev_class_t devclass = packmsg_get_int32(&in);
 	uint32_t count = packmsg_get_array(&in);
 
-	if(!name) {
-		logger(mesh, MESHLINK_DEBUG, "No Name found in invitation!\n");
+	if(!name || !check_id(name)) {
+		logger(mesh, MESHLINK_DEBUG, "No valid Name found in invitation!\n");
+		free(name);
+		free(submesh_name);
 		return false;
 	}
 
-	if(!check_id(name)) {
-		logger(mesh, MESHLINK_DEBUG, "Invalid Name found in invitation: %s!\n", name);
+	if(!submesh_name || (strcmp(submesh_name, CORE_MESH) && !check_id(submesh_name))) {
+		logger(mesh, MESHLINK_DEBUG, "No valid Submesh found in invitation!\n");
 		free(name);
+		free(submesh_name);
 		return false;
 	}
 
 	if(!count) {
 		logger(mesh, MESHLINK_ERROR, "Incomplete invitation file!\n");
 		free(name);
+		free(submesh_name);
 		return false;
 	}
 
@@ -729,6 +699,8 @@ static bool finalize_join(join_state_t *state, const void *buf, uint16_t len) {
 	free(mesh->self->name);
 	mesh->name = name;
 	mesh->self->name = xstrdup(name);
+	mesh->self->submesh = strcmp(submesh_name, CORE_MESH) ? lookup_or_create_submesh(mesh, submesh_name) : NULL;
+	free(submesh_name);
 	mesh->self->devclass = devclass == DEV_CLASS_UNKNOWN ? mesh->devclass : devclass;
 
 	// Initialize configuration directory
@@ -743,39 +715,39 @@ static bool finalize_join(join_state_t *state, const void *buf, uint16_t len) {
 	// Write host config files
 	for(uint32_t i = 0; i < count; i++) {
 		const void *data;
-		uint32_t len = packmsg_get_bin_raw(&in, &data);
+		uint32_t data_len = packmsg_get_bin_raw(&in, &data);
 
-		if(!len) {
+		if(!data_len) {
 			logger(mesh, MESHLINK_ERROR, "Incomplete invitation file!\n");
 			return false;
 		}
 
-		packmsg_input_t in2 = {data, len};
-		uint32_t version = packmsg_get_uint32(&in2);
-		char *name = packmsg_get_str_dup(&in2);
+		packmsg_input_t in2 = {data, data_len};
+		uint32_t version2 = packmsg_get_uint32(&in2);
+		char *name2 = packmsg_get_str_dup(&in2);
 
-		if(!packmsg_input_ok(&in2) || version != MESHLINK_CONFIG_VERSION || !check_id(name)) {
-			free(name);
+		if(!packmsg_input_ok(&in2) || version2 != MESHLINK_CONFIG_VERSION || !check_id(name2)) {
+			free(name2);
 			packmsg_input_invalidate(&in);
 			break;
 		}
 
-		if(!check_id(name)) {
-			free(name);
+		if(!check_id(name2)) {
+			free(name2);
 			break;
 		}
 
-		if(!strcmp(name, mesh->name)) {
+		if(!strcmp(name2, mesh->name)) {
 			logger(mesh, MESHLINK_DEBUG, "Secondary chunk would overwrite our own host config file.\n");
-			free(name);
+			free(name2);
 			meshlink_errno = MESHLINK_EPEER;
 			return false;
 		}
 
 		node_t *n = new_node();
-		n->name = name;
+		n->name = name2;
 
-		config_t config = {data, len};
+		config_t config = {data, data_len};
 
 		if(!node_read_from_config(mesh, n, &config)) {
 			free_node(n);
@@ -921,7 +893,7 @@ static bool recvline(join_state_t *state) {
 	return true;
 }
 
-static bool sendline(int fd, char *format, ...) {
+static bool sendline(int fd, const char *format, ...) {
 	char buffer[4096];
 	char *p = buffer;
 	int blen = 0;
@@ -995,10 +967,18 @@ static bool ecdsa_keygen(meshlink_handle_t *mesh) {
 	return true;
 }
 
-static struct timeval idle(event_loop_t *loop, void *data) {
+static bool timespec_lt(const struct timespec *a, const struct timespec *b) {
+	if(a->tv_sec == b->tv_sec) {
+		return a->tv_nsec < b->tv_nsec;
+	} else {
+		return a->tv_sec < b->tv_sec;
+	}
+}
+
+static struct timespec idle(event_loop_t *loop, void *data) {
 	(void)loop;
 	meshlink_handle_t *mesh = data;
-	struct timeval t, tmin = {3600, 0};
+	struct timespec t, tmin = {3600, 0};
 
 	for splay_each(node_t, n, mesh->nodes) {
 		if(!n->utcp) {
@@ -1007,7 +987,7 @@ static struct timeval idle(event_loop_t *loop, void *data) {
 
 		t = utcp_timeout(n->utcp);
 
-		if(timercmp(&t, &tmin, <)) {
+		if(timespec_lt(&t, &tmin)) {
 			tmin = t;
 		}
 	}
@@ -1114,9 +1094,6 @@ static bool meshlink_read_config(meshlink_handle_t *mesh) {
 		return false;
 	}
 
-#if 0
-
-	// TODO: check this?
 	if(mesh->name && strcmp(mesh->name, name)) {
 		logger(NULL, MESHLINK_ERROR, "Configuration is for a different name (%s)!", name);
 		meshlink_errno = MESHLINK_ESTORAGE;
@@ -1124,8 +1101,6 @@ static bool meshlink_read_config(meshlink_handle_t *mesh) {
 		config_free(&config);
 		return false;
 	}
-
-#endif
 
 	free(mesh->name);
 	mesh->name = name;
@@ -1184,13 +1159,7 @@ meshlink_open_params_t *meshlink_open_params_init(const char *confbase, const ch
 		return NULL;
 	}
 
-	if(!name || !*name) {
-		logger(NULL, MESHLINK_ERROR, "No name given!\n");
-		meshlink_errno = MESHLINK_EINVAL;
-		return NULL;
-	};
-
-	if(!check_id(name)) {
+	if(name && !check_id(name)) {
 		logger(NULL, MESHLINK_ERROR, "Invalid name given!\n");
 		meshlink_errno = MESHLINK_EINVAL;
 		return NULL;
@@ -1205,7 +1174,7 @@ meshlink_open_params_t *meshlink_open_params_init(const char *confbase, const ch
 	meshlink_open_params_t *params = xzalloc(sizeof * params);
 
 	params->confbase = xstrdup(confbase);
-	params->name = xstrdup(name);
+	params->name = name ? xstrdup(name) : NULL;
 	params->appname = xstrdup(appname);
 	params->devclass = devclass;
 	params->netns = -1;
@@ -1249,7 +1218,7 @@ bool meshlink_encrypted_key_rotate(meshlink_handle_t *mesh, const void *new_key,
 		return false;
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	// Create hash for the new key
 	void *new_config_key;
@@ -1258,7 +1227,7 @@ bool meshlink_encrypted_key_rotate(meshlink_handle_t *mesh, const void *new_key,
 	if(!prf(new_key, new_keylen, "MeshLink configuration key", 26, new_config_key, CHACHA_POLY1305_KEYLEN)) {
 		logger(mesh, MESHLINK_ERROR, "Error creating new configuration key!\n");
 		meshlink_errno = MESHLINK_EINTERNAL;
-		pthread_mutex_unlock(&mesh->mutex);
+		assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 		return false;
 	}
 
@@ -1267,7 +1236,7 @@ bool meshlink_encrypted_key_rotate(meshlink_handle_t *mesh, const void *new_key,
 	if(!config_copy(mesh, "current", mesh->config_key, "new", new_config_key)) {
 		logger(mesh, MESHLINK_ERROR, "Could not set up configuration in %s/old: %s\n", mesh->confbase, strerror(errno));
 		meshlink_errno = MESHLINK_ESTORAGE;
-		pthread_mutex_unlock(&mesh->mutex);
+		assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 		return false;
 	}
 
@@ -1278,7 +1247,7 @@ bool meshlink_encrypted_key_rotate(meshlink_handle_t *mesh, const void *new_key,
 	if(!config_rename(mesh, "current", "old")) {
 		logger(mesh, MESHLINK_ERROR, "Cannot rename %s/current to %s/old\n", mesh->confbase, mesh->confbase);
 		meshlink_errno = MESHLINK_ESTORAGE;
-		pthread_mutex_unlock(&mesh->mutex);
+		assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 		return false;
 	}
 
@@ -1289,7 +1258,7 @@ bool meshlink_encrypted_key_rotate(meshlink_handle_t *mesh, const void *new_key,
 	if(!config_rename(mesh, "new", "current")) {
 		logger(mesh, MESHLINK_ERROR, "Cannot rename %s/new to %s/current\n", mesh->confbase, mesh->confbase);
 		meshlink_errno = MESHLINK_ESTORAGE;
-		pthread_mutex_unlock(&mesh->mutex);
+		assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 		return false;
 	}
 
@@ -1298,7 +1267,7 @@ bool meshlink_encrypted_key_rotate(meshlink_handle_t *mesh, const void *new_key,
 	// Cleanup the "old" confbase sub-directory
 
 	if(!config_destroy(mesh->confbase, "old")) {
-		pthread_mutex_unlock(&mesh->mutex);
+		assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 		return false;
 	}
 
@@ -1307,7 +1276,7 @@ bool meshlink_encrypted_key_rotate(meshlink_handle_t *mesh, const void *new_key,
 	free(mesh->config_key);
 	mesh->config_key = new_config_key;
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 
 	return true;
 }
@@ -1378,6 +1347,36 @@ meshlink_handle_t *meshlink_open_encrypted(const char *confbase, const char *nam
 }
 
 meshlink_handle_t *meshlink_open_ephemeral(const char *name, const char *appname, dev_class_t devclass) {
+	if(!name) {
+		logger(NULL, MESHLINK_ERROR, "No name given!\n");
+		meshlink_errno = MESHLINK_EINVAL;
+		return NULL;
+	}
+
+	if(!check_id(name)) {
+		logger(NULL, MESHLINK_ERROR, "Invalid name given!\n");
+		meshlink_errno = MESHLINK_EINVAL;
+		return NULL;
+	}
+
+	if(!appname || !*appname) {
+		logger(NULL, MESHLINK_ERROR, "No appname given!\n");
+		meshlink_errno = MESHLINK_EINVAL;
+		return NULL;
+	}
+
+	if(strchr(appname, ' ')) {
+		logger(NULL, MESHLINK_ERROR, "Invalid appname given!\n");
+		meshlink_errno = MESHLINK_EINVAL;
+		return NULL;
+	}
+
+	if(devclass < 0 || devclass >= DEV_CLASS_COUNT) {
+		logger(NULL, MESHLINK_ERROR, "Invalid devclass given!\n");
+		meshlink_errno = MESHLINK_EINVAL;
+		return NULL;
+	}
+
 	/* Create a temporary struct on the stack, to avoid allocating and freeing one. */
 	meshlink_open_params_t params;
 	memset(&params, 0, sizeof(params));
@@ -1391,11 +1390,9 @@ meshlink_handle_t *meshlink_open_ephemeral(const char *name, const char *appname
 }
 
 meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
-	// Validate arguments provided by the application
-	bool usingname = false;
-
 	logger(NULL, MESHLINK_DEBUG, "meshlink_open called\n");
 
+	// Validate arguments provided by the application
 	if(!params->appname || !*params->appname) {
 		logger(NULL, MESHLINK_ERROR, "No appname given!\n");
 		meshlink_errno = MESHLINK_EINVAL;
@@ -1408,18 +1405,10 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 		return NULL;
 	}
 
-	if(!params->name || !*params->name) {
-		logger(NULL, MESHLINK_ERROR, "No name given!\n");
-		//return NULL;
-	} else { //check name only if there is a name != NULL
-
-		if(!check_id(params->name)) {
-			logger(NULL, MESHLINK_ERROR, "Invalid name given!\n");
-			meshlink_errno = MESHLINK_EINVAL;
-			return NULL;
-		} else {
-			usingname = true;
-		}
+	if(params->name && !check_id(params->name)) {
+		logger(NULL, MESHLINK_ERROR, "Invalid name given!\n");
+		meshlink_errno = MESHLINK_EINVAL;
+		return NULL;
 	}
 
 	if(params->devclass < 0 || params->devclass >= DEV_CLASS_COUNT) {
@@ -1448,6 +1437,7 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 	mesh->submeshes = NULL;
 	mesh->log_cb = global_log_cb;
 	mesh->log_level = global_log_level;
+	mesh->packet = xmalloc(sizeof(vpn_packet_t));
 
 	randomize(&mesh->prng_state, sizeof(mesh->prng_state));
 
@@ -1457,9 +1447,7 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 
 	memcpy(mesh->dev_class_traits, default_class_traits, sizeof(default_class_traits));
 
-	if(usingname) {
-		mesh->name = xstrdup(params->name);
-	}
+	mesh->name = params->name ? xstrdup(params->name) : NULL;
 
 	// Hash the key
 	if(params->key) {
@@ -1473,11 +1461,17 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 		}
 	}
 
-	// initialize mutex
+	// initialize mutexes and conds
 	pthread_mutexattr_t attr;
-	pthread_mutexattr_init(&attr);
-	pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
-	pthread_mutex_init(&mesh->mutex, &attr);
+	assert(pthread_mutexattr_init(&attr) == 0);
+	assert(pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE) == 0);
+	assert(pthread_mutex_init(&mesh->mutex, &attr) == 0);
+	assert(pthread_cond_init(&mesh->cond, NULL) == 0);
+
+	assert(pthread_mutex_init(&mesh->discovery_mutex, NULL) == 0);
+	assert(pthread_cond_init(&mesh->discovery_cond, NULL) == 0);
+
+	assert(pthread_cond_init(&mesh->adns_cond, NULL) == 0);
 
 	mesh->threadstarted = false;
 	event_loop_init(&mesh->loop);
@@ -1494,6 +1488,13 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 	// If no configuration exists yet, create it.
 
 	if(!meshlink_confbase_exists(mesh)) {
+		if(!mesh->name) {
+			logger(NULL, MESHLINK_ERROR, "No configuration files found!\n");
+			meshlink_close(mesh);
+			meshlink_errno = MESHLINK_ESTORAGE;
+			return NULL;
+		}
+
 		if(!meshlink_setup(mesh)) {
 			logger(NULL, MESHLINK_ERROR, "Cannot create initial configuration\n");
 			meshlink_close(mesh);
@@ -1570,11 +1571,11 @@ meshlink_submesh_t *meshlink_submesh_open(meshlink_handle_t  *mesh, const char *
 	}
 
 	//lock mesh->nodes
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	s = (meshlink_submesh_t *)create_submesh(mesh, submesh);
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 
 	return s;
 }
@@ -1586,12 +1587,12 @@ static void *meshlink_main_loop(void *arg) {
 #ifdef HAVE_SETNS
 
 		if(setns(mesh->netns, CLONE_NEWNET) != 0) {
-			pthread_cond_signal(&mesh->cond);
+			assert(pthread_cond_signal(&mesh->cond) == 0);
 			return NULL;
 		}
 
 #else
-		pthread_cond_signal(&mesh->cond);
+		assert(pthread_cond_signal(&mesh->cond) == 0);
 		return NULL;
 #endif // HAVE_SETNS
 	}
@@ -1604,14 +1605,14 @@ static void *meshlink_main_loop(void *arg) {
 
 #endif
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	logger(mesh, MESHLINK_DEBUG, "Starting main_loop...\n");
-	pthread_cond_broadcast(&mesh->cond);
+	assert(pthread_cond_broadcast(&mesh->cond) == 0);
 	main_loop(mesh);
 	logger(mesh, MESHLINK_DEBUG, "main_loop returned.\n");
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 
 #if HAVE_CATTA
 
@@ -1633,7 +1634,7 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 
 	logger(mesh, MESHLINK_DEBUG, "meshlink_start called\n");
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	assert(mesh->self);
 	assert(mesh->private_key);
@@ -1642,7 +1643,7 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 
 	if(mesh->threadstarted) {
 		logger(mesh, MESHLINK_DEBUG, "thread was already running\n");
-		pthread_mutex_unlock(&mesh->mutex);
+		assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 		return true;
 	}
 
@@ -1658,32 +1659,38 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 	if(!mesh->name) {
 		logger(mesh, MESHLINK_DEBUG, "No name given!\n");
 		meshlink_errno = MESHLINK_EINVAL;
-		pthread_mutex_unlock(&mesh->mutex);
+		assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 		return false;
 	}
 
 	init_outgoings(mesh);
+	init_adns(mesh);
 
 	// Start the main thread
 
 	event_loop_start(&mesh->loop);
 
-	if(pthread_create(&mesh->thread, NULL, meshlink_main_loop, mesh) != 0) {
+	// Ensure we have a decent amount of stack space. Musl's default of 80 kB is too small.
+	pthread_attr_t attr;
+	assert(pthread_attr_init(&attr) == 0);
+	assert(pthread_attr_setstacksize(&attr, 1024 * 1024) == 0);
+
+	if(pthread_create(&mesh->thread, &attr, meshlink_main_loop, mesh) != 0) {
 		logger(mesh, MESHLINK_DEBUG, "Could not start thread: %s\n", strerror(errno));
 		memset(&mesh->thread, 0, sizeof(mesh)->thread);
 		meshlink_errno = MESHLINK_EINTERNAL;
 		event_loop_stop(&mesh->loop);
-		pthread_mutex_unlock(&mesh->mutex);
+		assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 		return false;
 	}
 
-	pthread_cond_wait(&mesh->cond, &mesh->mutex);
+	assert(pthread_cond_wait(&mesh->cond, &mesh->mutex) == 0);
 	mesh->threadstarted = true;
 
 	// Ensure we are considered reachable
 	graph(mesh);
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 	return true;
 }
 
@@ -1693,7 +1700,7 @@ void meshlink_stop(meshlink_handle_t *mesh) {
 		return;
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 	logger(mesh, MESHLINK_DEBUG, "meshlink_stop called\n");
 
 	// Shut down the main thread
@@ -1716,9 +1723,9 @@ void meshlink_stop(meshlink_handle_t *mesh) {
 
 	if(mesh->threadstarted) {
 		// Wait for the main thread to finish
-		pthread_mutex_unlock(&mesh->mutex);
-		pthread_join(mesh->thread, NULL);
-		pthread_mutex_lock(&mesh->mutex);
+		assert(pthread_mutex_unlock(&mesh->mutex) == 0);
+		assert(pthread_join(mesh->thread, NULL) == 0);
+		assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 		mesh->threadstarted = false;
 	}
@@ -1733,6 +1740,7 @@ void meshlink_stop(meshlink_handle_t *mesh) {
 		}
 	}
 
+	exit_adns(mesh);
 	exit_outgoings(mesh);
 
 	// Ensure we are considered unreachable
@@ -1749,7 +1757,7 @@ void meshlink_stop(meshlink_handle_t *mesh) {
 		}
 	}
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 }
 
 void meshlink_close(meshlink_handle_t *mesh) {
@@ -1762,7 +1770,7 @@ void meshlink_close(meshlink_handle_t *mesh) {
 	meshlink_stop(mesh);
 
 	// lock is not released after this
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	// Close and free all resources used.
 
@@ -1797,6 +1805,7 @@ void meshlink_close(meshlink_handle_t *mesh) {
 	free(mesh->confbase);
 	free(mesh->config_key);
 	free(mesh->external_address_url);
+	free(mesh->packet);
 	ecdsa_free(mesh->private_key);
 
 	if(mesh->invitation_addresses) {
@@ -1805,8 +1814,8 @@ void meshlink_close(meshlink_handle_t *mesh) {
 
 	main_config_unlock(mesh);
 
-	pthread_mutex_unlock(&mesh->mutex);
-	pthread_mutex_destroy(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
+	assert(pthread_mutex_destroy(&mesh->mutex) == 0);
 
 	memset(mesh, 0, sizeof(*mesh));
 
@@ -1882,9 +1891,9 @@ void meshlink_set_receive_cb(meshlink_handle_t *mesh, meshlink_receive_cb_t cb) 
 		return;
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 	mesh->receive_cb = cb;
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 }
 
 void meshlink_set_connection_try_cb(meshlink_handle_t *mesh, meshlink_connection_try_cb_t cb) {
@@ -1893,9 +1902,9 @@ void meshlink_set_connection_try_cb(meshlink_handle_t *mesh, meshlink_connection
 		return;
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 	mesh->connection_try_cb = cb;
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 }
 
 void meshlink_set_node_status_cb(meshlink_handle_t *mesh, meshlink_node_status_cb_t cb) {
@@ -1904,9 +1913,9 @@ void meshlink_set_node_status_cb(meshlink_handle_t *mesh, meshlink_node_status_c
 		return;
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 	mesh->node_status_cb = cb;
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 }
 
 void meshlink_set_node_pmtu_cb(meshlink_handle_t *mesh, meshlink_node_pmtu_cb_t cb) {
@@ -1915,9 +1924,9 @@ void meshlink_set_node_pmtu_cb(meshlink_handle_t *mesh, meshlink_node_pmtu_cb_t 
 		return;
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 	mesh->node_pmtu_cb = cb;
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 }
 
 void meshlink_set_node_duplicate_cb(meshlink_handle_t *mesh, meshlink_node_duplicate_cb_t cb) {
@@ -1926,17 +1935,17 @@ void meshlink_set_node_duplicate_cb(meshlink_handle_t *mesh, meshlink_node_dupli
 		return;
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 	mesh->node_duplicate_cb = cb;
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 }
 
 void meshlink_set_log_cb(meshlink_handle_t *mesh, meshlink_log_level_t level, meshlink_log_cb_t cb) {
 	if(mesh) {
-		pthread_mutex_lock(&mesh->mutex);
+		assert(pthread_mutex_lock(&mesh->mutex) == 0);
 		mesh->log_cb = cb;
 		mesh->log_level = cb ? level : 0;
-		pthread_mutex_unlock(&mesh->mutex);
+		assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 	} else {
 		global_log_cb = cb;
 		global_log_level = cb ? level : 0;
@@ -1949,25 +1958,15 @@ void meshlink_set_error_cb(struct meshlink_handle *mesh, meshlink_error_cb_t cb)
 		return;
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 	mesh->error_cb = cb;
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 }
 
-bool meshlink_send(meshlink_handle_t *mesh, meshlink_node_t *destination, const void *data, size_t len) {
+static bool prepare_packet(meshlink_handle_t *mesh, meshlink_node_t *destination, const void *data, size_t len, vpn_packet_t *packet) {
 	meshlink_packethdr_t *hdr;
 
-	// Validate arguments
-	if(!mesh || !destination || len >= MAXSIZE - sizeof(*hdr)) {
-		meshlink_errno = MESHLINK_EINVAL;
-		return false;
-	}
-
-	if(!len) {
-		return true;
-	}
-
-	if(!data) {
+	if(len > MAXSIZE - sizeof(*hdr)) {
 		meshlink_errno = MESHLINK_EINVAL;
 		return false;
 	}
@@ -1981,13 +1980,6 @@ bool meshlink_send(meshlink_handle_t *mesh, meshlink_node_t *destination, const 
 	}
 
 	// Prepare the packet
-	vpn_packet_t *packet = malloc(sizeof(*packet));
-
-	if(!packet) {
-		meshlink_errno = MESHLINK_ENOMEM;
-		return false;
-	}
-
 	packet->probe = false;
 	packet->tcp = false;
 	packet->len = len + sizeof(*hdr);
@@ -1996,10 +1988,59 @@ bool meshlink_send(meshlink_handle_t *mesh, meshlink_node_t *destination, const 
 	memset(hdr, 0, sizeof(*hdr));
 	// leave the last byte as 0 to make sure strings are always
 	// null-terminated if they are longer than the buffer
-	strncpy((char *)hdr->destination, destination->name, (sizeof(hdr)->destination) - 1);
-	strncpy((char *)hdr->source, mesh->self->name, (sizeof(hdr)->source) - 1);
+	strncpy((char *)hdr->destination, destination->name, sizeof(hdr->destination) - 1);
+	strncpy((char *)hdr->source, mesh->self->name, sizeof(hdr->source) - 1);
 
 	memcpy(packet->data + sizeof(*hdr), data, len);
+
+	return true;
+}
+
+static bool meshlink_send_immediate(meshlink_handle_t *mesh, meshlink_node_t *destination, const void *data, size_t len) {
+	assert(mesh);
+	assert(destination);
+	assert(data);
+	assert(len);
+
+	// Prepare the packet
+	if(!prepare_packet(mesh, destination, data, len, mesh->packet)) {
+		return false;
+	}
+
+	// Send it immediately
+	route(mesh, mesh->self, mesh->packet);
+
+	return true;
+}
+
+bool meshlink_send(meshlink_handle_t *mesh, meshlink_node_t *destination, const void *data, size_t len) {
+	// Validate arguments
+	if(!mesh || !destination) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(!len) {
+		return true;
+	}
+
+	if(!data) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	// Prepare the packet
+	vpn_packet_t *packet = malloc(sizeof(*packet));
+
+	if(!packet) {
+		meshlink_errno = MESHLINK_ENOMEM;
+		return false;
+	}
+
+	if(!prepare_packet(mesh, destination, data, len, packet)) {
+		free(packet);
+		return false;
+	}
 
 	// Queue it
 	if(!meshlink_queue_push(&mesh->outpacketqueue, packet)) {
@@ -2037,19 +2078,19 @@ ssize_t meshlink_get_pmtu(meshlink_handle_t *mesh, meshlink_node_t *destination)
 		return -1;
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	node_t *n = (node_t *)destination;
 
 	if(!n->status.reachable) {
-		pthread_mutex_unlock(&mesh->mutex);
+		assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 		return 0;
 
 	} else if(n->mtuprobes > 30 && n->minmtu) {
-		pthread_mutex_unlock(&mesh->mutex);
+		assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 		return n->minmtu;
 	} else {
-		pthread_mutex_unlock(&mesh->mutex);
+		assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 		return MTU;
 	}
 }
@@ -2060,13 +2101,13 @@ char *meshlink_get_fingerprint(meshlink_handle_t *mesh, meshlink_node_t *node) {
 		return NULL;
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	node_t *n = (node_t *)node;
 
 	if(!node_read_public_key(mesh, n) || !n->ecdsa) {
 		meshlink_errno = MESHLINK_EINTERNAL;
-		pthread_mutex_unlock(&mesh->mutex);
+		assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 		return false;
 	}
 
@@ -2076,7 +2117,7 @@ char *meshlink_get_fingerprint(meshlink_handle_t *mesh, meshlink_node_t *node) {
 		meshlink_errno = MESHLINK_EINTERNAL;
 	}
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 	return fingerprint;
 }
 
@@ -2097,9 +2138,9 @@ meshlink_node_t *meshlink_get_node(meshlink_handle_t *mesh, const char *name) {
 
 	node_t *n = NULL;
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 	n = lookup_node(mesh, (char *)name); // TODO: make lookup_node() use const
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 
 	if(!n) {
 		meshlink_errno = MESHLINK_ENOENT;
@@ -2116,9 +2157,9 @@ meshlink_submesh_t *meshlink_get_submesh(meshlink_handle_t *mesh, const char *na
 
 	meshlink_submesh_t *submesh = NULL;
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 	submesh = (meshlink_submesh_t *)lookup_submesh(mesh, name);
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 
 	if(!submesh) {
 		meshlink_errno = MESHLINK_ENOENT;
@@ -2136,7 +2177,7 @@ meshlink_node_t **meshlink_get_all_nodes(meshlink_handle_t *mesh, meshlink_node_
 	meshlink_node_t **result;
 
 	//lock mesh->nodes
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	*nmemb = mesh->nodes->count;
 	result = realloc(nodes, *nmemb * sizeof(*nodes));
@@ -2153,7 +2194,7 @@ meshlink_node_t **meshlink_get_all_nodes(meshlink_handle_t *mesh, meshlink_node_
 		meshlink_errno = MESHLINK_ENOMEM;
 	}
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 
 	return result;
 }
@@ -2161,7 +2202,7 @@ meshlink_node_t **meshlink_get_all_nodes(meshlink_handle_t *mesh, meshlink_node_
 static meshlink_node_t **meshlink_get_all_nodes_by_condition(meshlink_handle_t *mesh, const void *condition, meshlink_node_t **nodes, size_t *nmemb, search_node_by_condition_t search_node) {
 	meshlink_node_t **result;
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	*nmemb = 0;
 
@@ -2173,7 +2214,7 @@ static meshlink_node_t **meshlink_get_all_nodes_by_condition(meshlink_handle_t *
 
 	if(*nmemb == 0) {
 		free(nodes);
-		pthread_mutex_unlock(&mesh->mutex);
+		assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 		return NULL;
 	}
 
@@ -2193,7 +2234,7 @@ static meshlink_node_t **meshlink_get_all_nodes_by_condition(meshlink_handle_t *
 		meshlink_errno = MESHLINK_ENOMEM;
 	}
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 
 	return result;
 }
@@ -2278,11 +2319,11 @@ dev_class_t meshlink_get_node_dev_class(meshlink_handle_t *mesh, meshlink_node_t
 
 	dev_class_t devclass;
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	devclass = ((node_t *)node)->devclass;
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 
 	return devclass;
 }
@@ -2311,7 +2352,7 @@ bool meshlink_get_node_reachability(struct meshlink_handle *mesh, struct meshlin
 	node_t *n = (node_t *)node;
 	bool reachable;
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 	reachable = n->status.reachable && !n->status.blacklisted;
 
 	if(last_reachable) {
@@ -2322,7 +2363,7 @@ bool meshlink_get_node_reachability(struct meshlink_handle *mesh, struct meshlin
 		*last_unreachable = n->last_unreachable;
 	}
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 
 	return reachable;
 }
@@ -2338,16 +2379,16 @@ bool meshlink_sign(meshlink_handle_t *mesh, const void *data, size_t len, void *
 		return false;
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	if(!ecdsa_sign(mesh->private_key, data, len, signature)) {
 		meshlink_errno = MESHLINK_EINTERNAL;
-		pthread_mutex_unlock(&mesh->mutex);
+		assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 		return false;
 	}
 
 	*siglen = MESHLINK_SIGLEN;
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 	return true;
 }
 
@@ -2362,7 +2403,7 @@ bool meshlink_verify(meshlink_handle_t *mesh, meshlink_node_t *source, const voi
 		return false;
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	bool rval = false;
 
@@ -2375,12 +2416,12 @@ bool meshlink_verify(meshlink_handle_t *mesh, meshlink_node_t *source, const voi
 		rval = ecdsa_verify(((struct node_t *)source)->ecdsa, data, len, signature);
 	}
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 	return rval;
 }
 
 static bool refresh_invitation_key(meshlink_handle_t *mesh) {
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	size_t count = invitation_purge_old(mesh, time(NULL) - mesh->invitation_timeout);
 
@@ -2388,7 +2429,7 @@ static bool refresh_invitation_key(meshlink_handle_t *mesh) {
 		// TODO: Update invitation key if necessary?
 	}
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 
 	return mesh->invitation_key;
 }
@@ -2400,13 +2441,20 @@ bool meshlink_set_canonical_address(meshlink_handle_t *mesh, meshlink_node_t *no
 	}
 
 	if(!is_valid_hostname(address)) {
-		logger(mesh, MESHLINK_DEBUG, "Invalid character in address: %s\n", address);
+		logger(mesh, MESHLINK_DEBUG, "Invalid character in address: %s", address);
 		meshlink_errno = MESHLINK_EINVAL;
 		return false;
 	}
 
+	if((node_t *)node != mesh->self && !port) {
+		logger(mesh, MESHLINK_DEBUG, "Missing port number!");
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+
+	}
+
 	if(port && !is_valid_port(port)) {
-		logger(mesh, MESHLINK_DEBUG, "Invalid character in port: %s\n", address);
+		logger(mesh, MESHLINK_DEBUG, "Invalid character in port: %s", address);
 		meshlink_errno = MESHLINK_EINVAL;
 		return false;
 	}
@@ -2419,18 +2467,18 @@ bool meshlink_set_canonical_address(meshlink_handle_t *mesh, meshlink_node_t *no
 		canonical_address = xstrdup(address);
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	node_t *n = (node_t *)node;
 	free(n->canonical_address);
 	n->canonical_address = canonical_address;
 
 	if(!node_write_config(mesh, n)) {
-		pthread_mutex_unlock(&mesh->mutex);
+		assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 		return false;
 	}
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 
 	return config_sync(mesh, "current");
 }
@@ -2461,14 +2509,14 @@ bool meshlink_add_invitation_address(struct meshlink_handle *mesh, const char *a
 		combo = xstrdup(address);
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	if(!mesh->invitation_addresses) {
 		mesh->invitation_addresses = list_alloc((list_action_t)free);
 	}
 
 	list_insert_tail(mesh->invitation_addresses, combo);
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 
 	return true;
 }
@@ -2479,14 +2527,14 @@ void meshlink_clear_invitation_addresses(struct meshlink_handle *mesh) {
 		return;
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	if(mesh->invitation_addresses) {
 		list_delete_list(mesh->invitation_addresses);
 		mesh->invitation_addresses = NULL;
 	}
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 }
 
 bool meshlink_add_address(meshlink_handle_t *mesh, const char *address) {
@@ -2524,9 +2572,9 @@ int meshlink_get_port(meshlink_handle_t *mesh) {
 
 	int port;
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 	port = atoi(mesh->myport);
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 
 	return port;
 }
@@ -2550,7 +2598,7 @@ bool meshlink_set_port(meshlink_handle_t *mesh, int port) {
 
 	bool rval = false;
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	if(mesh->threadstarted) {
 		meshlink_errno = MESHLINK_EINVAL;
@@ -2591,7 +2639,7 @@ bool meshlink_set_port(meshlink_handle_t *mesh, int port) {
 	rval = config_sync(mesh, "current");
 
 done:
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 
 	return rval && meshlink_get_port(mesh) == port;
 }
@@ -2620,13 +2668,13 @@ char *meshlink_invite_ex(meshlink_handle_t *mesh, meshlink_submesh_t *submesh, c
 		s = (meshlink_submesh_t *)mesh->self->submesh;
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	// Check validity of the new node's name
 	if(!check_id(name)) {
 		logger(mesh, MESHLINK_ERROR, "Invalid name for node.\n");
 		meshlink_errno = MESHLINK_EINVAL;
-		pthread_mutex_unlock(&mesh->mutex);
+		assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 		return NULL;
 	}
 
@@ -2634,7 +2682,7 @@ char *meshlink_invite_ex(meshlink_handle_t *mesh, meshlink_submesh_t *submesh, c
 	if(config_exists(mesh, "current", name)) {
 		logger(mesh, MESHLINK_ERROR, "A host config file for %s already exists!\n", name);
 		meshlink_errno = MESHLINK_EEXIST;
-		pthread_mutex_unlock(&mesh->mutex);
+		assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 		return NULL;
 	}
 
@@ -2642,7 +2690,7 @@ char *meshlink_invite_ex(meshlink_handle_t *mesh, meshlink_submesh_t *submesh, c
 	if(lookup_node(mesh, name)) {
 		logger(mesh, MESHLINK_ERROR, "A node with name %s is already known!\n", name);
 		meshlink_errno = MESHLINK_EEXIST;
-		pthread_mutex_unlock(&mesh->mutex);
+		assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 		return NULL;
 	}
 
@@ -2652,13 +2700,13 @@ char *meshlink_invite_ex(meshlink_handle_t *mesh, meshlink_submesh_t *submesh, c
 	if(!address) {
 		logger(mesh, MESHLINK_ERROR, "No Address known for ourselves!\n");
 		meshlink_errno = MESHLINK_ERESOLV;
-		pthread_mutex_unlock(&mesh->mutex);
+		assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 		return NULL;
 	}
 
 	if(!refresh_invitation_key(mesh)) {
 		meshlink_errno = MESHLINK_EINTERNAL;
-		pthread_mutex_unlock(&mesh->mutex);
+		assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 		return NULL;
 	}
 
@@ -2666,7 +2714,7 @@ char *meshlink_invite_ex(meshlink_handle_t *mesh, meshlink_submesh_t *submesh, c
 	if(mesh->self->status.dirty) {
 		if(!node_write_config(mesh, mesh->self)) {
 			logger(mesh, MESHLINK_ERROR, "Could not write our own host config file!\n");
-			pthread_mutex_unlock(&mesh->mutex);
+			assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 			return NULL;
 		}
 	}
@@ -2728,7 +2776,7 @@ char *meshlink_invite_ex(meshlink_handle_t *mesh, meshlink_submesh_t *submesh, c
 	if(!invitation_write(mesh, "current", cookiehash, &config, mesh->config_key)) {
 		logger(mesh, MESHLINK_DEBUG, "Could not create invitation file %s: %s\n", cookiehash, strerror(errno));
 		meshlink_errno = MESHLINK_ESTORAGE;
-		pthread_mutex_unlock(&mesh->mutex);
+		assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 		return NULL;
 	}
 
@@ -2737,7 +2785,7 @@ char *meshlink_invite_ex(meshlink_handle_t *mesh, meshlink_submesh_t *submesh, c
 	xasprintf(&url, "%s/%s%s", address, hash, cookie);
 	free(address);
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 	return url;
 }
 
@@ -2762,7 +2810,7 @@ bool meshlink_join(meshlink_handle_t *mesh, const char *invitation) {
 	//TODO: think of a better name for this variable, or of a different way to tokenize the invitation URL.
 	char copy[strlen(invitation) + 1];
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	//Before doing meshlink_join make sure we are not connected to another mesh
 	if(mesh->threadstarted) {
@@ -2850,17 +2898,22 @@ bool meshlink_join(meshlink_handle_t *mesh, const char *invitation) {
 		}
 
 		// Connect to the meshlink daemon mentioned in the URL.
-		struct addrinfo *ai = str2addrinfo(address, port, SOCK_STREAM);
+		struct addrinfo *ai = adns_blocking_request(mesh, xstrdup(address), xstrdup(port), SOCK_STREAM, 5);
 
 		if(ai) {
 			for(struct addrinfo *aip = ai; aip; aip = aip->ai_next) {
-				state.sock = socket_in_netns(aip->ai_family, aip->ai_socktype, aip->ai_protocol, mesh->netns);
+				state.sock = socket_in_netns(aip->ai_family, SOCK_STREAM, IPPROTO_TCP, mesh->netns);
 
 				if(state.sock == -1) {
 					logger(mesh, MESHLINK_DEBUG, "Could not open socket: %s\n", strerror(errno));
 					meshlink_errno = MESHLINK_ENETWORK;
 					continue;
 				}
+
+#ifdef SO_NOSIGPIPE
+				int nosigpipe = 1;
+				setsockopt(state.sock, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, sizeof(nosigpipe));
+#endif
 
 				set_timeout(state.sock, 5000);
 
@@ -2980,7 +3033,7 @@ bool meshlink_join(meshlink_handle_t *mesh, const char *invitation) {
 	ecdsa_free(key);
 	closesocket(state.sock);
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 	return true;
 
 invalid:
@@ -2995,7 +3048,7 @@ exit:
 		closesocket(state.sock);
 	}
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 	return false;
 }
 
@@ -3013,12 +3066,20 @@ char *meshlink_export(meshlink_handle_t *mesh) {
 	packmsg_add_str(&out, mesh->name);
 	packmsg_add_str(&out, CORE_MESH);
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	packmsg_add_int32(&out, mesh->self->devclass);
 	packmsg_add_bool(&out, mesh->self->status.blacklisted);
 	packmsg_add_bin(&out, ecdsa_get_public_key(mesh->private_key), 32);
-	packmsg_add_str(&out, mesh->self->canonical_address ? mesh->self->canonical_address : "");
+
+	if(mesh->self->canonical_address && !strchr(mesh->self->canonical_address, ' ')) {
+		char *canonical_address = NULL;
+		xasprintf(&canonical_address, "%s %s", mesh->self->canonical_address, mesh->myport);
+		packmsg_add_str(&out, canonical_address);
+		free(canonical_address);
+	} else {
+		packmsg_add_str(&out, mesh->self->canonical_address ? mesh->self->canonical_address : "");
+	}
 
 	uint32_t count = 0;
 
@@ -3039,7 +3100,7 @@ char *meshlink_export(meshlink_handle_t *mesh) {
 	packmsg_add_int64(&out, 0);
 	packmsg_add_int64(&out, 0);
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 
 	if(!packmsg_output_ok(&out)) {
 		logger(mesh, MESHLINK_DEBUG, "Error creating export data\n");
@@ -3093,17 +3154,17 @@ bool meshlink_import(meshlink_handle_t *mesh, const char *data) {
 		return false;
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	while(count--) {
-		const void *data;
-		uint32_t len = packmsg_get_bin_raw(&in, &data);
+		const void *data2;
+		uint32_t len2 = packmsg_get_bin_raw(&in, &data2);
 
-		if(!len) {
+		if(!len2) {
 			break;
 		}
 
-		packmsg_input_t in2 = {data, len};
+		packmsg_input_t in2 = {data2, len2};
 		uint32_t version = packmsg_get_uint32(&in2);
 		char *name = packmsg_get_str_dup(&in2);
 
@@ -3129,7 +3190,7 @@ bool meshlink_import(meshlink_handle_t *mesh, const char *data) {
 		n = new_node();
 		n->name = name;
 
-		config_t config = {data, len};
+		config_t config = {data2, len2};
 
 		if(!node_read_from_config(mesh, n, &config)) {
 			free_node(n);
@@ -3149,7 +3210,7 @@ bool meshlink_import(meshlink_handle_t *mesh, const char *data) {
 		node_add(mesh, n);
 	}
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 
 	free(buf);
 
@@ -3198,7 +3259,7 @@ static bool blacklist(meshlink_handle_t *mesh, node_t *n) {
 	n->status.udp_confirmed = false;
 
 	if(n->status.reachable) {
-		n->last_unreachable = mesh->loop.now.tv_sec;
+		n->last_unreachable = time(NULL);
 	}
 
 	/* Graph updates will suppress status updates for blacklisted nodes, so we need to
@@ -3217,14 +3278,14 @@ bool meshlink_blacklist(meshlink_handle_t *mesh, meshlink_node_t *node) {
 		return false;
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	if(!blacklist(mesh, (node_t *)node)) {
-		pthread_mutex_unlock(&mesh->mutex);
+		assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 		return false;
 	}
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 
 	logger(mesh, MESHLINK_DEBUG, "Blacklisted %s.\n", node->name);
 	return true;
@@ -3236,7 +3297,7 @@ bool meshlink_blacklist_by_name(meshlink_handle_t *mesh, const char *name) {
 		return false;
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	node_t *n = lookup_node(mesh, (char *)name);
 
@@ -3247,11 +3308,11 @@ bool meshlink_blacklist_by_name(meshlink_handle_t *mesh, const char *name) {
 	}
 
 	if(!blacklist(mesh, (node_t *)n)) {
-		pthread_mutex_unlock(&mesh->mutex);
+		assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 		return false;
 	}
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 
 	logger(mesh, MESHLINK_DEBUG, "Blacklisted %s.\n", name);
 	return true;
@@ -3272,7 +3333,7 @@ static bool whitelist(meshlink_handle_t *mesh, node_t *n) {
 	n->status.blacklisted = false;
 
 	if(n->status.reachable) {
-		n->last_reachable = mesh->loop.now.tv_sec;
+		n->last_reachable = time(NULL);
 		update_node_status(mesh, n);
 	}
 
@@ -3285,14 +3346,14 @@ bool meshlink_whitelist(meshlink_handle_t *mesh, meshlink_node_t *node) {
 		return false;
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	if(!whitelist(mesh, (node_t *)node)) {
-		pthread_mutex_unlock(&mesh->mutex);
+		assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 		return false;
 	}
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 
 	logger(mesh, MESHLINK_DEBUG, "Whitelisted %s.\n", node->name);
 	return true;
@@ -3304,7 +3365,7 @@ bool meshlink_whitelist_by_name(meshlink_handle_t *mesh, const char *name) {
 		return false;
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	node_t *n = lookup_node(mesh, (char *)name);
 
@@ -3315,11 +3376,11 @@ bool meshlink_whitelist_by_name(meshlink_handle_t *mesh, const char *name) {
 	}
 
 	if(!whitelist(mesh, (node_t *)n)) {
-		pthread_mutex_unlock(&mesh->mutex);
+		assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 		return false;
 	}
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 
 	logger(mesh, MESHLINK_DEBUG, "Whitelisted %s.\n", name);
 	return true;
@@ -3337,18 +3398,18 @@ bool meshlink_forget_node(meshlink_handle_t *mesh, meshlink_node_t *node) {
 
 	node_t *n = (node_t *)node;
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	/* Check that the node is not reachable */
 	if(n->status.reachable || n->connection) {
-		pthread_mutex_unlock(&mesh->mutex);
+		assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 		logger(mesh, MESHLINK_WARNING, "Could not forget %s: still reachable", n->name);
 		return false;
 	}
 
 	/* Check that we don't have any active UTCP connections */
 	if(n->utcp && utcp_is_active(n->utcp)) {
-		pthread_mutex_unlock(&mesh->mutex);
+		assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 		logger(mesh, MESHLINK_WARNING, "Could not forget %s: active UTCP connections", n->name);
 		return false;
 	}
@@ -3356,7 +3417,7 @@ bool meshlink_forget_node(meshlink_handle_t *mesh, meshlink_node_t *node) {
 	/* Check that we have no active connections to this node */
 	for list_each(connection_t, c, mesh->connections) {
 		if(c->node == n) {
-			pthread_mutex_unlock(&mesh->mutex);
+			assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 			logger(mesh, MESHLINK_WARNING, "Could not forget %s: active connection", n->name);
 			return false;
 		}
@@ -3366,21 +3427,21 @@ bool meshlink_forget_node(meshlink_handle_t *mesh, meshlink_node_t *node) {
 	if(mesh->outgoings) {
 		for list_each(outgoing_t, outgoing, mesh->outgoings) {
 			if(outgoing->node == n) {
-				list_delete_node(mesh->outgoings, node);
+				list_delete_node(mesh->outgoings, list_node);
 			}
 		}
 	}
 
 	/* Delete the config file for this node */
 	if(!config_delete(mesh, "current", n->name)) {
-		pthread_mutex_unlock(&mesh->mutex);
+		assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 		return false;
 	}
 
 	/* Delete the node struct and any remaining edges referencing this node */
 	node_del(mesh, n);
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 
 	return config_sync(mesh, "current");
 }
@@ -3394,7 +3455,7 @@ void meshlink_hint_address(meshlink_handle_t *mesh, meshlink_node_t *node, const
 		return;
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	node_t *n = (node_t *)node;
 
@@ -3404,7 +3465,7 @@ void meshlink_hint_address(meshlink_handle_t *mesh, meshlink_node_t *node, const
 		}
 	}
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 	// @TODO do we want to fire off a connection attempt right away?
 }
 
@@ -3415,16 +3476,46 @@ static bool channel_pre_accept(struct utcp *utcp, uint16_t port) {
 	return mesh->channel_accept_cb;
 }
 
-static void aio_signal(meshlink_handle_t *mesh, meshlink_channel_t *channel, meshlink_aio_buffer_t *aio) {
-	if(aio->data) {
-		if(aio->cb.buffer) {
-			aio->cb.buffer(mesh, channel, aio->data, aio->len, aio->priv);
+/* Finish one AIO buffer, return true if the channel is still open. */
+static bool aio_finish_one(meshlink_handle_t *mesh, meshlink_channel_t *channel, meshlink_aio_buffer_t **head) {
+	meshlink_aio_buffer_t *aio = *head;
+	*head = aio->next;
+
+	if(channel->c) {
+		channel->in_callback = true;
+
+		if(aio->data) {
+			if(aio->cb.buffer) {
+				aio->cb.buffer(mesh, channel, aio->data, aio->done, aio->priv);
+			}
+		} else {
+			if(aio->cb.fd) {
+				aio->cb.fd(mesh, channel, aio->fd, aio->done, aio->priv);
+			}
 		}
-	} else {
-		if(aio->cb.fd) {
-			aio->cb.fd(mesh, channel, aio->fd, aio->done, aio->priv);
+
+		channel->in_callback = false;
+
+		if(!channel->c) {
+			free(aio);
+			free(channel);
+			return false;
 		}
 	}
+
+	free(aio);
+	return true;
+}
+
+/* Finish all AIO buffers, return true if the channel is still open. */
+static bool aio_abort(meshlink_handle_t *mesh, meshlink_channel_t *channel, meshlink_aio_buffer_t **head) {
+	while(*head) {
+		if(!aio_finish_one(mesh, channel, head)) {
+			return false;
+		}
+	}
+
+	return true;
 }
 
 static ssize_t channel_recv(struct utcp_connection *connection, const void *data, size_t len) {
@@ -3446,6 +3537,15 @@ static ssize_t channel_recv(struct utcp_connection *connection, const void *data
 	size_t left = len;
 
 	while(channel->aio_receive) {
+		if(!len) {
+			/* This receive callback signalled an error, abort all outstanding AIO buffers. */
+			if(!aio_abort(mesh, channel, &channel->aio_receive)) {
+				return len;
+			}
+
+			break;
+		}
+
 		meshlink_aio_buffer_t *aio = channel->aio_receive;
 		size_t todo = aio->len - aio->done;
 
@@ -3458,23 +3558,35 @@ static ssize_t channel_recv(struct utcp_connection *connection, const void *data
 		} else {
 			ssize_t result = write(aio->fd, p, todo);
 
-			if(result > 0) {
-				todo = result;
+			if(result <= 0) {
+				if(result < 0 && errno == EINTR) {
+					continue;
+				}
+
+				/* Writing to fd failed, cancel just this AIO buffer. */
+				logger(mesh, MESHLINK_ERROR, "Writing to AIO fd %d failed: %s", aio->fd, strerror(errno));
+
+				if(!aio_finish_one(mesh, channel, &channel->aio_receive)) {
+					return len;
+				}
+
+				continue;
 			}
+
+			todo = result;
 		}
 
 		aio->done += todo;
-
-		if(aio->done == aio->len) {
-			channel->aio_receive = aio->next;
-			aio_signal(mesh, channel, aio);
-			free(aio);
-		}
-
 		p += todo;
 		left -= todo;
 
-		if(!left && len) {
+		if(aio->done == aio->len) {
+			if(!aio_finish_one(mesh, channel, &channel->aio_receive)) {
+				return len;
+			}
+		}
+
+		if(!left) {
 			return len;
 		}
 	}
@@ -3510,6 +3622,17 @@ static void channel_accept(struct utcp_connection *utcp_connection, uint16_t por
 	}
 }
 
+static void channel_retransmit(struct utcp_connection *utcp_connection) {
+	node_t *n = utcp_connection->utcp->priv;
+	meshlink_handle_t *mesh = n->mesh;
+
+	if(n->mtuprobes == 31) {
+		timeout_set(&mesh->loop, &n->mtutimeout, &(struct timespec) {
+			0, 0
+		});
+	}
+}
+
 static ssize_t channel_send(struct utcp *utcp, const void *data, size_t len) {
 	node_t *n = utcp->priv;
 
@@ -3518,7 +3641,7 @@ static ssize_t channel_send(struct utcp *utcp, const void *data, size_t len) {
 	}
 
 	meshlink_handle_t *mesh = n->mesh;
-	return meshlink_send(mesh, (meshlink_node_t *)n, data, len) ? (ssize_t)len : -1;
+	return meshlink_send_immediate(mesh, (meshlink_node_t *)n, data, len) ? (ssize_t)len : -1;
 }
 
 void meshlink_set_channel_receive_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, meshlink_channel_receive_cb_t cb) {
@@ -3550,56 +3673,93 @@ static void channel_poll(struct utcp_connection *connection, size_t len) {
 
 	node_t *n = channel->node;
 	meshlink_handle_t *mesh = n->mesh;
-	meshlink_aio_buffer_t *aio = channel->aio_send;
 
-	if(aio) {
-		/* We at least one AIO buffer. Send as much as possible form the first buffer. */
-		size_t left = aio->len - aio->done;
+	while(channel->aio_send) {
+		if(!len) {
+			/* This poll callback signalled an error, abort all outstanding AIO buffers. */
+			if(!aio_abort(mesh, channel, &channel->aio_send)) {
+				return;
+			}
+
+			break;
+		}
+
+		/* We have at least one AIO buffer. Send as much as possible from the buffers. */
+		meshlink_aio_buffer_t *aio = channel->aio_send;
+		size_t todo = aio->len - aio->done;
 		ssize_t sent;
 
-		if(len > left) {
-			len = left;
+		if(todo > len) {
+			todo = len;
 		}
 
 		if(aio->data) {
-			sent = utcp_send(connection, (char *)aio->data + aio->done, len);
+			sent = utcp_send(connection, (char *)aio->data + aio->done, todo);
 		} else {
-			char buf[65536];
-			size_t todo = utcp_get_sndbuf_free(connection);
-
-			if(todo > left) {
-				todo = left;
+			/* Limit the amount we read at once to avoid stack overflows */
+			if(todo > 65536) {
+				todo = 65536;
 			}
 
-			if(todo > sizeof(buf)) {
-				todo = sizeof(buf);
-			}
-
+			char buf[todo];
 			ssize_t result = read(aio->fd, buf, todo);
 
 			if(result > 0) {
-				sent = utcp_send(connection, buf, result);
+				todo = result;
+				sent = utcp_send(connection, buf, todo);
 			} else {
-				sent = result;
+				if(result < 0 && errno == EINTR) {
+					continue;
+				}
+
+				/* Reading from fd failed, cancel just this AIO buffer. */
+				if(result != 0) {
+					logger(mesh, MESHLINK_ERROR, "Reading from AIO fd %d failed: %s", aio->fd, strerror(errno));
+				}
+
+				if(!aio_finish_one(mesh, channel, &channel->aio_send)) {
+					return;
+				}
+
+				continue;
 			}
 		}
 
-		if(sent >= 0) {
-			aio->done += sent;
+		if(sent != (ssize_t)todo) {
+			/* We should never get a partial send at this point */
+			assert(sent <= 0);
+
+			/* Sending failed, abort all outstanding AIO buffers and send a poll callback. */
+			if(!aio_abort(mesh, channel, &channel->aio_send)) {
+				return;
+			}
+
+			len = 0;
+			break;
 		}
 
-		/* If the buffer is now completely sent, call the callback and dispose of it. */
-		if(aio->done >= aio->len) {
-			channel->aio_send = aio->next;
-			aio_signal(mesh, channel, aio);
-			free(aio);
+		aio->done += sent;
+		len -= sent;
+
+		/* If we didn't finish this buffer, exit early. */
+		if(aio->done < aio->len) {
+			return;
 		}
+
+		/* Signal completion of this buffer, and go to the next one. */
+		if(!aio_finish_one(mesh, channel, &channel->aio_send)) {
+			return;
+		}
+
+		if(!len) {
+			return;
+		}
+	}
+
+	if(channel->poll_cb) {
+		channel->poll_cb(mesh, channel, len);
 	} else {
-		if(channel->poll_cb) {
-			channel->poll_cb(mesh, channel, len);
-		} else {
-			utcp_set_poll_cb(connection, NULL);
-		}
+		utcp_set_poll_cb(connection, NULL);
 	}
 }
 
@@ -3609,10 +3769,10 @@ void meshlink_set_channel_poll_cb(meshlink_handle_t *mesh, meshlink_channel_t *c
 		return;
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 	channel->poll_cb = cb;
 	utcp_set_poll_cb(channel->c, (cb || channel->aio_send) ? channel_poll : NULL);
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 }
 
 void meshlink_set_channel_accept_cb(meshlink_handle_t *mesh, meshlink_channel_accept_cb_t cb) {
@@ -3621,17 +3781,19 @@ void meshlink_set_channel_accept_cb(meshlink_handle_t *mesh, meshlink_channel_ac
 		return;
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 	mesh->channel_accept_cb = cb;
 	mesh->receive_cb = channel_receive;
 
 	for splay_each(node_t, n, mesh->nodes) {
 		if(!n->utcp && n != mesh->self) {
 			n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, n);
+			utcp_set_mtu(n->utcp, n->mtu - sizeof(meshlink_packethdr_t));
+			utcp_set_retransmit_cb(n->utcp, channel_retransmit);
 		}
 	}
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 }
 
 void meshlink_set_channel_sndbuf(meshlink_handle_t *mesh, meshlink_channel_t *channel, size_t size) {
@@ -3642,9 +3804,9 @@ void meshlink_set_channel_sndbuf(meshlink_handle_t *mesh, meshlink_channel_t *ch
 		return;
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 	utcp_set_sndbuf(channel->c, size);
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 }
 
 void meshlink_set_channel_rcvbuf(meshlink_handle_t *mesh, meshlink_channel_t *channel, size_t size) {
@@ -3655,9 +3817,9 @@ void meshlink_set_channel_rcvbuf(meshlink_handle_t *mesh, meshlink_channel_t *ch
 		return;
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 	utcp_set_rcvbuf(channel->c, size);
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 }
 
 meshlink_channel_t *meshlink_channel_open_ex(meshlink_handle_t *mesh, meshlink_node_t *node, uint16_t port, meshlink_channel_receive_cb_t cb, const void *data, size_t len, uint32_t flags) {
@@ -3670,17 +3832,19 @@ meshlink_channel_t *meshlink_channel_open_ex(meshlink_handle_t *mesh, meshlink_n
 		return NULL;
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	node_t *n = (node_t *)node;
 
 	if(!n->utcp) {
 		n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, n);
+		utcp_set_mtu(n->utcp, n->mtu - sizeof(meshlink_packethdr_t));
+		utcp_set_retransmit_cb(n->utcp, channel_retransmit);
 		mesh->receive_cb = channel_receive;
 
 		if(!n->utcp) {
 			meshlink_errno = errno == ENOMEM ? MESHLINK_ENOMEM : MESHLINK_EINTERNAL;
-			pthread_mutex_unlock(&mesh->mutex);
+			assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 			return NULL;
 		}
 	}
@@ -3688,7 +3852,7 @@ meshlink_channel_t *meshlink_channel_open_ex(meshlink_handle_t *mesh, meshlink_n
 	if(n->status.blacklisted) {
 		logger(mesh, MESHLINK_ERROR, "Cannot open a channel with blacklisted node\n");
 		meshlink_errno = MESHLINK_EBLACKLISTED;
-		pthread_mutex_unlock(&mesh->mutex);
+		assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 		return NULL;
 	}
 
@@ -3702,7 +3866,7 @@ meshlink_channel_t *meshlink_channel_open_ex(meshlink_handle_t *mesh, meshlink_n
 
 	channel->c = utcp_connect_ex(n->utcp, port, channel_recv, channel, flags);
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 
 	if(!channel->c) {
 		meshlink_errno = errno == ENOMEM ? MESHLINK_ENOMEM : MESHLINK_EINTERNAL;
@@ -3723,9 +3887,9 @@ void meshlink_channel_shutdown(meshlink_handle_t *mesh, meshlink_channel_t *chan
 		return;
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 	utcp_shutdown(channel->c, direction);
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 }
 
 void meshlink_channel_close(meshlink_handle_t *mesh, meshlink_channel_t *channel) {
@@ -3734,26 +3898,22 @@ void meshlink_channel_close(meshlink_handle_t *mesh, meshlink_channel_t *channel
 		return;
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
-	utcp_close(channel->c);
+	if(channel->c) {
+		utcp_close(channel->c);
+		channel->c = NULL;
 
-	/* Clean up any outstanding AIO buffers. */
-	for(meshlink_aio_buffer_t *aio = channel->aio_send, *next; aio; aio = next) {
-		next = aio->next;
-		aio_signal(mesh, channel, aio);
-		free(aio);
+		/* Clean up any outstanding AIO buffers. */
+		aio_abort(mesh, channel, &channel->aio_send);
+		aio_abort(mesh, channel, &channel->aio_receive);
 	}
 
-	for(meshlink_aio_buffer_t *aio = channel->aio_receive, *next; aio; aio = next) {
-		next = aio->next;
-		aio_signal(mesh, channel, aio);
-		free(aio);
+	if(!channel->in_callback) {
+		free(channel);
 	}
 
-	pthread_mutex_unlock(&mesh->mutex);
-
-	free(channel);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 }
 
 ssize_t meshlink_channel_send(meshlink_handle_t *mesh, meshlink_channel_t *channel, const void *data, size_t len) {
@@ -3778,7 +3938,7 @@ ssize_t meshlink_channel_send(meshlink_handle_t *mesh, meshlink_channel_t *chann
 
 	ssize_t retval;
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	/* Disallow direct calls to utcp_send() while we still have AIO active. */
 	if(channel->aio_send) {
@@ -3787,7 +3947,7 @@ ssize_t meshlink_channel_send(meshlink_handle_t *mesh, meshlink_channel_t *chann
 		retval = utcp_send(channel->c, data, len);
 	}
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 
 	if(retval < 0) {
 		meshlink_errno = MESHLINK_ENETWORK;
@@ -3813,7 +3973,7 @@ bool meshlink_channel_aio_send(meshlink_handle_t *mesh, meshlink_channel_t *chan
 	aio->cb.buffer = cb;
 	aio->priv = priv;
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	/* Append the AIO buffer descriptor to the end of the chain */
 	meshlink_aio_buffer_t **p = &channel->aio_send;
@@ -3826,9 +3986,13 @@ bool meshlink_channel_aio_send(meshlink_handle_t *mesh, meshlink_channel_t *chan
 
 	/* Ensure the poll callback is set, and call it right now to push data if possible */
 	utcp_set_poll_cb(channel->c, channel_poll);
-	channel_poll(channel->c, len);
+	size_t todo = MIN(len, utcp_get_rcvbuf_free(channel->c));
 
-	pthread_mutex_unlock(&mesh->mutex);
+	if(todo) {
+		channel_poll(channel->c, todo);
+	}
+
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 
 	return true;
 }
@@ -3850,7 +4014,7 @@ bool meshlink_channel_aio_fd_send(meshlink_handle_t *mesh, meshlink_channel_t *c
 	aio->cb.fd = cb;
 	aio->priv = priv;
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	/* Append the AIO buffer descriptor to the end of the chain */
 	meshlink_aio_buffer_t **p = &channel->aio_send;
@@ -3863,9 +4027,13 @@ bool meshlink_channel_aio_fd_send(meshlink_handle_t *mesh, meshlink_channel_t *c
 
 	/* Ensure the poll callback is set, and call it right now to push data if possible */
 	utcp_set_poll_cb(channel->c, channel_poll);
-	channel_poll(channel->c, len);
+	size_t left = utcp_get_rcvbuf_free(channel->c);
 
-	pthread_mutex_unlock(&mesh->mutex);
+	if(left) {
+		channel_poll(channel->c, left);
+	}
+
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 
 	return true;
 }
@@ -3887,7 +4055,7 @@ bool meshlink_channel_aio_receive(meshlink_handle_t *mesh, meshlink_channel_t *c
 	aio->cb.buffer = cb;
 	aio->priv = priv;
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	/* Append the AIO buffer descriptor to the end of the chain */
 	meshlink_aio_buffer_t **p = &channel->aio_receive;
@@ -3898,7 +4066,7 @@ bool meshlink_channel_aio_receive(meshlink_handle_t *mesh, meshlink_channel_t *c
 
 	*p = aio;
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 
 	return true;
 }
@@ -3920,7 +4088,7 @@ bool meshlink_channel_aio_fd_receive(meshlink_handle_t *mesh, meshlink_channel_t
 	aio->cb.fd = cb;
 	aio->priv = priv;
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	/* Append the AIO buffer descriptor to the end of the chain */
 	meshlink_aio_buffer_t **p = &channel->aio_receive;
@@ -3931,7 +4099,7 @@ bool meshlink_channel_aio_fd_receive(meshlink_handle_t *mesh, meshlink_channel_t
 
 	*p = aio;
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 
 	return true;
 }
@@ -3963,6 +4131,15 @@ size_t meshlink_channel_get_recvq(meshlink_handle_t *mesh, meshlink_channel_t *c
 	return utcp_get_recvq(channel->c);
 }
 
+size_t meshlink_channel_get_mss(meshlink_handle_t *mesh, meshlink_channel_t *channel) {
+	if(!mesh || !channel) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return -1;
+	}
+
+	return utcp_get_mss(channel->node->utcp);
+}
+
 void meshlink_set_node_channel_timeout(meshlink_handle_t *mesh, meshlink_node_t *node, int timeout) {
 	if(!mesh || !node) {
 		meshlink_errno = MESHLINK_EINVAL;
@@ -3971,20 +4148,24 @@ void meshlink_set_node_channel_timeout(meshlink_handle_t *mesh, meshlink_node_t 
 
 	node_t *n = (node_t *)node;
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	if(!n->utcp) {
 		n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, n);
+		utcp_set_mtu(n->utcp, n->mtu - sizeof(meshlink_packethdr_t));
+		utcp_set_retransmit_cb(n->utcp, channel_retransmit);
 	}
 
 	utcp_set_user_timeout(n->utcp, timeout);
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 }
 
 void update_node_status(meshlink_handle_t *mesh, node_t *n) {
 	if(n->status.reachable && mesh->channel_accept_cb && !n->utcp) {
 		n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, n);
+		utcp_set_mtu(n->utcp, n->mtu - sizeof(meshlink_packethdr_t));
+		utcp_set_retransmit_cb(n->utcp, channel_retransmit);
 	}
 
 	if(mesh->node_status_cb) {
@@ -3997,6 +4178,8 @@ void update_node_status(meshlink_handle_t *mesh, node_t *n) {
 }
 
 void update_node_pmtu(meshlink_handle_t *mesh, node_t *n) {
+	utcp_set_mtu(n->utcp, (n->minmtu > MINMTU ? n->minmtu : MINMTU) - sizeof(meshlink_packethdr_t));
+
 	if(mesh->node_pmtu_cb && !n->status.blacklisted) {
 		mesh->node_pmtu_cb(mesh, (meshlink_node_t *)n, n->minmtu);
 	}
@@ -4019,7 +4202,7 @@ void meshlink_enable_discovery(meshlink_handle_t *mesh, bool enable) {
 		return;
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	if(mesh->discovery == enable) {
 		goto end;
@@ -4036,7 +4219,7 @@ void meshlink_enable_discovery(meshlink_handle_t *mesh, bool enable) {
 	mesh->discovery = enable;
 
 end:
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 #else
 	(void)mesh;
 	(void)enable;
@@ -4055,10 +4238,10 @@ void meshlink_set_dev_class_timeouts(meshlink_handle_t *mesh, dev_class_t devcla
 		return;
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 	mesh->dev_class_traits[devclass].pinginterval = pinginterval;
 	mesh->dev_class_traits[devclass].pingtimeout = pingtimeout;
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 }
 
 void meshlink_set_dev_class_fast_retry_period(meshlink_handle_t *mesh, dev_class_t devclass, int fast_retry_period) {
@@ -4072,9 +4255,9 @@ void meshlink_set_dev_class_fast_retry_period(meshlink_handle_t *mesh, dev_class
 		return;
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 	mesh->dev_class_traits[devclass].fast_retry_period = fast_retry_period;
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 }
 
 extern void meshlink_set_inviter_commits_first(struct meshlink_handle *mesh, bool inviter_commits_first) {
@@ -4083,9 +4266,9 @@ extern void meshlink_set_inviter_commits_first(struct meshlink_handle *mesh, boo
 		return;
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 	mesh->inviter_commits_first = inviter_commits_first;
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 }
 
 void meshlink_set_external_address_discovery_url(struct meshlink_handle *mesh, const char *url) {
@@ -4099,10 +4282,19 @@ void meshlink_set_external_address_discovery_url(struct meshlink_handle *mesh, c
 		return;
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 	free(mesh->external_address_url);
 	mesh->external_address_url = url ? xstrdup(url) : NULL;
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
+}
+
+void meshlink_set_scheduling_granularity(struct meshlink_handle *mesh, long granularity) {
+	if(!mesh || granularity < 0) {
+		meshlink_errno = EINVAL;
+		return;
+	}
+
+	utcp_set_clock_granularity(granularity);
 }
 
 void handle_network_change(meshlink_handle_t *mesh, bool online) {
@@ -4113,9 +4305,10 @@ void handle_network_change(meshlink_handle_t *mesh, bool online) {
 	}
 
 	retry(mesh);
+	signal_trigger(&mesh->loop, &mesh->datafromapp);
 }
 
-void call_error_cb(meshlink_handle_t *mesh, meshlink_errno_t meshlink_errno) {
+void call_error_cb(meshlink_handle_t *mesh, meshlink_errno_t cb_errno) {
 	// We should only call the callback function if we are in the background thread.
 	if(!mesh->error_cb) {
 		return;
@@ -4126,12 +4319,13 @@ void call_error_cb(meshlink_handle_t *mesh, meshlink_errno_t meshlink_errno) {
 	}
 
 	if(mesh->thread == pthread_self()) {
-		mesh->error_cb(mesh, meshlink_errno);
+		mesh->error_cb(mesh, cb_errno);
 	}
 }
 
 static void __attribute__((constructor)) meshlink_init(void) {
 	crypto_init();
+	utcp_set_clock_granularity(10000);
 }
 
 static void __attribute__((destructor)) meshlink_exit(void) {

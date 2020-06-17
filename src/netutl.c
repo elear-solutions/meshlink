@@ -57,7 +57,7 @@ sockaddr_t str2sockaddr(const char *address, const char *port) {
 
 	struct addrinfo hint = {
 		.ai_family = AF_UNSPEC,
-		.ai_flags = AI_NUMERICHOST,
+		.ai_flags = NI_NUMERICHOST | NI_NUMERICSERV,
 		.ai_socktype = SOCK_STREAM,
 	};
 
@@ -282,7 +282,8 @@ void packmsg_add_sockaddr(packmsg_output_t *out, const sockaddr_t *sa) {
 }
 
 sockaddr_t packmsg_get_sockaddr(packmsg_input_t *in) {
-	sockaddr_t sa = {0};
+	sockaddr_t sa;
+	memset(&sa, 0, sizeof sa);
 
 	int8_t type;
 	const void *data;
