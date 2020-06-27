@@ -22,6 +22,7 @@
 #include "utils.h"
 #include "conf.h"
 #include "connection.h"
+#include "devtools.h"
 #include "graph.h"
 #include "logger.h"
 #include "meshlink_internal.h"
@@ -29,6 +30,7 @@
 #include "net.h"
 #include "netutl.h"
 #include "protocol.h"
+#include "sptps.h"
 #include "xalloc.h"
 
 #include <assert.h>
@@ -91,13 +93,6 @@ void terminate_connection(meshlink_handle_t *mesh, connection_t *c, bool report)
 	if(outgoing) {
 		do_outgoing_connection(mesh, outgoing);
 	}
-
-#ifndef HAVE_MINGW
-	/* Clean up dead proxy processes */
-
-	while(waitpid(-1, NULL, WNOHANG) > 0);
-
-#endif
 }
 
 /*
@@ -129,6 +124,18 @@ static void timeout_handler(event_loop_t *loop, void *data) {
 			}
 		}
 
+		if(c->status.active && c->last_key_renewal + 3600 < mesh->loop.now.tv_sec) {
+			devtool_sptps_renewal_probe((meshlink_node_t *)c->node);
+
+			if(!sptps_force_kex(&c->sptps)) {
+				logger(mesh, MESHLINK_ERROR, "SPTPS key renewal for connection with %s failed", c->name);
+				terminate_connection(mesh, c, true);
+				continue;
+			} else {
+				c->last_key_renewal = mesh->loop.now.tv_sec;
+			}
+		}
+
 		if(c->last_ping_time + pingtimeout <= mesh->loop.now.tv_sec) {
 			if(c->status.active) {
 				if(c->status.pinged) {
@@ -151,7 +158,7 @@ static void timeout_handler(event_loop_t *loop, void *data) {
 		}
 	}
 
-	timeout_set(&mesh->loop, data, &(struct timeval) {
+	timeout_set(&mesh->loop, data, &(struct timespec) {
 		1, prng(mesh, TIMER_FUDGE)
 	});
 }
@@ -346,7 +353,8 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 
 	if(mesh->contradicting_del_edge > 100 && mesh->contradicting_add_edge > 100) {
 		logger(mesh, MESHLINK_WARNING, "Possible node with same Name as us! Sleeping %d seconds.", mesh->sleeptime);
-		usleep(mesh->sleeptime * 1000000LL);
+		struct timespec ts = {mesh->sleeptime, 0};
+		nanosleep(&ts, NULL);
 		mesh->sleeptime *= 2;
 
 		if(mesh->sleeptime < 0) {
@@ -608,15 +616,30 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 
 	for splay_each(node_t, n, mesh->nodes) {
 		if(n->status.dirty) {
-			if(node_write_config(mesh, n)) {
+			if(!node_write_config(mesh, n)) {
 				logger(mesh, MESHLINK_DEBUG, "Could not update %s", n->name);
 			}
 
 			n->status.dirty = false;
 		}
+
+		if(n->status.validkey && n->last_req_key + 3600 < mesh->loop.now.tv_sec) {
+			logger(mesh, MESHLINK_DEBUG, "SPTPS key renewal for node %s", n->name);
+			devtool_sptps_renewal_probe((meshlink_node_t *)n);
+
+			if(!sptps_force_kex(&n->sptps)) {
+				logger(mesh, MESHLINK_ERROR, "SPTPS key renewal for node %s failed", n->name);
+				n->status.validkey = false;
+				sptps_stop(&n->sptps);
+				n->status.waitingforkey = false;
+				n->last_req_key = -3600;
+			} else {
+				n->last_req_key = mesh->loop.now.tv_sec;
+			}
+		}
 	}
 
-	timeout_set(&mesh->loop, data, &(struct timeval) {
+	timeout_set(&mesh->loop, data, &(struct timespec) {
 		timeout, prng(mesh, TIMER_FUDGE)
 	});
 }
@@ -633,10 +656,11 @@ void retry(meshlink_handle_t *mesh) {
 	for list_each(outgoing_t, outgoing, mesh->outgoings) {
 		outgoing->timeout = 0;
 
-		if(outgoing->ev.cb)
-			timeout_set(&mesh->loop, &outgoing->ev, &(struct timeval) {
-			0, 0
-		});
+		if(outgoing->ev.cb) {
+			timeout_set(&mesh->loop, &outgoing->ev, &(struct timespec) {
+				0, 0
+			});
+		}
 	}
 
 	/* For active connections, check if their addresses are still valid.
@@ -647,7 +671,7 @@ void retry(meshlink_handle_t *mesh) {
 		}
 
 		if(!c->status.pinged) {
-			c->last_ping_time = 0;
+			c->last_ping_time = -3600;
 		}
 
 		sockaddr_t sa;
@@ -685,7 +709,7 @@ void retry(meshlink_handle_t *mesh) {
 	}
 
 	/* Kick the ping timeout handler */
-	timeout_set(&mesh->loop, &mesh->pingtimer, &(struct timeval) {
+	timeout_set(&mesh->loop, &mesh->pingtimer, &(struct timespec) {
 		0, 0
 	});
 }
@@ -694,10 +718,10 @@ void retry(meshlink_handle_t *mesh) {
   this is where it all happens...
 */
 void main_loop(meshlink_handle_t *mesh) {
-	timeout_add(&mesh->loop, &mesh->pingtimer, timeout_handler, &mesh->pingtimer, &(struct timeval) {
+	timeout_add(&mesh->loop, &mesh->pingtimer, timeout_handler, &mesh->pingtimer, &(struct timespec) {
 		1, prng(mesh, TIMER_FUDGE)
 	});
-	timeout_add(&mesh->loop, &mesh->periodictimer, periodic_handler, &mesh->periodictimer, &(struct timeval) {
+	timeout_add(&mesh->loop, &mesh->periodictimer, periodic_handler, &mesh->periodictimer, &(struct timespec) {
 		0, 0
 	});
 

@@ -521,7 +521,7 @@ public:
 	}
 
 	/** This function performs tries to discover the local node's external address
-	 *  by contacting the meshlink.io server. If a reverse lookup of the address works,
+	 *  by contacting the findmyip.getcoco.buzz server. If a reverse lookup of the address works,
 	 *  the FQDN associated with the address will be returned.
 	 *
 	 *  Please note that this is function only returns a single address,
@@ -617,6 +617,18 @@ public:
 	 */
 	void set_invitation_timeout(int timeout) {
 		meshlink_set_invitation_timeout(handle, timeout);
+	}
+
+	/// Set the scheduling granularity of the application
+	/** This should be set to the effective scheduling granularity for the application.
+	 *  This depends on the scheduling granularity of the operating system, the application's
+	 *  process priority and whether it is running as realtime or not.
+	 *  The default value is 10000 (10 milliseconds).
+	 *
+	 *  @param granularity  The scheduling granularity of the application in microseconds.
+	 */
+	void set_granularity(long granularity) {
+		meshlink_set_scheduling_granularity(handle, granularity);
 	}
 
 	/// Invite another node into the mesh.
@@ -752,7 +764,7 @@ public:
 	 *  This is useful if new nodes are blacklisted by default.
 	 *
 	 *  \memberof meshlink_node
-	 *  @param node         A pointer to a struct meshlink_node describing the node to be whitelisted.
+	 *  @param name         The name of the node to whitelist.
 	 *
 	 *  @return             This function returns true if the node has been whitelisted, false otherwise.
 	 */
@@ -803,7 +815,7 @@ public:
 	/** This sets the timeout after which unresponsive channels will be reported as closed.
 	 *  The timeout is set for all current and future channels to the given node.
 	 *
-	 *  @param channel      A handle for the channel.
+	 *  @param node         The node to set the channel timeout for.
 	 *  @param timeout      The timeout in seconds after which unresponsive channels will be reported as closed.
 	 *                      The default is 60 seconds.
 	 */
@@ -993,6 +1005,17 @@ public:
 		return meshlink_channel_get_recvq(handle, channel);
 	}
 
+	/// Get the maximum segment size of a channel.
+	/** This returns the amount of bytes that can be sent at once for channels with UDP semantics.
+	 *
+	 *  @param channel      A handle for the channel.
+	 *
+	 *  @return             The amount of bytes in the receive buffer.
+	 */
+	size_t channel_get_mss(channel *channel) {
+		return meshlink_channel_get_mss(handle, channel);
+	};
+
 	/// Enable or disable zeroconf discovery of local peers
 	/** This controls whether zeroconf discovery using the Catta library will be
 	 *  enabled to search for peers on the local network. By default, it is enabled.
@@ -1039,7 +1062,7 @@ public:
 
 	/// Set the URL used to discover the host's external address
 	/** For generating invitation URLs, MeshLink can look up the externally visible address of the local node.
-	 *  It does so by querying an external service. By default, this is http://meshlink.io/host.cgi.
+	 *  It does so by querying an external service. By default, this is http://findmyip.getcoco.buzz/host.cgi.
 	 *  Only URLs starting with http:// are supported.
 	 *
 	 *  @param url   The URL to use for external address queries, or NULL to revert back to the default URL.

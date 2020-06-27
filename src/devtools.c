@@ -30,7 +30,7 @@
 
 #include "devtools.h"
 
-static void trybind_nop_probe(void) {
+static void nop_probe(void) {
 	return;
 }
 
@@ -44,9 +44,16 @@ static void inviter_commits_first_nop_probe(bool stage) {
 	return;
 }
 
-void (*devtool_trybind_probe)(void) = trybind_nop_probe;
+static void sptps_renewal_nop_probe(meshlink_node_t *node) {
+	(void)node;
+	return;
+}
+
+void (*devtool_trybind_probe)(void) = nop_probe;
 void (*devtool_keyrotate_probe)(int stage) = keyrotate_nop_probe;
 void (*devtool_set_inviter_commits_first)(bool inviter_commited_first) = inviter_commits_first_nop_probe;
+void (*devtool_adns_resolve_probe)(void) = nop_probe;
+void (*devtool_sptps_renewal_probe)(meshlink_node_t *node) = sptps_renewal_nop_probe;
 
 /* Return an array of edges in the current network graph.
  * Data captures the current state and will not be updated.
@@ -58,7 +65,7 @@ devtool_edge_t *devtool_get_all_edges(meshlink_handle_t *mesh, devtool_edge_t *e
 		return NULL;
 	}
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	devtool_edge_t *result = NULL;
 	unsigned int result_size = 0;
@@ -106,7 +113,7 @@ devtool_edge_t *devtool_get_all_edges(meshlink_handle_t *mesh, devtool_edge_t *e
 		meshlink_errno = MESHLINK_ENOMEM;
 	}
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 
 	return result;
 }
@@ -128,7 +135,7 @@ bool devtool_export_json_all_edges_state(meshlink_handle_t *mesh, FILE *stream) 
 
 	bool result = true;
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	// export edges and nodes
 	size_t node_count = 0;
@@ -243,7 +250,7 @@ done:
 	free(nodes);
 	free(edges);
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 
 	return result;
 }
@@ -256,7 +263,7 @@ void devtool_get_node_status(meshlink_handle_t *mesh, meshlink_node_t *node, dev
 
 	node_t *internal = (node_t *)node;
 
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	memcpy(&status->status, &internal->status, sizeof status->status);
 	memcpy(&status->address, &internal->address, sizeof status->address);
@@ -286,7 +293,7 @@ void devtool_get_node_status(meshlink_handle_t *mesh, meshlink_node_t *node, dev
 		status->udp_status = DEVTOOL_UDP_UNKNOWN;
 	}
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 }
 
 meshlink_submesh_t **devtool_get_all_submeshes(meshlink_handle_t *mesh, meshlink_submesh_t **submeshes, size_t *nmemb) {
@@ -298,7 +305,7 @@ meshlink_submesh_t **devtool_get_all_submeshes(meshlink_handle_t *mesh, meshlink
 	meshlink_submesh_t **result;
 
 	//lock mesh->nodes
-	pthread_mutex_lock(&mesh->mutex);
+	assert(pthread_mutex_lock(&mesh->mutex) == 0);
 
 	*nmemb = mesh->submeshes->count;
 	result = realloc(submeshes, *nmemb * sizeof(*submeshes));
@@ -315,7 +322,7 @@ meshlink_submesh_t **devtool_get_all_submeshes(meshlink_handle_t *mesh, meshlink
 		meshlink_errno = MESHLINK_ENOMEM;
 	}
 
-	pthread_mutex_unlock(&mesh->mutex);
+	assert(pthread_mutex_unlock(&mesh->mutex) == 0);
 
 	return result;
 }
@@ -335,4 +342,20 @@ meshlink_handle_t *devtool_open_in_netns(const char *confbase, const char *name,
 	meshlink_open_params_free(params);
 
 	return handle;
+}
+
+void devtool_force_sptps_renewal(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	node_t *n = (node_t *)node;
+	connection_t *c = n->connection;
+
+	n->last_req_key = -3600;
+
+	if(c) {
+		c->last_key_renewal = -3600;
+	}
 }

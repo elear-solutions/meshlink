@@ -67,6 +67,7 @@ typedef struct connection_t {
 	int tcplen;                     /* length of incoming TCPpacket */
 	int allow_request;              /* defined if there's only one request possible */
 	time_t last_ping_time;          /* last time we saw some activity from the other end or pinged them */
+	time_t last_key_renewal;        /* last time we renewed the SPTPS key */
 
 	struct outgoing_t *outgoing;    /* used to keep track of outgoing connections */
 
@@ -79,11 +80,11 @@ typedef struct connection_t {
 	int protocol_minor;             /* used protocol */
 } connection_t;
 
-extern void init_connections(struct meshlink_handle *mesh);
-extern void exit_connections(struct meshlink_handle *mesh);
-extern connection_t *new_connection(void) __attribute__((__malloc__));
-extern void free_connection(connection_t *);
-extern void connection_add(struct meshlink_handle *mesh, connection_t *);
-extern void connection_del(struct meshlink_handle *mesh, connection_t *);
+void init_connections(struct meshlink_handle *mesh);
+void exit_connections(struct meshlink_handle *mesh);
+connection_t *new_connection(void) __attribute__((__malloc__));
+void free_connection(connection_t *);
+void connection_add(struct meshlink_handle *mesh, connection_t *);
+void connection_del(struct meshlink_handle *mesh, connection_t *);
 
 #endif

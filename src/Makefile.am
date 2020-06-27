@@ -26,16 +26,18 @@ chacha_poly1305_SOURCES = \
 	chacha-poly1305/poly1305.c chacha-poly1305/poly1305.h
 
 utcp_SOURCES = \
-	utcp/utcp.c utcp/utcp.h \
-	utcp/utcp_priv.h
+	utcp.c utcp.h \
+	utcp_priv.h
 
 lib_LTLIBRARIES = libmeshlink.la
+noinst_PROGRAMS = utcp-test
 
 pkginclude_HEADERS = meshlink++.h meshlink.h
 
 libmeshlink_la_LDFLAGS = -export-symbols $(srcdir)/meshlink.sym
 
 libmeshlink_la_SOURCES = \
+	adns.c adns.h \
 	buffer.c buffer.h \
 	conf.c conf.h \
 	connection.c connection.h \
@@ -46,9 +48,6 @@ libmeshlink_la_SOURCES = \
 	ecdsagen.h \
 	edge.c edge.h \
 	event.c event.h \
-	fake-gai-errnos.h \
-	fake-getaddrinfo.c fake-getaddrinfo.h \
-	fake-getnameinfo.c fake-getnameinfo.h \
 	graph.c graph.h \
 	hash.c hash.h \
 	have.h \
@@ -65,6 +64,7 @@ libmeshlink_la_SOURCES = \
 	netutl.c netutl.h \
 	node.c node.h \
 	submesh.c submesh.h \
+	packmsg.h \
 	prf.c prf.h \
 	protocol.c protocol.h \
 	protocol_auth.c \
@@ -84,10 +84,17 @@ libmeshlink_la_SOURCES = \
 	$(chacha_poly1305_SOURCES) \
 	$(utcp_SOURCES)
 
+utcp_test_SOURCES = \
+	utcp-test.c \
+	$(utcp_SOURCES)
+
 EXTRA_libmeshlink_la_DEPENDENCIES = $(srcdir)/meshlink.sym
 
 libmeshlink_la_CFLAGS = $(PTHREAD_CFLAGS) -fPIC -iquote.
 libmeshlink_la_LDFLAGS += $(PTHREAD_LIBS)
+
+utcp_test_CFLAGS = $(PTHREAD_CFLAGS) -iquote.
+utcp_test_LDFLAGS = $(PTHREAD_LIBS)
 
 if CATTA
 libmeshlink_la_SOURCES += \

@@ -75,7 +75,9 @@ static void poll_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, size_t
 	assert(meshlink_channel_send(mesh, channel, "Hello", 5) == 5);
 }
 
-int main() {
+int main(void) {
+	init_sync_flag(&b_responded);
+
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
 
 	// Open two new meshlink instance.

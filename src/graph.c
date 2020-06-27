@@ -126,8 +126,8 @@ static void sssp_bfs(meshlink_handle_t *mesh) {
 			list_insert_tail(todo_list, e->to);
 		}
 
-		next = node->next; /* Because the list_insert_tail() above could have added something extra for us! */
-		list_delete_node(todo_list, node);
+		list_next = list_node->next; /* Because the list_insert_tail() above could have added something extra for us! */
+		list_delete_node(todo_list, list_node);
 	}
 
 	list_free(todo_list);
@@ -158,7 +158,7 @@ static void check_reachability(meshlink_handle_t *mesh) {
 				n->status.validkey = false;
 				sptps_stop(&n->sptps);
 				n->status.waitingforkey = false;
-				n->last_req_key = 0;
+				n->last_req_key = -3600;
 
 				n->status.udp_confirmed = false;
 				n->maxmtu = MTU;
@@ -177,7 +177,7 @@ static void check_reachability(meshlink_handle_t *mesh) {
 				if(n->status.reachable) {
 					logger(mesh, MESHLINK_DEBUG, "Node %s became reachable", n->name);
 					bool first_time_reachable = !n->last_reachable;
-					n->last_reachable = mesh->loop.now.tv_sec;
+					n->last_reachable = time(NULL);
 
 					if(first_time_reachable) {
 						if(!node_write_config(mesh, n)) {
@@ -187,7 +187,7 @@ static void check_reachability(meshlink_handle_t *mesh) {
 					}
 				} else {
 					logger(mesh, MESHLINK_DEBUG, "Node %s became unreachable", n->name);
-					n->last_unreachable = mesh->loop.now.tv_sec;
+					n->last_unreachable = time(NULL);
 				}
 			}
 
@@ -196,7 +196,7 @@ static void check_reachability(meshlink_handle_t *mesh) {
 			n->status.validkey = false;
 			sptps_stop(&n->sptps);
 			n->status.waitingforkey = false;
-			n->last_req_key = 0;
+			n->last_req_key = -3600;
 
 			n->status.udp_confirmed = false;
 			n->maxmtu = MTU;
@@ -228,8 +228,8 @@ static void check_reachability(meshlink_handle_t *mesh) {
 		if(!reachable) {
 			mesh->last_unreachable = mesh->loop.now.tv_sec;
 
-			if(mesh->threadstarted) {
-				timeout_set(&mesh->loop, &mesh->periodictimer, &(struct timeval) {
+			if(mesh->threadstarted && mesh->periodictimer.cb) {
+				timeout_set(&mesh->loop, &mesh->periodictimer, &(struct timespec) {
 					0, prng(mesh, TIMER_FUDGE)
 				});
 			}
