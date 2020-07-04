@@ -93,8 +93,10 @@ void retry_outgoing(meshlink_handle_t *mesh, outgoing_t *outgoing) {
 		outgoing->timeout += 5;
 	}
 
-	if(outgoing->timeout > mesh->maxtimeout) {
-		outgoing->timeout = mesh->maxtimeout;
+	int maxtimeout = mesh->dev_class_traits[outgoing->node->devclass].maxtimeout;
+
+	if(outgoing->timeout > maxtimeout) {
+		outgoing->timeout = maxtimeout;
 	}
 
 	timeout_add(&mesh->loop, &outgoing->ev, retry_outgoing_handler, outgoing, &(struct timespec) {
