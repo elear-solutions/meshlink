@@ -157,10 +157,16 @@ static ssize_t do_send(struct utcp *utcp, const void *data, size_t len) {
 }
 
 static void set_mtu(struct utcp *u, int s) {
+#ifdef IP_MTU
+
 	if(!mtu) {
 		socklen_t optlen = sizeof(mtu);
 		getsockopt(s, IPPROTO_IP, IP_MTU, &mtu, &optlen);
 	}
+
+#else
+	(void)s;
+#endif
 
 	if(!mtu || mtu == 65535) {
 		mtu = 1500;
@@ -264,6 +270,11 @@ int main(int argc, char *argv[]) {
 			return 1;
 		}
 	} else {
+#ifdef SO_NOSIGPIPE
+		int nosigpipe = 1;
+		setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, sizeof(nosigpipe));
+#endif
+
 		if(connect(s, ai->ai_addr, ai->ai_addrlen)) {
 			debug("Could not connect: %s\n", strerror(errno));
 			return 1;

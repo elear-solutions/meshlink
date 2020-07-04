@@ -39,10 +39,7 @@ typedef struct meshlink_queue_item {
 static inline void meshlink_queue_init(meshlink_queue_t *queue) {
 	queue->head = NULL;
 	queue->tail = NULL;
-	pthread_mutexattr_t attr;
-	pthread_mutexattr_init(&attr);
-	pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_DEFAULT);
-	pthread_mutex_init(&queue->mutex, &attr);
+	pthread_mutex_init(&queue->mutex, NULL);
 }
 
 static inline void meshlink_queue_exit(meshlink_queue_t *queue) {
@@ -58,7 +55,10 @@ static inline __attribute__((__warn_unused_result__)) bool meshlink_queue_push(m
 
 	item->data = data;
 	item->next = NULL;
-	pthread_mutex_lock(&queue->mutex);
+
+	if(pthread_mutex_lock(&queue->mutex) != 0) {
+		abort();
+	}
 
 	if(!queue->tail) {
 		queue->head = queue->tail = item;
@@ -73,7 +73,9 @@ static inline __attribute__((__warn_unused_result__)) bool meshlink_queue_push(m
 static inline __attribute__((__warn_unused_result__)) void *meshlink_queue_pop(meshlink_queue_t *queue) {
 	meshlink_queue_item_t *item;
 
-	pthread_mutex_lock(&queue->mutex);
+	if(pthread_mutex_lock(&queue->mutex) != 0) {
+		abort();
+	}
 
 	if((item = queue->head)) {
 		queue->head = item->next;
@@ -93,7 +95,9 @@ static inline __attribute__((__warn_unused_result__)) void *meshlink_queue_pop(m
 static inline __attribute__((__warn_unused_result__)) void *meshlink_queue_pop_cond(meshlink_queue_t *queue, pthread_cond_t *cond) {
 	meshlink_queue_item_t *item;
 
-	pthread_mutex_lock(&queue->mutex);
+	if(pthread_mutex_lock(&queue->mutex) != 0) {
+		abort();
+	}
 
 	while(!queue->head) {
 		pthread_cond_wait(cond, &queue->mutex);

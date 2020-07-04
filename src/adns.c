@@ -85,8 +85,9 @@ static void adns_cb_handler(event_loop_t *loop, void *data) {
 }
 
 void init_adns(meshlink_handle_t *mesh) {
-	signal_add(&mesh->loop, &mesh->adns_signal, adns_cb_handler, mesh, 1);
 	meshlink_queue_init(&mesh->adns_queue);
+	meshlink_queue_init(&mesh->adns_done_queue);
+	signal_add(&mesh->loop, &mesh->adns_signal, adns_cb_handler, mesh, 1);
 	pthread_create(&mesh->adns_thread, NULL, adns_loop, mesh);
 }
 
@@ -157,7 +158,9 @@ static void *adns_blocking_handler(void *data) {
 		info->ai = NULL;
 	}
 
-	pthread_mutex_lock(&info->mutex);
+	if(pthread_mutex_lock(&info->mutex) != 0) {
+		abort();
+	}
 
 	bool cleanup = info->done;
 
@@ -184,6 +187,8 @@ struct addrinfo *adns_blocking_request(meshlink_handle_t *mesh, char *host, char
 	info->host = host;
 	info->serv = serv;
 	info->socktype = socktype;
+	pthread_mutex_init(&info->mutex, NULL);
+	pthread_cond_init(&info->cond, NULL);
 
 	struct timespec deadline;
 	clock_gettime(CLOCK_REALTIME, &deadline);
@@ -200,7 +205,10 @@ struct addrinfo *adns_blocking_request(meshlink_handle_t *mesh, char *host, char
 		pthread_detach(thread);
 	}
 
-	pthread_mutex_lock(&info->mutex);
+	if(pthread_mutex_lock(&info->mutex) != 0) {
+		abort();
+	}
+
 	pthread_cond_timedwait(&info->cond, &info->mutex, &deadline);
 
 	struct addrinfo *result = NULL;

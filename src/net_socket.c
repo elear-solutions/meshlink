@@ -71,6 +71,11 @@ static void configure_tcp(connection_t *c) {
 	int lowdelay = IPTOS_LOWDELAY;
 	setsockopt(c->socket, IPPROTO_IP, IP_TOS, (void *)&lowdelay, sizeof(lowdelay));
 #endif
+
+#if defined(SO_NOSIGPIPE)
+	int nosigpipe = 1;
+	setsockopt(c->socket, SOL_SOCKET, SO_NOSIGPIPE, (void *)&nosigpipe, sizeof(nosigpipe));
+#endif
 }
 
 static void retry_outgoing_handler(event_loop_t *loop, void *data) {
@@ -88,8 +93,10 @@ void retry_outgoing(meshlink_handle_t *mesh, outgoing_t *outgoing) {
 		outgoing->timeout += 5;
 	}
 
-	if(outgoing->timeout > mesh->maxtimeout) {
-		outgoing->timeout = mesh->maxtimeout;
+	int maxtimeout = mesh->dev_class_traits[outgoing->node->devclass].maxtimeout;
+
+	if(outgoing->timeout > maxtimeout) {
+		outgoing->timeout = maxtimeout;
 	}
 
 	timeout_add(&mesh->loop, &outgoing->ev, retry_outgoing_handler, outgoing, &(struct timespec) {

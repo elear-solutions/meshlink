@@ -123,12 +123,12 @@ static void exportmeshgraph_timer(int signum) {
 	gettimeofday(&ts, NULL);
 
 	char name[1024];
-	snprintf(name, sizeof(name), "%sgraph_%ld_%03ld.json", namesprefix, ts.tv_sec, ts.tv_usec / 1000);
+	snprintf(name, sizeof(name), "%sgraph_%ld_%03ld.json", namesprefix, ts.tv_sec, ts.tv_usec / 1000L);
 
 	exportmeshgraph(name);
 }
 
-#ifndef _WIN32
+#ifdef ITIMER_REAL
 static bool exportmeshgraph_started = false;
 
 static bool exportmeshgraph_end(void) {
