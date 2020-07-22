@@ -12,10 +12,12 @@ class MeshlinklibConan(ConanFile):
     topics = ("peer-to-peer", "networking", "p2p")
     settings = "os", "compiler", "build_type", "arch"
     options = {
-        "shared": [True, False]
+        "shared": [True, False],
+        "cmake_build_type": [ "Debug", "Release" ]
     }
     default_options = {key: False for key in options.keys()}
     default_options ["shared"] = False
+    default_options ["cmake_build_type"] = "Release"
     generators = "make"
 
     @property
@@ -25,7 +27,10 @@ class MeshlinklibConan(ConanFile):
             "iOS-x86_64-*": "x86_64-apple-ios"
         }
     def config_options(self):
-        args = ["--prefix=${PWD}"]
+        if self.settings.build_type == "Release":
+         args = ["--prefix=${PWD}", "CFLAGS=-Os -s -ffunction-sections -fdata-sections"]
+        else:
+         args = ["--prefix=${PWD}"]
         return args
 
     def build(self):
