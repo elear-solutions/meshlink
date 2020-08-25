@@ -650,6 +650,7 @@ void utcp_accept(struct utcp_connection *c, utcp_recv_t recv, void *priv) {
 	debug(c, "accepted %p %p\n", c, recv, priv);
 	c->recv = recv;
 	c->priv = priv;
+	c->do_poll = true;
 	set_state(c, ESTABLISHED);
 }
 
@@ -1292,7 +1293,7 @@ ssize_t utcp_recv(struct utcp *utcp, const void *data, size_t len) {
 
 		if(hdr.ctl & SYN && !(hdr.ctl & ACK) && utcp->accept) {
 			// If we don't want to accept it, send a RST back
-			if((utcp->pre_accept && !utcp->pre_accept(utcp, hdr.dst))) {
+			if((utcp->listen && !utcp->listen(utcp, hdr.dst))) {
 				len = 1;
 				goto reset;
 			}
@@ -1718,6 +1719,7 @@ skip_ack:
 				c->snd.last++;
 				set_state(c, FIN_WAIT_1);
 			} else {
+				c->do_poll = true;
 				set_state(c, ESTABLISHED);
 			}
 
@@ -2043,7 +2045,6 @@ void utcp_abort_all_connections(struct utcp *utcp) {
 
 int utcp_close(struct utcp_connection *c) {
 	if(c->rcvbuf.used) {
-		fprintf(stderr, "UTCP channel closed with stuff in receive buffer\n");
 		return reset_connection(c) ? 0 : -1;
 	}
 
@@ -2157,7 +2158,7 @@ bool utcp_is_active(struct utcp *utcp) {
 	return false;
 }
 
-struct utcp *utcp_init(utcp_accept_t accept, utcp_pre_accept_t pre_accept, utcp_send_t send, void *priv) {
+struct utcp *utcp_init(utcp_accept_t accept, utcp_listen_t listen, utcp_send_t send, void *priv) {
 	if(!send) {
 		errno = EFAULT;
 		return NULL;
@@ -2183,7 +2184,7 @@ struct utcp *utcp_init(utcp_accept_t accept, utcp_pre_accept_t pre_accept, utcp_
 	}
 
 	utcp->accept = accept;
-	utcp->pre_accept = pre_accept;
+	utcp->listen = listen;
 	utcp->send = send;
 	utcp->priv = priv;
 	utcp->timeout = DEFAULT_USER_TIMEOUT; // sec
@@ -2400,10 +2401,10 @@ void utcp_set_poll_cb(struct utcp_connection *c, utcp_poll_t poll) {
 	}
 }
 
-void utcp_set_accept_cb(struct utcp *utcp, utcp_accept_t accept, utcp_pre_accept_t pre_accept) {
+void utcp_set_accept_cb(struct utcp *utcp, utcp_accept_t accept, utcp_listen_t listen) {
 	if(utcp) {
 		utcp->accept = accept;
-		utcp->pre_accept = pre_accept;
+		utcp->listen = listen;
 	}
 }
 

@@ -344,6 +344,52 @@ static bool is_localaddr(sockaddr_t *sa) {
 	}
 }
 
+#ifdef HAVE_GETIFADDRS
+struct getifaddrs_in_netns_params {
+	struct ifaddrs **ifa;
+	int netns;
+};
+
+#ifdef HAVE_SETNS
+static void *getifaddrs_in_netns_thread(void *arg) {
+	struct getifaddrs_in_netns_params *params = arg;
+
+	if(setns(params->netns, CLONE_NEWNET) == -1) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return NULL;
+	}
+
+	if(getifaddrs(params->ifa) != 0) {
+		*params->ifa = NULL;
+	}
+
+	return NULL;
+}
+#endif // HAVE_SETNS
+
+static int getifaddrs_in_netns(struct ifaddrs **ifa, int netns) {
+	if(netns == -1) {
+		return getifaddrs(ifa);
+	}
+
+#ifdef HAVE_SETNS
+	struct getifaddrs_in_netns_params params = {ifa, netns};
+	pthread_t thr;
+
+	if(pthread_create(&thr, NULL, getifaddrs_in_netns_thread, &params) == 0) {
+		if(pthread_join(thr, NULL) != 0) {
+			abort();
+		}
+	}
+
+	return *params.ifa ? 0 : -1;
+#else
+	return -1;
+#endif // HAVE_SETNS
+
+}
+#endif
+
 char *meshlink_get_local_address_for_family(meshlink_handle_t *mesh, int family) {
 	(void)mesh;
 
@@ -361,12 +407,12 @@ char *meshlink_get_local_address_for_family(meshlink_handle_t *mesh, int family)
 
 	if(!success) {
 		struct ifaddrs *ifa = NULL;
-		getifaddrs(&ifa);
+		getifaddrs_in_netns(&ifa, mesh->netns);
 
 		for(struct ifaddrs *ifap = ifa; ifap; ifap = ifap->ifa_next) {
 			sockaddr_t *sa = (sockaddr_t *)ifap->ifa_addr;
 
-			if(sa->sa.sa_family != family) {
+			if(!sa || sa->sa.sa_family != family) {
 				continue;
 			}
 
@@ -783,7 +829,7 @@ static bool finalize_join(join_state_t *state, const void *buf, uint16_t len) {
 	}
 
 	/* Ensure the configuration directory metadata is on disk */
-	if(!config_sync(mesh, "current") || !sync_path(mesh->confbase)) {
+	if(!config_sync(mesh, "current") || (mesh->confbase && !sync_path(mesh->confbase))) {
 		return false;
 	}
 
@@ -1665,6 +1711,11 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 		logger(mesh, MESHLINK_ERROR, "Listening socket not open\n");
 		meshlink_errno = MESHLINK_ENETWORK;
 		return false;
+	}
+
+	// Reset node connection timers
+	for splay_each(node_t, n, mesh->nodes) {
+		n->last_connect_try = 0;
 	}
 
 	// TODO: open listening sockets first
@@ -3575,7 +3626,12 @@ static bool channel_pre_accept(struct utcp *utcp, uint16_t port) {
 	(void)port;
 	node_t *n = utcp->priv;
 	meshlink_handle_t *mesh = n->mesh;
-	return mesh->channel_accept_cb;
+
+	if(mesh->channel_accept_cb && mesh->channel_listen_cb) {
+		return mesh->channel_listen_cb(mesh, (meshlink_node_t *)n, port);
+	} else {
+		return mesh->channel_accept_cb;
+	}
 }
 
 /* Finish one AIO buffer, return true if the channel is still open. */
@@ -3877,6 +3933,21 @@ void meshlink_set_channel_poll_cb(meshlink_handle_t *mesh, meshlink_channel_t *c
 
 	channel->poll_cb = cb;
 	utcp_set_poll_cb(channel->c, (cb || channel->aio_send) ? channel_poll : NULL);
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+void meshlink_set_channel_listen_cb(meshlink_handle_t *mesh, meshlink_channel_listen_cb_t cb) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	mesh->channel_listen_cb = cb;
+
 	pthread_mutex_unlock(&mesh->mutex);
 }
 
@@ -4420,7 +4491,20 @@ void meshlink_set_dev_class_maxtimeout(struct meshlink_handle *mesh, dev_class_t
 	pthread_mutex_unlock(&mesh->mutex);
 }
 
-extern void meshlink_set_inviter_commits_first(struct meshlink_handle *mesh, bool inviter_commits_first) {
+void meshlink_reset_timers(struct meshlink_handle *mesh) {
+	if(!mesh) {
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	handle_network_change(mesh, true);
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+void meshlink_set_inviter_commits_first(struct meshlink_handle *mesh, bool inviter_commits_first) {
 	if(!mesh) {
 		meshlink_errno = EINVAL;
 		return;

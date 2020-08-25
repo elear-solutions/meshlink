@@ -360,6 +360,7 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	n->last_successfull_connection = mesh->loop.now.tv_sec;
 
 	n->connection = c;
+	n->nexthop = n;
 	c->node = n;
 
 	/* Activate this connection */
@@ -369,6 +370,10 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	c->status.active = true;
 
 	logger(mesh, MESHLINK_INFO, "Connection with %s activated", c->name);
+
+	if(mesh->meta_status_cb) {
+		mesh->meta_status_cb(mesh, (meshlink_node_t *)n, true);
+	}
 
 	/* Send him everything we know */
 
@@ -385,6 +390,7 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	c->edge->weight = mesh->dev_class_traits[devclass].edge_weight;
 	c->edge->connection = c;
 
+	node_add_recent_address(mesh, n, &c->address);
 	edge_add(mesh, c->edge);
 
 	/* Notify everyone of the new edge */
@@ -394,6 +400,12 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	/* Run MST and SSSP algorithms */
 
 	graph(mesh);
+
+	/* Request a session key to jump start UDP traffic */
+
+	if(c->status.initiator) {
+		send_req_key(mesh, n);
+	}
 
 	return true;
 }

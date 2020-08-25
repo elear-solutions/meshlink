@@ -16,12 +16,19 @@
 void init_sync_flag(struct sync_flag *s) {
 	assert(pthread_mutex_init(&s->mutex, NULL) == 0);
 	assert(pthread_cond_init(&s->cond, NULL) == 0);
+	s->flag = false;
 }
 
 void set_sync_flag(struct sync_flag *s, bool value) {
 	assert(pthread_mutex_lock(&s->mutex) == 0);
 	s->flag = value;
 	assert(pthread_cond_broadcast(&s->cond) == 0);
+	assert(pthread_mutex_unlock(&s->mutex) == 0);
+}
+
+void reset_sync_flag(struct sync_flag *s) {
+	assert(pthread_mutex_lock(&s->mutex) == 0);
+	s->flag = false;
 	assert(pthread_mutex_unlock(&s->mutex) == 0);
 }
 
@@ -92,6 +99,26 @@ void open_meshlink_pair(meshlink_handle_t **pa, meshlink_handle_t **pb, const ch
 
 	free(a_name);
 	free(b_name);
+
+	meshlink_enable_discovery(a, false);
+	meshlink_enable_discovery(b, false);
+
+	link_meshlink_pair(a, b);
+
+	*pa = a;
+	*pb = b;
+}
+
+void open_meshlink_pair_ephemeral(meshlink_handle_t **pa, meshlink_handle_t **pb, const char *prefix) {
+	// Create two new MeshLink instances
+
+	*pa = *pb = NULL;
+
+	meshlink_handle_t *a = meshlink_open_ephemeral("a", prefix, DEV_CLASS_BACKBONE);
+	meshlink_handle_t *b = meshlink_open_ephemeral("b", prefix, DEV_CLASS_BACKBONE);
+
+	assert(a);
+	assert(b);
 
 	meshlink_enable_discovery(a, false);
 	meshlink_enable_discovery(b, false);

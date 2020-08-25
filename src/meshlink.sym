@@ -5,6 +5,7 @@ devtool_get_all_submeshes
 devtool_get_node_status
 devtool_keyrotate_probe
 devtool_open_in_netns
+devtool_set_meta_status_cb
 devtool_set_inviter_commits_first
 devtool_trybind_probe
 meshlink_add_address
@@ -61,9 +62,13 @@ meshlink_open_ephemeral
 meshlink_open_ex
 meshlink_open_params_free
 meshlink_open_params_init
+meshlink_open_params_set_netns
+meshlink_open_params_set_storage_key
+meshlink_reset_timers
 meshlink_send
 meshlink_set_canonical_address
 meshlink_set_channel_accept_cb
+meshlink_set_channel_listen_cb
 meshlink_set_channel_poll_cb
 meshlink_set_channel_rcvbuf
 meshlink_set_channel_receive_cb
