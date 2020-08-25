@@ -366,7 +366,7 @@ char *meshlink_get_local_address_for_family(meshlink_handle_t *mesh, int family)
 		for(struct ifaddrs *ifap = ifa; ifap; ifap = ifap->ifa_next) {
 			sockaddr_t *sa = (sockaddr_t *)ifap->ifa_addr;
 
-			if(sa->sa.sa_family != family) {
+			if(!sa || sa->sa.sa_family != family) {
 				continue;
 			}
 
@@ -967,14 +967,6 @@ static bool ecdsa_keygen(meshlink_handle_t *mesh) {
 	logger(mesh, MESHLINK_DEBUG, "Done.\n");
 
 	return true;
-}
-
-static bool timespec_lt(const struct timespec *a, const struct timespec *b) {
-	if(a->tv_sec == b->tv_sec) {
-		return a->tv_nsec < b->tv_nsec;
-	} else {
-		return a->tv_sec < b->tv_sec;
-	}
 }
 
 static struct timespec idle(event_loop_t *loop, void *data) {
@@ -2027,7 +2019,6 @@ static bool prepare_packet(meshlink_handle_t *mesh, meshlink_node_t *destination
 
 	// Prepare the packet
 	packet->probe = false;
-	packet->tcp = false;
 	packet->len = len + sizeof(*hdr);
 
 	hdr = (meshlink_packethdr_t *)packet->data;
@@ -3728,8 +3719,8 @@ static void channel_retransmit(struct utcp_connection *utcp_connection) {
 	node_t *n = utcp_connection->utcp->priv;
 	meshlink_handle_t *mesh = n->mesh;
 
-	if(n->mtuprobes == 31) {
-		timeout_set(&mesh->loop, &n->mtutimeout, &(struct timespec) {
+	if(n->mtuprobes == -1) {
+		timeout_set(&mesh->loop, &n->udp_ping_timeout, &(struct timespec) {
 			0, 0
 		});
 	}
@@ -4420,7 +4411,20 @@ void meshlink_set_dev_class_maxtimeout(struct meshlink_handle *mesh, dev_class_t
 	pthread_mutex_unlock(&mesh->mutex);
 }
 
-extern void meshlink_set_inviter_commits_first(struct meshlink_handle *mesh, bool inviter_commits_first) {
+void meshlink_reset_timers(struct meshlink_handle *mesh) {
+	if(!mesh) {
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	handle_network_change(mesh, true);
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+void meshlink_set_inviter_commits_first(struct meshlink_handle *mesh, bool inviter_commits_first) {
 	if(!mesh) {
 		meshlink_errno = EINVAL;
 		return;

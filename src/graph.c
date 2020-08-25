@@ -165,7 +165,7 @@ static void check_reachability(meshlink_handle_t *mesh) {
 				n->minmtu = 0;
 				n->mtuprobes = 0;
 
-				timeout_del(&mesh->loop, &n->mtutimeout);
+				timeout_del(&mesh->loop, &n->udp_ping_timeout);
 			}
 		}
 
@@ -203,7 +203,7 @@ static void check_reachability(meshlink_handle_t *mesh) {
 			n->minmtu = 0;
 			n->mtuprobes = 0;
 
-			timeout_del(&mesh->loop, &n->mtutimeout);
+			timeout_del(&mesh->loop, &n->udp_ping_timeout);
 
 			if(!n->status.blacklisted) {
 				update_node_status(mesh, n);
