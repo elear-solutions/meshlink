@@ -11,6 +11,7 @@ TESTS = \
 	channels-fork \
 	channels-no-partial \
 	channels-udp \
+	channels-udp-cornercases \
 	duplicate \
 	encrypted \
 	ephemeral \
@@ -18,11 +19,15 @@ TESTS = \
 	import-export \
 	invite-join \
 	pmtu \
+	meta-connections \
 	sign-verify \
 	trio \
 	trio2 \
 	utcp-benchmark \
 	utcp-benchmark-stream
+
+TESTS += \
+	api_set_node_status_cb
 
 if BLACKBOX_TESTS
 SUBDIRS = blackbox
@@ -34,6 +39,7 @@ AM_CPPFLAGS = $(PTHREAD_CFLAGS) -I${top_srcdir}/src -iquote. -Wall
 AM_LDFLAGS = $(PTHREAD_LIBS)
 
 check_PROGRAMS = \
+	api_set_node_status_cb \
 	basic \
 	basicpp \
 	blacklist \
@@ -46,6 +52,7 @@ check_PROGRAMS = \
 	channels-fork \
 	channels-no-partial \
 	channels-udp \
+	channels-udp-cornercases \
 	duplicate \
 	echo-fork \
 	encrypted \
@@ -53,7 +60,11 @@ check_PROGRAMS = \
 	get-all-nodes \
 	import-export \
 	invite-join \
+<<<<<<< HEAD
 	pmtu \
+=======
+	meta-connections \
+>>>>>>> 4bfa6c6c9749fb3d8b73734ec7aa1ca51f813b5f
 	sign-verify \
 	stream \
 	trio \
@@ -62,6 +73,9 @@ check_PROGRAMS = \
 if INSTALL_TESTS
 bin_PROGRAMS = $(check_PROGRAMS)
 endif
+
+api_set_node_status_cb_SOURCES = api_set_node_status_cb.c utils.c utils.h
+api_set_node_status_cb_LDADD = $(top_builddir)/src/libmeshlink.la
 
 basic_SOURCES = basic.c utils.c utils.h
 basic_LDADD = $(top_builddir)/src/libmeshlink.la
@@ -99,6 +113,9 @@ channels_cornercases_LDADD = $(top_builddir)/src/libmeshlink.la
 channels_udp_SOURCES = channels-udp.c utils.c utils.h
 channels_udp_LDADD = $(top_builddir)/src/libmeshlink.la
 
+channels_udp_cornercases_SOURCES = channels-udp-cornercases.c utils.c utils.h
+channels_udp_cornercases_LDADD = $(top_builddir)/src/libmeshlink.la
+
 duplicate_SOURCES = duplicate.c utils.c utils.h
 duplicate_LDADD = $(top_builddir)/src/libmeshlink.la
 
@@ -120,8 +137,13 @@ import_export_LDADD = $(top_builddir)/src/libmeshlink.la
 invite_join_SOURCES = invite-join.c utils.c utils.h
 invite_join_LDADD = $(top_builddir)/src/libmeshlink.la
 
+<<<<<<< HEAD
 pmtu_SOURCES = pmtu.c utils.c utils.h
 pmtu_LDADD = $(top_builddir)/src/libmeshlink.la
+=======
+meta_connections_SOURCES = meta-connections.c netns_utils.c netns_utils.h utils.c utils.h
+meta_connections_LDADD = $(top_builddir)/src/libmeshlink.la
+>>>>>>> 4bfa6c6c9749fb3d8b73734ec7aa1ca51f813b5f
 
 sign_verify_SOURCES = sign-verify.c utils.c utils.h
 sign_verify_LDADD = $(top_builddir)/src/libmeshlink.la
