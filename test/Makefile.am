@@ -60,11 +60,8 @@ check_PROGRAMS = \
 	get-all-nodes \
 	import-export \
 	invite-join \
-<<<<<<< HEAD
 	pmtu \
-=======
 	meta-connections \
->>>>>>> 4bfa6c6c9749fb3d8b73734ec7aa1ca51f813b5f
 	sign-verify \
 	stream \
 	trio \
@@ -137,13 +134,11 @@ import_export_LDADD = $(top_builddir)/src/libmeshlink.la
 invite_join_SOURCES = invite-join.c utils.c utils.h
 invite_join_LDADD = $(top_builddir)/src/libmeshlink.la
 
-<<<<<<< HEAD
 pmtu_SOURCES = pmtu.c utils.c utils.h
 pmtu_LDADD = $(top_builddir)/src/libmeshlink.la
-=======
+
 meta_connections_SOURCES = meta-connections.c netns_utils.c netns_utils.h utils.c utils.h
 meta_connections_LDADD = $(top_builddir)/src/libmeshlink.la
->>>>>>> 4bfa6c6c9749fb3d8b73734ec7aa1ca51f813b5f
 
 sign_verify_SOURCES = sign-verify.c utils.c utils.h
 sign_verify_LDADD = $(top_builddir)/src/libmeshlink.la
