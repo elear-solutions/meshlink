@@ -163,6 +163,7 @@ static void check_reachability(meshlink_handle_t *mesh) {
 				n->status.udp_confirmed = false;
 				n->maxmtu = MTU;
 				n->minmtu = 0;
+				n->udpprobes = 0;
 				n->mtuprobes = 0;
 
 				timeout_del(&mesh->loop, &n->udp_ping_timeout);
@@ -201,6 +202,7 @@ static void check_reachability(meshlink_handle_t *mesh) {
 			n->status.udp_confirmed = false;
 			n->maxmtu = MTU;
 			n->minmtu = 0;
+			n->udpprobes = 0;
 			n->mtuprobes = 0;
 
 			timeout_del(&mesh->loop, &n->udp_ping_timeout);
