@@ -17,6 +17,7 @@ TESTS = \
 	get-all-nodes \
 	import-export \
 	invite-join \
+	pmtu \
 	sign-verify \
 	trio \
 	trio2 \
@@ -52,6 +53,7 @@ check_PROGRAMS = \
 	get-all-nodes \
 	import-export \
 	invite-join \
+	pmtu \
 	sign-verify \
 	stream \
 	trio \
@@ -117,6 +119,9 @@ import_export_LDADD = $(top_builddir)/src/libmeshlink.la
 
 invite_join_SOURCES = invite-join.c utils.c utils.h
 invite_join_LDADD = $(top_builddir)/src/libmeshlink.la
+
+pmtu_SOURCES = pmtu.c utils.c utils.h
+pmtu_LDADD = $(top_builddir)/src/libmeshlink.la
 
 sign_verify_SOURCES = sign-verify.c utils.c utils.h
 sign_verify_LDADD = $(top_builddir)/src/libmeshlink.la
