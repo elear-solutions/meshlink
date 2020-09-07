@@ -57,13 +57,7 @@ static void client_receive_cb(meshlink_handle_t *mesh, meshlink_channel_t *chann
 	(void)data;
 
 	// We expect always the same amount of data from the server.
-<<<<<<< HEAD
-	assert(mesh->priv);
-	struct client *client = mesh->priv;
-	assert(len == 512 || len == 65536);
-=======
 	assert(len == 512 || len == LARGE_SIZE);
->>>>>>> ab2be40... Allow sending up to 16 MiB in one go over a UDP channel.
 	client->received += len;
 
 	if(len == LARGE_SIZE) {
