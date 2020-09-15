@@ -4,7 +4,7 @@ from conans import ConanFile, AutoToolsBuildEnvironment, tools
 
 class MeshlinklibConan(ConanFile):
     name = "meshlink"
-    version = "0.7.0"
+    version = "0.8.0"
     license = "<Put the package license here>"
     author = "<Put your name here> <And your email here>"
     url = "https://github.com/elear-solutions/meshlink"
