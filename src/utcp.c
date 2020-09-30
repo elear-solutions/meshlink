@@ -1367,7 +1367,7 @@ synack:
 
 	if(c->state == CLOSED) {
 		debug(c, "got packet for closed connection\n");
-		return 0;
+		goto reset;
 	}
 
 	// It is for an existing connection.
@@ -1453,17 +1453,6 @@ synack:
 		if(hdr.ack != c->snd.last && c->state >= ESTABLISHED) {
 			hdr.ack = c->snd.una;
 		}
-	}
-
-	if(hdr.ctl & ACK && (seqdiff(hdr.ack, c->snd.last) > 0 || seqdiff(hdr.ack, c->snd.una) < 0)) {
-		debug(c, "packet ack seqno out of range, %u <= %u < %u\n", c->snd.una, hdr.ack, c->snd.una + c->sndbuf.used);
-
-		// Ignore unacceptable RST packets.
-		if(hdr.ctl & RST) {
-			return 0;
-		}
-
-		goto reset;
 	}
 
 	// 2. Handle RST packets
@@ -1555,14 +1544,14 @@ synack:
 
 	// 3. Advance snd.una
 
+	if(seqdiff(hdr.ack, c->snd.last) > 0 || seqdiff(hdr.ack, c->snd.una) < 0) {
+		debug(c, "packet ack seqno out of range, %u <= %u < %u\n", c->snd.una, hdr.ack, c->snd.una + c->sndbuf.used);
+		goto reset;
+	}
+
 	advanced = seqdiff(hdr.ack, c->snd.una);
 
 	if(advanced) {
-		if(c->reapable && !is_reliable(c)) {
-			// TODO: we should also send RST for reliable connections
-			goto reset;
-		}
-
 		// RTT measurement
 		if(c->rtt_start.tv_sec) {
 			if(c->rtt_seq == hdr.ack) {
@@ -1781,8 +1770,15 @@ skip_ack:
 			return 0;
 
 		case ESTABLISHED:
+			break;
+
 		case FIN_WAIT_1:
 		case FIN_WAIT_2:
+			if(c->reapable) {
+				// We already closed the connection and are not interested in more data.
+				goto reset;
+			}
+
 			break;
 
 		case CLOSE_WAIT:
@@ -2004,7 +2000,7 @@ static bool reset_connection(struct utcp_connection *c) {
 	hdr.src = c->src;
 	hdr.dst = c->dst;
 	hdr.seq = c->snd.nxt;
-	hdr.ack = 0;
+	hdr.ack = c->rcv.nxt;
 	hdr.wnd = 0;
 	hdr.ctl = RST;
 
@@ -2047,10 +2043,6 @@ void utcp_abort_all_connections(struct utcp *utcp) {
 }
 
 int utcp_close(struct utcp_connection *c) {
-	if(c->rcvbuf.used) {
-		return reset_connection(c) ? 0 : -1;
-	}
-
 	if(utcp_shutdown(c, SHUT_RDWR) && errno != ENOTCONN) {
 		return -1;
 	}
