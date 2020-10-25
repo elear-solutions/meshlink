@@ -450,6 +450,7 @@ public:
 	/// Get a list of all nodes by blacklist status.
 	/** This function returns a list with handles for all the nodes who were either blacklisted or whitelisted.
 	 *
+	 *  @param blacklisted  If true, a list of blacklisted nodes will be returned, otherwise whitelisted nodes.
 	 *  @param nodes        A pointer to an array of pointers to meshlink::node, which should be allocated by the application.
 	 *  @param nmemb        The maximum number of pointers that can be stored in the nodes array.
 	 *
@@ -515,7 +516,6 @@ public:
 	/// Clear the canonical Address for a node.
 	/** This function clears the canonical Address for a node.
 	 *
-	 *  @param mesh         A handle which represents an instance of MeshLink.
 	 *  @param node         A pointer to a struct meshlink_node describing the node.
 	 *
 	 *  @return             This function returns true if the address was removed, false otherwise.
