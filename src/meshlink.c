@@ -1440,7 +1440,7 @@ meshlink_handle_t *meshlink_open_ephemeral(const char *name, const char *appname
 }
 
 meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
-	logger(NULL, MESHLINK_DEBUG, "meshlink_open called\n");
+	logger(NULL, MESHLINK_INFO, "meshlink_open was never called bro..\n");
 
 	// Validate arguments provided by the application
 	if(!params->appname || !*params->appname) {
