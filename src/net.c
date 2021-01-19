@@ -722,12 +722,14 @@ void retry(meshlink_handle_t *mesh) {
   this is where it all happens...
 */
 void main_loop(meshlink_handle_t *mesh) {
+logger(mesh, MESHLINK_INFO, "Inside meshlink main loop..\n");
 	timeout_add(&mesh->loop, &mesh->pingtimer, timeout_handler, &mesh->pingtimer, &(struct timespec) {
 		1, prng(mesh, TIMER_FUDGE)
 	});
 	timeout_add(&mesh->loop, &mesh->periodictimer, periodic_handler, &mesh->periodictimer, &(struct timespec) {
 		0, 0
 	});
+logger(mesh, MESHLINK_INFO, "Added timers\n");
 
 	//Add signal handler
 	mesh->datafromapp.signum = 0;

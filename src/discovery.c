@@ -476,7 +476,7 @@ fail:
 }
 
 bool discovery_start(meshlink_handle_t *mesh) {
-	logger(mesh, MESHLINK_DEBUG, "discovery_start called\n");
+	logger(mesh, MESHLINK_INFO, "discovery_start called\n");
 
 	assert(mesh);
 	assert(!mesh->catta_poll);
@@ -485,11 +485,13 @@ bool discovery_start(meshlink_handle_t *mesh) {
 	assert(!mesh->discovery_threadstarted);
 	assert(!mesh->catta_servicetype);
 
+	logger(mesh, MESHLINK_INFO, "Lock disovery mutex\n");
 	if(pthread_mutex_lock(&mesh->discovery_mutex) != 0) {
 		abort();
 	}
 
 	// Start the discovery thread
+	logger(mesh, MESHLINK_INFO, "spawning catta thread..\n");
 	if(pthread_create(&mesh->discovery_thread, NULL, discovery_loop, mesh) != 0) {
 		pthread_mutex_unlock(&mesh->discovery_mutex);
 		logger(mesh, MESHLINK_ERROR, "Could not start discovery thread: %s\n", strerror(errno));
@@ -497,11 +499,14 @@ bool discovery_start(meshlink_handle_t *mesh) {
 		return false;
 	}
 
+	logger(mesh, MESHLINK_INFO, "Waiting on condition in catta..\n");
 	pthread_cond_wait(&mesh->discovery_cond, &mesh->discovery_mutex);
+	logger(mesh, MESHLINK_INFO, "Unlocking disovery mutex\n");
 	pthread_mutex_unlock(&mesh->discovery_mutex);
 
 	mesh->discovery_threadstarted = true;
 
+	logger(mesh, MESHLINK_INFO, "Started catta service\n");
 	return true;
 }
 

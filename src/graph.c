@@ -226,6 +226,8 @@ static void check_reachability(meshlink_handle_t *mesh) {
 }
 
 void graph(meshlink_handle_t *mesh) {
+logger(mesh, MESHLINK_INFO, "sssp_bfs\n");
 	sssp_bfs(mesh);
+logger(mesh, MESHLINK_INFO, "check_reachability\n");
 	check_reachability(mesh);
 }

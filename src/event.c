@@ -25,6 +25,7 @@
 #include "splay_tree.h"
 #include "utils.h"
 #include "xalloc.h"
+#include "logger.h"
 
 #ifndef EVENT_CLOCK
 #if defined(CLOCK_MONOTONIC_RAW) && defined(__x86_64__)
@@ -279,12 +280,14 @@ void idle_set(event_loop_t *loop, idle_cb_t cb, void *data) {
 }
 
 bool event_loop_run(event_loop_t *loop, pthread_mutex_t *mutex) {
+logger(NULL, MESHLINK_INFO, "Event loop run started\n");
 	assert(mutex);
 
 	fd_set readable;
 	fd_set writable;
 
 	while(loop->running) {
+logger(NULL, MESHLINK_INFO, "loop->running..\n");
 		clock_gettime(EVENT_CLOCK, &loop->now);
 		struct timespec it, ts = {3600, 0};
 
@@ -319,7 +322,9 @@ bool event_loop_run(event_loop_t *loop, pthread_mutex_t *mutex) {
 		}
 
 		// release mesh mutex during select
+logger(NULL, MESHLINK_INFO, "release mesh mutex during select\n");
 		pthread_mutex_unlock(mutex);
+logger(NULL, MESHLINK_INFO, "Entering into select\n");
 
 #ifdef HAVE_PSELECT
 		int n = pselect(fds, &readable, &writable, NULL, &ts, NULL);
@@ -328,9 +333,11 @@ bool event_loop_run(event_loop_t *loop, pthread_mutex_t *mutex) {
 		int n = select(fds, &readable, &writable, NULL, (struct timeval *)&tv);
 #endif
 
+logger(NULL, MESHLINK_INFO, "Locking the mutex\n");
 		if(pthread_mutex_lock(mutex) != 0) {
 			abort();
 		}
+logger(NULL, MESHLINK_INFO, "Acquired the meshlink mutex\n");
 
 		clock_gettime(EVENT_CLOCK, &loop->now);
 

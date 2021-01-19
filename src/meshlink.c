@@ -1637,9 +1637,11 @@ meshlink_submesh_t *meshlink_submesh_open(meshlink_handle_t  *mesh, const char *
 }
 
 static void *meshlink_main_loop(void *arg) {
+logger(NULL, MESHLINK_INFO, "Inside meshlink main loop thread..\n");
 	meshlink_handle_t *mesh = arg;
 
 	if(mesh->netns != -1) {
+logger(NULL, MESHLINK_INFO, "mesh->netns: %d\n", mesh->netns);
 #ifdef HAVE_SETNS
 
 		if(setns(mesh->netns, CLONE_NEWNET) != 0) {
@@ -1656,20 +1658,23 @@ static void *meshlink_main_loop(void *arg) {
 #if HAVE_CATTA
 
 	if(mesh->discovery) {
+logger(NULL, MESHLINK_INFO, "Setting discovery start\n");
 		discovery_start(mesh);
 	}
 
 #endif
 
+logger(NULL, MESHLINK_INFO, "Locking meshlink mutex..\n");
 	if(pthread_mutex_lock(&mesh->mutex) != 0) {
 		abort();
 	}
 
-	logger(mesh, MESHLINK_DEBUG, "Starting main_loop...\n");
+	logger(NULL, MESHLINK_INFO, "Starting main_loop...\n");
 	pthread_cond_broadcast(&mesh->cond);
 	main_loop(mesh);
-	logger(mesh, MESHLINK_DEBUG, "main_loop returned.\n");
+	logger(NULL, MESHLINK_INFO, "main_loop returned.\n");
 
+logger(NULL, MESHLINK_INFO, "Unlocking meshlink mutex..\n");
 	pthread_mutex_unlock(&mesh->mutex);
 
 #if HAVE_CATTA
@@ -1690,7 +1695,7 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 		return false;
 	}
 
-	logger(mesh, MESHLINK_DEBUG, "meshlink_start called\n");
+	logger(mesh, MESHLINK_INFO, "meshlink_start called\n");
 
 	if(pthread_mutex_lock(&mesh->mutex) != 0) {
 		abort();
@@ -1701,19 +1706,21 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 	assert(mesh->self->ecdsa);
 	assert(!memcmp((uint8_t *)mesh->self->ecdsa + 64, (uint8_t *)mesh->private_key + 64, 32));
 
+	logger(mesh, MESHLINK_INFO, "checking the thread is running or not\n");
 	if(mesh->threadstarted) {
-		logger(mesh, MESHLINK_DEBUG, "thread was already running\n");
+		logger(mesh, MESHLINK_INFO, "thread was already running\n");
 		pthread_mutex_unlock(&mesh->mutex);
 		return true;
 	}
 
 	if(mesh->listen_socket[0].tcp.fd < 0) {
-		logger(mesh, MESHLINK_ERROR, "Listening socket not open\n");
+		logger(mesh, MESHLINK_INFO, "Listening socket not open\n");
 		meshlink_errno = MESHLINK_ENETWORK;
 		return false;
 	}
 
 	// Reset node connection timers
+	logger(mesh, MESHLINK_INFO, "Reset node connection timers\n");
 	for splay_each(node_t, n, mesh->nodes) {
 		n->last_connect_try = 0;
 	}
@@ -1721,13 +1728,15 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 	// TODO: open listening sockets first
 
 	//Check that a valid name is set
+	logger(mesh, MESHLINK_INFO, "Check that a valid name is set\n");
 	if(!mesh->name) {
-		logger(mesh, MESHLINK_DEBUG, "No name given!\n");
+		logger(mesh, MESHLINK_INFO, "No name given!\n");
 		meshlink_errno = MESHLINK_EINVAL;
 		pthread_mutex_unlock(&mesh->mutex);
 		return false;
 	}
 
+logger(mesh, MESHLINK_INFO, "Init outgoings and adns\n");
 	init_outgoings(mesh);
 	init_adns(mesh);
 
@@ -1740,8 +1749,9 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 	pthread_attr_init(&attr);
 	pthread_attr_setstacksize(&attr, 1024 * 1024);
 
+logger(mesh, MESHLINK_INFO, "Creating meshlink thread..\n");
 	if(pthread_create(&mesh->thread, &attr, meshlink_main_loop, mesh) != 0) {
-		logger(mesh, MESHLINK_DEBUG, "Could not start thread: %s\n", strerror(errno));
+		logger(mesh, MESHLINK_INFO, "Could not start thread: %s\n", strerror(errno));
 		memset(&mesh->thread, 0, sizeof(mesh)->thread);
 		meshlink_errno = MESHLINK_EINTERNAL;
 		event_loop_stop(&mesh->loop);
@@ -1750,12 +1760,14 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 	}
 
 	pthread_cond_wait(&mesh->cond, &mesh->mutex);
+logger(mesh, MESHLINK_INFO, "pthread_cond_wait done, meshlink thread started..\n");
 	mesh->threadstarted = true;
 
 	// Ensure we are considered reachable
 	graph(mesh);
 
 	pthread_mutex_unlock(&mesh->mutex);
+logger(mesh, MESHLINK_INFO, "pthread_mutex_unlocked\n");
 	return true;
 }
 
