@@ -821,11 +821,13 @@ static bool finalize_join(join_state_t *state, const void *buf, uint16_t len) {
 		n->last_unreachable = 0;
 
 		if(!node_write_config(mesh, n)) {
+		logger(mesh, MESHLINK_ERROR, "node: %s failed to add\n", n->name);
 			free_node(n);
 			return false;
 		}
 
 		node_add(mesh, n);
+		logger(mesh, MESHLINK_ERROR, "node: %s added\n", n->name);
 	}
 
 	/* Ensure the configuration directory metadata is on disk */
@@ -839,7 +841,7 @@ static bool finalize_join(join_state_t *state, const void *buf, uint16_t len) {
 
 	sptps_send_record(&state->sptps, 1, ecdsa_get_public_key(mesh->private_key), 32);
 
-	logger(mesh, MESHLINK_DEBUG, "Configuration stored in: %s\n", mesh->confbase);
+	logger(mesh, MESHLINK_INFO, "Configuration stored in: %s\n", mesh->confbase);
 
 	return true;
 }
@@ -1640,6 +1642,7 @@ static void *meshlink_main_loop(void *arg) {
 logger(NULL, MESHLINK_INFO, "Inside meshlink main loop thread..\n");
 	meshlink_handle_t *mesh = arg;
 
+logger(mesh, MESHLINK_INFO, "--- start() %d---", mesh->nodes->count);
 	if(mesh->netns != -1) {
 logger(NULL, MESHLINK_INFO, "mesh->netns: %d\n", mesh->netns);
 #ifdef HAVE_SETNS
@@ -1696,6 +1699,7 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 	}
 
 	logger(mesh, MESHLINK_INFO, "meshlink_start called\n");
+logger(mesh, MESHLINK_INFO, "--- start() %d---", mesh->nodes->count);
 
 	if(pthread_mutex_lock(&mesh->mutex) != 0) {
 		abort();
@@ -3239,6 +3243,7 @@ bool meshlink_join(meshlink_handle_t *mesh, const char *invitation) {
 			goto exit;
 		}
 	}
+logger(mesh, MESHLINK_INFO, "--- nodes after joining() %d---", mesh->nodes->count);
 
 	if(!state.success) {
 		logger(mesh, MESHLINK_INFO, "Connection closed by peer, invitation cancelled.\n");

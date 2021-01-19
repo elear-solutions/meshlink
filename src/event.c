@@ -287,7 +287,7 @@ logger(NULL, MESHLINK_INFO, "Event loop run started\n");
 	fd_set writable;
 
 	while(loop->running) {
-logger(NULL, MESHLINK_INFO, "loop->running..\n");
+//logger(NULL, MESHLINK_INFO, "loop->running..\n");
 		clock_gettime(EVENT_CLOCK, &loop->now);
 		struct timespec it, ts = {3600, 0};
 
@@ -322,9 +322,9 @@ logger(NULL, MESHLINK_INFO, "loop->running..\n");
 		}
 
 		// release mesh mutex during select
-logger(NULL, MESHLINK_INFO, "release mesh mutex during select\n");
+//logger(NULL, MESHLINK_INFO, "release mesh mutex during select\n");
 		pthread_mutex_unlock(mutex);
-logger(NULL, MESHLINK_INFO, "Entering into select\n");
+//logger(NULL, MESHLINK_INFO, "Entering into select\n");
 
 #ifdef HAVE_PSELECT
 		int n = pselect(fds, &readable, &writable, NULL, &ts, NULL);
@@ -333,11 +333,11 @@ logger(NULL, MESHLINK_INFO, "Entering into select\n");
 		int n = select(fds, &readable, &writable, NULL, (struct timeval *)&tv);
 #endif
 
-logger(NULL, MESHLINK_INFO, "Locking the mutex\n");
+//logger(NULL, MESHLINK_INFO, "Locking the mutex\n");
 		if(pthread_mutex_lock(mutex) != 0) {
 			abort();
 		}
-logger(NULL, MESHLINK_INFO, "Acquired the meshlink mutex\n");
+//logger(NULL, MESHLINK_INFO, "Acquired the meshlink mutex\n");
 
 		clock_gettime(EVENT_CLOCK, &loop->now);
 

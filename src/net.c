@@ -379,6 +379,8 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 
 	/* Check if we need to make or break connections. */
 
+logger(mesh, MESHLINK_INFO, "--- periodic_handler() %d---", mesh->nodes->count);
+
 	if(mesh->nodes->count > 1) {
 
 		logger(mesh, MESHLINK_DEBUG, "--- autoconnect begin ---");
