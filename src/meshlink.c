@@ -3123,7 +3123,7 @@ bool meshlink_join(meshlink_handle_t *mesh, const char *invitation) {
 				state.sock = socket_in_netns(aip->ai_family, SOCK_STREAM, IPPROTO_TCP, mesh->netns);
 
 				if(state.sock == -1) {
-					logger(mesh, MESHLINK_DEBUG, "Could not open socket: %s\n", strerror(errno));
+					logger(mesh, MESHLINK_INFO, "Could not open socket: %s\n", strerror(errno));
 					meshlink_errno = MESHLINK_ENETWORK;
 					continue;
 				}
@@ -3136,7 +3136,7 @@ bool meshlink_join(meshlink_handle_t *mesh, const char *invitation) {
 				set_timeout(state.sock, 5000);
 
 				if(connect(state.sock, aip->ai_addr, aip->ai_addrlen)) {
-					logger(mesh, MESHLINK_DEBUG, "Could not connect to %s port %s: %s\n", address, port, strerror(errno));
+					logger(mesh, MESHLINK_INFO, "Could not connect to %s port %s: %s\n", address, port, strerror(errno));
 					meshlink_errno = MESHLINK_ENETWORK;
 					closesocket(state.sock);
 					state.sock = -1;
@@ -3162,14 +3162,14 @@ bool meshlink_join(meshlink_handle_t *mesh, const char *invitation) {
 		goto exit;
 	}
 
-	logger(mesh, MESHLINK_DEBUG, "Connected to %s port %s...\n", address, port);
+	logger(mesh, MESHLINK_INFO, "Connected to %s port %s...\n", address, port);
 
 	// Tell him we have an invitation, and give him our throw-away key.
 
 	state.blen = 0;
 
 	if(!sendline(state.sock, "0 ?%s %d.%d %s", b64key, PROT_MAJOR, PROT_MINOR, mesh->appname)) {
-		logger(mesh, MESHLINK_DEBUG, "Error sending request to %s port %s: %s\n", address, port, strerror(errno));
+		logger(mesh, MESHLINK_INFO, "Error sending request to %s port %s: %s\n", address, port, strerror(errno));
 		meshlink_errno = MESHLINK_ENETWORK;
 		goto exit;
 	}
@@ -3180,7 +3180,7 @@ bool meshlink_join(meshlink_handle_t *mesh, const char *invitation) {
 	int code, hismajor, hisminor = 0;
 
 	if(!recvline(&state) || sscanf(state.line, "%d %s %d.%d", &code, hisname, &hismajor, &hisminor) < 3 || code != 0 || hismajor != PROT_MAJOR || !check_id(hisname) || !recvline(&state) || !rstrip(state.line) || sscanf(state.line, "%d ", &code) != 1 || code != ACK || strlen(state.line) < 3) {
-		logger(mesh, MESHLINK_DEBUG, "Cannot read greeting from peer\n");
+		logger(mesh, MESHLINK_INFO, "Cannot read greeting from peer\n");
 		meshlink_errno = MESHLINK_ENETWORK;
 		goto exit;
 	}
@@ -3190,13 +3190,13 @@ bool meshlink_join(meshlink_handle_t *mesh, const char *invitation) {
 	char hishash[64];
 
 	if(sha512(fingerprint, strlen(fingerprint), hishash)) {
-		logger(mesh, MESHLINK_DEBUG, "Could not create hash\n%s\n", state.line + 2);
+		logger(mesh, MESHLINK_INFO, "Could not create hash\n%s\n", state.line + 2);
 		meshlink_errno = MESHLINK_EINTERNAL;
 		goto exit;
 	}
 
 	if(memcmp(hishash, state.hash, 18)) {
-		logger(mesh, MESHLINK_DEBUG, "Peer has an invalid key!\n%s\n", state.line + 2);
+		logger(mesh, MESHLINK_INFO, "Peer has an invalid key!\n%s\n", state.line + 2);
 		meshlink_errno = MESHLINK_EPEER;
 		goto exit;
 	}
@@ -3221,7 +3221,7 @@ bool meshlink_join(meshlink_handle_t *mesh, const char *invitation) {
 	}
 
 	ssize_t len;
-	logger(mesh, MESHLINK_DEBUG, "Starting invitation recv loop: %d %zu\n", state.sock, sizeof(state.line));
+	logger(mesh, MESHLINK_INFO, "Starting invitation recv loop: %d %zu\n", state.sock, sizeof(state.line));
 
 	while((len = recv(state.sock, state.line, sizeof(state.line), 0))) {
 		if(len < 0) {
@@ -3229,7 +3229,7 @@ bool meshlink_join(meshlink_handle_t *mesh, const char *invitation) {
 				continue;
 			}
 
-			logger(mesh, MESHLINK_DEBUG, "Error reading data from %s port %s: %s\n", address, port, strerror(errno));
+			logger(mesh, MESHLINK_INFO, "Error reading data from %s port %s: %s\n", address, port, strerror(errno));
 			meshlink_errno = MESHLINK_ENETWORK;
 			goto exit;
 		}
@@ -3241,7 +3241,7 @@ bool meshlink_join(meshlink_handle_t *mesh, const char *invitation) {
 	}
 
 	if(!state.success) {
-		logger(mesh, MESHLINK_DEBUG, "Connection closed by peer, invitation cancelled.\n");
+		logger(mesh, MESHLINK_INFO, "Connection closed by peer, invitation cancelled.\n");
 		meshlink_errno = MESHLINK_EPEER;
 		goto exit;
 	}
@@ -3252,10 +3252,11 @@ bool meshlink_join(meshlink_handle_t *mesh, const char *invitation) {
 	closesocket(state.sock);
 
 	pthread_mutex_unlock(&mesh->mutex);
+	logger(mesh, MESHLINK_INFO, "Joined successfully\n");
 	return true;
 
 invalid:
-	logger(mesh, MESHLINK_DEBUG, "Invalid invitation URL\n");
+	logger(mesh, MESHLINK_INFO, "Invalid invitation URL\n");
 	meshlink_errno = MESHLINK_EINVAL;
 exit:
 	sptps_stop(&state.sptps);
