@@ -352,6 +352,7 @@ int setup_tcp_listen_socket(meshlink_handle_t *mesh, const struct addrinfo *aip)
 	int flags = fcntl(nfd, F_GETFL);
 
 	if(fcntl(nfd, F_SETFL, flags | O_NONBLOCK) < 0) {
+    logger(mesh, MESHLINK_DEBUG, "Closing socketFd (nfd): %d", nfd);
 		closesocket(nfd);
 		logger(mesh, MESHLINK_ERROR, "System call `%s' failed: %s", "fcntl", strerror(errno));
 		return -1;
@@ -361,6 +362,7 @@ int setup_tcp_listen_socket(meshlink_handle_t *mesh, const struct addrinfo *aip)
 	unsigned long arg = 1;
 
 	if(ioctlsocket(nfd, FIONBIO, &arg) != 0) {
+    logger(mesh, MESHLINK_DEBUG, "Closing socketFd (nfd): %d", nfd);
 		closesocket(nfd);
 		logger(mesh, MESHLINK_ERROR, "Call to `%s' failed: %s", "ioctlsocket", sockstrerror(sockerrno));
 		return -1;

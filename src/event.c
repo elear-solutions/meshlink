@@ -25,6 +25,7 @@
 #include "splay_tree.h"
 #include "utils.h"
 #include "xalloc.h"
+#include "logger.h"
 
 #ifndef EVENT_CLOCK
 #if defined(CLOCK_MONOTONIC_RAW) && defined(__x86_64__)
@@ -290,18 +291,27 @@ static void check_bad_fds(event_loop_t *loop) {
 
 		for splay_each(io_t, io, &loop->ios) {
 			if(io->flags & IO_WRITE) {
+        logger(NULL, MESHLINK_DEBUG, "FD for the flag %d is %d", io->flags, io->fd);
+        logger(NULL, MESHLINK_DEBUG, "Invoking the callback");
 				io->cb(loop, io->data, IO_WRITE);
 			}
 
+			logger(NULL, MESHLINK_DEBUG, "Detection flag is: %d", loop->deletion);
+
 			if(loop->deletion) {
+        logger(NULL, MESHLINK_DEBUG, "Breaking loop due to deletion");
 				break;
 			}
 
 			if(io->flags & IO_READ) {
+        logger(NULL, MESHLINK_DEBUG, "Invoking the callback");
 				io->cb(loop, io->data, IO_READ);
 			}
 
+			logger(NULL, MESHLINK_DEBUG, "Detection flag is: %d", loop->deletion);
+
 			if(loop->deletion) {
+        logger(NULL, MESHLINK_DEBUG, "Breaking loop due to deletion");
 				break;
 			}
 		}
@@ -314,11 +324,13 @@ static void check_bad_fds(event_loop_t *loop) {
 
 	for splay_each(io_t, io, &loop->ios) {
 		if(io->flags & IO_READ) {
+      logger(NULL, MESHLINK_DEBUG, "Setting read FD set for the flag %d is %d", io->flags, io->fd);
 			FD_SET(io->fd, &loop->readfds);
 			io->cb(loop, io->data, IO_READ);
 		}
 
 		if(io->flags & IO_WRITE) {
+      logger(NULL, MESHLINK_DEBUG, "Setting write FD set for the flag %d is %d", io->flags, io->fd);
 			FD_SET(io->fd, &loop->writefds);
 			io->cb(loop, io->data, IO_WRITE);
 		}
@@ -388,16 +400,18 @@ bool event_loop_run(event_loop_t *loop, pthread_mutex_t *mutex) {
 				continue;
 			} else {
 				errors++;
+				logger(NULL, MESHLINK_DEBUG, "Error count value is: %d", errors);
 
 				if(errors > 10) {
+          logger(NULL, MESHLINK_DEBUG, "Error count value is greater than 10");
 					return false;
 				}
-
+        logger(NULL, MESHLINK_DEBUG, "Calling check_bad_fds");
 				check_bad_fds(loop);
 				continue;
 			}
 		}
-
+    logger(NULL, MESHLINK_DEBUG, "Setting errors to zero");
 		errors = 0;
 
 		if(!n) {

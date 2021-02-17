@@ -522,9 +522,11 @@ void handle_new_meta_connection(event_loop_t *loop, void *data, int flags) {
 	memset(&sa, 0, sizeof(sa));
 
 	fd = accept(l->tcp.fd, &sa.sa, &len);
-
+  logger(mesh, MESHLINK_DEBUG, "Fd %d is : %d", fd);
 	if(fd < 0) {
+    logger(mesh, MESHLINK_DEBUG, "Fd %d is : %d", fd);
 		if(sockwouldblock(errno)) {
+		  logger(mesh, MESHLINK_DEBUG, "Returning form sockwouldblock");
 			return;
 		}
 
