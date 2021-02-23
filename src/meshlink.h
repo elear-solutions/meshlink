@@ -1417,6 +1417,15 @@ void meshlink_set_channel_sndbuf_storage(struct meshlink_handle *mesh, struct me
  */
 void meshlink_set_channel_rcvbuf_storage(struct meshlink_handle *mesh, struct meshlink_channel *channel, void *buf, size_t size);
 
+/// Set the flags of a channel.
+/** This function allows changing some of the channel flags.
+ *  Currently only MESHLINK_CHANNEL_NO_PARTIAL and MESHLINK_CHANNEL_DROP_LATE are supported, other flags are ignored.
+ *  These flags only affect the local side of the channel with the peer.
+ *  The changes take effect immediately.
+ *  @param flags     A bitwise-or'd combination of flags that set the semantics for this channel.
+ */
+void meshlink_set_channel_flags(struct meshlink_handle *mesh, struct meshlink_channel *channel, uint32_t flags);
+
 /// Open a reliable stream channel to another node.
 /** This function is called whenever a remote node wants to open a channel to the local node.
  *  The application then has to decide whether to accept or reject this channel.
