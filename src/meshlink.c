@@ -4125,6 +4125,20 @@ void meshlink_set_channel_rcvbuf_storage(meshlink_handle_t *mesh, meshlink_chann
 	pthread_mutex_unlock(&mesh->mutex);
 }
 
+void meshlink_set_channel_flags(meshlink_handle_t *mesh, meshlink_channel_t *channel, uint32_t flags) {
+	if(!mesh || !channel) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	utcp_set_flags(channel->c, flags);
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
 meshlink_channel_t *meshlink_channel_open_ex(meshlink_handle_t *mesh, meshlink_node_t *node, uint16_t port, meshlink_channel_receive_cb_t cb, const void *data, size_t len, uint32_t flags) {
 	if(data && len) {
 		abort();        // TODO: handle non-NULL data

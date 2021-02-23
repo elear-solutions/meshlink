@@ -78,6 +78,7 @@ meshlink_send
 meshlink_set_blacklisted_cb
 meshlink_set_canonical_address
 meshlink_set_channel_accept_cb
+meshlink_set_channel_flags
 meshlink_set_channel_poll_cb
 meshlink_set_channel_rcvbuf
 meshlink_set_channel_rcvbuf_storage
