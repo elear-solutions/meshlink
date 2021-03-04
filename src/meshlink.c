@@ -391,7 +391,10 @@ static int getifaddrs_in_netns(struct ifaddrs **ifa, int netns) {
 #endif
 
 char *meshlink_get_local_address_for_family(meshlink_handle_t *mesh, int family) {
-	(void)mesh;
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return NULL;
+	}
 
 	// Determine address of the local interface used for outgoing connections.
 	char localaddr[NI_MAXHOST];
@@ -686,7 +689,7 @@ static bool write_main_config_files(meshlink_handle_t *mesh) {
 	}
 
 	/* Write our own host config file */
-	if(!node_write_config(mesh, mesh->self)) {
+	if(!node_write_config(mesh, mesh->self, true)) {
 		return false;
 	}
 
@@ -820,7 +823,7 @@ static bool finalize_join(join_state_t *state, const void *buf, uint16_t len) {
 		n->last_reachable = 0;
 		n->last_unreachable = 0;
 
-		if(!node_write_config(mesh, n)) {
+		if(!node_write_config(mesh, n, true)) {
 			free_node(n);
 			return false;
 		}
@@ -1227,6 +1230,8 @@ meshlink_open_params_t *meshlink_open_params_init(const char *confbase, const ch
 	params->devclass = devclass;
 	params->netns = -1;
 
+	xasprintf(&params->lock_filename, "%s" SLASH "meshlink.lock", confbase);
+
 	return params;
 }
 
@@ -1255,6 +1260,29 @@ bool meshlink_open_params_set_storage_key(meshlink_open_params_t *params, const 
 
 	params->key = key;
 	params->keylen = keylen;
+
+	return true;
+}
+
+bool meshlink_open_params_set_storage_policy(meshlink_open_params_t *params, meshlink_storage_policy_t policy) {
+	if(!params) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	params->storage_policy = policy;
+
+	return true;
+}
+
+bool meshlink_open_params_set_lock_filename(meshlink_open_params_t *params, const char *filename) {
+	if(!params || !filename) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	free(params->lock_filename);
+	params->lock_filename = xstrdup(filename);
 
 	return true;
 }
@@ -1340,6 +1368,7 @@ void meshlink_open_params_free(meshlink_open_params_t *params) {
 	free(params->confbase);
 	free(params->name);
 	free(params->appname);
+	free(params->lock_filename);
 
 	free(params);
 }
@@ -1359,15 +1388,18 @@ meshlink_handle_t *meshlink_open(const char *confbase, const char *name, const c
 		return NULL;
 	}
 
-	/* Create a temporary struct on the stack, to avoid allocating and freeing one. */
-	meshlink_open_params_t params;
-	memset(&params, 0, sizeof(params));
+	char lock_filename[PATH_MAX];
+	snprintf(lock_filename, sizeof(lock_filename), "%s" SLASH "meshlink.lock", confbase);
 
-	params.confbase = (char *)confbase;
-	params.name = (char *)name;
-	params.appname = (char *)appname;
-	params.devclass = devclass;
-	params.netns = -1;
+	/* Create a temporary struct on the stack, to avoid allocating and freeing one. */
+	meshlink_open_params_t params = {
+		.confbase = (char *)confbase,
+		.lock_filename = lock_filename,
+		.name = (char *)name,
+		.appname = (char *)appname,
+		.devclass = devclass,
+		.netns = -1,
+	};
 
 	return meshlink_open_ex(&params);
 }
@@ -1379,15 +1411,18 @@ meshlink_handle_t *meshlink_open_encrypted(const char *confbase, const char *nam
 		return NULL;
 	}
 
-	/* Create a temporary struct on the stack, to avoid allocating and freeing one. */
-	meshlink_open_params_t params;
-	memset(&params, 0, sizeof(params));
+	char lock_filename[PATH_MAX];
+	snprintf(lock_filename, sizeof(lock_filename), "%s" SLASH "meshlink.lock", confbase);
 
-	params.confbase = (char *)confbase;
-	params.name = (char *)name;
-	params.appname = (char *)appname;
-	params.devclass = devclass;
-	params.netns = -1;
+	/* Create a temporary struct on the stack, to avoid allocating and freeing one. */
+	meshlink_open_params_t params = {
+		.confbase = (char *)confbase,
+		.lock_filename = lock_filename,
+		.name = (char *)name,
+		.appname = (char *)appname,
+		.devclass = devclass,
+		.netns = -1,
+	};
 
 	if(!meshlink_open_params_set_storage_key(&params, key, keylen)) {
 		return false;
@@ -1428,13 +1463,12 @@ meshlink_handle_t *meshlink_open_ephemeral(const char *name, const char *appname
 	}
 
 	/* Create a temporary struct on the stack, to avoid allocating and freeing one. */
-	meshlink_open_params_t params;
-	memset(&params, 0, sizeof(params));
-
-	params.name = (char *)name;
-	params.appname = (char *)appname;
-	params.devclass = devclass;
-	params.netns = -1;
+	meshlink_open_params_t params = {
+		.name = (char *)name,
+		.appname = (char *)appname,
+		.devclass = devclass,
+		.netns = -1,
+	};
 
 	return meshlink_open_ex(&params);
 }
@@ -1534,12 +1568,14 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 	meshlink_queue_init(&mesh->outpacketqueue);
 
 	// Atomically lock the configuration directory.
-	if(!main_config_lock(mesh)) {
+	if(!main_config_lock(mesh, params->lock_filename)) {
 		meshlink_close(mesh);
 		return NULL;
 	}
 
 	// If no configuration exists yet, create it.
+
+	bool new_configuration = false;
 
 	if(!meshlink_confbase_exists(mesh)) {
 		if(!mesh->name) {
@@ -1554,6 +1590,8 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 			meshlink_close(mesh);
 			return NULL;
 		}
+
+		new_configuration = true;
 	} else {
 		if(!meshlink_read_config(mesh)) {
 			logger(NULL, MESHLINK_ERROR, "Cannot read main configuration\n");
@@ -1561,6 +1599,8 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 			return NULL;
 		}
 	}
+
+	mesh->storage_policy = params->storage_policy;
 
 #ifdef HAVE_MINGW
 	struct WSAData wsa_state;
@@ -1598,7 +1638,7 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 
 	add_local_addresses(mesh);
 
-	if(!node_write_config(mesh, mesh->self)) {
+	if(!node_write_config(mesh, mesh->self, new_configuration)) {
 		logger(NULL, MESHLINK_ERROR, "Cannot update configuration\n");
 		return NULL;
 	}
@@ -1826,7 +1866,9 @@ void meshlink_stop(meshlink_handle_t *mesh) {
 	if(mesh->nodes) {
 		for splay_each(node_t, n, mesh->nodes) {
 			if(n->status.dirty) {
-				n->status.dirty = !node_write_config(mesh, n);
+				if(!node_write_config(mesh, n, false)) {
+					// ignore
+				}
 			}
 		}
 	}
@@ -1898,25 +1940,27 @@ void meshlink_close(meshlink_handle_t *mesh) {
 	free(mesh);
 }
 
-bool meshlink_destroy(const char *confbase) {
-	if(!confbase) {
+bool meshlink_destroy_ex(const meshlink_open_params_t *params) {
+	if(!params) {
 		meshlink_errno = MESHLINK_EINVAL;
 		return false;
 	}
 
+	if(!params->confbase) {
+		/* Ephemeral instances */
+		return true;
+	}
+
 	/* Exit early if the confbase directory itself doesn't exist */
-	if(access(confbase, F_OK) && errno == ENOENT) {
+	if(access(params->confbase, F_OK) && errno == ENOENT) {
 		return true;
 	}
 
 	/* Take the lock the same way meshlink_open() would. */
-	char lockfilename[PATH_MAX];
-	snprintf(lockfilename, sizeof(lockfilename), "%s" SLASH "meshlink.lock", confbase);
-
-	FILE *lockfile = fopen(lockfilename, "w+");
+	FILE *lockfile = fopen(params->lock_filename, "w+");
 
 	if(!lockfile) {
-		logger(NULL, MESHLINK_ERROR, "Could not open lock file %s: %s", lockfilename, strerror(errno));
+		logger(NULL, MESHLINK_ERROR, "Could not open lock file %s: %s", params->lock_filename, strerror(errno));
 		meshlink_errno = MESHLINK_ESTORAGE;
 		return false;
 	}
@@ -1930,7 +1974,7 @@ bool meshlink_destroy(const char *confbase) {
 #else
 
 	if(flock(fileno(lockfile), LOCK_EX | LOCK_NB) != 0) {
-		logger(NULL, MESHLINK_ERROR, "Configuration directory %s still in use\n", lockfilename);
+		logger(NULL, MESHLINK_ERROR, "Configuration directory %s still in use\n", params->lock_filename);
 		fclose(lockfile);
 		meshlink_errno = MESHLINK_EBUSY;
 		return false;
@@ -1938,13 +1982,13 @@ bool meshlink_destroy(const char *confbase) {
 
 #endif
 
-	if(!config_destroy(confbase, "current") || !config_destroy(confbase, "new") || !config_destroy(confbase, "old")) {
-		logger(NULL, MESHLINK_ERROR, "Cannot remove sub-directories in %s: %s\n", confbase, strerror(errno));
+	if(!config_destroy(params->confbase, "current") || !config_destroy(params->confbase, "new") || !config_destroy(params->confbase, "old")) {
+		logger(NULL, MESHLINK_ERROR, "Cannot remove sub-directories in %s: %s\n", params->confbase, strerror(errno));
 		return false;
 	}
 
-	if(unlink(lockfilename)) {
-		logger(NULL, MESHLINK_ERROR, "Cannot remove lock file %s: %s\n", lockfilename, strerror(errno));
+	if(unlink(params->lock_filename)) {
+		logger(NULL, MESHLINK_ERROR, "Cannot remove lock file %s: %s\n", params->lock_filename, strerror(errno));
 		fclose(lockfile);
 		meshlink_errno = MESHLINK_ESTORAGE;
 		return false;
@@ -1952,13 +1996,25 @@ bool meshlink_destroy(const char *confbase) {
 
 	fclose(lockfile);
 
-	if(!sync_path(confbase)) {
-		logger(NULL, MESHLINK_ERROR, "Cannot sync directory %s: %s\n", confbase, strerror(errno));
+	if(!sync_path(params->confbase)) {
+		logger(NULL, MESHLINK_ERROR, "Cannot sync directory %s: %s\n", params->confbase, strerror(errno));
 		meshlink_errno = MESHLINK_ESTORAGE;
 		return false;
 	}
 
 	return true;
+}
+
+bool meshlink_destroy(const char *confbase) {
+	char lock_filename[PATH_MAX];
+	snprintf(lock_filename, sizeof(lock_filename), "%s" SLASH "meshlink.lock", confbase);
+
+	meshlink_open_params_t params = {
+		.confbase = (char *)confbase,
+		.lock_filename = lock_filename,
+	};
+
+	return meshlink_destroy_ex(&params);
 }
 
 void meshlink_set_receive_cb(meshlink_handle_t *mesh, meshlink_receive_cb_t cb) {
@@ -2057,6 +2113,20 @@ void meshlink_set_error_cb(struct meshlink_handle *mesh, meshlink_error_cb_t cb)
 	}
 
 	mesh->error_cb = cb;
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+void meshlink_set_blacklisted_cb(struct meshlink_handle *mesh, meshlink_blacklisted_cb_t cb) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	mesh->blacklisted_cb = cb;
 	pthread_mutex_unlock(&mesh->mutex);
 }
 
@@ -2360,6 +2430,10 @@ static bool search_node_by_dev_class(const node_t *node, const void *condition) 
 	return false;
 }
 
+static bool search_node_by_blacklisted(const node_t *node, const void *condition) {
+	return *(bool *)condition == node->status.blacklisted;
+}
+
 static bool search_node_by_submesh(const node_t *node, const void *condition) {
 	if(condition == node->submesh) {
 		return true;
@@ -2422,6 +2496,15 @@ meshlink_node_t **meshlink_get_all_nodes_by_last_reachable(meshlink_handle_t *me
 	return meshlink_get_all_nodes_by_condition(mesh, &range, nodes, nmemb, search_node_by_last_reachable);
 }
 
+meshlink_node_t **meshlink_get_all_nodes_by_blacklisted(meshlink_handle_t *mesh, bool blacklisted, meshlink_node_t **nodes, size_t *nmemb) {
+	if(!mesh || !nmemb) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return NULL;
+	}
+
+	return meshlink_get_all_nodes_by_condition(mesh, &blacklisted, nodes, nmemb, search_node_by_blacklisted);
+}
+
 dev_class_t meshlink_get_node_dev_class(meshlink_handle_t *mesh, meshlink_node_t *node) {
 	if(!mesh || !node) {
 		meshlink_errno = MESHLINK_EINVAL;
@@ -2439,6 +2522,28 @@ dev_class_t meshlink_get_node_dev_class(meshlink_handle_t *mesh, meshlink_node_t
 	pthread_mutex_unlock(&mesh->mutex);
 
 	return devclass;
+}
+
+bool meshlink_get_node_blacklisted(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+	}
+
+	if(!node) {
+		return mesh->default_blacklist;
+	}
+
+	bool blacklisted;
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	blacklisted = ((node_t *)node)->status.blacklisted;
+
+	pthread_mutex_unlock(&mesh->mutex);
+
+	return blacklisted;
 }
 
 meshlink_submesh_t *meshlink_get_node_submesh(meshlink_handle_t *mesh, meshlink_node_t *node) {
@@ -2583,11 +2688,7 @@ bool meshlink_set_canonical_address(meshlink_handle_t *mesh, meshlink_node_t *no
 
 	char *canonical_address;
 
-	if(port) {
-		xasprintf(&canonical_address, "%s %s", address, port);
-	} else {
-		canonical_address = xstrdup(address);
-	}
+	xasprintf(&canonical_address, "%s %s", address, port ? port : mesh->myport);
 
 	if(pthread_mutex_lock(&mesh->mutex) != 0) {
 		abort();
@@ -2597,7 +2698,31 @@ bool meshlink_set_canonical_address(meshlink_handle_t *mesh, meshlink_node_t *no
 	free(n->canonical_address);
 	n->canonical_address = canonical_address;
 
-	if(!node_write_config(mesh, n)) {
+	if(!node_write_config(mesh, n, false)) {
+		pthread_mutex_unlock(&mesh->mutex);
+		return false;
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+
+	return config_sync(mesh, "current");
+}
+
+bool meshlink_clear_canonical_address(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	node_t *n = (node_t *)node;
+	free(n->canonical_address);
+	n->canonical_address = NULL;
+
+	if(!node_write_config(mesh, n, false)) {
 		pthread_mutex_unlock(&mesh->mutex);
 		return false;
 	}
@@ -2847,7 +2972,7 @@ char *meshlink_invite_ex(meshlink_handle_t *mesh, meshlink_submesh_t *submesh, c
 
 	// If we changed our own host config file, write it out now
 	if(mesh->self->status.dirty) {
-		if(!node_write_config(mesh, mesh->self)) {
+		if(!node_write_config(mesh, mesh->self, false)) {
 			logger(mesh, MESHLINK_ERROR, "Could not write our own host config file!\n");
 			pthread_mutex_unlock(&mesh->mutex);
 			return NULL;
@@ -2930,6 +3055,11 @@ char *meshlink_invite(meshlink_handle_t *mesh, meshlink_submesh_t *submesh, cons
 
 bool meshlink_join(meshlink_handle_t *mesh, const char *invitation) {
 	if(!mesh || !invitation) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(mesh->storage_policy == MESHLINK_STORAGE_DISABLED) {
 		meshlink_errno = MESHLINK_EINVAL;
 		return false;
 	}
@@ -3343,7 +3473,7 @@ bool meshlink_import(meshlink_handle_t *mesh, const char *data) {
 		n->last_reachable = 0;
 		n->last_unreachable = 0;
 
-		if(!node_write_config(mesh, n)) {
+		if(!node_write_config(mesh, n, true)) {
 			free_node(n);
 			return false;
 		}
@@ -3387,6 +3517,10 @@ static bool blacklist(meshlink_handle_t *mesh, node_t *n) {
 	 */
 	for list_each(connection_t, c, mesh->connections) {
 		if(c->node == n) {
+			if(c->status.active) {
+				send_error(mesh, c, BLACKLISTED, "blacklisted");
+			}
+
 			shutdown(c->socket, SHUT_RDWR);
 		}
 	}
@@ -3410,7 +3544,10 @@ static bool blacklist(meshlink_handle_t *mesh, node_t *n) {
 		mesh->node_status_cb(mesh, (meshlink_node_t *)n, false);
 	}
 
-	return node_write_config(mesh, n) && config_sync(mesh, "current");
+	/* Remove any outstanding invitations */
+	invitation_purge_node(mesh, n->name);
+
+	return node_write_config(mesh, n, true) && config_sync(mesh, "current");
 }
 
 bool meshlink_blacklist(meshlink_handle_t *mesh, meshlink_node_t *node) {
@@ -3482,7 +3619,7 @@ static bool whitelist(meshlink_handle_t *mesh, node_t *n) {
 		update_node_status(mesh, n);
 	}
 
-	return node_write_config(mesh, n) && config_sync(mesh, "current");
+	return node_write_config(mesh, n, true) && config_sync(mesh, "current");
 }
 
 bool meshlink_whitelist(meshlink_handle_t *mesh, meshlink_node_t *node) {
@@ -3589,6 +3726,9 @@ bool meshlink_forget_node(meshlink_handle_t *mesh, meshlink_node_t *node) {
 		return false;
 	}
 
+	/* Delete any pending invitations */
+	invitation_purge_node(mesh, n->name);
+
 	/* Delete the node struct and any remaining edges referencing this node */
 	node_del(mesh, n);
 
@@ -3613,7 +3753,7 @@ void meshlink_hint_address(meshlink_handle_t *mesh, meshlink_node_t *node, const
 	node_t *n = (node_t *)node;
 
 	if(node_add_recent_address(mesh, n, (sockaddr_t *)addr)) {
-		if(!node_write_config(mesh, n)) {
+		if(!node_write_config(mesh, n, false)) {
 			logger(mesh, MESHLINK_DEBUG, "Could not update %s\n", n->name);
 		}
 	}
@@ -3784,7 +3924,7 @@ static void channel_retransmit(struct utcp_connection *utcp_connection) {
 	node_t *n = utcp_connection->utcp->priv;
 	meshlink_handle_t *mesh = n->mesh;
 
-	if(n->mtuprobes == 31) {
+	if(n->mtuprobes == 31 && n->mtutimeout.cb) {
 		timeout_set(&mesh->loop, &n->mtutimeout, &(struct timespec) {
 			0, 0
 		});
@@ -3884,9 +4024,6 @@ static void channel_poll(struct utcp_connection *connection, size_t len) {
 		}
 
 		if(sent != (ssize_t)todo) {
-			/* We should never get a partial send at this point */
-			assert(sent <= 0);
-
 			/* Sending failed, abort all outstanding AIO buffers and send a poll callback. */
 			if(!aio_abort(mesh, channel, &channel->aio_send)) {
 				return;
@@ -3976,25 +4113,15 @@ void meshlink_set_channel_accept_cb(meshlink_handle_t *mesh, meshlink_channel_ac
 }
 
 void meshlink_set_channel_sndbuf(meshlink_handle_t *mesh, meshlink_channel_t *channel, size_t size) {
-	(void)mesh;
-
-	if(!channel) {
-		meshlink_errno = MESHLINK_EINVAL;
-		return;
-	}
-
-	if(pthread_mutex_lock(&mesh->mutex) != 0) {
-		abort();
-	}
-
-	utcp_set_sndbuf(channel->c, size);
-	pthread_mutex_unlock(&mesh->mutex);
+	meshlink_set_channel_sndbuf_storage(mesh, channel, NULL, size);
 }
 
 void meshlink_set_channel_rcvbuf(meshlink_handle_t *mesh, meshlink_channel_t *channel, size_t size) {
-	(void)mesh;
+	meshlink_set_channel_rcvbuf_storage(mesh, channel, NULL, size);
+}
 
-	if(!channel) {
+void meshlink_set_channel_sndbuf_storage(meshlink_handle_t *mesh, meshlink_channel_t *channel, void *buf, size_t size) {
+	if(!mesh || !channel) {
 		meshlink_errno = MESHLINK_EINVAL;
 		return;
 	}
@@ -4003,7 +4130,35 @@ void meshlink_set_channel_rcvbuf(meshlink_handle_t *mesh, meshlink_channel_t *ch
 		abort();
 	}
 
-	utcp_set_rcvbuf(channel->c, size);
+	utcp_set_sndbuf(channel->c, buf, size);
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+void meshlink_set_channel_rcvbuf_storage(meshlink_handle_t *mesh, meshlink_channel_t *channel, void *buf, size_t size) {
+	if(!mesh || !channel) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	utcp_set_rcvbuf(channel->c, buf, size);
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+void meshlink_set_channel_flags(meshlink_handle_t *mesh, meshlink_channel_t *channel, uint32_t flags) {
+	if(!mesh || !channel) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	utcp_set_flags(channel->c, flags);
 	pthread_mutex_unlock(&mesh->mutex);
 }
 
@@ -4545,6 +4700,20 @@ void meshlink_set_scheduling_granularity(struct meshlink_handle *mesh, long gran
 	}
 
 	utcp_set_clock_granularity(granularity);
+}
+
+void meshlink_set_storage_policy(struct meshlink_handle *mesh, meshlink_storage_policy_t policy) {
+	if(!mesh) {
+		meshlink_errno = EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	mesh->storage_policy = policy;
+	pthread_mutex_unlock(&mesh->mutex);
 }
 
 void handle_network_change(meshlink_handle_t *mesh, bool online) {

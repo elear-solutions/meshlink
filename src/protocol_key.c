@@ -71,15 +71,35 @@ static bool send_initial_sptps_data(void *handle, uint8_t type, const void *data
 
 	node_t *to = handle;
 	meshlink_handle_t *mesh = to->mesh;
+
+	if(!to->nexthop || !to->nexthop->connection) {
+		logger(mesh, MESHLINK_WARNING, "Cannot send SPTPS data to %s via %s", to->name, to->nexthop ? to->nexthop->name : to->name);
+		return false;
+	}
+
 	to->sptps.send_data = send_sptps_data;
 	char buf[len * 4 / 3 + 5];
 	b64encode(data, buf, len);
 	return send_request(mesh, to->nexthop->connection, NULL, "%d %s %s %d %s", REQ_KEY, mesh->self->name, to->name, REQ_KEY, buf);
 }
 
+bool send_canonical_address(meshlink_handle_t *mesh, node_t *to) {
+	if(!mesh->self->canonical_address) {
+		return true;
+	}
+
+	return send_request(mesh, to->nexthop->connection, NULL, "%d %s %s %d %s", REQ_KEY, mesh->self->name, to->name, REQ_CANONICAL, mesh->self->canonical_address);
+}
+
 bool send_req_key(meshlink_handle_t *mesh, node_t *to) {
 	if(!node_read_public_key(mesh, to)) {
 		logger(mesh, MESHLINK_DEBUG, "No ECDSA key known for %s", to->name);
+
+		if(!to->nexthop || !to->nexthop->connection) {
+			logger(mesh, MESHLINK_WARNING, "Cannot send REQ_PUBKEY to %s via %s", to->name, to->nexthop ? to->nexthop->name : to->name);
+			return true;
+		}
+
 		char *pubkey = ecdsa_get_base64_public_key(mesh->private_key);
 		send_request(mesh, to->nexthop->connection, NULL, "%d %s %s %d %s", REQ_KEY, mesh->self->name, to->name, REQ_PUBKEY, pubkey);
 		free(pubkey);
@@ -89,6 +109,9 @@ bool send_req_key(meshlink_handle_t *mesh, node_t *to) {
 	if(to->sptps.label) {
 		logger(mesh, MESHLINK_DEBUG, "send_req_key(%s) called while sptps->label != NULL!", to->name);
 	}
+
+	/* Send our canonical address to help with UDP hole punching */
+	send_canonical_address(mesh, to);
 
 	char label[sizeof(meshlink_udp_label) + strlen(mesh->self->name) + strlen(to->name) + 2];
 	snprintf(label, sizeof(label), "%s %s %s", meshlink_udp_label, mesh->self->name, to->name);
@@ -104,13 +127,14 @@ bool send_req_key(meshlink_handle_t *mesh, node_t *to) {
 static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *request, node_t *from, int reqno) {
 	(void)c;
 
+	if(!from->nexthop || !from->nexthop->connection) {
+		logger(mesh, MESHLINK_WARNING, "Cannot answer REQ_KEY from %s via %s", from->name, from->nexthop ? from->nexthop->name : from->name);
+		return true;
+	}
+
 	switch(reqno) {
 	case REQ_PUBKEY: {
 		char *pubkey = ecdsa_get_base64_public_key(mesh->private_key);
-
-		if(!from->nexthop || !from->nexthop->connection) {
-			return false;
-		}
 
 		if(!node_read_public_key(mesh, from)) {
 			char hiskey[MAX_STRING_SIZE];
@@ -121,6 +145,13 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 				if(!from->ecdsa) {
 					logger(mesh, MESHLINK_ERROR, "Got bad %s from %s: %s", "REQ_PUBKEY", from->name, "invalid pubkey");
 					return true;
+				}
+
+				logger(mesh, MESHLINK_INFO, "Learned ECDSA public key from %s", from->name);
+				from->status.dirty = true;
+
+				if(!node_write_config(mesh, from, true)) {
+					// ignore
 				}
 			}
 		}
@@ -145,6 +176,10 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 
 		logger(mesh, MESHLINK_INFO, "Learned ECDSA public key from %s", from->name);
 		from->status.dirty = true;
+
+		if(!node_write_config(mesh, from, true)) {
+			// ignore
+		}
 
 		/* If we are trying to form an outgoing connection to this node, retry immediately */
 		for list_each(outgoing_t, outgoing, mesh->outgoings) {
@@ -193,6 +228,9 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 		from->status.waitingforkey = true;
 		from->last_req_key = mesh->loop.now.tv_sec;
 
+		/* Send our canonical address to help with UDP hole punching */
+		send_canonical_address(mesh, from);
+
 		if(!sptps_start(&from->sptps, from, false, true, mesh->private_key, from->ecdsa, label, sizeof(label) - 1, send_sptps_data, receive_sptps_record)) {
 			logger(mesh, MESHLINK_ERROR, "Could not start SPTPS session with %s: %s", from->name, strerror(errno));
 			return true;
@@ -225,6 +263,28 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 			return true;
 		}
 
+		return true;
+	}
+
+	case REQ_CANONICAL: {
+		char host[MAX_STRING_SIZE];
+		char port[MAX_STRING_SIZE];
+
+		if(sscanf(request, "%*d %*s %*s %*d " MAX_STRING " " MAX_STRING, host, port) != 2) {
+			logger(mesh, MESHLINK_ERROR, "Got bad %s from %s: %s", "REQ_CANONICAL", from->name, "invalid canonical address");
+			return true;
+		}
+
+		strncat(host, " ", MAX_STRING_SIZE - 1);
+		strncat(host, port, MAX_STRING_SIZE - 1);
+
+		if(from->canonical_address && !strcmp(from->canonical_address, host)) {
+			return true;
+		}
+
+		logger(mesh, MESHLINK_DEBUG, "Updating canonical address of %s to %s", from->name, host);
+		free(from->canonical_address);
+		from->canonical_address = xstrdup(host);
 		return true;
 	}
 
@@ -280,7 +340,7 @@ bool req_key_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		/* This should never happen. Ignore it, unless it came directly from the connected peer, in which case we disconnect. */
 		return from->connection != c;
 	} else {
-		if(!to->status.reachable) {
+		if(!to->status.reachable || !to->nexthop || !to->nexthop->connection) {
 			logger(mesh, MESHLINK_WARNING, "Got %s from %s destination %s which is not reachable",
 			       "REQ_KEY", c->name, to_name);
 			return true;
@@ -347,6 +407,11 @@ bool ans_key_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 			return true;
 		}
 
+		if(!to->nexthop || !to->nexthop->connection) {
+			logger(mesh, MESHLINK_WARNING, "Cannot forward ANS_KEY to %s via %s", to->name, to->nexthop ? to->nexthop->name : to->name);
+			return false;
+		}
+
 		/* Append the known UDP address of the from node, if we have a confirmed one */
 		if(!*address && from->status.udp_confirmed && from->address.sa.sa_family != AF_UNSPEC) {
 			char *reflexive_address, *reflexive_port;
@@ -378,6 +443,10 @@ bool ans_key_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 				}
 
 				if(!n->status.waitingforkey && !n->status.validkey) {
+					continue;
+				}
+
+				if(!n->nexthop->connection) {
 					continue;
 				}
 

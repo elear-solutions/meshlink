@@ -48,8 +48,21 @@ bool send_id(meshlink_handle_t *mesh, connection_t *c) {
 }
 
 static bool commit_invitation(meshlink_handle_t *mesh, connection_t *c, const void *data) {
+	// Check if the node is known
+	node_t *n = lookup_node(mesh, c->name);
+
+	if(n) {
+		if(n->status.blacklisted) {
+			logger(mesh, MESHLINK_ERROR, "Invitee %s is blacklisted", c->name);
+		} else {
+			logger(mesh, MESHLINK_ERROR, "Invitee %s already known", c->name);
+		}
+
+		return false;
+	}
+
 	// Create a new node
-	node_t *n = new_node();
+	n = new_node();
 	n->name = xstrdup(c->name);
 	n->devclass = DEV_CLASS_UNKNOWN;
 	n->ecdsa = ecdsa_set_public_key(data);
@@ -58,7 +71,7 @@ static bool commit_invitation(meshlink_handle_t *mesh, connection_t *c, const vo
 	// Remember its current address
 	node_add_recent_address(mesh, n, &c->address);
 
-	if(!node_write_config(mesh, n) || !config_sync(mesh, "current")) {
+	if(!node_write_config(mesh, n, true) || !config_sync(mesh, "current")) {
 		logger(mesh, MESHLINK_ERROR, "Error writing configuration file for invited node %s!\n", c->name);
 		free_node(n);
 		return false;
@@ -146,6 +159,9 @@ static bool receive_invitation_sptps(void *handle, uint8_t type, const void *dat
 	connection_t *c = handle;
 	meshlink_handle_t *mesh = c->mesh;
 
+	// Extend the time for the invitation exchange upon receiving a valid message
+	c->last_ping_time = mesh->loop.now.tv_sec;
+
 	if(type == SPTPS_HANDSHAKE) {
 		// The peer should send its cookie first.
 		return true;
@@ -207,6 +223,7 @@ bool id_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 
 		c->protocol_minor = 2;
 		c->allow_request = 1;
+		c->last_ping_time = mesh->loop.now.tv_sec;
 
 		return sptps_start(&c->sptps, c, false, false, mesh->invitation_key, c->ecdsa, meshlink_invitation_label, sizeof(meshlink_invitation_label), send_meta_sptps, receive_invitation_sptps);
 	}
@@ -250,11 +267,6 @@ bool id_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		return false;
 	}
 
-	if(n->status.blacklisted) {
-		logger(mesh, MESHLINK_WARNING, "Peer %s is blacklisted", c->name);
-		return false;
-	}
-
 	if(!node_read_public_key(mesh, n)) {
 		logger(mesh, MESHLINK_ERROR, "No key known for peer %s", c->name);
 
@@ -275,6 +287,7 @@ bool id_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	}
 
 	c->allow_request = ACK;
+	c->last_ping_time = mesh->loop.now.tv_sec;
 	char label[sizeof(meshlink_tcp_label) + strlen(mesh->self->name) + strlen(c->name) + 2];
 
 	if(c->outgoing) {
@@ -291,6 +304,14 @@ bool id_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 }
 
 bool send_ack(meshlink_handle_t *mesh, connection_t *c) {
+	node_t *n = lookup_node(mesh, c->name);
+
+	if(n && n->status.blacklisted) {
+		logger(mesh, MESHLINK_WARNING, "Peer %s is blacklisted", c->name);
+		return send_error(mesh, c, BLACKLISTED, "blacklisted");
+	}
+
+	c->last_ping_time = mesh->loop.now.tv_sec;
 	return send_request(mesh, c, NULL, "%d %s %d %x", ACK, mesh->myport, mesh->devclass, OPTION_PMTU_DISCOVERY | (PROT_MINOR << 24));
 }
 
@@ -373,6 +394,25 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 
 	if(mesh->meta_status_cb) {
 		mesh->meta_status_cb(mesh, (meshlink_node_t *)n, true);
+	}
+
+	/*  Terminate any connections to this node that are not activated yet */
+
+	for list_each(connection_t, other, mesh->connections) {
+		if(!other->status.active && !strcmp(other->name, c->name)) {
+			if(other->outgoing) {
+				if(c->outgoing) {
+					logger(mesh, MESHLINK_WARNING, "Two outgoing connections to the same node!");
+				} else {
+					c->outgoing = other->outgoing;
+				}
+
+				other->outgoing = NULL;
+			}
+
+			logger(mesh, MESHLINK_DEBUG, "Terminating pending second connection with %s", n->name);
+			terminate_connection(mesh, other, false);
+		}
 	}
 
 	/* Send him everything we know */

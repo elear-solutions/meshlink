@@ -274,6 +274,12 @@ public:
 		(void)meshlink_errno;
 	}
 
+	/// This functions is called whenever MeshLink is blacklisted by another node.
+	virtual void blacklisted(node *peer) {
+		/* do nothing */
+		(void)peer;
+	}
+
 	/// This functions is called whenever MeshLink a meta-connection attempt is made.
 	virtual void connection_try(node *peer) {
 		/* do nothing */
@@ -374,6 +380,7 @@ public:
 		meshlink_set_node_duplicate_cb(handle, &node_duplicate_trampoline);
 		meshlink_set_log_cb(handle, MESHLINK_DEBUG, &log_trampoline);
 		meshlink_set_error_cb(handle, &error_trampoline);
+		meshlink_set_blacklisted_cb(handle, &blacklisted_trampoline);
 		meshlink_set_channel_listen_cb(handle, &channel_listen_trampoline);
 		meshlink_set_channel_accept_cb(handle, &channel_accept_trampoline);
 		meshlink_set_connection_try_cb(handle, &connection_try_trampoline);
@@ -431,6 +438,17 @@ public:
 		return meshlink_get_node_reachability(handle, node, last_reachable, last_unreachable);
 	}
 
+	/// Get a node's blacklist status.
+	/** This function returns the current blacklist status of a given node.
+	 *
+	 *  @param node              A pointer to a meshlink::node describing the node.
+	 *
+	 *  @return                  This function returns true if the node is currently blacklisted, false otherwise.
+	 */
+	bool get_node_blacklisted(node *node) {
+		return meshlink_get_node_blacklisted(handle, node);
+	}
+
 	/// Get a handle for a specific submesh.
 	/** This function returns a handle for the submesh with the given name.
 	 *
@@ -463,6 +481,22 @@ public:
 	 */
 	node **get_all_nodes(node **nodes, size_t *nmemb) {
 		return (node **)meshlink_get_all_nodes(handle, (meshlink_node_t **)nodes, nmemb);
+	}
+
+	/// Get a list of all nodes by blacklist status.
+	/** This function returns a list with handles for all the nodes who were either blacklisted or whitelisted.
+	 *
+	 *  @param blacklisted  If true, a list of blacklisted nodes will be returned, otherwise whitelisted nodes.
+	 *  @param nodes        A pointer to an array of pointers to meshlink::node, which should be allocated by the application.
+	 *  @param nmemb        The maximum number of pointers that can be stored in the nodes array.
+	 *
+	 *  @return             A pointer to an array containing pointers to all known nodes with the given blacklist status.
+	 *                      If the @a nodes argument was not NULL, then the return value can either be the same value or a different value.
+	 *                      If it is a new value, the old value of @a nodes should not be used anymore.
+	 *                      If the new value is NULL, then the old array will have been freed by MeshLink.
+	 */
+	node **get_all_nodes_by_blacklisted(bool blacklisted, node **nodes, size_t *nmemb) {
+		return (node **)meshlink_get_all_nodes_by_blacklisted(handle, blacklisted, (meshlink_node_t **)nodes, nmemb);
 	}
 
 	/// Sign data using the local node's MeshLink key.
@@ -513,6 +547,17 @@ public:
 	 */
 	bool set_canonical_address(node *node, const char *address, const char *port = NULL) {
 		return meshlink_set_canonical_address(handle, node, address, port);
+	}
+
+	/// Clear the canonical Address for a node.
+	/** This function clears the canonical Address for a node.
+	 *
+	 *  @param node         A pointer to a struct meshlink_node describing the node.
+	 *
+	 *  @return             This function returns true if the address was removed, false otherwise.
+	 */
+	bool clear_canonical_address(node *node) {
+		return meshlink_clear_canonical_address(handle, node);
 	}
 
 	/// Add an invitation address for the local node.
@@ -658,6 +703,19 @@ public:
 	 */
 	void set_granularity(long granularity) {
 		meshlink_set_scheduling_granularity(handle, granularity);
+	}
+
+	/// Sets the storage policy used by MeshLink
+	/** This sets the policy MeshLink uses when it has new information about nodes.
+	 *  By default, all udpates will be stored to disk (unless an ephemeral instance has been opened).
+	 *  Setting the policy to MESHLINK_STORAGE_KEYS_ONLY, only updates that contain new keys for nodes
+	 *  are stored, as well as blacklist/whitelist settings.
+	 *  By setting the policy to MESHLINK_STORAGE_DISABLED, no updates will be stored.
+	 *
+	 *  @param policy  The storage policy to use.
+	 */
+	void set_storage_policy(meshlink_storage_policy_t policy) {
+		meshlink_set_storage_policy(handle, policy);
 	}
 
 	/// Invite another node into the mesh.
@@ -838,6 +896,43 @@ public:
 	 */
 	void set_channel_rcvbuf(channel *channel, size_t size) {
 		meshlink_set_channel_rcvbuf(handle, channel, size);
+	}
+
+	/// Set the flags of a channel.
+	/** This function allows changing some of the channel flags.
+	 *  Currently only MESHLINK_CHANNEL_NO_PARTIAL and MESHLINK_CHANNEL_DROP_LATE are supported, other flags are ignored.
+	 *  These flags only affect the local side of the channel with the peer.
+	 *  The changes take effect immediately.
+	 *
+	 *  @param channel   A handle for the channel.
+	 *  @param flags     A bitwise-or'd combination of flags that set the semantics for this channel.
+	 */
+	void set_channel_flags(channel *channel, uint32_t flags) {
+		meshlink_set_channel_flags(handle, channel, flags);
+	}
+
+	/// Set the send buffer storage of a channel.
+	/** This function provides MeshLink with a send buffer allocated by the application.
+	*
+	*  @param channel   A handle for the channel.
+	*  @param buf       A pointer to the start of the buffer.
+	*                   If a NULL pointer is given, MeshLink will use its own internal buffer again.
+	*  @param size      The size of the buffer.
+	*/
+	void set_channel_sndbuf_storage(channel *channel, void *buf, size_t size) {
+		meshlink_set_channel_sndbuf_storage(handle, channel, buf, size);
+	}
+
+	/// Set the receive buffer storage of a channel.
+	/** This function provides MeshLink with a receive buffer allocated by the application.
+	*
+	*  @param channel   A handle for the channel.
+	*  @param buf       A pointer to the start of the buffer.
+	*                   If a NULL pointer is given, MeshLink will use its own internal buffer again.
+	*  @param size      The size of the buffer.
+	*/
+	void set_channel_rcvbuf_storage(channel *channel, void *buf, size_t size) {
+		meshlink_set_channel_rcvbuf_storage(handle, channel, buf, size);
 	}
 
 	/// Set the connection timeout used for channels to the given node.
@@ -1168,6 +1263,15 @@ private:
 
 		meshlink::mesh *that = static_cast<mesh *>(handle->priv);
 		that->error(meshlink_errno);
+	}
+
+	static void blacklisted_trampoline(meshlink_handle_t *handle, meshlink_node_t *peer) {
+		if(!(handle->priv)) {
+			return;
+		}
+
+		meshlink::mesh *that = static_cast<mesh *>(handle->priv);
+		that->blacklisted(static_cast<node *>(peer));
 	}
 
 	static void connection_try_trampoline(meshlink_handle_t *handle, meshlink_node_t *peer) {

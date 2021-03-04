@@ -36,7 +36,7 @@
 /* Request numbers */
 
 typedef enum request_t {
-	ALL = -1,                                       /* Guardian for allow_request */
+	ALL = -1, /* Guardian for allow_request */
 	ID = 0, METAKEY, CHALLENGE, CHAL_REPLY, ACK,
 	STATUS, ERROR, TERMREQ,
 	PING, PONG,
@@ -44,12 +44,18 @@ typedef enum request_t {
 	ADD_EDGE, DEL_EDGE,
 	KEY_CHANGED, REQ_KEY, ANS_KEY,
 	PACKET,
-	/* Tinc 1.1 requests */
+	/* Extended requests */
 	CONTROL,
 	REQ_PUBKEY, ANS_PUBKEY,
 	REQ_SPTPS,
-	LAST                                            /* Guardian for the highest request number */
+	REQ_CANONICAL,
+	NUM_REQUESTS
 } request_t;
+
+typedef enum request_error_t {
+	NONE = 0,
+	BLACKLISTED = 1,
+} request_error_t;
 
 typedef struct past_request_t {
 	const char *request;
@@ -83,11 +89,13 @@ bool seen_request(struct meshlink_handle *mesh, const char *);
 
 bool send_id(struct meshlink_handle *mesh, struct connection_t *);
 bool send_ack(struct meshlink_handle *mesh, struct connection_t *);
+bool send_error(struct meshlink_handle *mesh, struct connection_t *, request_error_t, const char *);
 bool send_ping(struct meshlink_handle *mesh, struct connection_t *);
 bool send_pong(struct meshlink_handle *mesh, struct connection_t *);
 bool send_add_edge(struct meshlink_handle *mesh, struct connection_t *, const struct edge_t *, int contradictions);
 bool send_del_edge(struct meshlink_handle *mesh, struct connection_t *, const struct edge_t *, int contradictions);
 bool send_req_key(struct meshlink_handle *mesh, struct node_t *);
+bool send_canonical_address(struct meshlink_handle *mesh, struct node_t *);
 
 /* Request handlers  */
 

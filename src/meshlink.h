@@ -83,6 +83,13 @@ typedef enum {
 	DEV_CLASS_COUNT
 } dev_class_t;
 
+/// Storage policy
+typedef enum {
+	MESHLINK_STORAGE_ENABLED,    ///< Store all updates.
+	MESHLINK_STORAGE_DISABLED,   ///< Don't store any updates.
+	MESHLINK_STORAGE_KEYS_ONLY,  ///< Only store updates when a node's key has changed.
+} meshlink_storage_policy_t;
+
 /// Invitation flags
 static const uint32_t MESHLINK_INVITE_LOCAL = 1;    // Only use local addresses in the URL
 static const uint32_t MESHLINK_INVITE_PUBLIC = 2;   // Only use public or canonical addresses in the URL
@@ -188,6 +195,27 @@ bool meshlink_open_params_set_netns(meshlink_open_params_t *params, int netns) _
  *  @return         This function will return true if the open parameters have been successfully updated, false otherwise.
  */
 bool meshlink_open_params_set_storage_key(meshlink_open_params_t *params, const void *key, size_t keylen) __attribute__((__warn_unused_result__));
+
+/// Set the encryption key MeshLink should use for local storage.
+/** This function changes the open parameters to use the given storage policy.
+ *
+ *  @param params   A pointer to a meshlink_open_params_t which must have been created earlier with meshlink_open_params_init().
+ *  @param policy   The storage policy to use.
+ *
+ *  @return         This function will return true if the open parameters have been successfully updated, false otherwise.
+ */
+bool meshlink_open_params_set_storage_policy(meshlink_open_params_t *params, meshlink_storage_policy_t policy) __attribute__((__warn_unused_result__));
+
+/// Set the filename of the lockfile.
+/** This function changes the path of the lockfile used to ensure only one instance of MeshLink can be open at the same time.
+ *  If an application changes this, it must always set it to the same location.
+ *
+ *  @param params   A pointer to a meshlink_open_params_t which must have been created earlier with meshlink_open_params_init().
+ *  @param filename The filename of the lockfile.
+ *
+ *  @return         This function will return true if the open parameters have been successfully updated, false otherwise.
+ */
+bool meshlink_open_params_set_lock_filename(meshlink_open_params_t *params, const char *filename) __attribute__((__warn_unused_result__));
 
 /// Open or create a MeshLink instance.
 /** This function opens or creates a MeshLink instance.
@@ -361,6 +389,21 @@ void meshlink_close(struct meshlink_handle *mesh);
  *  @return         This function will return true if the MeshLink instance was successfully destroyed, false otherwise.
  */
 bool meshlink_destroy(const char *confbase) __attribute__((__warn_unused_result__));
+
+/// Destroy a MeshLink instance using open parameters.
+/** This function remove all configuration files of a MeshLink instance. It should only be called when the application
+ *  does not have an open handle to this instance. Afterwards, a call to meshlink_open() will create a completely
+ *  new instance.
+ *
+ *  This version expects a pointer to meshlink_open_params_t,
+ *  and will use exactly the same settings used for opening a handle to destroy it.
+ *
+ *  @param params   A pointer to a meshlink_open_params_t which must be filled in by the application.
+ *                  After the function returns, the application is free to reuse or free @a params.
+ *
+ *  @return         This function will return true if the MeshLink instance was successfully destroyed, false otherwise.
+ */
+bool meshlink_destroy_ex(const meshlink_open_params_t *params) __attribute__((__warn_unused_result__));
 
 /// A callback for receiving data from the mesh.
 /** @param mesh      A handle which represents an instance of MeshLink.
@@ -546,6 +589,27 @@ typedef void (*meshlink_error_cb_t)(struct meshlink_handle *mesh, meshlink_errno
  *                   If a NULL pointer is given, the callback will be disabled.
  */
 void meshlink_set_error_cb(struct meshlink_handle *mesh, meshlink_error_cb_t cb);
+
+/// A callback for receiving blacklisted conditions encountered by the MeshLink thread.
+/** @param mesh      A handle which represents an instance of MeshLink, or NULL.
+ *  @param node      The node that blacklisted the local node.
+ */
+typedef void (*meshlink_blacklisted_cb_t)(struct meshlink_handle *mesh, struct meshlink_node *node);
+
+/// Set the blacklisted callback.
+/** This functions sets the callback that is called whenever MeshLink detects that it is blacklisted by another node.
+ *
+ *  The callback is run in MeshLink's own thread.
+ *  It is important that the callback uses apprioriate methods (queues, pipes, locking, etc.)
+ *  to hand the data over to the application's thread.
+ *  The callback should also not block itself and return as quickly as possible.
+ *
+ *  \memberof meshlink_handle
+ *  @param mesh      A handle which represents an instance of MeshLink, or NULL.
+ *  @param cb        A pointer to the function which will be called when a serious error is encountered.
+ *                   If a NULL pointer is given, the callback will be disabled.
+ */
+void meshlink_set_blacklisted_cb(struct meshlink_handle *mesh, meshlink_blacklisted_cb_t cb);
 
 /// Send data to another node.
 /** This functions sends one packet of data to another node in the mesh.
@@ -739,16 +803,48 @@ struct meshlink_node **meshlink_get_all_nodes_by_submesh(struct meshlink_handle 
  */
 struct meshlink_node **meshlink_get_all_nodes_by_last_reachable(struct meshlink_handle *mesh, time_t start, time_t end, struct meshlink_node **nodes, size_t *nmemb) __attribute__((__warn_unused_result__));
 
+/// Get the list of all nodes by blacklist status.
+/** This function returns a list with handles for all the nodes who were either blacklisted or whitelisted.
+ *
+ *  \memberof meshlink_handle
+ *  @param mesh         A handle which represents an instance of MeshLink.
+ *  @param blacklisted  If true, a list of blacklisted nodes will be returned, otherwise whitelisted nodes.
+ *  @param nodes        A pointer to a previously allocated array of pointers to struct meshlink_node, or NULL in which case MeshLink will allocate a new array.
+ *                      The application can supply an array it allocated itself with malloc, or the return value from the previous call to this function (which is the preferred way).
+ *                      The application is allowed to call free() on the array whenever it wishes.
+ *                      The pointers in the array are valid until meshlink_close() is called.
+ *  @param nmemb        A pointer to a variable holding the number of nodes that were reachable within the period given by @a start and @a end.
+ *                      In case the @a nodes argument is not NULL, MeshLink might call realloc() on the array to change its size.
+ *                      The contents of this variable will be changed to reflect the new size of the array.
+ *
+ *  @return             A pointer to an array containing pointers to all known nodes with the given blacklist status.
+ *                      If the @a nodes argument was not NULL, then the return value can either be the same value or a different value.
+ *                      If it is a new value, the old value of @a nodes should not be used anymore.
+ *                      If the new value is NULL, then the old array will have been freed by MeshLink.
+ */
+struct meshlink_node **meshlink_get_all_nodes_by_blacklisted(struct meshlink_handle *mesh, bool blacklisted, struct meshlink_node **nodes, size_t *nmemb) __attribute__((__warn_unused_result__));
+
 /// Get the node's device class.
 /** This function returns the device class of the given node.
  *
  *  \memberof meshlink_node
  *  @param mesh          A handle which represents an instance of MeshLink.
- *  @param node         A pointer to a struct meshlink_node describing the node.
+ *  @param node          A pointer to a struct meshlink_node describing the node.
  *
  *  @return              This function returns the device class of the @a node, or -1 in case of an error.
  */
 dev_class_t meshlink_get_node_dev_class(struct meshlink_handle *mesh, struct meshlink_node *node) __attribute__((__warn_unused_result__));
+
+/// Get the node's blacklist status.
+/** This function returns the given node is blacklisted.
+ *
+ *  \memberof meshlink_node
+ *  @param mesh          A handle which represents an instance of MeshLink.
+ *  @param node          A pointer to a struct meshlink_node describing the node.
+ *
+ *  @return              This function returns true if the node is blacklisted, false otherwise.
+ */
+bool meshlink_get_node_blacklisted(struct meshlink_handle *mesh, struct meshlink_node *node) __attribute__((__warn_unused_result__));
 
 /// Get the node's submesh handle.
 /** This function returns the submesh handle of the given node.
@@ -801,6 +897,8 @@ bool meshlink_verify(struct meshlink_handle *mesh, struct meshlink_node *source,
  *
  *  If a canonical Address is set for the local node,
  *  it will be used for the hostname part of generated invitation URLs.
+ *  If a canonical Address is set for a remote node,
+ *  it is used exclusively for creating outgoing connections to that node.
  *
  *  \memberof meshlink_node
  *  @param mesh         A handle which represents an instance of MeshLink.
@@ -813,6 +911,17 @@ bool meshlink_verify(struct meshlink_handle *mesh, struct meshlink_node *source,
  */
 bool meshlink_set_canonical_address(struct meshlink_handle *mesh, struct meshlink_node *node, const char *address, const char *port) __attribute__((__warn_unused_result__));
 
+/// Clear the canonical Address for a node.
+/** This function clears the canonical Address for a node.
+ *
+ *  \memberof meshlink_node
+ *  @param mesh         A handle which represents an instance of MeshLink.
+ *  @param node         A pointer to a struct meshlink_node describing the node.
+ *
+ *  @return             This function returns true if the address was removed, false otherwise.
+ */
+bool meshlink_clear_canonical_address(struct meshlink_handle *mesh, struct meshlink_node *node) __attribute__((__warn_unused_result__));
+
 /// Add an invitation address for the local node.
 /** This function adds an address for the local node, which will be used only for invitation URLs.
  *  This address is not stored permanently.
@@ -822,7 +931,7 @@ bool meshlink_set_canonical_address(struct meshlink_handle *mesh, struct meshlin
  *  @param mesh         A handle which represents an instance of MeshLink.
  *  @param address      A nul-terminated C string containing the address, which can be either in numeric format or a hostname.
  *  @param port         A nul-terminated C string containing the port, which can be either in numeric or symbolic format.
- *                      If it is NULL, the listening port's number will be used.
+ *                      If it is NULL, the current listening port's number will be used.
  *
  *  @return             This function returns true if the address was added, false otherwise.
  */
@@ -953,6 +1062,9 @@ int meshlink_get_port(struct meshlink_handle *mesh) __attribute__((__warn_unused
  *  that the other nodes may no longer be able to initiate connections to the local node,
  *  since they will try to connect to the previously configured port.
  *
+ *  Note that if a canonical address has been set for the local node,
+ *  you might need to call meshlink_set_canonical_address() again to ensure it includes the new port number.
+ *
  *  \memberof meshlink_handle
  *  @param mesh          A handle which represents an instance of MeshLink.
  *  @param port          The port number to listen on. This must be between 0 and 65535.
@@ -1020,6 +1132,7 @@ char *meshlink_invite(struct meshlink_handle *mesh, struct meshlink_submesh *sub
  *  After a successfully accepted invitation, the name of the local node may have changed.
  *
  *  This function may only be called on a mesh that has not been started yet and which is not already part of an existing mesh.
+ *  It is not valid to call this function when the storage policy set to MESHLINK_STORAGE_DISABLED.
  *
  *  This function is blocking. It can take several seconds before it returns.
  *  There is no guarantee it will perform a successful join.
@@ -1296,7 +1409,6 @@ void meshlink_set_channel_poll_cb(struct meshlink_handle *mesh, struct meshlink_
  *  @param mesh      A handle which represents an instance of MeshLink.
  *  @param channel   A handle for the channel.
  *  @param size      The desired size for the send buffer.
- *                   If a NULL pointer is given, the callback will be disabled.
  */
 void meshlink_set_channel_sndbuf(struct meshlink_handle *mesh, struct meshlink_channel *channel, size_t size);
 
@@ -1308,9 +1420,47 @@ void meshlink_set_channel_sndbuf(struct meshlink_handle *mesh, struct meshlink_c
  *  @param mesh      A handle which represents an instance of MeshLink.
  *  @param channel   A handle for the channel.
  *  @param size      The desired size for the send buffer.
- *                   If a NULL pointer is given, the callback will be disabled.
  */
 void meshlink_set_channel_rcvbuf(struct meshlink_handle *mesh, struct meshlink_channel *channel, size_t size);
+
+/// Set the send buffer storage of a channel.
+/** This function provides MeshLink with a send buffer allocated by the application.
+ *  The buffer must be valid until the channel is closed or until this function is called again with a NULL pointer for @a buf.
+ *
+ *  \memberof meshlink_channel
+ *  @param mesh      A handle which represents an instance of MeshLink.
+ *  @param channel   A handle for the channel.
+ *  @param buf       A pointer to the start of the buffer.
+ *                   If a NULL pointer is given, MeshLink will use its own internal buffer again.
+ *  @param size      The size of the buffer.
+ */
+void meshlink_set_channel_sndbuf_storage(struct meshlink_handle *mesh, struct meshlink_channel *channel, void *buf, size_t size);
+
+/// Set the receive buffer storage of a channel.
+/** This function provides MeshLink with a receive buffer allocated by the application.
+ *  The buffer must be valid until the channel is closed or until this function is called again with a NULL pointer for @a buf.
+ *
+ *  \memberof meshlink_channel
+ *  @param mesh      A handle which represents an instance of MeshLink.
+ *  @param channel   A handle for the channel.
+ *  @param buf       A pointer to the start of the buffer.
+ *                   If a NULL pointer is given, MeshLink will use its own internal buffer again.
+ *  @param size      The size of the buffer.
+ */
+void meshlink_set_channel_rcvbuf_storage(struct meshlink_handle *mesh, struct meshlink_channel *channel, void *buf, size_t size);
+
+/// Set the flags of a channel.
+/** This function allows changing some of the channel flags.
+ *  Currently only MESHLINK_CHANNEL_NO_PARTIAL and MESHLINK_CHANNEL_DROP_LATE are supported, other flags are ignored.
+ *  These flags only affect the local side of the channel with the peer.
+ *  The changes take effect immediately.
+ *
+ *  \memberof meshlink_channel
+ *  @param mesh      A handle which represents an instance of MeshLink.
+ *  @param channel   A handle for the channel.
+ *  @param flags     A bitwise-or'd combination of flags that set the semantics for this channel.
+ */
+void meshlink_set_channel_flags(struct meshlink_handle *mesh, struct meshlink_channel *channel, uint32_t flags);
 
 /// Open a reliable stream channel to another node.
 /** This function is called whenever a remote node wants to open a channel to the local node.
@@ -1673,6 +1823,19 @@ void meshlink_set_external_address_discovery_url(struct meshlink_handle *mesh, c
  *  @param granularity  The scheduling granularity of the application in microseconds.
  */
 void meshlink_set_scheduling_granularity(struct meshlink_handle *mesh, long granularity);
+
+/// Sets the storage policy used by MeshLink
+/** This sets the policy MeshLink uses when it has new information about nodes.
+ *  By default, all udpates will be stored to disk (unless an ephemeral instance has been opened).
+ *  Setting the policy to MESHLINK_STORAGE_KEYS_ONLY, only updates that contain new keys for nodes
+ *  are stored, as well as blacklist/whitelist settings.
+ *  By setting the policy to MESHLINK_STORAGE_DISABLED, no updates will be stored.
+ *
+ *  \memberof meshlink_handle
+ *  @param mesh    A handle which represents an instance of MeshLink.
+ *  @param policy  The storage policy to use.
+ */
+void meshlink_set_storage_policy(struct meshlink_handle *mesh, meshlink_storage_policy_t policy);
 
 #ifdef __cplusplus
 }

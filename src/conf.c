@@ -79,7 +79,9 @@ static bool deltree(const char *dirname) {
 
 		while((ent = readdir(d))) {
 			if(ent->d_name[0] == '.') {
-				continue;
+				if(!ent->d_name[1] || (ent->d_name[1] == '.' && !ent->d_name[2])) {
+					continue;
+				}
 			}
 
 			char filename[PATH_MAX];
@@ -403,7 +405,7 @@ bool config_rename(meshlink_handle_t *mesh, const char *old_conf_subdir, const c
 bool config_sync(meshlink_handle_t *mesh, const char *conf_subdir) {
 	assert(conf_subdir);
 
-	if(!mesh->confbase) {
+	if(!mesh->confbase || mesh->storage_policy == MESHLINK_STORAGE_DISABLED) {
 		return true;
 	}
 
@@ -482,10 +484,12 @@ bool meshlink_confbase_exists(meshlink_handle_t *mesh) {
 }
 
 /// Lock the main configuration file. Creates confbase if necessary.
-bool main_config_lock(meshlink_handle_t *mesh) {
+bool main_config_lock(meshlink_handle_t *mesh, const char *lock_filename) {
 	if(!mesh->confbase) {
 		return true;
 	}
+
+	assert(lock_filename);
 
 	if(mkdir(mesh->confbase, 0700) && errno != EEXIST) {
 		logger(NULL, MESHLINK_ERROR, "Cannot create configuration directory %s: %s", mesh->confbase, strerror(errno));
@@ -494,13 +498,10 @@ bool main_config_lock(meshlink_handle_t *mesh) {
 		return NULL;
 	}
 
-	char path[PATH_MAX];
-	snprintf(path, sizeof(path), "%s" SLASH "meshlink.lock", mesh->confbase);
-
-	mesh->lockfile = fopen(path, "w+");
+	mesh->lockfile = fopen(lock_filename, "w+");
 
 	if(!mesh->lockfile) {
-		logger(NULL, MESHLINK_ERROR, "Cannot not open %s: %s\n", path, strerror(errno));
+		logger(NULL, MESHLINK_ERROR, "Cannot not open %s: %s\n", lock_filename, strerror(errno));
 		meshlink_errno = MESHLINK_ESTORAGE;
 		return false;
 	}
@@ -514,7 +515,7 @@ bool main_config_lock(meshlink_handle_t *mesh) {
 #else
 
 	if(flock(fileno(mesh->lockfile), LOCK_EX | LOCK_NB) != 0) {
-		logger(NULL, MESHLINK_ERROR, "Cannot lock %s: %s\n", path, strerror(errno));
+		logger(NULL, MESHLINK_ERROR, "Cannot lock %s: %s\n", lock_filename, strerror(errno));
 		fclose(mesh->lockfile);
 		mesh->lockfile = NULL;
 		meshlink_errno = MESHLINK_EBUSY;
@@ -1023,6 +1024,82 @@ size_t invitation_purge_old(meshlink_handle_t *mesh, time_t deadline) {
 			logger(mesh, MESHLINK_DEBUG, "Could not stat %s: %s\n", invname, strerror(errno));
 			errno = 0;
 		}
+	}
+
+	if(errno) {
+		logger(mesh, MESHLINK_DEBUG, "Error while reading directory %s: %s\n", path, strerror(errno));
+		closedir(dir);
+		meshlink_errno = MESHLINK_ESTORAGE;
+		return 0;
+	}
+
+	closedir(dir);
+
+	return count;
+}
+
+/// Purge invitations for the given node
+size_t invitation_purge_node(meshlink_handle_t *mesh, const char *node_name) {
+	if(!mesh->confbase) {
+		return true;
+	}
+
+	char path[PATH_MAX];
+	make_invitation_path(mesh, "current", "", path, sizeof(path));
+
+	DIR *dir = opendir(path);
+
+	if(!dir) {
+		logger(mesh, MESHLINK_DEBUG, "Could not read directory %s: %s\n", path, strerror(errno));
+		meshlink_errno = MESHLINK_ESTORAGE;
+		return 0;
+	}
+
+	errno = 0;
+	size_t count = 0;
+	struct dirent *ent;
+
+	while((ent = readdir(dir))) {
+		if(strlen(ent->d_name) != 24) {
+			continue;
+		}
+
+		char invname[PATH_MAX];
+
+		if(snprintf(invname, sizeof(invname), "%s" SLASH "%s", path, ent->d_name) >= PATH_MAX) {
+			logger(mesh, MESHLINK_DEBUG, "Filename too long: %s" SLASH "%s", path, ent->d_name);
+			continue;
+		}
+
+		FILE *f = fopen(invname, "r");
+
+		if(!f) {
+			errno = 0;
+			continue;
+		}
+
+		config_t config;
+
+		if(!config_read_file(mesh, f, &config, mesh->config_key)) {
+			logger(mesh, MESHLINK_ERROR, "Failed to read `%s': %s", invname, strerror(errno));
+			config_free(&config);
+			fclose(f);
+			errno = 0;
+			continue;
+		}
+
+		packmsg_input_t in = {config.buf, config.len};
+		packmsg_get_uint32(&in); // skip version
+		char *name = packmsg_get_str_dup(&in);
+
+		if(name && !strcmp(name, node_name)) {
+			logger(mesh, MESHLINK_DEBUG, "Removing invitation for %s", node_name);
+			unlink(invname);
+		}
+
+		free(name);
+		config_free(&config);
+		fclose(f);
 	}
 
 	if(errno) {

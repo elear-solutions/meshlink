@@ -102,7 +102,7 @@ static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 	}
 
 	if(n->mtuprobes == 31) {
-		if(!n->minmtu && n->status.want_udp) {
+		if(!n->minmtu && n->status.want_udp && n->nexthop && n->nexthop->connection) {
 			/* Send a dummy ANS_KEY to try to update the reflexive UDP address */
 			send_request(mesh, n->nexthop->connection, NULL, "%d %s %s . -1 -1 -1 0", ANS_KEY, mesh->self->name, n->name);
 			n->status.want_udp = false;
@@ -188,7 +188,13 @@ static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet
 		if(!n->status.udp_confirmed) {
 			char *address, *port;
 			sockaddr2str(&n->address, &address, &port);
-			send_request(mesh, n->nexthop->connection, NULL, "%d %s %s . -1 -1 -1 0 %s %s", ANS_KEY, n->name, n->name, address, port);
+
+			if(n->nexthop && n->nexthop->connection) {
+				send_request(mesh, n->nexthop->connection, NULL, "%d %s %s . -1 -1 -1 0 %s %s", ANS_KEY, n->name, n->name, address, port);
+			} else {
+				logger(mesh, MESHLINK_WARNING, "Cannot send reflexive address to %s via %s", n->name, n->nexthop ? n->nexthop->name : n->name);
+			}
+
 			free(address);
 			free(port);
 			n->status.udp_confirmed = true;
@@ -245,6 +251,11 @@ static bool try_mac(meshlink_handle_t *mesh, node_t *n, const vpn_packet_t *inpk
 }
 
 static void receive_udppacket(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *inpkt) {
+	if(!n->status.reachable) {
+		logger(mesh, MESHLINK_ERROR, "Got SPTPS data from unreachable node %s", n->name);
+		return;
+	}
+
 	if(!n->sptps.state) {
 		if(!n->status.waitingforkey) {
 			logger(mesh, MESHLINK_DEBUG, "Got packet from %s but we haven't exchanged keys yet", n->name);
@@ -262,6 +273,11 @@ static void receive_udppacket(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *
 }
 
 static void send_sptps_packet(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *origpkt) {
+	if(!n->status.reachable) {
+		logger(mesh, MESHLINK_ERROR, "Trying to send SPTPS data to unreachable node %s", n->name);
+		return;
+	}
+
 	if(!n->status.validkey) {
 		logger(mesh, MESHLINK_INFO, "No valid key known yet for %s", n->name);
 
@@ -289,7 +305,7 @@ static void send_sptps_packet(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *
 	return;
 }
 
-static void choose_udp_address(meshlink_handle_t *mesh, const node_t *n, const sockaddr_t **sa, int *sock) {
+static void choose_udp_address(meshlink_handle_t *mesh, const node_t *n, const sockaddr_t **sa, int *sock, sockaddr_t *sa_buf) {
 	/* Latest guess */
 	*sa = &n->address;
 	*sock = n->sock;
@@ -312,6 +328,22 @@ static void choose_udp_address(meshlink_handle_t *mesh, const node_t *n, const s
 	if(mesh->udp_choice == 1 && n->catta_address.sa.sa_family != AF_UNSPEC) {
 		*sa = &n->catta_address;
 		goto check_socket;
+	}
+
+	/* Else, if we have a canonical address, try this once every batch */
+	if(mesh->udp_choice == 1 && n->canonical_address) {
+		char *host = xstrdup(n->canonical_address);
+		char *port = strchr(host, ' ');
+
+		if(port) {
+			*port++ = 0;
+			*sa_buf = str2sockaddr_random(mesh, host, port);
+			*sa = sa_buf;
+			free(host);
+			goto check_socket;
+		}
+
+		free(host);
 	}
 
 	/* Otherwise, address are found in edges to this node.
@@ -379,11 +411,21 @@ bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 	node_t *to = handle;
 	meshlink_handle_t *mesh = to->mesh;
 
+	if(!to->status.reachable) {
+		logger(mesh, MESHLINK_ERROR, "Trying to send SPTPS data to unreachable node %s", to->name);
+		return false;
+	}
+
 	/* Send it via TCP if it is a handshake packet, TCPOnly is in use, or this packet is larger than the MTU. */
 
 	if(type >= SPTPS_HANDSHAKE || (type != PKT_PROBE && (len - 21) > to->minmtu)) {
 		char buf[len * 4 / 3 + 5];
 		b64encode(data, buf, len);
+
+		if(!to->nexthop || !to->nexthop->connection) {
+			logger(mesh, MESHLINK_WARNING, "Unable to forward SPTPS packet to %s via %s", to->name, to->nexthop ? to->nexthop->name : to->name);
+			return false;
+		}
 
 		/* If no valid key is known yet, send the packets using ANS_KEY requests,
 		   to ensure we get to learn the reflexive UDP address. */
@@ -396,13 +438,14 @@ bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 
 	/* Otherwise, send the packet via UDP */
 
+	sockaddr_t sa_buf;
 	const sockaddr_t *sa;
 	int sock;
 
 	if(to->status.broadcast) {
 		choose_broadcast_address(mesh, to, &sa, &sock);
 	} else {
-		choose_udp_address(mesh, to, &sa, &sock);
+		choose_udp_address(mesh, to, &sa, &sock, &sa_buf);
 	}
 
 	if(sendto(mesh->listen_socket[sock].udp.fd, data, len, 0, &sa->sa, SALEN(sa->sa)) < 0 && !sockwouldblock(sockerrno)) {

@@ -145,28 +145,25 @@ static void check_reachability(meshlink_handle_t *mesh) {
 
 		/* Check for nodes that have changed session_id */
 		if(n->status.visited && n->prevedge && n->prevedge->reverse->session_id != n->session_id) {
+			logger(mesh, MESHLINK_DEBUG, "Node %s has a new session ID", n->name);
+
 			n->session_id = n->prevedge->reverse->session_id;
 
 			if(n->utcp) {
 				utcp_abort_all_connections(n->utcp);
 			}
 
-			if(n->status.visited == n->status.reachable) {
-				/* This session replaces the previous one without changing reachability status.
-				 * We still need to reset the UDP SPTPS state.
-				 */
-				n->status.validkey = false;
-				sptps_stop(&n->sptps);
-				n->status.waitingforkey = false;
-				n->last_req_key = -3600;
+			n->status.validkey = false;
+			sptps_stop(&n->sptps);
+			n->status.waitingforkey = false;
+			n->last_req_key = -3600;
 
-				n->status.udp_confirmed = false;
-				n->maxmtu = MTU;
-				n->minmtu = 0;
-				n->mtuprobes = 0;
+			n->status.udp_confirmed = false;
+			n->maxmtu = MTU;
+			n->minmtu = 0;
+			n->mtuprobes = 0;
 
-				timeout_del(&mesh->loop, &n->mtutimeout);
-			}
+			timeout_del(&mesh->loop, &n->mtutimeout);
 		}
 
 		if(n->status.visited != n->status.reachable) {
@@ -180,7 +177,7 @@ static void check_reachability(meshlink_handle_t *mesh) {
 					n->last_reachable = time(NULL);
 
 					if(first_time_reachable) {
-						if(!node_write_config(mesh, n)) {
+						if(!node_write_config(mesh, n, false)) {
 							logger(mesh, MESHLINK_WARNING, "Could not write host config file for node %s!\n", n->name);
 
 						}
@@ -190,13 +187,6 @@ static void check_reachability(meshlink_handle_t *mesh) {
 					n->last_unreachable = time(NULL);
 				}
 			}
-
-			/* TODO: only clear status.validkey if node is unreachable? */
-
-			n->status.validkey = false;
-			sptps_stop(&n->sptps);
-			n->status.waitingforkey = false;
-			n->last_req_key = -3600;
 
 			n->status.udp_confirmed = false;
 			n->maxmtu = MTU;

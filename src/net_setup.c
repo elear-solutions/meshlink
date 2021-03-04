@@ -218,9 +218,24 @@ bool node_read_from_config(meshlink_handle_t *mesh, node_t *n, const config_t *c
 	return packmsg_done(&in);
 }
 
-bool node_write_config(meshlink_handle_t *mesh, node_t *n) {
+bool node_write_config(meshlink_handle_t *mesh, node_t *n, bool new_key) {
 	if(!mesh->confbase) {
 		return true;
+	}
+
+	switch(mesh->storage_policy) {
+	case MESHLINK_STORAGE_KEYS_ONLY:
+		if(!new_key) {
+			return true;
+		}
+
+		break;
+
+	case MESHLINK_STORAGE_DISABLED:
+		return true;
+
+	default:
+		break;
 	}
 
 	uint8_t buf[4096];
@@ -271,6 +286,7 @@ bool node_write_config(meshlink_handle_t *mesh, node_t *n) {
 		return false;
 	}
 
+	n->status.dirty = false;
 	return true;
 }
 
@@ -332,6 +348,25 @@ int setup_tcp_listen_socket(meshlink_handle_t *mesh, const struct addrinfo *aip)
 	fcntl(nfd, F_SETFD, FD_CLOEXEC);
 #endif
 
+#ifdef O_NONBLOCK
+	int flags = fcntl(nfd, F_GETFL);
+
+	if(fcntl(nfd, F_SETFL, flags | O_NONBLOCK) < 0) {
+		closesocket(nfd);
+		logger(mesh, MESHLINK_ERROR, "System call `%s' failed: %s", "fcntl", strerror(errno));
+		return -1;
+	}
+
+#elif defined(WIN32)
+	unsigned long arg = 1;
+
+	if(ioctlsocket(nfd, FIONBIO, &arg) != 0) {
+		closesocket(nfd);
+		logger(mesh, MESHLINK_ERROR, "Call to `%s' failed: %s", "ioctlsocket", sockstrerror(sockerrno));
+		return -1;
+	}
+
+#endif
 	int option = 1;
 	setsockopt(nfd, SOL_SOCKET, SO_REUSEADDR, (void *)&option, sizeof(option));
 
@@ -528,8 +563,8 @@ static bool add_listen_sockets(meshlink_handle_t *mesh) {
 		for(int i = 0; i < mesh->listen_sockets; i++) {
 			io_del(&mesh->loop, &mesh->listen_socket[i].tcp);
 			io_del(&mesh->loop, &mesh->listen_socket[i].udp);
-			close(mesh->listen_socket[i].tcp.fd);
-			close(mesh->listen_socket[i].udp.fd);
+			closesocket(mesh->listen_socket[i].tcp.fd);
+			closesocket(mesh->listen_socket[i].udp.fd);
 		}
 
 		mesh->listen_sockets = 0;
@@ -617,8 +652,8 @@ void close_network_connections(meshlink_handle_t *mesh) {
 	for(int i = 0; i < mesh->listen_sockets; i++) {
 		io_del(&mesh->loop, &mesh->listen_socket[i].tcp);
 		io_del(&mesh->loop, &mesh->listen_socket[i].udp);
-		close(mesh->listen_socket[i].tcp.fd);
-		close(mesh->listen_socket[i].udp.fd);
+		closesocket(mesh->listen_socket[i].tcp.fd);
+		closesocket(mesh->listen_socket[i].udp.fd);
 	}
 
 	exit_requests(mesh);

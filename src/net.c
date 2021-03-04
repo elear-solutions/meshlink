@@ -117,13 +117,13 @@ static void timeout_handler(event_loop_t *loop, void *data) {
 		int pingtimeout = c->node ? mesh->dev_class_traits[c->node->devclass].pingtimeout : default_timeout;
 		int pinginterval = c->node ? mesh->dev_class_traits[c->node->devclass].pinginterval : default_interval;
 
-		if(c->outgoing && c->outgoing->timeout < 5) {
+		if(c->outgoing && !c->status.active && c->outgoing->timeout < 5) {
 			pingtimeout = 1;
 		}
 
 		// Also make sure that if outstanding key requests for the UDP counterpart of a connection has timed out, we restart it.
 		if(c->node) {
-			if(c->node->status.waitingforkey && c->node->last_req_key + pingtimeout <= mesh->loop.now.tv_sec) {
+			if(c->node->status.waitingforkey && c->node->last_req_key + pingtimeout < mesh->loop.now.tv_sec) {
 				send_req_key(mesh, c->node);
 			}
 		}
@@ -140,7 +140,7 @@ static void timeout_handler(event_loop_t *loop, void *data) {
 			}
 		}
 
-		if(c->last_ping_time + pingtimeout <= mesh->loop.now.tv_sec) {
+		if(c->last_ping_time + pingtimeout < mesh->loop.now.tv_sec) {
 			if(c->status.active) {
 				if(c->status.pinged) {
 					logger(mesh, MESHLINK_INFO, "%s didn't respond to PING in %ld seconds", c->name, (long)mesh->loop.now.tv_sec - c->last_ping_time);
@@ -620,14 +620,12 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 
 	for splay_each(node_t, n, mesh->nodes) {
 		if(n->status.dirty) {
-			if(!node_write_config(mesh, n)) {
+			if(!node_write_config(mesh, n, false)) {
 				logger(mesh, MESHLINK_DEBUG, "Could not update %s", n->name);
 			}
-
-			n->status.dirty = false;
 		}
 
-		if(n->status.validkey && n->last_req_key + 3600 < mesh->loop.now.tv_sec) {
+		if(n->status.reachable && n->status.validkey && n->last_req_key + 3600 < mesh->loop.now.tv_sec) {
 			logger(mesh, MESHLINK_DEBUG, "SPTPS key renewal for node %s", n->name);
 			devtool_sptps_renewal_probe((meshlink_node_t *)n);
 
@@ -700,7 +698,7 @@ void retry(meshlink_handle_t *mesh) {
 
 		int sock = socket(sa.sa.sa_family, SOCK_STREAM, IPPROTO_TCP);
 
-		if(sock != -1) {
+		if(sock == -1) {
 			continue;
 		}
 
@@ -713,9 +711,11 @@ void retry(meshlink_handle_t *mesh) {
 	}
 
 	/* Kick the ping timeout handler */
-	timeout_set(&mesh->loop, &mesh->pingtimer, &(struct timespec) {
-		0, 0
-	});
+	if(mesh->pingtimer.cb) {
+		timeout_set(&mesh->loop, &mesh->pingtimer, &(struct timespec) {
+			0, 0
+		});
+	}
 }
 
 /*
@@ -733,7 +733,7 @@ void main_loop(meshlink_handle_t *mesh) {
 	mesh->datafromapp.signum = 0;
 	signal_add(&mesh->loop, &mesh->datafromapp, meshlink_send_from_queue, mesh, mesh->datafromapp.signum);
 
-	if(!event_loop_run(&mesh->loop, &mesh->mutex)) {
+	if(!event_loop_run(&mesh->loop, mesh)) {
 		logger(mesh, MESHLINK_ERROR, "Error while waiting for input: %s", strerror(errno));
 		call_error_cb(mesh, MESHLINK_ENETWORK);
 	}

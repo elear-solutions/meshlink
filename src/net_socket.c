@@ -87,7 +87,7 @@ static void retry_outgoing_handler(event_loop_t *loop, void *data) {
 }
 
 void retry_outgoing(meshlink_handle_t *mesh, outgoing_t *outgoing) {
-	if(!mesh->reachable && mesh->loop.now.tv_sec < mesh->last_unreachable + mesh->dev_class_traits[mesh->devclass].fast_retry_period) {
+	if(!mesh->reachable && mesh->loop.now.tv_sec < mesh->last_unreachable + mesh->dev_class_traits[outgoing->node->devclass].fast_retry_period) {
 		outgoing->timeout = 1;
 	} else {
 		outgoing->timeout += 5;
@@ -141,6 +141,10 @@ static void handle_meta_write(meshlink_handle_t *mesh, connection_t *c) {
 	if(!c->outbuf.len) {
 		io_set(&mesh->loop, &c->io, IO_READ);
 	}
+}
+
+void flush_meta(meshlink_handle_t *mesh, connection_t *c) {
+	handle_meta_write(mesh, c);
 }
 
 static void handle_meta_io(event_loop_t *loop, void *data, int flags) {
@@ -320,7 +324,7 @@ static bool get_next_outgoing_address(meshlink_handle_t *mesh, outgoing_t *outgo
 
 		outgoing->ai = NULL;
 		outgoing->aip = NULL;
-		outgoing->state = OUTGOING_RECENT;
+		outgoing->state = OUTGOING_END;
 	}
 
 	if(outgoing->state == OUTGOING_RECENT) {
@@ -520,6 +524,10 @@ void handle_new_meta_connection(event_loop_t *loop, void *data, int flags) {
 	fd = accept(l->tcp.fd, &sa.sa, &len);
 
 	if(fd < 0) {
+		if(sockwouldblock(errno)) {
+			return;
+		}
+
 		if(errno == EINVAL) { // TODO: check if Windows agrees
 			event_loop_stop(loop);
 			return;
