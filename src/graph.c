@@ -161,9 +161,8 @@ static void check_reachability(meshlink_handle_t *mesh) {
 			n->status.udp_confirmed = false;
 			n->maxmtu = MTU;
 			n->minmtu = 0;
+			n->udpprobes = 0;
 			n->mtuprobes = 0;
-
-			timeout_del(&mesh->loop, &n->mtutimeout);
 		}
 
 		if(n->status.visited != n->status.reachable) {
@@ -191,9 +190,10 @@ static void check_reachability(meshlink_handle_t *mesh) {
 			n->status.udp_confirmed = false;
 			n->maxmtu = MTU;
 			n->minmtu = 0;
+			n->udpprobes = 0;
 			n->mtuprobes = 0;
 
-			timeout_del(&mesh->loop, &n->mtutimeout);
+			timeout_del(&mesh->loop, &n->udp_ping_timeout);
 
 			if(!n->status.blacklisted) {
 				update_node_status(mesh, n);

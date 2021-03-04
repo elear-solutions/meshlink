@@ -30,6 +30,7 @@
 #include "node.h"
 #include "submesh.h"
 #include "packmsg.h"
+#include "pmtu.h"
 #include "prf.h"
 #include "protocol.h"
 #include "route.h"
@@ -1016,14 +1017,6 @@ static bool ecdsa_keygen(meshlink_handle_t *mesh) {
 	logger(mesh, MESHLINK_DEBUG, "Done.\n");
 
 	return true;
-}
-
-static bool timespec_lt(const struct timespec *a, const struct timespec *b) {
-	if(a->tv_sec == b->tv_sec) {
-		return a->tv_nsec < b->tv_nsec;
-	} else {
-		return a->tv_sec < b->tv_sec;
-	}
 }
 
 static struct timespec idle(event_loop_t *loop, void *data) {
@@ -2137,7 +2130,6 @@ static bool prepare_packet(meshlink_handle_t *mesh, meshlink_node_t *destination
 
 	// Prepare the packet
 	packet->probe = false;
-	packet->tcp = false;
 	packet->len = len + sizeof(*hdr);
 
 	hdr = (meshlink_packethdr_t *)packet->data;
@@ -3519,6 +3511,7 @@ static bool blacklist(meshlink_handle_t *mesh, node_t *n) {
 	n->mtu = 0;
 	n->minmtu = 0;
 	n->maxmtu = MTU;
+	n->udpprobes = 0;
 	n->mtuprobes = 0;
 	n->status.udp_confirmed = false;
 
@@ -3913,10 +3906,9 @@ static void channel_retransmit(struct utcp_connection *utcp_connection) {
 	node_t *n = utcp_connection->utcp->priv;
 	meshlink_handle_t *mesh = n->mesh;
 
-	if(n->mtuprobes == 31 && n->mtutimeout.cb) {
-		timeout_set(&mesh->loop, &n->mtutimeout, &(struct timespec) {
-			0, 0
-		});
+	if(!n->udpprobes) {
+		timespec_clear(&n->last_udp_probe_sent);
+		keepalive(mesh, n, false);
 	}
 }
 
