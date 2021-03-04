@@ -1,6 +1,6 @@
 /*
     meshlink.c -- Implementation of the MeshLink API.
-    Copyright (C) 2014-2018 Guus Sliepen <guus@meshlink.io>
+    Copyright (C) 2014-2021 Guus Sliepen <guus@meshlink.io>
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -1515,7 +1515,7 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 
 	mesh->appname = xstrdup(params->appname);
 	mesh->devclass = params->devclass;
-	mesh->discovery = true;
+	mesh->discovery.enabled = true;
 	mesh->invitation_timeout = 604800; // 1 week
 	mesh->netns = params->netns;
 	mesh->submeshes = NULL;
@@ -1555,9 +1555,6 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 
 	pthread_mutex_init(&mesh->mutex, &attr);
 	pthread_cond_init(&mesh->cond, NULL);
-
-	pthread_mutex_init(&mesh->discovery_mutex, NULL);
-	pthread_cond_init(&mesh->discovery_cond, NULL);
 
 	pthread_cond_init(&mesh->adns_cond, NULL);
 
@@ -1693,13 +1690,9 @@ static void *meshlink_main_loop(void *arg) {
 #endif // HAVE_SETNS
 	}
 
-#if HAVE_CATTA
-
-	if(mesh->discovery) {
+	if(mesh->discovery.enabled) {
 		discovery_start(mesh);
 	}
-
-#endif
 
 	if(pthread_mutex_lock(&mesh->mutex) != 0) {
 		abort();
@@ -1712,14 +1705,10 @@ static void *meshlink_main_loop(void *arg) {
 
 	pthread_mutex_unlock(&mesh->mutex);
 
-#if HAVE_CATTA
-
 	// Stop discovery
-	if(mesh->discovery) {
+	if(mesh->discovery.enabled) {
 		discovery_stop(mesh);
 	}
-
-#endif
 
 	return NULL;
 }
@@ -4554,8 +4543,6 @@ void handle_duplicate_node(meshlink_handle_t *mesh, node_t *n) {
 }
 
 void meshlink_enable_discovery(meshlink_handle_t *mesh, bool enable) {
-#if HAVE_CATTA
-
 	if(!mesh) {
 		meshlink_errno = MESHLINK_EINVAL;
 		return;
@@ -4565,7 +4552,7 @@ void meshlink_enable_discovery(meshlink_handle_t *mesh, bool enable) {
 		abort();
 	}
 
-	if(mesh->discovery == enable) {
+	if(mesh->discovery.enabled == enable) {
 		goto end;
 	}
 
@@ -4577,15 +4564,32 @@ void meshlink_enable_discovery(meshlink_handle_t *mesh, bool enable) {
 		}
 	}
 
-	mesh->discovery = enable;
+	mesh->discovery.enabled = enable;
 
 end:
 	pthread_mutex_unlock(&mesh->mutex);
-#else
-	(void)mesh;
-	(void)enable;
-	meshlink_errno = MESHLINK_ENOTSUP;
-#endif
+}
+
+void meshlink_hint_network_change(struct meshlink_handle *mesh) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	if(mesh->discovery.enabled) {
+		scan_ifaddrs(mesh);
+	}
+
+	if(mesh->loop.now.tv_sec > mesh->discovery.last_update + 5) {
+		mesh->discovery.last_update = mesh->loop.now.tv_sec;
+		handle_network_change(mesh, 1);
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
 }
 
 void meshlink_set_dev_class_timeouts(meshlink_handle_t *mesh, dev_class_t devclass, int pinginterval, int pingtimeout) {
@@ -4656,6 +4660,11 @@ void meshlink_reset_timers(struct meshlink_handle *mesh) {
 	}
 
 	handle_network_change(mesh, true);
+
+	if(mesh->discovery.enabled) {
+		discovery_refresh(mesh);
+	}
+
 	pthread_mutex_unlock(&mesh->mutex);
 }
 

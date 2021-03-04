@@ -42,6 +42,7 @@ libmeshlink_la_SOURCES = \
 	conf.c conf.h \
 	connection.c connection.h \
 	crypto.c crypto.h \
+	discovery.c discovery.h \
 	dropin.c dropin.h \
 	ecdh.h \
 	ecdsa.h \
@@ -53,6 +54,7 @@ libmeshlink_la_SOURCES = \
 	have.h \
 	list.c list.h \
 	logger.c logger.h \
+	mdns.c mdns.h \
 	meshlink.c meshlink.h meshlink.sym \
 	meshlink_internal.h \
 	meshlink_queue.h \
@@ -95,16 +97,3 @@ libmeshlink_la_LDFLAGS += $(PTHREAD_LIBS)
 
 utcp_test_CFLAGS = $(PTHREAD_CFLAGS) -iquote.
 utcp_test_LDFLAGS = $(PTHREAD_LIBS)
-
-if CATTA
-libmeshlink_la_SOURCES += \
-	discovery.c discovery.h
-
-libmeshlink_la_CFLAGS += -I${top_srcdir}/catta/include/
-
-if MINGW
-libmeshlink_la_CFLAGS += -I${top_srcdir}/catta/src/compat/windows/include/
-endif
-
-libmeshlink_la_LIBADD = ${top_builddir}/catta/src/libcatta.la
-endif
