@@ -79,6 +79,15 @@ typedef void (*duplicate_cb_t)(mesh *mesh, node *node);
  */
 typedef void (*log_cb_t)(mesh *mesh, log_level_t level, const char *text);
 
+/// A callback for listening for incoming channels.
+/** @param mesh         A handle which represents an instance of MeshLink.
+ *  @param node         A handle for the node that wants to open a channel.
+ *  @param port         The port number the peer wishes to connect to.
+ *
+ *  @return             This function should return true if the application listens for the incoming channel, false otherwise.
+ */
+typedef bool (*meshlink_channel_listen_cb_t)(struct meshlink_handle *mesh, struct meshlink_node *node, uint16_t port);
+
 /// A callback for accepting incoming channels.
 /** @param mesh         A handle which represents an instance of MeshLink.
  *  @param channel      A handle for the incoming channel.
@@ -277,6 +286,25 @@ public:
 		(void)peer;
 	}
 
+	/// This functions is called to determine if we are listening for incoming channels.
+	/**
+	 *  The function is run in MeshLink's own thread.
+	 *  It is therefore important that the callback uses apprioriate methods (queues, pipes, locking, etc.)
+	 *  to pass data to or from the application's thread.
+	 *  The callback should also not block itself and return as quickly as possible.
+	 *
+	 *  @param node         A handle for the node that wants to open a channel.
+	 *  @param port         The port number the peer wishes to connect to.
+	 *
+	 *  @return             This function should return true if the application accepts the incoming channel, false otherwise.
+	 */
+	virtual bool channel_listen(node *node, uint16_t port) {
+		/* by default accept all channels */
+		(void)node;
+		(void)port;
+		return true;
+	}
+
 	/// This functions is called whenever another node attempts to open a channel to the local node.
 	/**
 	 *  If the channel is accepted, the poll_callback will be set to channel_poll and can be
@@ -353,6 +381,7 @@ public:
 		meshlink_set_log_cb(handle, MESHLINK_DEBUG, &log_trampoline);
 		meshlink_set_error_cb(handle, &error_trampoline);
 		meshlink_set_blacklisted_cb(handle, &blacklisted_trampoline);
+		meshlink_set_channel_listen_cb(handle, &channel_listen_trampoline);
 		meshlink_set_channel_accept_cb(handle, &channel_accept_trampoline);
 		meshlink_set_connection_try_cb(handle, &connection_try_trampoline);
 		return meshlink_start(handle);
@@ -869,6 +898,19 @@ public:
 		meshlink_set_channel_rcvbuf(handle, channel, size);
 	}
 
+	/// Set the flags of a channel.
+	/** This function allows changing some of the channel flags.
+	 *  Currently only MESHLINK_CHANNEL_NO_PARTIAL and MESHLINK_CHANNEL_DROP_LATE are supported, other flags are ignored.
+	 *  These flags only affect the local side of the channel with the peer.
+	 *  The changes take effect immediately.
+	 *
+	 *  @param channel   A handle for the channel.
+	 *  @param flags     A bitwise-or'd combination of flags that set the semantics for this channel.
+	 */
+	void set_channel_flags(channel *channel, uint32_t flags) {
+		meshlink_set_channel_flags(handle, channel, flags);
+	}
+
 	/// Set the send buffer storage of a channel.
 	/** This function provides MeshLink with a send buffer allocated by the application.
 	*
@@ -891,19 +933,6 @@ public:
 	*/
 	void set_channel_rcvbuf_storage(channel *channel, void *buf, size_t size) {
 		meshlink_set_channel_rcvbuf_storage(handle, channel, buf, size);
-	}
-
-	/// Set the flags of a channel.
-	/** This function allows changing some of the channel flags.
-	 *  Currently only MESHLINK_CHANNEL_NO_PARTIAL and MESHLINK_CHANNEL_DROP_LATE are supported, other flags are ignored.
-	 *  These flags only affect the local side of the channel with the peer.
-	 *  The changes take effect immediately.
-	 *
-	 *  @param channel   A handle for the channel.
-	 *  @param flags     A bitwise-or'd combination of flags that set the semantics for this channel.
-	 */
-	void set_channel_flags(channel *channel, uint32_t flags) {
-		meshlink_set_channel_flags(handle, channel, flags);
 	}
 
 	/// Set the connection timeout used for channels to the given node.
@@ -1252,6 +1281,15 @@ private:
 
 		meshlink::mesh *that = static_cast<mesh *>(handle->priv);
 		that->connection_try(static_cast<node *>(peer));
+	}
+
+	static bool channel_listen_trampoline(meshlink_handle_t *handle, meshlink_node_t *node, uint16_t port) {
+		if(!(handle->priv)) {
+			return false;
+		}
+
+		meshlink::mesh *that = static_cast<mesh *>(handle->priv);
+		return that->channel_listen(static_cast<meshlink::node *>(node), port);
 	}
 
 	static bool channel_accept_trampoline(meshlink_handle_t *handle, meshlink_channel *channel, uint16_t port, const void *data, size_t len) {

@@ -391,7 +391,10 @@ static int getifaddrs_in_netns(struct ifaddrs **ifa, int netns) {
 #endif
 
 char *meshlink_get_local_address_for_family(meshlink_handle_t *mesh, int family) {
-	(void)mesh;
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return NULL;
+	}
 
 	// Determine address of the local interface used for outgoing connections.
 	char localaddr[NI_MAXHOST];
@@ -3763,7 +3766,12 @@ static bool channel_pre_accept(struct utcp *utcp, uint16_t port) {
 	(void)port;
 	node_t *n = utcp->priv;
 	meshlink_handle_t *mesh = n->mesh;
-	return mesh->channel_accept_cb;
+
+	if(mesh->channel_accept_cb && mesh->channel_listen_cb) {
+		return mesh->channel_listen_cb(mesh, (meshlink_node_t *)n, port);
+	} else {
+		return mesh->channel_accept_cb;
+	}
 }
 
 /* Finish one AIO buffer, return true if the channel is still open. */
@@ -4065,6 +4073,21 @@ void meshlink_set_channel_poll_cb(meshlink_handle_t *mesh, meshlink_channel_t *c
 	pthread_mutex_unlock(&mesh->mutex);
 }
 
+void meshlink_set_channel_listen_cb(meshlink_handle_t *mesh, meshlink_channel_listen_cb_t cb) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	mesh->channel_listen_cb = cb;
+
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
 void meshlink_set_channel_accept_cb(meshlink_handle_t *mesh, meshlink_channel_accept_cb_t cb) {
 	if(!mesh) {
 		meshlink_errno = MESHLINK_EINVAL;
@@ -4098,7 +4121,7 @@ void meshlink_set_channel_rcvbuf(meshlink_handle_t *mesh, meshlink_channel_t *ch
 }
 
 void meshlink_set_channel_sndbuf_storage(meshlink_handle_t *mesh, meshlink_channel_t *channel, void *buf, size_t size) {
-	if(!channel) {
+	if(!mesh || !channel) {
 		meshlink_errno = MESHLINK_EINVAL;
 		return;
 	}
@@ -4112,7 +4135,7 @@ void meshlink_set_channel_sndbuf_storage(meshlink_handle_t *mesh, meshlink_chann
 }
 
 void meshlink_set_channel_rcvbuf_storage(meshlink_handle_t *mesh, meshlink_channel_t *channel, void *buf, size_t size) {
-	if(!channel) {
+	if(!mesh || !channel) {
 		meshlink_errno = MESHLINK_EINVAL;
 		return;
 	}

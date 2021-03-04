@@ -38,7 +38,7 @@ static void client_receive_cb(meshlink_handle_t *mesh, meshlink_channel_t *chann
 	}
 
 	// We expect always the same amount of data from the server.
-	assert(len == 512 || len == LARGE_SIZE);
+	assert(len == 512 || len == 65536);
 	client->received += len;
 
 	if(len == LARGE_SIZE) {
