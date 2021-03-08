@@ -43,10 +43,11 @@ class MeshlinklibConan(ConanFile):
 
     def package(self):
         self.copy("*.h", dst="include", src="src/include/")
-        self.copy("*.h", dst="include", src="catta/include/include")
+        #self.copy("*.h", dst="include", src="catta/include/include")
         # By default, files are copied recursively. To avoid that we are specifying keep_path=False
         self.copy("*", dst="lib", src="src/lib", keep_path=False)
-        self.copy("*", dst="lib", src="catta/src/lib", keep_path=False)
+        #self.copy("*", dst="lib", src="catta/src/lib", keep_path=False)
 
     def package_info(self):
-        self.cpp_info.libs = [ "meshlink" , "catta"]
+        #self.cpp_info.libs = [ "meshlink" , "catta"]
+        self.cpp_info.libs = [ "meshlink" ]
