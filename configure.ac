@@ -135,6 +135,8 @@ AC_CHECK_FUNCS([asprintf fchmod fork gettimeofday random pselect select setns st
   [], [], [#include "$srcdir/src/have.h"]
 )
 
+CPPFLAGS="$CPPFLAGS -I/usr/local/include"
+
 dnl Support for SunOS
 
 AC_CHECK_FUNC(socket, [], [

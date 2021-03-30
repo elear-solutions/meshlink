@@ -24,6 +24,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <unistd.h>
+#include "ec.h"
 
 typedef struct meshlink_queue {
 	struct meshlink_queue_item *head;

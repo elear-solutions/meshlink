@@ -6,11 +6,13 @@ if CATTA
 MAYBE_CATTA = catta
 endif
 
-SUBDIRS = $(MAYBE_CATTA) src test examples
+SUBDIRS = $(MAYBE_CATTA) src
 
 DIST_SUBDIRS = $(SUBDIRS)
 
 ACLOCAL_AMFLAGS = -I m4 
+
+AM_LDFLAGS = -lelearcommon
 
 EXTRA_DIST = \
 	COPYING.README \

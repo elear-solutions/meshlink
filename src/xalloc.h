@@ -19,6 +19,7 @@
    with this program; if not, write to the Free Software Foundation, Inc., Foundation,
    51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */
+#include "ec.h"
 
 static inline void *xmalloc(size_t n) __attribute__((__malloc__));
 static inline void *xmalloc(size_t n) {

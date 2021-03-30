@@ -18,6 +18,7 @@
 */
 
 #include "system.h"
+#include "ec.h"
 
 #include "chacha-poly1305/chacha-poly1305.h"
 #include "crypto.h"

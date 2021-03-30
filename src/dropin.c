@@ -18,6 +18,7 @@
 */
 
 #include "system.h"
+#include "ec.h"
 
 #include "xalloc.h"
 

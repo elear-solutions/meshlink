@@ -21,6 +21,20 @@
 #include <time.h>
 
 #include "utcp_priv.h"
+#include "elearcommon/allocate.h"
+
+/*static const char *utcpStr = "utcp";
+
+#define malloc(bytes) ec_allocate_mem(bytes, EC_TTL_INFINITY, utcpStr)
+#define calloc(mem, bytes) ec_allocate_mem_and_set(bytes, EC_TTL_INFINITY, utcpStr, 0)
+#define realloc(ptr, bytes) ( ptr ? ec_reallocate_mem(ptr, bytes, EC_TTL_INFINITY, utcpStr) : ec_allocate_mem(bytes, EC_TTL_INFINITY, utcpStr))
+#define free(ptr) ec_deallocate(ptr)*/
+
+
+#define malloc(bytes) ec_allocate_mem(bytes, EC_TTL_INFINITY, __func__)
+#define calloc(mem, bytes) ec_allocate_mem_and_set(bytes, EC_TTL_INFINITY, __func__, 0)
+#define realloc(ptr, bytes) ( ptr ? ec_reallocate_mem(ptr, bytes, EC_TTL_INFINITY, __func__) : ec_allocate_mem(bytes, EC_TTL_INFINITY, __func__))
+#define free(ptr) ec_deallocate(ptr)
 
 #ifndef EBADMSG
 #define EBADMSG         104

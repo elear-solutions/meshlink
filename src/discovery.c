@@ -9,6 +9,8 @@
 #include <catta/alternative.h>
 #include <catta/error.h>
 
+#include "ec.h"
+
 #include "meshlink_internal.h"
 #include "discovery.h"
 #include "sockaddr.h"

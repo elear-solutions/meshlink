@@ -18,6 +18,7 @@
 */
 
 #include "system.h"
+#include "ec.h"
 #include <assert.h>
 #include <sys/types.h>
 #include <utime.h>

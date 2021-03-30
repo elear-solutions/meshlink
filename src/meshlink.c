@@ -18,6 +18,7 @@
 */
 
 #include "system.h"
+#include "ec.h"
 #include <pthread.h>
 
 #include "adns.h"
@@ -40,6 +41,8 @@
 #include "discovery.h"
 #include "devtools.h"
 #include "graph.h"
+
+const char *meshlinkStr = "meshlink";
 
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
