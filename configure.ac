@@ -1,6 +1,6 @@
 dnl Process this file with autoconf to produce a configure script.
 
-AC_PREREQ(2.61)
+AC_PREREQ(2.69)
 AC_INIT([MeshLink], [0.1])
 DX_PS_FEATURE(OFF)
 DX_INIT_DOXYGEN([MeshLink], [$(top_srcdir)/Doxyfile])
@@ -9,21 +9,19 @@ AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_MACRO_DIR([m4])
 AM_SILENT_RULES([yes])
 
-# Enable GNU extensions.
-# Define this here, not in acconfig's @TOP@ section, since definitions
-# in the latter don't make it into the configure-time tests.
-AC_GNU_SOURCE
+dnl Enable GNU and BSD extensions.
+AC_USE_SYSTEM_EXTENSIONS([_GNU_SOURCE])
 AC_DEFINE([__USE_BSD], 1, [Enable BSD extensions])
 
 dnl Checks for programs.
 AM_PROG_CC_C_O
 AM_PROG_AR
-AC_PROG_CC_C99
+AC_PROG_CC
 AC_PROG_CXX
 AC_PROG_CPP
 AC_PROG_INSTALL
 AC_PROG_LN_S
-AC_PROG_LIBTOOL
+LT_INIT
 AX_PTHREAD
 
 dnl Check and set OS
@@ -125,7 +123,6 @@ MeshLink_ATTRIBUTE(__malloc__)
 MeshLink_ATTRIBUTE(__warn_unused_result__)
 
 dnl Checks for library functions.
-AC_TYPE_SIGNAL
 AC_CHECK_FUNCS([asprintf fchmod fork gettimeofday random pselect select setns strdup usleep getifaddrs freeifaddrs],
   [], [], [#include "$srcdir/src/have.h"]
 )
