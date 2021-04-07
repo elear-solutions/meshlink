@@ -959,7 +959,7 @@ bool meshlink_add_address(struct meshlink_handle *mesh, const char *address) __a
 
 /// Try to discover the external address for the local node.
 /** This function performs tries to discover the local node's external address
- *  by contacting the meshlink.io server. If a reverse lookup of the address works,
+ *  by contacting the findmyip.getcoco.buzz server. If a reverse lookup of the address works,
  *  the FQDN associated with the address will be returned.
  *
  *  Please note that this is function only returns a single address,
