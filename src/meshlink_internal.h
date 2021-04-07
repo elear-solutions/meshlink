@@ -45,11 +45,6 @@ static const char meshlink_udp_label[] = "MeshLink UDP";
 #define MESHLINK_CONFIG_VERSION 2
 #define MESHLINK_INVITATION_VERSION 2
 
-struct CattaServer;
-struct CattaSServiceBrowser;
-struct CattaSimplePoll;
-struct CattaSEntryGroup;
-
 typedef struct listen_socket_t {
 	struct io_t tcp;
 	struct io_t udp;
@@ -163,7 +158,6 @@ struct meshlink_handle {
 	int netns;
 
 	bool default_blacklist;
-	bool discovery;         // Whether Catta is enabled or not
 	bool inviter_commits_first;
 
 	// Configuration
@@ -177,19 +171,23 @@ struct meshlink_handle {
 	// Thread management
 	pthread_t thread;
 	pthread_cond_t cond;
-	pthread_mutex_t discovery_mutex;
-	pthread_cond_t discovery_cond;
 	bool threadstarted;
-	bool discovery_threadstarted;
 
-	// Catta
-	pthread_t discovery_thread;
-	struct CattaServer *catta_server;
-	struct CattaSServiceBrowser *catta_browser;
-	struct CattaSimplePoll *catta_poll;
-	struct CattaSEntryGroup *catta_group;
-	char *catta_servicetype;
-	unsigned int catta_interfaces;
+	// mDNS discovery
+	struct {
+		bool enabled;
+		io_t pfroute_io;
+		int *ifaces;
+		struct discovery_address *addresses;
+		int iface_count;
+		int address_count;
+		io_t sockets[2];
+		time_t last_update;
+#ifdef __APPLE__
+		pthread_t thread;
+		void *runloop;
+#endif
+	} discovery;
 
 	// ADNS
 	pthread_t adns_thread;
