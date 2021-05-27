@@ -263,7 +263,41 @@ static void mdns_io_handler(event_loop_t *loop, void *data, int flags) {
 	sockaddr_t sa;
 	socklen_t sl = sizeof(sa);
 
+#ifdef IP_PKTINFO
+	struct iovec iov  = {
+		.iov_base = buf,
+		.iov_len = sizeof(buf),
+	};
+
+	union {
+		char buf[1024];
+		struct cmsghdr align;
+	} u;
+
+	struct msghdr msg = {
+		.msg_name = &sa,
+		.msg_namelen = sl,
+		.msg_iov = &iov,
+		.msg_iovlen = 1,
+		.msg_control = u.buf,
+		.msg_controllen = sizeof(u.buf),
+	};
+
+	ssize_t len = recvmsg(io->fd, &msg, MSG_DONTWAIT | MSG_NOSIGNAL);
+
+	sl = msg.msg_namelen;
+	struct in_pktinfo *pktinfo = NULL;
+
+	for(struct cmsghdr *cmptr = CMSG_FIRSTHDR(&msg); cmptr != NULL; cmptr = CMSG_NXTHDR(&msg, cmptr)) {
+		if(cmptr->cmsg_level == IPPROTO_IP && cmptr->cmsg_type == IP_PKTINFO) {
+			pktinfo = (struct in_pktinfo *) CMSG_DATA(cmptr);
+			break;
+		}
+	}
+
+#else
 	ssize_t len = recvfrom(io->fd, buf, sizeof(buf), MSG_DONTWAIT, &sa.sa, &sl);
+#endif
 
 	if(len == -1) {
 		if(!sockwouldblock(errno)) {
@@ -327,11 +361,33 @@ static void mdns_io_handler(event_loop_t *loop, void *data, int flags) {
 			}
 		}
 	} else if(parse_request(buf, len, mesh->appname, "tcp")) {
-		// Send a unicast response back
 		char *fingerprint = meshlink_get_fingerprint(mesh, (meshlink_node_t *)mesh->self);
 		const char *response_values[] = {mesh->name, fingerprint};
 		size_t size = prepare_response(buf, sizeof(buf), fingerprint, mesh->appname, "tcp", atoi(mesh->myport), 2, keys, response_values);
-		sendto(io->fd, buf, size, MSG_DONTWAIT | MSG_NOSIGNAL, &sa.sa, sl);
+#ifdef IP_PKTINFO
+
+		if(pktinfo) {
+			// Send a multicast response back to the same interface and multicast address
+			sockaddr_t dst = {
+				.in = {
+					.sin_family = AF_INET,
+					.sin_addr = pktinfo->ipi_addr,
+					.sin_port = ntohs(5353),
+				}
+			};
+
+			iov.iov_base = buf;
+			iov.iov_len = size;
+			msg.msg_name = &dst.sa;
+			msg.msg_namelen = SALEN(dst.sa);
+			sendmsg(io->fd, &msg, MSG_DONTWAIT | MSG_NOSIGNAL);
+		} else
+#endif
+		{
+			// Send a unicast response back
+			sendto(io->fd, buf, size, MSG_DONTWAIT | MSG_NOSIGNAL, &sa.sa, sl);
+		}
+
 		free(fingerprint);
 	}
 
@@ -873,6 +929,9 @@ bool discovery_start(meshlink_handle_t *mesh) {
 	setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
 #ifdef SO_REUSEPORT
 	setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one));
+#endif
+#ifdef IP_PKTINFO
+	setsockopt(fd, IPPROTO_IP, IP_PKTINFO, &one, sizeof(one));
 #endif
 	setsockopt(fd, IPPROTO_IP, IP_MULTICAST_LOOP, &one8, sizeof(one8));
 	setsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, &ttl8, sizeof(ttl8));
