@@ -57,9 +57,16 @@ void route(meshlink_handle_t *mesh, node_t *source, vpn_packet_t *packet) {
 		return;
 	}
 
+	size_t len = packet->len - sizeof(*hdr);
+
+	// Channel traffic accounting
+	if(source == mesh->self) {
+		dest->out_data += len + SPTPS_OVERHEAD;
+	}
+
 	if(dest == mesh->self) {
+		source->in_data += len + SPTPS_OVERHEAD;
 		const void *payload = packet->data + sizeof(*hdr);
-		size_t len = packet->len - sizeof(*hdr);
 
 		char hex[len * 2 + 1];
 
