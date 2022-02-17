@@ -21,7 +21,7 @@
 #include <time.h>
 
 #include "utcp_priv.h"
-#define UTCP_DEBUG
+#define UTCP_DEBUG 1
 
 #ifndef EBADMSG
 #define EBADMSG         104
