@@ -226,12 +226,14 @@ char *meshlink_get_external_address(meshlink_handle_t *mesh) {
 }
 
 char *meshlink_get_external_address_for_family(meshlink_handle_t *mesh, int family) {
-	logger(mesh, MESHLINK_DEBUG, "meshlink_get_external_address_for_family(%d)", family);
+	// logger(mesh, MESHLINK_DEBUG, "meshlink_get_external_address_for_family(%d)", family);
 	const char *url = mesh->external_address_url;
 
 	if(!url) {
 		url = "http://findmyip.getcoco.buzz/host.cgi";
 	}
+
+	logger(mesh, MESHLINK_DEBUG, "meshlink_get_external_address_for_family(%d) from URL = %s", family, url);
 
 	/* Find the hostname part between the slashes */
 	if(strncmp(url, "http://", 7)) {

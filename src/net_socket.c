@@ -43,6 +43,48 @@
 
 static const int max_connection_burst = 100;
 
+// Function to log outgoing connection details (supports both IPv4 and IPv6)
+static void log_outgoing_connection(meshlink_handle_t *mesh, struct sockaddr *dest_addr) {
+    char ip_str[INET6_ADDRSTRLEN];  // Large enough for both IPv4 and IPv6
+    int dest_port;
+
+    if (dest_addr->sa_family == AF_INET) {  // IPv4
+        struct sockaddr_in *addr_in = (struct sockaddr_in *)dest_addr;
+        inet_ntop(AF_INET, &(addr_in->sin_addr), ip_str, INET_ADDRSTRLEN);
+        dest_port = ntohs(addr_in->sin_port);
+    } else if (dest_addr->sa_family == AF_INET6) {  // IPv6
+        struct sockaddr_in6 *addr_in6 = (struct sockaddr_in6 *)dest_addr;
+        inet_ntop(AF_INET6, &(addr_in6->sin6_addr), ip_str, INET6_ADDRSTRLEN);
+        dest_port = ntohs(addr_in6->sin6_port);
+    } else {
+        logger(mesh, MESHLINK_CRITICAL, "Unknown address family for outgoing connection");
+        return;
+    }
+    logger(mesh, MESHLINK_CRITICAL, "Attempting an outgoing connection: IP = %s, Port = %d", ip_str, dest_port);
+}
+
+// Function to log incoming connection details (supports both IPv4 and IPv6)
+static void log_incoming_connection(meshlink_handle_t *mesh, struct sockaddr *client_addr) {
+    char ip_str[INET6_ADDRSTRLEN];  // Large enough for both IPv4 and IPv6
+    int client_port;
+
+    if (client_addr->sa_family == AF_INET) {  // IPv4
+        struct sockaddr_in *addr_in = (struct sockaddr_in *)client_addr;
+        inet_ntop(AF_INET, &(addr_in->sin_addr), ip_str, INET_ADDRSTRLEN);
+        client_port = ntohs(addr_in->sin_port);
+    } else if (client_addr->sa_family == AF_INET6) {  // IPv6
+        struct sockaddr_in6 *addr_in6 = (struct sockaddr_in6 *)client_addr;
+        inet_ntop(AF_INET6, &(addr_in6->sin6_addr), ip_str, INET6_ADDRSTRLEN);
+        client_port = ntohs(addr_in6->sin6_port);
+    } else {
+		printf("Exiting log_incoming_connection\n");
+        logger(mesh, MESHLINK_CRITICAL, "Unknown address family for incoming connection");
+        return;
+    }
+	printf("Inside log_incoming_connection\n");
+    logger(mesh, MESHLINK_CRITICAL, "Received an incoming connection: IP = %s, Port = %d", ip_str, client_port);
+}
+
 /* Setup sockets */
 
 static void configure_tcp(connection_t *c) {
@@ -446,6 +488,7 @@ begin:
 	}
 
 	/* Now that there is a working socket, fill in the rest and register this connection. */
+	log_outgoing_connection(mesh, &c->address.sa);
 
 	c->status.connecting = true;
 	c->status.initiator = true;
@@ -527,6 +570,8 @@ void handle_new_meta_connection(event_loop_t *loop, void *data, int flags) {
 	memset(&sa, 0, sizeof(sa));
 
 	fd = accept(l->tcp.fd, &sa.sa, &len);
+
+	log_incoming_connection(mesh, &sa.sa);
 
 	if(fd < 0) {
 		if(sockwouldblock(errno)) {

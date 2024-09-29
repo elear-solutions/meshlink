@@ -246,7 +246,7 @@ int main(int argc, char *argv[]) {
 		nick = argv[2];
 	}
 
-	meshlink_set_log_cb(NULL, MESHLINK_INFO, log_message);
+	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_message);
 
 	meshlink_handle_t *mesh = meshlink_open(confbase, nick, "chat", DEV_CLASS_STATIONARY);
 
