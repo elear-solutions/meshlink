@@ -6,7 +6,6 @@ Makefile.in
 *.la
 *.orig
 *~
-.*
 !.gitignore
 !.gitmodules
 !.astylerc
