@@ -651,7 +651,7 @@ static bool try_bind(meshlink_handle_t *mesh, int port) {
 
 int check_port(meshlink_handle_t *mesh) {
 	for(int i = 0; i < 1000; i++) {
-		int port = 0x1000 + prng(mesh, 0x8000);
+		int port = 0x1000 + prng(mesh, 0x7000);
 
 		if(try_bind(mesh, port)) {
 			free(mesh->myport);
@@ -1654,6 +1654,19 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 		meshlink_close(mesh);
 		meshlink_errno = MESHLINK_ENETWORK;
 		return NULL;
+	}
+
+	if(mesh->devclass == DEV_CLASS_BACKBONE) {
+		logger(NULL, MESHLINK_DEBUG, "Resolving external IP address as we are a backbone node\n");
+
+		mesh->self->external_ip_address = meshlink_get_external_address(mesh);
+
+		// if(meshlink_errno == MESHLINK_ERESOLV) {
+		if(!mesh->self->external_ip_address) {
+			logger(NULL, MESHLINK_WARNING, "Couldn't resolve external IP address, continuing without it...\n");
+		} else {
+			logger(NULL, MESHLINK_INFO, "Found external IP address: %s\n", mesh->self->external_ip_address);
+		}
 	}
 
 	add_local_addresses(mesh);

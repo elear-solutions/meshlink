@@ -14,6 +14,7 @@ TESTS = \
 	channels-no-partial \
 	channels-udp \
 	channels-udp-cornercases \
+	discovery \
 	duplicate \
 	encrypted \
 	ephemeral \
@@ -25,6 +26,7 @@ TESTS = \
 	metering-slowping \
 	metering-tcponly \		
 	meta-connections \
+	port \
 	sign-verify \
 	storage-policy \
 	trio \
@@ -61,6 +63,7 @@ check_PROGRAMS = \
 	channels-no-partial \
 	channels-udp \
 	channels-udp-cornercases \
+	discovery \
 	duplicate \
 	echo-fork \
 	encrypted \
@@ -73,6 +76,7 @@ check_PROGRAMS = \
 	metering-slowping \
 	metering-tcponly \
 	meta-connections \
+	port \
 	sign-verify \
 	storage-policy \
 	stream \
@@ -131,6 +135,9 @@ channels_udp_LDADD = $(top_builddir)/src/libmeshlink.la
 channels_udp_cornercases_SOURCES = channels-udp-cornercases.c utils.c utils.h
 channels_udp_cornercases_LDADD = $(top_builddir)/src/libmeshlink.la
 
+discovery_SOURCES = discovery.c utils.c utils.h
+discovery_LDADD = $(top_builddir)/src/libmeshlink.la
+
 duplicate_SOURCES = duplicate.c utils.c utils.h
 duplicate_LDADD = $(top_builddir)/src/libmeshlink.la
 
@@ -166,6 +173,9 @@ metering_tcponly_LDADD = $(top_builddir)/src/libmeshlink.la
 
 meta_connections_SOURCES = meta-connections.c netns_utils.c netns_utils.h utils.c utils.h
 meta_connections_LDADD = $(top_builddir)/src/libmeshlink.la
+
+port_SOURCES = port.c utils.c utils.h
+port_LDADD = $(top_builddir)/src/libmeshlink.la
 
 sign_verify_SOURCES = sign-verify.c utils.c utils.h
 sign_verify_LDADD = $(top_builddir)/src/libmeshlink.la
