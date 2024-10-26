@@ -141,9 +141,6 @@ static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 		randomize(packet.data + 14, len - 14);
 		packet.len = len;
 		n->status.broadcast = i >= 4 && n->mtuprobes <= 10 && n->prevedge;
-
-		logger(mesh, MESHLINK_DEBUG, "Sending MTU probe length %d to %s", len, n->name);
-
 		n->out_meta += packet.len + PROBE_OVERHEAD;
 		send_udppacket(mesh, n, &packet);
 	}
@@ -706,6 +703,14 @@ bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 		choose_broadcast_address(mesh, to, &sa, &sock);
 	} else {
 		choose_udp_address(mesh, to, &sa, &sock, &sa_buf);
+
+		if ((mesh->log_level <= MESHLINK_DEBUG) && (type == PKT_PROBE)) {
+			char *address, *port;
+			sockaddr2str(sa, &address, &port);
+			logger(mesh, MESHLINK_DEBUG, "Sending MTU probe length %ld to %s at %s port %s", len, to->name, address, port);
+			free(address);
+			free(port);
+		}
 	}
 
 	if(!sa || sock < 0 || sock >= mesh->listen_sockets) {
