@@ -536,11 +536,8 @@ static bool add_listen_sockets(meshlink_handle_t *mesh) {
 		io_add(&mesh->loop, &mesh->listen_socket[mesh->listen_sockets].tcp, handle_new_meta_connection, &mesh->listen_socket[mesh->listen_sockets], tcp_fd, IO_READ);
 		io_add(&mesh->loop, &mesh->listen_socket[mesh->listen_sockets].udp, handle_incoming_vpn_data, &mesh->listen_socket[mesh->listen_sockets], udp_fd, IO_READ);
 
-		if(mesh->log_level <= MESHLINK_INFO) {
-			char *hostname = sockaddr2hostname((sockaddr_t *) aip->ai_addr);
-			logger(mesh, MESHLINK_INFO, "Listening on %s", hostname);
-			free(hostname);
-		}
+		// Note: Log message will be printed after port update (if port 0)
+		// to show the actual assigned port, not the requested port 0
 
 		memcpy(&mesh->listen_socket[mesh->listen_sockets].sa, aip->ai_addr, aip->ai_addrlen);
 		memcpy(&mesh->listen_socket[mesh->listen_sockets].broadcast_sa, aip->ai_addr, aip->ai_addrlen);
@@ -558,6 +555,56 @@ static bool add_listen_sockets(meshlink_handle_t *mesh) {
 	}
 
 	freeaddrinfo(ai);
+
+	// BUG FIX: Update mesh->myport if we bound to port 0
+	// When port 0 is requested, the OS assigns an actual ephemeral port,
+	// but mesh->myport remains "0". This causes:
+	// 1. REQ_EXTERNAL messages to advertise port 0 (breaking P2P connections)
+	// 2. meshlink_get_port() to return 0 (API bug)
+	// 3. Config to save port 0 (missing port stability opportunity)
+	if(success && mesh->myport && strcmp(mesh->myport, "0") == 0 && mesh->listen_sockets > 0) {
+		// We need to query the actual assigned port from the bound socket
+		// using getsockname(), since the listen_socket[].sa structure still
+		// contains the requested port (0), not the assigned port.
+		// Note: All listening sockets should have the same port, so we only need to check the first one.
+		sockaddr_t sa;
+		socklen_t salen = sizeof(sa);
+		
+		if(getsockname(mesh->listen_socket[0].tcp.fd, &sa.sa, &salen) == 0) {
+			int actual_port = 0;
+			if(sa.sa.sa_family == AF_INET) {
+				actual_port = ntohs(sa.in.sin_port);
+			} else if(sa.sa.sa_family == AF_INET6) {
+				actual_port = ntohs(sa.in6.sin6_port);
+			}
+
+			if(actual_port > 0) {
+				free(mesh->myport);
+				xasprintf(&mesh->myport, "%d", actual_port);
+				logger(mesh, MESHLINK_DEBUG, "Updated port 0 to actual assigned port %d", actual_port);
+				
+				// Update all stored socket addresses with the actual port
+				// This avoids multiple getsockname() calls in the logging loop
+				for(int i = 0; i < mesh->listen_sockets; i++) {
+					if(mesh->listen_socket[i].sa.sa.sa_family == AF_INET) {
+						mesh->listen_socket[i].sa.in.sin_port = htons(actual_port);
+					} else if(mesh->listen_socket[i].sa.sa.sa_family == AF_INET6) {
+						mesh->listen_socket[i].sa.in6.sin6_port = htons(actual_port);
+					}
+				}
+			}
+		}
+	}
+
+	// Print listening messages AFTER port update (if any) to show correct ports
+	if(mesh->log_level <= MESHLINK_INFO) {
+		for(int i = 0; i < mesh->listen_sockets; i++) {
+			// Now we can use the updated socket address directly (no getsockname needed)
+			char *hostname = sockaddr2hostname(&mesh->listen_socket[i].sa);
+			logger(mesh, MESHLINK_INFO, "Listening on %s", hostname);
+			free(hostname);
+		}
+	}
 
 	if(!success) {
 		for(int i = 0; i < mesh->listen_sockets; i++) {

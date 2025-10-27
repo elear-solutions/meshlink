@@ -280,6 +280,10 @@ static void devtool_get_reset_node_status(meshlink_handle_t *mesh, meshlink_node
 		status->in_meta = internal->in_meta;
 		status->out_meta = internal->out_meta;
 
+		// External address information (from REQ_EXTERNAL messages)
+		status->external_ip_address = internal->external_ip_address ? xstrdup(internal->external_ip_address) : NULL;
+		status->canonical_address = internal->canonical_address ? xstrdup(internal->canonical_address) : NULL;
+
 		// Derive UDP connection status
 		if(internal == mesh->self) {
 			status->udp_status = DEVTOOL_UDP_WORKING;
@@ -392,6 +396,20 @@ void devtool_force_sptps_renewal(meshlink_handle_t *mesh, meshlink_node_t *node)
 	if(c) {
 		c->last_key_renewal = -3600;
 	}
+}
+
+void devtool_free_node_status(devtool_node_status_t *status) {
+	if(!status) {
+		return;
+	}
+
+	// Free the dynamically allocated strings
+	free(status->external_ip_address);
+	free(status->canonical_address);
+	
+	// Clear the pointers to prevent double-free
+	status->external_ip_address = NULL;
+	status->canonical_address = NULL;
 }
 
 void devtool_set_meta_status_cb(meshlink_handle_t *mesh, meshlink_node_status_cb_t cb) {

@@ -1079,11 +1079,14 @@ bool meshlink_add_external_address(struct meshlink_handle *mesh) __attribute__((
 
 /// Get the network port used by the local node.
 /** This function returns the network port that the local node is listening on.
+ *  When port 0 was set using meshlink_set_port(), this returns the actual assigned port
+ *  (not 0) after the OS has assigned an ephemeral port.
  *
  *  \memberof meshlink_handle
  *  @param mesh          A handle which represents an instance of MeshLink.
  *
  *  @return              This function returns the port number, or -1 in case of an error.
+ *                       For port 0 configurations, returns the actual assigned port > 0.
  */
 int meshlink_get_port(struct meshlink_handle *mesh) __attribute__((__warn_unused_result__));
 
@@ -1103,6 +1106,9 @@ int meshlink_get_port(struct meshlink_handle *mesh) __attribute__((__warn_unused
  *  @param port          The port number to listen on. This must be between 0 and 65535.
  *                       If the port is set to 0, then MeshLink will listen on a port
  *                       that is randomly assigned by the operating system every time meshlink_open() is called.
+ *                       The actual assigned port can be retrieved using meshlink_get_port().
+ *                       When port 0 is used, the assigned port is automatically saved to the configuration
+ *                       file for port stability across restarts.
  *
  *  @return              This function returns true if the port was successfully changed
  *                       to the desired port, false otherwise. If it returns false, there

@@ -27,6 +27,7 @@ TESTS = \
 	metering-tcponly \		
 	meta-connections \
 	port \
+	req-external-port \
 	sign-verify \
 	storage-policy \
 	trio \
@@ -77,6 +78,7 @@ check_PROGRAMS = \
 	metering-tcponly \
 	meta-connections \
 	port \
+	req-external-port \
 	sign-verify \
 	storage-policy \
 	stream \
@@ -176,6 +178,9 @@ meta_connections_LDADD = $(top_builddir)/src/libmeshlink.la
 
 port_SOURCES = port.c utils.c utils.h
 port_LDADD = $(top_builddir)/src/libmeshlink.la
+
+req_external_port_SOURCES = req-external-port.c utils.c utils.h
+req_external_port_LDADD = $(top_builddir)/src/libmeshlink.la
 
 sign_verify_SOURCES = sign-verify.c utils.c utils.h
 sign_verify_LDADD = $(top_builddir)/src/libmeshlink.la

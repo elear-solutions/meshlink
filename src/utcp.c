@@ -844,8 +844,13 @@ ssize_t utcp_send(struct utcp_connection *c, const void *data, size_t len) {
 	case SYN_SENT:
 	case SYN_RECEIVED:
 	case ESTABLISHED:
-	case CLOSE_WAIT:
 		break;
+
+	case CLOSE_WAIT:
+		/* Remote side has closed, but we haven't closed yet */
+		debug(c, "send() called on connection where remote side has closed\n");
+		errno = EPIPE;
+		return -1;
 
 	case FIN_WAIT_1:
 	case FIN_WAIT_2:

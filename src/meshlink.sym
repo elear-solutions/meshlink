@@ -1,5 +1,6 @@
 __emutls_v.meshlink_errno
 devtool_export_json_all_edges_state
+devtool_free_node_status
 devtool_get_all_edges
 devtool_get_all_submeshes
 devtool_get_node_status

@@ -107,6 +107,14 @@ struct devtool_node_status {
 	uint64_t out_forward;                /// Bytes forwarded from channel from other nodes
 	uint64_t in_meta;                    /// Bytes received from meta-connections, heartbeat packets etc.
 	uint64_t out_meta;                   /// Bytes sent on meta-connections, heartbeat packets etc.
+
+	// External address information (from REQ_EXTERNAL messages)
+	char *external_ip_address;            /// External IP address and port in "IP PORT" format
+	                                      /// Set by REQ_EXTERNAL messages from backbone nodes
+	                                      /// NULL if not known or for portable nodes
+	char *canonical_address;             /// Canonical address if known
+	                                      /// Set by REQ_CANONICAL messages
+	                                      /// NULL if not known
 };
 
 /// Get the status of a node.
@@ -121,6 +129,14 @@ struct devtool_node_status {
  *                      the current status of the node.
  */
 void devtool_get_node_status(meshlink_handle_t *mesh, meshlink_node_t *node, devtool_node_status_t *status);
+
+/// Free the memory allocated by devtool_get_node_status.
+/** This function frees the dynamically allocated strings in a devtool_node_status_t struct.
+ *  Call this function when you're done with the status data to prevent memory leaks.
+ *
+ *  @param status A pointer to the devtool_node_status_t struct to clean up.
+ */
+void devtool_free_node_status(devtool_node_status_t *status);
 
 /// Reset the traffic counters of a node.
 /** This function resets the byte counters for the given node to zero.
