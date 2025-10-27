@@ -64,13 +64,8 @@ First, clean any previous build artifacts:
 # Clean Conan build directory
 rm -rf build/
 
-# Clean autotools artifacts
-cd .. && make distclean || true
-
 # Clean untracked files (use with caution!)
 git clean -fdx
-
-cd meshlink
 ```
 
 **Warning:** `git clean -fdx` will remove all untracked files and directories from the repository. Make sure you don't have any uncommitted changes you want to keep.
@@ -105,8 +100,29 @@ conan create . meshlink/0.24.0@jenkins/develop \
     --build=missing
 ```
 
+### Build Options
+
+You can enable UTCP debug logging by passing the `utcp_debug` option:
+
+```bash
+conan install . meshlink/0.24.0@jenkins/develop -if=build \
+    -o meshlink:utcp_debug=True \
+    -r=conan_server \
+    --profile=/path/to/your/profile
+```
+
+Or with `conan create`:
+
+```bash
+conan create . meshlink/0.24.0@jenkins/develop \
+    -o meshlink:utcp_debug=True \
+    -s build_type=Release \
+    --build=missing
+```
+
 ### Notes
 
 - Replace `jenkins/develop` with your Conan user/channel as needed
 - The `-f` flag in `export-pkg` forces overwrite of existing packages
 - For platform-specific builds (iOS, Android), the conanfile handles cross-compilation automatically
+- `utcp_debug=True` enables UTCP debug logging (adds `-DUTCP_DEBUG` compile flag)

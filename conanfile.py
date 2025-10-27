@@ -12,10 +12,12 @@ class MeshlinklibConan(ConanFile):
     topics = ("peer-to-peer", "networking", "p2p")
     settings = "os", "compiler", "build_type", "arch"
     options = {
-        "shared": [True, False]
+        "shared": [True, False],
+        "utcp_debug": [True, False]
     }
     default_options = {key: False for key in options.keys()}
     default_options ["shared"] = False
+    default_options ["utcp_debug"] = False
     generators = "make"
 
     @property
@@ -26,6 +28,8 @@ class MeshlinklibConan(ConanFile):
         }
     def config_options(self):
         args = ["--prefix=${PWD}"]
+        if self.options.utcp_debug:
+            args.append("--enable-utcp-debug")
         return args
 
     def build(self):
