@@ -40,3 +40,73 @@ Other noteworthy features are:
 - NAT traversal (requires at least one node that is not behind a NAT)
 - Ed25519 keys (TBD)
 - ChaCha-Poly1305 encryption and message authentication
+
+
+Building Using Conan
+---------------------
+
+MeshLink can be built and packaged using Conan. The project includes a `conanfile.py`
+that configures the build process.
+
+### Prerequisites
+
+- Conan installed (version 1.x or 2.x)
+- Autotools build environment
+- C compiler (GCC or Clang)
+
+### Build Steps
+
+#### Clean Build (Recommended)
+
+First, clean any previous build artifacts:
+
+```bash
+# Clean Conan build directory
+rm -rf build/
+
+# Clean autotools artifacts
+cd .. && make distclean || true
+
+# Clean untracked files (use with caution!)
+git clean -fdx
+
+cd meshlink
+```
+
+**Warning:** `git clean -fdx` will remove all untracked files and directories from the repository. Make sure you don't have any uncommitted changes you want to keep.
+
+#### Standard Conan Build Flow
+
+1. **Install dependencies and generate build files:**
+   ```bash
+   conan install . meshlink/0.24.0@jenkins/develop -if=build \
+       -r=conan_server \
+       --profile=/path/to/your/profile
+   ```
+
+2. **Build the library:**
+   ```bash
+   conan build . -bf=build
+   ```
+
+3. **Package and export:**
+   ```bash
+   conan export-pkg . meshlink/0.24.0@jenkins/develop -bf=build -f
+   ```
+
+#### Simplified Single-Command Build
+
+Alternatively, use `conan create` to combine all steps:
+
+```bash
+conan create . meshlink/0.24.0@jenkins/develop \
+    -s build_type=Release \
+    -s compiler.libcxx=libstdc++11 \
+    --build=missing
+```
+
+### Notes
+
+- Replace `jenkins/develop` with your Conan user/channel as needed
+- The `-f` flag in `export-pkg` forces overwrite of existing packages
+- For platform-specific builds (iOS, Android), the conanfile handles cross-compilation automatically
