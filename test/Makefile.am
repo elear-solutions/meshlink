@@ -28,6 +28,7 @@ TESTS = \
 	metering-tcponly \		
 	meta-connections \
 	get-external-address \
+	mtu-probe-log \
 	port \
 	req-external-port \
 	sign-verify \
@@ -81,6 +82,7 @@ check_PROGRAMS = \
 	metering-tcponly \
 	meta-connections \
 	get-external-address \
+	mtu-probe-log \
 	port \
 	req-external-port \
 	sign-verify \
@@ -185,6 +187,9 @@ meta_connections_LDADD = $(top_builddir)/src/libmeshlink.la
 
 get_external_address_SOURCES = get-external-address.c utils.c utils.h
 get_external_address_LDADD = $(top_builddir)/src/libmeshlink.la
+
+mtu_probe_log_SOURCES = mtu-probe-log.c utils.c utils.h
+mtu_probe_log_LDADD = $(top_builddir)/src/libmeshlink.la
 
 port_SOURCES = port.c utils.c utils.h
 port_LDADD = $(top_builddir)/src/libmeshlink.la

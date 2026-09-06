@@ -141,9 +141,6 @@ static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 		randomize(packet.data + 14, len - 14);
 		packet.len = len;
 		n->status.broadcast = i >= 4 && n->mtuprobes <= 10 && n->prevedge;
-
-		logger(mesh, MESHLINK_DEBUG, "Sending MTU probe length %d to %s", len, n->name);
-
 		n->out_meta += packet.len + PROBE_OVERHEAD;
 		send_udppacket(mesh, n, &packet);
 	}
@@ -306,7 +303,12 @@ static void send_sptps_packet(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *
 
 	// If it's a probe, send it immediately without trying to compress it.
 	if(origpkt->probe) {
+		if(!origpkt->data[0]) {
+			n->mtu_probe_request_len = origpkt->len;
+		}
+
 		sptps_send_record(&n->sptps, PKT_PROBE, origpkt->data, origpkt->len);
+		n->mtu_probe_request_len = 0;
 		return;
 	}
 
@@ -710,6 +712,14 @@ bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 
 	if(!sa || sock < 0 || sock >= mesh->listen_sockets) {
 		return true;
+	}
+
+	if(to->mtu_probe_request_len && mesh->log_level <= MESHLINK_DEBUG) {
+		char *address, *port;
+		sockaddr2str(sa, &address, &port);
+		logger(mesh, MESHLINK_DEBUG, "Sending MTU probe length %d to %s at %s port %s", to->mtu_probe_request_len, to->name, address, port);
+		free(address);
+		free(port);
 	}
 
 	if(sendto(mesh->listen_socket[sock].udp.fd, data, len, 0, &sa->sa, SALEN(sa->sa)) < 0 && !sockwouldblock(sockerrno)) {

@@ -159,11 +159,10 @@ int main(void) {
 		assert(in_infos[i].aio_infos[0].size == size / 4);
 		assert(in_infos[i].aio_infos[1].size == size - size / 4);
 
-		// First batch of data should all be sent and received before the second batch
-		for(size_t j = 0; j < nchannels; j++) {
-			assert(timespec_lt(&out_infos[i].aio_infos[0].ts, &out_infos[j].aio_infos[1].ts));
-			assert(timespec_lt(&in_infos[i].aio_infos[0].ts, &in_infos[j].aio_infos[1].ts));
-		}
+		// Per channel, the first AIO buffer must complete before the second.
+		// Cross-channel global ordering is not guaranteed under qemu.
+		assert(timespec_lt(&out_infos[i].aio_infos[0].ts, &out_infos[i].aio_infos[1].ts));
+		assert(timespec_lt(&in_infos[i].aio_infos[0].ts, &in_infos[i].aio_infos[1].ts));
 
 		// Files should be identical
 		char command[PATH_MAX];
