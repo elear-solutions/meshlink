@@ -39,7 +39,6 @@
 #include "ed25519/sha512.h"
 #include "discovery.h"
 #include "devtools.h"
-#include "external_address_http.h"
 #include "graph.h"
 
 #ifndef MSG_NOSIGNAL
@@ -289,7 +288,9 @@ char *meshlink_get_external_address_for_family(meshlink_handle_t *mesh, int fami
 
 		if(s >= 0) {
 			char req[512];
-			int reqlen = external_address_format_http_request(req, sizeof(req), path, host);
+			int reqlen = snprintf(req, sizeof(req),
+			                      "GET %s HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n",
+			                      path, host);
 
 			if(reqlen > 0 && reqlen < (int)sizeof(req)) {
 				send(s, req, (size_t)reqlen, 0);
@@ -299,7 +300,55 @@ char *meshlink_get_external_address_for_family(meshlink_handle_t *mesh, int fami
 
 			if(len > 0) {
 				line[len] = 0;
-				hostname = external_address_hostname_from_http(line);
+
+				char *body = strstr(line, "\r\n\r\n");
+
+				if(body) {
+					body += 4;
+				} else if((body = strstr(line, "\n\n"))) {
+					body += 2;
+				} else {
+					body = line;
+				}
+
+				/* Skip a Transfer-Encoding: chunked size line (hex only). */
+				char *line_end = strpbrk(body, "\r\n");
+
+				if(line_end && line_end != body) {
+					bool hex_only = true;
+
+					for(char *p = body; p < line_end; p++) {
+						if(!isxdigit((unsigned char)*p)) {
+							hex_only = false;
+							break;
+						}
+					}
+
+					if(hex_only) {
+						body = line_end;
+
+						while(*body == '\r' || *body == '\n') {
+							body++;
+						}
+					}
+				}
+
+				while(*body == ' ' || *body == '\r' || *body == '\n') {
+					body++;
+				}
+
+				char *tok_end = body;
+
+				while(*tok_end && *tok_end != ' ' && *tok_end != '\r' && *tok_end != '\n') {
+					tok_end++;
+				}
+
+				if(tok_end != body) {
+					char saved = *tok_end;
+					*tok_end = 0;
+					hostname = xstrdup(body);
+					*tok_end = saved;
+				}
 			}
 
 			closesocket(s);
