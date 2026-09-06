@@ -282,8 +282,12 @@ void sockaddrcpy_setport(sockaddr_t *a, const sockaddr_t *b, uint16_t port) {
 	}
 }
 
+bool udp_address_bound(const sockaddr_t *sa) {
+	return sa && (sa->sa.sa_family == AF_INET || sa->sa.sa_family == AF_INET6);
+}
+
 bool udp_address_usable(const sockaddr_t *sa) {
-	if(!sa || sa->sa.sa_family == AF_UNSPEC || sa->sa.sa_family == AF_UNKNOWN) {
+	if(!udp_address_bound(sa)) {
 		return false;
 	}
 

@@ -392,9 +392,17 @@ static bool parse_host_port_field(const char *field, char **host_out, char **por
 	return true;
 }
 
-static bool try_req_external(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **sa, int *sock, sockaddr_t *sa_buf) {
+static bool leftover_ok(const sockaddr_t *sa, bool allow_private) {
+	return allow_private ? udp_address_bound(sa) : udp_address_usable(sa);
+}
+
+static bool try_req_external(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **sa, int *sock, sockaddr_t *sa_buf, bool *hairpin_skip) {
 	char *host = NULL;
 	char *port = NULL;
+
+	if(hairpin_skip) {
+		*hairpin_skip = false;
+	}
 
 	if(!parse_host_port_field(n->external_ip_address, &host, &port)) {
 		logger(mesh, MESHLINK_DEBUG, "Couldn't find port, so skipping external IP address...");
@@ -410,6 +418,11 @@ static bool try_req_external(meshlink_handle_t *mesh, node_t *n, const sockaddr_
 	if(mesh->self && same_external_host(n->external_ip_address, mesh->self->external_ip_address)) {
 		logger(mesh, MESHLINK_DEBUG, "Skipping external UDP dest for %s: same public IP as self", n->name);
 		free(host);
+
+		if(hairpin_skip) {
+			*hairpin_skip = true;
+		}
+
 		return false;
 	}
 
@@ -424,7 +437,7 @@ static bool try_req_external(meshlink_handle_t *mesh, node_t *n, const sockaddr_
 	return true;
 }
 
-static bool try_canonical(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **sa, int *sock, sockaddr_t *sa_buf) {
+static bool try_canonical(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **sa, int *sock, sockaddr_t *sa_buf, bool allow_private) {
 	char *host = NULL;
 	char *port = NULL;
 
@@ -432,7 +445,7 @@ static bool try_canonical(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *
 		return false;
 	}
 
-	if(!host_port_to_sockaddr(host, port, sa_buf) || !udp_address_usable(sa_buf)) {
+	if(!host_port_to_sockaddr(host, port, sa_buf) || !leftover_ok(sa_buf, allow_private)) {
 		free(host);
 		return false;
 	}
@@ -472,23 +485,27 @@ void choose_udp_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **s
 	}
 
 	/* Unconfirmed: usable REQ_EXTERNAL wins over graph/META seeds and canonical.
-	   Skip when it is our own public IP — same-host / same-NAT cannot hairpin. */
-	if(n->external_ip_address && try_req_external(mesh, n, sa, sock, sa_buf)) {
+	   Skip when it is our own public IP — same-host / same-NAT cannot hairpin.
+	   After a hairpin skip, leftover may use RFC1918/ULA (LAN/VPC). Graph still
+	   will not seed those. */
+	bool hairpin_skip = false;
+
+	if(n->external_ip_address && try_req_external(mesh, n, sa, sock, sa_buf, &hairpin_skip)) {
 		return;
 	}
 
 	n->udp_choice = (n->udp_choice + 1) % 3;
 
-	if(n->udp_choice == 1 && n->catta_address.sa.sa_family != AF_UNSPEC && udp_address_usable(&n->catta_address)) {
+	if(n->udp_choice == 1 && leftover_ok(&n->catta_address, hairpin_skip)) {
 		*sa = &n->catta_address;
-	} else if(n->udp_choice == 2 && udp_address_usable(&n->address)) {
+	} else if(n->udp_choice == 2 && leftover_ok(&n->address, hairpin_skip)) {
 		*sa = &n->address;
 	} else {
 		edge_t *candidate = NULL;
 		int usable = 0;
 
 		for splay_each(edge_t, e, n->edge_tree) {
-			if(e->reverse && udp_address_usable(&e->reverse->address)) {
+			if(e->reverse && leftover_ok(&e->reverse->address, hairpin_skip)) {
 				if(prng(mesh, ++usable) == 0) {
 					candidate = e->reverse;
 				}
@@ -497,9 +514,9 @@ void choose_udp_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **s
 
 		if(candidate) {
 			*sa = &candidate->address;
-		} else if(udp_address_usable(&n->address)) {
+		} else if(leftover_ok(&n->address, hairpin_skip)) {
 			*sa = &n->address;
-		} else if(try_canonical(mesh, n, sa, sock, sa_buf)) {
+		} else if(try_canonical(mesh, n, sa, sock, sa_buf, hairpin_skip)) {
 			return;
 		}
 	}

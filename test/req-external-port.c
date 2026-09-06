@@ -389,7 +389,8 @@ int main(void) {
 	assert(((struct sockaddr_in *)&dest)->sin_addr.s_addr != expect_rfc.s_addr);
 	assert((((struct sockaddr_in *)&dest)->sin_addr.s_addr & htonl(0xff000000)) != htonl(0x0a000000));
 
-	/* Hairpin: same public IP as self is skipped. */
+	/* Hairpin: same public IP as self is skipped; leftover may be RFC1918 LAN. */
+	devtool_update_node_udp(mesh_foo, peer, (struct sockaddr *)&rfc1918);
 	devtool_set_external_ip_address(mesh_foo, self, "203.0.113.10 1");
 	devtool_set_external_ip_address(mesh_foo, peer, "203.0.113.10 30777");
 	assert(devtool_choose_udp_address(mesh_foo, peer, &dest, &sock));
