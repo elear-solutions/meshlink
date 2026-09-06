@@ -323,27 +323,27 @@ int main(void) {
 	memset(&rfc1918, 0, sizeof(rfc1918));
 	rfc1918.sin_family = AF_INET;
 	rfc1918.sin_port = htons(32072);
-	assert(inet_pton(AF_INET, "10.20.1.254", &rfc1918.sin_addr) == 1);
+	assert(inet_pton(AF_INET, "10.0.0.254", &rfc1918.sin_addr) == 1);
 	devtool_update_node_udp(mesh_foo, peer, (struct sockaddr *)&rfc1918);
 
-	devtool_set_external_ip_address(mesh_foo, peer, "16.112.61.125 30777");
+	devtool_set_external_ip_address(mesh_foo, peer, "203.0.113.10 30777");
 
 	struct sockaddr_storage dest;
 	int sock = -1;
 	assert(devtool_choose_udp_address(mesh_foo, peer, &dest, &sock));
 	assert(dest.ss_family == AF_INET);
-	assert(((struct sockaddr_in *)&dest)->sin_addr.s_addr == inet_addr("16.112.61.125"));
+	assert(((struct sockaddr_in *)&dest)->sin_addr.s_addr == inet_addr("203.0.113.10"));
 	assert(ntohs(((struct sockaddr_in *)&dest)->sin_port) == 30777);
 	assert(sock >= 0);
 
 	devtool_node_status_t st;
 	devtool_get_node_status(mesh_foo, peer, &st);
-	assert(((struct sockaddr_in *)&st.address)->sin_addr.s_addr == inet_addr("10.20.1.254"));
+	assert(((struct sockaddr_in *)&st.address)->sin_addr.s_addr == inet_addr("10.0.0.254"));
 	devtool_free_node_status(&st);
 
 	devtool_set_external_ip_address(mesh_foo, peer, NULL);
 	assert(devtool_choose_udp_address(mesh_foo, peer, &dest, &sock));
-	assert(((struct sockaddr_in *)&dest)->sin_addr.s_addr != inet_addr("10.20.1.254"));
+	assert(((struct sockaddr_in *)&dest)->sin_addr.s_addr != inet_addr("10.0.0.254"));
 
 	meshlink_close(mesh_foo);
 	meshlink_close(mesh_bar);
