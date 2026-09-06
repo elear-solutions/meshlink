@@ -390,12 +390,7 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		if(strcmp(other_init, c_init) < 0) {
 			logger(mesh, MESHLINK_INFO, "Dropping duplicate connection with %s, keeping the one initiated by %s", c->name, other_init);
 			transfer_outgoing(mesh, c, other);
-
-			if(other->status.active) {
-				return false;
-			}
-
-			return true;
+			return false;
 		}
 	}
 

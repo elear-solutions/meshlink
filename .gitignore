@@ -88,6 +88,7 @@ test/port
 test/req-external-port
 test/sign-verify
 test/storage-policy
+test/simultaneous-connect
 test/stream
 test/trio
 test/trio2
