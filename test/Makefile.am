@@ -33,6 +33,7 @@ TESTS = \
 	req-external-port \
 	sign-verify \
 	storage-policy \
+	simultaneous-connect \
 	trio \
 	trio2 \
 	utcp-benchmark \
@@ -87,6 +88,7 @@ check_PROGRAMS = \
 	req-external-port \
 	sign-verify \
 	storage-policy \
+	simultaneous-connect \
 	stream \
 	trio \
 	trio2
@@ -202,6 +204,9 @@ sign_verify_LDADD = $(top_builddir)/src/libmeshlink.la
 
 storage_policy_SOURCES = storage-policy.c utils.c utils.h
 storage_policy_LDADD = $(top_builddir)/src/libmeshlink.la
+
+simultaneous_connect_SOURCES = simultaneous-connect.c utils.c utils.h
+simultaneous_connect_LDADD = $(top_builddir)/src/libmeshlink.la
 
 trio_SOURCES = trio.c utils.c utils.h
 trio_LDADD = $(top_builddir)/src/libmeshlink.la

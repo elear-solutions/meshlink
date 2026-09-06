@@ -43,6 +43,26 @@
 
 extern bool node_write_devclass(meshlink_handle_t *mesh, node_t *n);
 
+static const char *conn_initiator_name(const meshlink_handle_t *mesh, const connection_t *c) {
+	return c->status.initiator ? mesh->self->name : c->name;
+}
+
+static void transfer_outgoing(meshlink_handle_t *mesh, connection_t *from, connection_t *to) {
+	if(!from->outgoing) {
+		return;
+	}
+
+	if(to->outgoing) {
+		logger(mesh, MESHLINK_WARNING, "Two outgoing connections to the same node!");
+		list_delete(mesh->outgoings, from->outgoing);
+		from->outgoing = NULL;
+		return;
+	}
+
+	to->outgoing = from->outgoing;
+	from->outgoing = NULL;
+}
+
 bool send_id(meshlink_handle_t *mesh, connection_t *c) {
 	return send_request(mesh, c, NULL, "%d %s %d.%d %s %u", ID, mesh->self->name, PROT_MAJOR, PROT_MINOR, mesh->appname, 0);
 }
@@ -355,27 +375,35 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		n = new_node();
 		n->name = xstrdup(c->name);
 		node_add(mesh, n);
-	} else {
-		if(n->connection) {
-			/* Oh dear, we already have a connection to this node. */
-			logger(mesh, MESHLINK_INFO, "Established a second connection with %s, closing old connection", n->connection->name);
+	}
 
-			if(n->connection->outgoing) {
-				if(c->outgoing) {
-					logger(mesh, MESHLINK_WARNING, "Two outgoing connections to the same node!");
-				} else {
-					c->outgoing = n->connection->outgoing;
-				}
+	/* Simultaneous connect: keep the TCP session initiated by the smaller name.
+	   Last-ACK-wins picks different sockets on each side; both get RST, then a 5s retry. */
+	for list_each(connection_t, other, mesh->connections) {
+		if(other == c || !other->name || strcmp(other->name, c->name)) {
+			continue;
+		}
 
-				n->connection->outgoing = NULL;
-			}
+		const char *other_init = conn_initiator_name(mesh, other);
+		const char *c_init = conn_initiator_name(mesh, c);
 
-			/* Remove the edge before terminating the connection, to prevent a graph update. */
+		if(strcmp(other_init, c_init) < 0) {
+			logger(mesh, MESHLINK_INFO, "Dropping duplicate connection with %s, keeping the one initiated by %s", c->name, other_init);
+			transfer_outgoing(mesh, c, other);
+			return false;
+		}
+	}
+
+	if(n->connection && n->connection != c) {
+		logger(mesh, MESHLINK_INFO, "Established a second connection with %s, closing old connection", n->connection->name);
+		transfer_outgoing(mesh, n->connection, c);
+
+		if(n->connection->edge) {
 			edge_del(mesh, n->connection->edge);
 			n->connection->edge = NULL;
-
-			terminate_connection(mesh, n->connection, false);
 		}
+
+		terminate_connection(mesh, n->connection, false);
 	}
 
 	n->devclass = devclass;
@@ -403,17 +431,8 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	/*  Terminate any connections to this node that are not activated yet */
 
 	for list_each(connection_t, other, mesh->connections) {
-		if(!other->status.active && !strcmp(other->name, c->name)) {
-			if(other->outgoing) {
-				if(c->outgoing) {
-					logger(mesh, MESHLINK_WARNING, "Two outgoing connections to the same node!");
-				} else {
-					c->outgoing = other->outgoing;
-				}
-
-				other->outgoing = NULL;
-			}
-
+		if(!other->status.active && other->name && !strcmp(other->name, c->name)) {
+			transfer_outgoing(mesh, other, c);
 			logger(mesh, MESHLINK_DEBUG, "Terminating pending second connection with %s", n->name);
 			terminate_connection(mesh, other, false);
 		}
