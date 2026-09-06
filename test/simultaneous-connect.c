@@ -7,6 +7,7 @@
 #include <string.h>
 #include <assert.h>
 #include <pthread.h>
+#include <unistd.h>
 
 #include "meshlink.h"
 #include "utils.h"
@@ -59,7 +60,8 @@ static void run_pair(void) {
 	assert(peer_a);
 	assert(peer_b);
 	assert(meshlink_get_node_reachability(a, peer_a, NULL, NULL));
-	assert(meshlink_get_node_reachability(b, peer_b, NULL, NULL));
+	/* start_meshlink_pair only waits on a; foo's graph update can lag by a tick. */
+	assert_after(meshlink_get_node_reachability(b, peer_b, NULL, NULL), 5);
 
 	close_meshlink_pair(a, b);
 	assert(meshlink_destroy("simultaneous-connect_conf.1"));
