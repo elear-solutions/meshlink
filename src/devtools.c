@@ -32,6 +32,8 @@
 
 #include "devtools.h"
 
+_Static_assert(DEVTOOL_MAX_RECENT == MAX_RECENT, "devtool_node_status_t.recent[] must mirror node_t.recent[]");
+
 static void nop_probe(void) {
 	return;
 }

@@ -190,3 +190,26 @@ bool node_add_recent_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_
 	n->status.dirty = true;
 	return !found;
 }
+
+/* Remember sa as a lower-priority candidate: it goes after the addresses we already
+   know, or is dropped if we know one already or the list is full. Returns true if it
+   was added. */
+bool node_append_recent_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa) {
+	(void)mesh;
+	int i;
+
+	for(i = 0; i < MAX_RECENT && n->recent[i].sa.sa_family; i++) {
+		if(!sockaddrcmp(&n->recent[i], sa)) {
+			return false;
+		}
+	}
+
+	if(i >= MAX_RECENT) {
+		return false;
+	}
+
+	memcpy(&n->recent[i], sa, SALEN(sa->sa));
+
+	n->status.dirty = true;
+	return true;
+}

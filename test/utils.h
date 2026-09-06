@@ -4,6 +4,8 @@
 #include <assert.h>
 #include <time.h>
 #include <pthread.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
 
 #include "../src/meshlink.h"
 
@@ -38,6 +40,44 @@ extern void link_meshlink_pair(meshlink_handle_t *a, meshlink_handle_t *b);
 
 /// Default log callback
 extern void log_cb(meshlink_handle_t *mesh, meshlink_log_level_t level, const char *text);
+
+/// Log callback that also keeps every line as "<mesh name>: <text>\n" so tests can assert on ordering.
+/// Register with meshlink_set_log_cb(NULL, level, capture_log_cb); free with free_captured_log().
+extern void capture_log_cb(meshlink_handle_t *mesh, meshlink_log_level_t level, const char *text);
+
+/// Current end of the captured log, to search only what came after it.
+extern size_t log_mark(void);
+
+/// Offset of the first occurrence of needle at or after from in the captured log, or -1.
+extern long log_find(size_t from, const char *needle);
+
+/// True if needle occurs anywhere in the captured log.
+extern bool log_contains(const char *needle);
+
+/// Number of (non-overlapping) occurrences of needle in the captured log.
+extern int log_count(const char *needle);
+
+/// Release the captured log.
+extern void free_captured_log(void);
+
+/// Build an IPv4 socket address; ip must be numeric.
+extern struct sockaddr_in ipv4(const char *ip, uint16_t port);
+
+/// Port of an IPv4 or IPv6 socket address in host order, -1 for anything else.
+extern int port_of(const struct sockaddr_storage *ss);
+
+/// True if ss is exactly the IPv4 address ip:port.
+extern bool addr_is(const struct sockaddr_storage *ss, const char *ip, int port);
+
+/// Drop everything mesh learned about where node lives: its UDP address and recent[].
+/// Fresh imports carry the peer's own local addresses, which would otherwise win as RECENT.
+extern void forget_addresses(meshlink_handle_t *mesh, meshlink_node_t *node);
+
+/// meshlink_hint_address() with a numeric IPv4 address.
+extern void hint_address(meshlink_handle_t *mesh, meshlink_node_t *node, const char *ip, int port);
+
+/// Import each side's export into the other, without touching canonical addresses (unlike link_meshlink_pair).
+extern void exchange_meshlink_pair(meshlink_handle_t *a, meshlink_handle_t *b);
 
 /// A TCP relay: accepts on listen_host:listen_port and byte-copies both ways to target_host:target_port.
 /// Stands in for a load balancer / demux so tests can tell "via relay" from "direct" by peer port and accept count.

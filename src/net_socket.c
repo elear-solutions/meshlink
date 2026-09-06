@@ -294,6 +294,23 @@ static void free_outgoing_addresses(outgoing_t *outgoing) {
 	outgoing->ai_is_getaddrinfo = false;
 }
 
+/* Where the address an outgoing_t is about to try came from, for the logs. */
+static const char *outgoing_address_source(const outgoing_t *outgoing) {
+	switch(outgoing->state) {
+	case OUTGOING_RECENT:
+		return "recent";
+
+	case OUTGOING_CANONICAL:
+		return "canonical";
+
+	case OUTGOING_KNOWN:
+		return "known";
+
+	default:
+		return "unknown";
+	}
+}
+
 /* Walk RECENT (direct addresses we saw the peer on) -> CANONICAL (its relay /
    load balancer address) -> KNOWN (addresses learned from edges). Direct first
    keeps the canonical path as a fallback only. */
@@ -409,9 +426,8 @@ begin:
 	memcpy(&c->address, outgoing->aip->ai_addr, outgoing->aip->ai_addrlen);
 
 	if(mesh->log_level <= MESHLINK_INFO) {
-		const char *source = outgoing->state == OUTGOING_RECENT ? "recent" : outgoing->state == OUTGOING_CANONICAL ? "canonical" : "known";
 		char *hostname = sockaddr2hostname(&c->address);
-		logger(mesh, MESHLINK_INFO, "Trying to connect to %s at %s (%s)", outgoing->node->name, hostname, source);
+		logger(mesh, MESHLINK_INFO, "Trying to connect to %s at %s (%s)", outgoing->node->name, hostname, outgoing_address_source(outgoing));
 		free(hostname);
 	}
 

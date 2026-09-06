@@ -350,6 +350,28 @@ static void send_everything(meshlink_handle_t *mesh, connection_t *c) {
 	}
 }
 
+/* c authenticated while n->connection is another, active connection: c takes over.
+   A spare held behind the old connection must go first, otherwise
+   terminate_connection() would promote it and we would end up with two self->n
+   edges (see upgrade_connection_closing). Leaves n->connection dangling for the
+   caller to install c. */
+static void replace_existing_connection(meshlink_handle_t *mesh, node_t *n, connection_t *c) {
+	connection_t *old = n->connection;
+
+	upgrade_drop_spare(mesh, n);
+
+	logger(mesh, MESHLINK_INFO, "Established a second connection with %s, closing old connection", old->name);
+	transfer_outgoing(mesh, old, c);
+
+	if(old->edge) {
+		edge_del(mesh, old->edge);
+		old->edge = NULL;
+	}
+
+	terminate_connection(mesh, old, false);
+	assert(!n->connection);
+}
+
 bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	assert(request);
 	assert(*request);
@@ -397,10 +419,10 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	}
 
 	/* The peer is replacing its canonical connection to us with this direct one. Keep the
-	   old one until the peer closes it (it does so once it has our ACK), then promote
-	   this one in terminate_connection() so the node never leaves the graph. */
+	   old one until the peer closes it (it does so once it has our ACK), then
+	   terminate_connection() promotes this one so the node never leaves the graph. */
 
-	bool deferred_ack = (c->flags & PROTOCOL_UPGRADE) && !c->status.initiator;
+	bool deferred_ack = upgrade_defers_ack(c);
 
 	if(deferred_ack && n->connection && n->connection != c && n->connection->status.active) {
 		upgrade_hold_spare(mesh, c, n, hisport, devclass);
@@ -408,15 +430,7 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	}
 
 	if(n->connection && n->connection != c) {
-		logger(mesh, MESHLINK_INFO, "Established a second connection with %s, closing old connection", n->connection->name);
-		transfer_outgoing(mesh, n->connection, c);
-
-		if(n->connection->edge) {
-			edge_del(mesh, n->connection->edge);
-			n->connection->edge = NULL;
-		}
-
-		terminate_connection(mesh, n->connection, false);
+		replace_existing_connection(mesh, n, c);
 	}
 
 	/* A probe that got this far replaces the canonical connection it was opened next to. */
@@ -430,11 +444,7 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	n->status.dirty = true;
 	n->status.tiny = c->flags & PROTOCOL_TINY;
 
-	n->last_successfull_connection = mesh->loop.now.tv_sec;
-
-	n->connection = c;
-	n->nexthop = n;
-	c->node = n;
+	install_node_connection(mesh, n, c);
 
 	/* The address walk is done: if this connection drops, start over from recent[] instead of
 	   continuing with whatever was left after the address that just worked. */
@@ -449,6 +459,8 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	c->status.active = true;
 
 	logger(mesh, MESHLINK_INFO, "Connection with %s activated", c->name);
+
+	/* No connection to hold this one behind, so we did not ACK during the handshake. */
 
 	if(deferred_ack && !send_ack(mesh, c)) {
 		return false;
@@ -476,14 +488,7 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 
 	/* Create an edge_t for this connection */
 
-	assert(devclass >= 0 && devclass < DEV_CLASS_COUNT);
-
-	c->edge = new_edge();
-	c->edge->from = mesh->self;
-	c->edge->to = n;
-	sockaddrcpy_setport(&c->edge->address, &c->address, atoi(hisport));
-	c->edge->weight = mesh->dev_class_traits[devclass].edge_weight;
-	c->edge->connection = c;
+	c->edge = new_connection_edge(mesh, c, n, hisport, devclass);
 
 	/* The canonical address is a relay, not the node itself: never remember it as a direct address. */
 
@@ -491,15 +496,9 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		node_add_recent_address(mesh, n, &c->address);
 	}
 
-	edge_add(mesh, c->edge);
+	/* Put it in the graph and notify everyone */
 
-	/* Notify everyone of the new edge */
-
-	send_add_edge(mesh, mesh->everyone, c->edge, 0);
-
-	/* Run MST and SSSP algorithms */
-
-	graph(mesh);
+	add_connection_edge(mesh, c);
 
 	/* Request a session key to jump start UDP traffic */
 

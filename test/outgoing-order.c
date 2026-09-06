@@ -27,50 +27,6 @@ static struct sync_flag peer_reachable;
 static devtool_node_status_t status_at_reachable;
 static const char *watched_peer;
 
-/* Captured log lines of every mesh, "<name>: <text>\n", for ordering assertions. */
-static pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
-static char *captured_log;
-static size_t captured_len;
-
-static void capture_log_cb(meshlink_handle_t *mesh, meshlink_log_level_t level, const char *text) {
-	log_cb(mesh, level, text);
-
-	assert(pthread_mutex_lock(&log_mutex) == 0);
-	size_t add = strlen(text) + 32;
-	captured_log = realloc(captured_log, captured_len + add + 1);
-	assert(captured_log);
-	captured_len += snprintf(captured_log + captured_len, add + 1, "%s: %s\n", mesh ? mesh->name : "-", text);
-	assert(pthread_mutex_unlock(&log_mutex) == 0);
-}
-
-static bool log_contains(const char *needle) {
-	assert(pthread_mutex_lock(&log_mutex) == 0);
-	bool found = captured_log && strstr(captured_log, needle);
-	assert(pthread_mutex_unlock(&log_mutex) == 0);
-	return found;
-}
-
-static struct sockaddr_in ipv4(const char *ip, uint16_t port) {
-	struct sockaddr_in sa;
-	memset(&sa, 0, sizeof sa);
-	sa.sin_family = AF_INET;
-	sa.sin_port = htons(port);
-	assert(inet_pton(AF_INET, ip, &sa.sin_addr) == 1);
-	return sa;
-}
-
-static int port_of(const struct sockaddr_storage *ss) {
-	if(ss->ss_family == AF_INET) {
-		return ntohs(((const struct sockaddr_in *)ss)->sin_port);
-	}
-
-	if(ss->ss_family == AF_INET6) {
-		return ntohs(((const struct sockaddr_in6 *)ss)->sin6_port);
-	}
-
-	return -1;
-}
-
 static bool is_rfc1918(const char *ip) {
 	struct in_addr in;
 
@@ -80,32 +36,6 @@ static bool is_rfc1918(const char *ip) {
 
 	uint32_t a = ntohl(in.s_addr);
 	return (a & 0xff000000) == 0x0a000000 || (a & 0xfff00000) == 0xac100000 || (a & 0xffff0000) == 0xc0a80000;
-}
-
-/* Drop everything a mesh learned about where a peer lives: n->address and recent[].
-   Fresh imports carry the peer's own local addresses, which would win as RECENT. */
-static void forget_addresses(meshlink_handle_t *mesh, meshlink_node_t *node) {
-	struct sockaddr_in unset;
-	memset(&unset, 0, sizeof unset);
-	unset.sin_family = AF_UNSPEC;
-	devtool_update_node_udp(mesh, node, (struct sockaddr *)&unset);
-}
-
-static void hint(meshlink_handle_t *mesh, meshlink_node_t *node, const char *ip, int port) {
-	struct sockaddr_in sa = ipv4(ip, (uint16_t)port);
-	meshlink_hint_address(mesh, node, (struct sockaddr *)&sa);
-}
-
-static void exchange(meshlink_handle_t *a, meshlink_handle_t *b) {
-	char *data = meshlink_export(a);
-	assert(data);
-	assert(meshlink_import(b, data));
-	free(data);
-
-	data = meshlink_export(b);
-	assert(data);
-	assert(meshlink_import(a, data));
-	free(data);
 }
 
 /* Snapshot the peer's meta connection the moment it becomes reachable, before any
@@ -163,12 +93,12 @@ static void test_recent_wins(void) {
 	snprintf(relay_port_str, sizeof relay_port_str, "%d", relay_port);
 
 	assert(meshlink_set_canonical_address(b, meshlink_get_self(b), "127.0.0.1", relay_port_str));
-	exchange(a, b);
+	exchange_meshlink_pair(a, b);
 
 	meshlink_node_t *node_b = meshlink_get_node(a, "b");
 	assert(node_b);
 	forget_addresses(a, node_b);
-	hint(a, node_b, "127.0.0.1", b_port);
+	hint_address(a, node_b, "127.0.0.1", b_port);
 
 	watched_peer = "b";
 	init_sync_flag(&peer_reachable);
@@ -212,12 +142,12 @@ static void test_fallback_to_canonical_and_recent_stays_direct(void) {
 	assert(closed_port != b_port && closed_port != relay_port);
 
 	assert(meshlink_set_canonical_address(b, meshlink_get_self(b), "127.0.0.1", relay_port_str));
-	exchange(a, b);
+	exchange_meshlink_pair(a, b);
 
 	meshlink_node_t *node_b = meshlink_get_node(a, "b");
 	assert(node_b);
 	forget_addresses(a, node_b);
-	hint(a, node_b, "127.0.0.1", closed_port);
+	hint_address(a, node_b, "127.0.0.1", closed_port);
 
 	watched_peer = "b";
 	init_sync_flag(&peer_reachable);
@@ -261,9 +191,8 @@ static void test_fallback_to_canonical_and_recent_stays_direct(void) {
 		assert(port == b_port || port == closed_port);
 	}
 
-	devtool_free_node_status(&st);
-
 	printf("T4 ok: %d entries in recent[], none is the relay\n", (int)st.recent_count);
+	devtool_free_node_status(&st);
 
 	close_pair(a, b, "outgoing_order_t2");
 	stop_tcp_relay(relay);
@@ -291,18 +220,20 @@ static void test_known_path(void) {
 	int c_port = meshlink_get_port(c);
 	assert(b_port > 0 && c_port > 0);
 
-	exchange(a, b);
-	exchange(a, c);
-	exchange(b, c);
+	exchange_meshlink_pair(a, b);
+	exchange_meshlink_pair(a, c);
+	exchange_meshlink_pair(b, c);
 
-	/* c reaches b over a private (RFC1918) interface address when one exists: the
-	   graph never seeds a UDP address from such an edge, so a's only way to reach c
-	   is the KNOWN list built from the edge b->c. On a host without a private
-	   address loopback is used and only the connection itself can be checked. */
+	/* The edge b->c carries the address b saw c connect from, plus c's port. The graph
+	   seeds that address into a's recent[] for c unless it is private (RFC1918): so
+	   when c reaches b over a private interface, a's only way to c is the KNOWN list
+	   built from the edge. On a loopback-only host the seed lands in recent[] first
+	   and the same edge address is tried as RECENT: the KNOWN source itself cannot be
+	   exercised there, but which source was used, and why, is asserted either way. */
 	char *local = meshlink_get_local_address_for_family(c, AF_INET);
 	const char *b_ip = local && is_rfc1918(local) ? local : "127.0.0.1";
 	bool edge_is_private = strcmp(b_ip, "127.0.0.1") != 0;
-	printf("c connects to b at %s (%s)\n", b_ip, edge_is_private ? "private, KNOWN path provable" : "loopback, KNOWN path not provable");
+	printf("c connects to b at %s (%s)\n", b_ip, edge_is_private ? "private, KNOWN path provable" : "loopback, edge address is seeded as RECENT");
 
 	meshlink_node_t *a_b = meshlink_get_node(a, "b");
 	meshlink_node_t *a_c = meshlink_get_node(a, "c");
@@ -310,10 +241,10 @@ static void test_known_path(void) {
 	assert(a_b && a_c && c_b);
 
 	forget_addresses(a, a_b);
-	hint(a, a_b, "127.0.0.1", b_port);
+	hint_address(a, a_b, "127.0.0.1", b_port);
 	forget_addresses(a, a_c);
 	forget_addresses(c, c_b);
-	hint(c, c_b, b_ip, b_port);
+	hint_address(c, c_b, b_ip, b_port);
 
 	devtool_node_status_t st;
 	devtool_get_node_status(a, a_c, &st);
@@ -332,6 +263,7 @@ static void test_known_path(void) {
 	meshlink_set_node_status_cb(b, NULL);
 	devtool_free_node_status(&status_at_reachable);
 
+	size_t mark = log_mark();
 	assert(meshlink_start(a));
 
 	/* a must end up with its own meta connection to c, made from the edge address. */
@@ -355,13 +287,31 @@ static void test_known_path(void) {
 	assert(port_of(&a_view_c.meta_address) == c_port);
 	devtool_free_node_status(&a_view_c);
 
+	char known_needle[128], recent_needle[128];
+	snprintf(known_needle, sizeof known_needle, "a: Trying to connect to c at %s port %d (known)", b_ip, c_port);
+	snprintf(recent_needle, sizeof recent_needle, "a: Trying to connect to c at %s port %d (recent)", b_ip, c_port);
+
 	if(edge_is_private) {
-		char needle[128];
-		snprintf(needle, sizeof needle, "a: Trying to connect to c at %s port %d (known)", b_ip, c_port);
-		assert(log_contains(needle));
+		/* Nothing was seeded, so the edge address can only have come from KNOWN. */
+		assert(log_find(mark, known_needle) >= 0);
+		assert(log_find(mark, recent_needle) < 0);
 		printf("T3 ok: a connected to c via KNOWN edge address %s port %d\n", b_ip, c_port);
 	} else {
-		printf("T3 ok: a connected to c at port %d (path source not provable on loopback)\n", c_port);
+		/* The graph seeded the edge address, so it was tried as RECENT and never
+		   reached KNOWN; a's recent[] for c must indeed hold it now. */
+		assert(log_find(mark, recent_needle) >= 0);
+		assert(log_find(mark, known_needle) < 0);
+
+		devtool_get_node_status(a, a_c, &st);
+		bool seeded = false;
+
+		for(size_t i = 0; i < st.recent_count; i++) {
+			seeded |= addr_is(&st.recent[i], b_ip, c_port);
+		}
+
+		assert(seeded);
+		devtool_free_node_status(&st);
+		printf("T3 ok: a connected to c at port %d from the graph-seeded RECENT entry (KNOWN not reachable on loopback)\n", c_port);
 	}
 
 	free(local);
@@ -384,6 +334,6 @@ int main(void) {
 	test_fallback_to_canonical_and_recent_stays_direct();
 	test_known_path();
 
-	free(captured_log);
+	free_captured_log();
 	return 0;
 }

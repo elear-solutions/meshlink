@@ -45,6 +45,42 @@ static inline int min(int a, int b) {
 static const int default_timeout = 5;
 static const int default_interval = 60;
 
+/* Build the self->n edge that represents c. Not yet in the graph: see add_connection_edge(). */
+edge_t *new_connection_edge(meshlink_handle_t *mesh, connection_t *c, node_t *n, const char *hisport, int devclass) {
+	assert(devclass >= 0 && devclass < DEV_CLASS_COUNT);
+
+	edge_t *e = new_edge();
+	e->from = mesh->self;
+	e->to = n;
+	sockaddrcpy_setport(&e->address, &c->address, atoi(hisport));
+	e->weight = mesh->dev_class_traits[devclass].edge_weight;
+	e->connection = c;
+
+	/* Over a canonical connection the address is the relay's, not the node's.
+	   Say so in the edge, so that nodes learning it via ADD_EDGE do not seed it
+	   as a UDP or recent[] address either (see sssp_bfs). */
+	if(c->status.via_canonical) {
+		e->options |= OPTION_INDIRECT;
+	}
+
+	return e;
+}
+
+/* Make c the connection we reach n through. */
+void install_node_connection(meshlink_handle_t *mesh, node_t *n, connection_t *c) {
+	n->connection = c;
+	n->nexthop = n;
+	n->last_successfull_connection = mesh->loop.now.tv_sec;
+	c->node = n;
+}
+
+/* Put c->edge in the graph, tell everyone, and recompute routes. */
+void add_connection_edge(meshlink_handle_t *mesh, connection_t *c) {
+	edge_add(mesh, c->edge);
+	send_add_edge(mesh, mesh->everyone, c->edge, 0);
+	graph(mesh);
+}
+
 /*
   Terminate a connection:
   - Mark it as inactive
@@ -57,27 +93,9 @@ void terminate_connection(meshlink_handle_t *mesh, connection_t *c, bool report)
 		logger(mesh, MESHLINK_INFO, "Closing connection with %s", c->name);
 	}
 
-	/* A probe that dies before ack_h() promoted it: back off, leave the canonical connection alone. */
+	/* Probe bookkeeping and, if a spare is held for this node, hand the node over to it. */
 
-	if(c->status.upgrade_probe && !c->status.active) {
-		node_t *n = lookup_node(mesh, c->name);
-
-		if(n && n->upgrade_probe == c) {
-			upgrade_probe_failed(mesh, n);
-		}
-	}
-
-	if(c->status.spare) {
-		/* Never became the node's connection: its prepared edge is not in the graph. */
-		free_edge(c->edge);
-		c->edge = NULL;
-	} else if(c->node && c->node->connection == c) {
-		connection_t *spare = upgrade_find_spare(mesh, c->node);
-
-		if(spare) {
-			upgrade_promote_spare(mesh, c, spare);
-		}
-	}
+	upgrade_connection_closing(mesh, c);
 
 	if(c->node && c->node->connection == c) {
 		if(c->status.active && mesh->meta_status_cb) {
@@ -426,7 +444,7 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 		unsigned int cur_connects = 0;
 
 		for list_each(connection_t, c, mesh->connections) {
-			if(c->status.active) {
+			if(c->status.active && !c->status.spare) {
 				cur_connects += 1;
 			}
 		}
@@ -475,7 +493,7 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 
 			for(dev_class_t devclass = 0; devclass <= mesh->devclass; ++devclass) {
 				for list_each(connection_t, c, mesh->connections) {
-					if(c->status.active && c->node && c->node->devclass == devclass) {
+					if(c->status.active && !c->status.spare && c->node && c->node->devclass == devclass) {
 						connects += 1;
 					}
 				}
@@ -570,7 +588,7 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 
 			for(dev_class_t devclass = 0; devclass <= mesh->devclass; ++devclass) {
 				for list_each(connection_t, c, mesh->connections) {
-					if(c->status.active && c->node && c->node->devclass == devclass) {
+					if(c->status.active && !c->status.spare && c->node && c->node->devclass == devclass) {
 						connects += 1;
 					}
 				}
@@ -579,7 +597,7 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 					splay_tree_t *nodes = splay_alloc_tree(node_compare_devclass_desc, NULL);
 
 					for list_each(connection_t, c, mesh->connections) {
-						if(c->outgoing && c->node && c->node->devclass >= devclass) {
+						if(c->outgoing && !c->status.spare && c->node && c->node->devclass >= devclass) {
 							splay_insert(nodes, c->node);
 						}
 					}
@@ -606,7 +624,7 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 			splay_tree_t *nodes = splay_alloc_tree(node_compare_devclass_desc, NULL);
 
 			for list_each(connection_t, c, mesh->connections) {
-				if(c->status.active && c->node) {
+				if(c->status.active && !c->status.spare && c->node) {
 					splay_insert(nodes, c->node);
 				}
 			}

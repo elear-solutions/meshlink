@@ -16,9 +16,13 @@
 #include "devtools.h"
 #include "utils.h"
 
-/* T9: a REQ_EXTERNAL from a peer puts its external IP:port at the front of recent[],
-   a repeated REQ_EXTERNAL does not add a second copy, and a REQ_EXTERNAL that equals
-   our own external IP:port (hairpin) is not remembered at all.
+/* T9: a REQ_EXTERNAL from a peer puts its external IP:port into recent[], a repeated
+   REQ_EXTERNAL does not add a second copy, and a REQ_EXTERNAL that equals our own
+   external IP:port (hairpin) is not remembered at all.
+
+   Here a is directly connected to b, so the address that just authenticated stays in
+   front and the REQ_EXTERNAL one is kept behind it as a fallback (over a canonical
+   connection it goes to the front and is probed: see canonical-migrate T5).
 
    b advertises a TEST-NET-3 address as its external IP so the entry that comes from
    REQ_EXTERNAL cannot be confused with what UDP learns (127.0.0.1). */
@@ -27,65 +31,6 @@
 
 static struct sync_flag peer_reachable;
 static const char *watched_peer;
-
-static pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
-static char *captured_log;
-static size_t captured_len;
-
-static void capture_log_cb(meshlink_handle_t *mesh, meshlink_log_level_t level, const char *text) {
-	log_cb(mesh, level, text);
-
-	assert(pthread_mutex_lock(&log_mutex) == 0);
-	size_t add = strlen(text) + 32;
-	captured_log = realloc(captured_log, captured_len + add + 1);
-	assert(captured_log);
-	captured_len += snprintf(captured_log + captured_len, add + 1, "%s: %s\n", mesh ? mesh->name : "-", text);
-	assert(pthread_mutex_unlock(&log_mutex) == 0);
-}
-
-static int log_count(const char *needle) {
-	int count = 0;
-
-	assert(pthread_mutex_lock(&log_mutex) == 0);
-
-	for(const char *p = captured_log; p && (p = strstr(p, needle)); p++) {
-		count++;
-	}
-
-	assert(pthread_mutex_unlock(&log_mutex) == 0);
-	return count;
-}
-
-static struct sockaddr_in ipv4(const char *ip, uint16_t port) {
-	struct sockaddr_in sa;
-	memset(&sa, 0, sizeof sa);
-	sa.sin_family = AF_INET;
-	sa.sin_port = htons(port);
-	assert(inet_pton(AF_INET, ip, &sa.sin_addr) == 1);
-	return sa;
-}
-
-static bool addr_is(const struct sockaddr_storage *ss, const char *ip, int port) {
-	if(ss->ss_family != AF_INET) {
-		return false;
-	}
-
-	struct sockaddr_in want = ipv4(ip, (uint16_t)port);
-	const struct sockaddr_in *got = (const struct sockaddr_in *)ss;
-	return got->sin_addr.s_addr == want.sin_addr.s_addr && got->sin_port == want.sin_port;
-}
-
-static int port_of(const struct sockaddr_storage *ss) {
-	if(ss->ss_family == AF_INET) {
-		return ntohs(((const struct sockaddr_in *)ss)->sin_port);
-	}
-
-	if(ss->ss_family == AF_INET6) {
-		return ntohs(((const struct sockaddr_in6 *)ss)->sin6_port);
-	}
-
-	return -1;
-}
 
 static int recent_occurrences(const devtool_node_status_t *st, const char *ip, int port) {
 	int count = 0;
@@ -97,30 +42,6 @@ static int recent_occurrences(const devtool_node_status_t *st, const char *ip, i
 	}
 
 	return count;
-}
-
-static void forget_addresses(meshlink_handle_t *mesh, meshlink_node_t *node) {
-	struct sockaddr_in unset;
-	memset(&unset, 0, sizeof unset);
-	unset.sin_family = AF_UNSPEC;
-	devtool_update_node_udp(mesh, node, (struct sockaddr *)&unset);
-}
-
-static void hint(meshlink_handle_t *mesh, meshlink_node_t *node, const char *ip, int port) {
-	struct sockaddr_in sa = ipv4(ip, (uint16_t)port);
-	meshlink_hint_address(mesh, node, (struct sockaddr *)&sa);
-}
-
-static void exchange(meshlink_handle_t *a, meshlink_handle_t *b) {
-	char *data = meshlink_export(a);
-	assert(data);
-	assert(meshlink_import(b, data));
-	free(data);
-
-	data = meshlink_export(b);
-	assert(data);
-	assert(meshlink_import(a, data));
-	free(data);
 }
 
 static void status_cb(meshlink_handle_t *mesh, meshlink_node_t *node, bool reachable) {
@@ -164,12 +85,12 @@ static void open_direct_pair(struct pair *p, const char *prefix, const char *sel
 		devtool_set_external_ip_address(p->a, meshlink_get_self(p->a), self_ext);
 	}
 
-	exchange(p->a, p->b);
+	exchange_meshlink_pair(p->a, p->b);
 
 	p->a_b = meshlink_get_node(p->a, "b");
 	assert(p->a_b);
 	forget_addresses(p->a, p->a_b);
-	hint(p->a, p->a_b, "127.0.0.1", p->b_port);
+	hint_address(p->a, p->a_b, "127.0.0.1", p->b_port);
 
 	watched_peer = "b";
 	init_sync_flag(&peer_reachable);
@@ -193,11 +114,10 @@ static bool ext_in_recent(meshlink_handle_t *mesh, meshlink_node_t *node, int po
 	return found;
 }
 
-/* The REQ_EXTERNAL address went to the front when it arrived. The only other thing
-   that touches recent[] on a afterwards is UDP learning b's real addresses (loopback,
-   and the container interface via broadcast probes), all on b's port; those may have
-   been moved in front of it since. */
-static void assert_ext_front_and_once(struct pair *p) {
+/* The REQ_EXTERNAL address is in recent[] exactly once, and everything in front of it
+   is one of b's real addresses on b's port: the loopback address that authenticated,
+   plus whatever UDP learned since (the container interface via broadcast probes). */
+static void assert_ext_once_behind_real_addresses(struct pair *p) {
 	devtool_node_status_t st;
 	devtool_get_node_status(p->a, p->a_b, &st);
 
@@ -209,6 +129,7 @@ static void assert_ext_front_and_once(struct pair *p) {
 	assert(st.recent_count >= 2);
 	assert(recent_occurrences(&st, EXT_IP, p->b_port) == 1);
 	assert(recent_occurrences(&st, "127.0.0.1", p->b_port) == 1);
+	assert(!addr_is(&st.recent[0], EXT_IP, p->b_port));
 
 	for(size_t i = 0; i < st.recent_count && !addr_is(&st.recent[i], EXT_IP, p->b_port); i++) {
 		assert(port_of(&st.recent[i]) == p->b_port);
@@ -223,7 +144,7 @@ static void assert_ext_front_and_once(struct pair *p) {
 }
 
 static void test_learn_and_dedupe(void) {
-	printf("\n=== T9a: REQ_EXTERNAL lands in recent[] once, at the front ===\n");
+	printf("\n=== T9a: REQ_EXTERNAL lands in recent[] once, behind the authenticated address ===\n");
 
 	struct pair p;
 	open_direct_pair(&p, "req_external_recent_t9a", NULL);
@@ -234,13 +155,13 @@ static void test_learn_and_dedupe(void) {
 
 	assert_after(log_count("a: Got REQ_EXTERNAL from b") >= 1, 5);
 	assert_after(ext_in_recent(p.a, p.a_b, p.b_port), 5);
-	assert_ext_front_and_once(&p);
+	assert_ext_once_behind_real_addresses(&p);
 
 	printf("T9a: learned %s:%d from REQ_EXTERNAL\n", EXT_IP, p.b_port);
 
 	/* A second connection means a second REQ_KEY/REQ_EXTERNAL round trip. The
-	   TEST-NET address is now first in recent[], so the reconnect tries it (and
-	   fails) before the loopback address: that is the direct-first order at work. */
+	   loopback address is still in front, so the reconnect is direct right away
+	   and the repeated REQ_EXTERNAL must not add a second TEST-NET entry. */
 	int got_before = log_count("a: Got REQ_EXTERNAL from b");
 	init_sync_flag(&peer_reachable);
 	meshlink_stop(p.a);
@@ -248,7 +169,7 @@ static void test_learn_and_dedupe(void) {
 	assert(wait_sync_flag(&peer_reachable, 30));
 
 	assert_after(log_count("a: Got REQ_EXTERNAL from b") > got_before, 10);
-	assert_ext_front_and_once(&p);
+	assert_ext_once_behind_real_addresses(&p);
 
 	printf("T9a ok: %d REQ_EXTERNALs received, one recent[] entry\n", log_count("a: Got REQ_EXTERNAL from b"));
 
@@ -298,6 +219,6 @@ int main(void) {
 	test_learn_and_dedupe();
 	test_own_external_not_added();
 
-	free(captured_log);
+	free_captured_log();
 	return 0;
 }

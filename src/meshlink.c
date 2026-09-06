@@ -1756,7 +1756,12 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 	// TODO: we should not open listening sockets yet
 
 	bool success = false;
-	char *persisted_port = xstrdup(mesh->myport);
+
+	/* The port as read from the config; setup_myself() may replace mesh->myport
+	   (range redraw, bind failure, port 0 resolved by the OS). A stack copy needs
+	   no free on the error exits below. */
+	char persisted_port[NI_MAXSERV];
+	snprintf(persisted_port, sizeof(persisted_port), "%s", mesh->myport);
 
 	if(mesh->netns != -1) {
 #ifdef HAVE_SETNS
@@ -1768,7 +1773,6 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 		}
 
 #else
-		free(persisted_port);
 		meshlink_errno = MESHLINK_EINTERNAL;
 		return NULL;
 
@@ -1778,14 +1782,12 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 	}
 
 	if(!success) {
-		free(persisted_port);
 		meshlink_close(mesh);
 		meshlink_errno = MESHLINK_ENETWORK;
 		return NULL;
 	}
 
-	/* setup_myself() may have drawn a different port (range redraw, bind failure,
-	   or port 0 resolved by the OS): persist it so the next start reuses it. */
+	/* Persist a redrawn port so the next start reuses it. */
 
 	if(strcmp(persisted_port, mesh->myport)) {
 		logger(NULL, MESHLINK_INFO, "Persisting new port %s (was %s)", mesh->myport, persisted_port);
@@ -1794,8 +1796,6 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 			logger(NULL, MESHLINK_WARNING, "Could not persist new port %s", mesh->myport);
 		}
 	}
-
-	free(persisted_port);
 
 	if(mesh->devclass == DEV_CLASS_BACKBONE) {
 		logger(NULL, MESHLINK_DEBUG, "Resolving external IP address as we are a backbone node\n");
@@ -3816,11 +3816,12 @@ static bool blacklist(meshlink_handle_t *mesh, node_t *n) {
 
 	n->status.blacklisted = true;
 
-	/* Immediately shut down any connections we have with the blacklisted node.
+	/* Immediately shut down any connections we have with the blacklisted node, including a
+	 * direct-upgrade probe that has not authenticated yet (it has no c->node until ack_h()).
 	 * We can't call terminate_connection(), because we might be called from a callback function.
 	 */
 	for list_each(connection_t, c, mesh->connections) {
-		if(c->node == n) {
+		if(c->node == n || c == n->upgrade_probe) {
 			if(c->status.active) {
 				send_error(mesh, c, BLACKLISTED, "blacklisted");
 			}
@@ -4016,9 +4017,10 @@ bool meshlink_forget_node(meshlink_handle_t *mesh, meshlink_node_t *node) {
 		return false;
 	}
 
-	/* Check that we have no active connections to this node */
+	/* Check that we have no active connections to this node, nor a direct-upgrade probe in flight
+	   (its connection_t only knows the node by name until ack_h() and would recreate it) */
 	for list_each(connection_t, c, mesh->connections) {
-		if(c->node == n) {
+		if(c->node == n || c == n->upgrade_probe) {
 			pthread_mutex_unlock(&mesh->mutex);
 			logger(mesh, MESHLINK_WARNING, "Could not forget %s: active connection", n->name);
 			return false;
@@ -4078,6 +4080,12 @@ void meshlink_hint_address(meshlink_handle_t *mesh, meshlink_node_t *node, const
 
 	/* A fresh direct address for a peer we only reach via its canonical address is worth a probe right away. */
 	try_upgrade_probe(mesh, n);
+
+	/* We are on the caller's thread; the loop thread is parked in pselect() with a copy of the
+	   fd set, so wake it up to watch the probe socket instead of waiting for the next timer. */
+	if(n->upgrade_probe) {
+		signal_trigger(&mesh->loop, &mesh->datafromapp);
+	}
 
 	pthread_mutex_unlock(&mesh->mutex);
 }

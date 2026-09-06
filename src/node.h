@@ -41,6 +41,8 @@ typedef struct node_status_t {
 	uint16_t tiny: 1;                   /* 1 if this is a tiny node */
 } node_status_t;
 
+/* Size of node_t.recent[]. devtool_node_status_t.recent[] mirrors it as DEVTOOL_MAX_RECENT
+   in the public header; devtools.c static-asserts the two agree. */
 #define MAX_RECENT 5
 
 typedef struct node_t {
@@ -121,6 +123,7 @@ node_t *lookup_node(struct meshlink_handle *mesh, const char *name) __attribute_
 node_t *lookup_node_udp(struct meshlink_handle *mesh, const sockaddr_t *sa) __attribute__((__warn_unused_result__));
 void update_node_udp(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *sa);
 bool node_add_recent_address(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *addr);
+bool node_append_recent_address(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *addr);
 bool graph_may_seed_udp(const node_t *n, const sockaddr_t *edge_addr);
 
 #endif

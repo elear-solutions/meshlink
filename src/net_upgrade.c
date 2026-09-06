@@ -1,6 +1,6 @@
 /*
     net_upgrade.c -- upgrade a canonical (relay) meta connection to a direct one
-    Copyright (C) 2014-2017 Guus Sliepen <guus@meshlink.io>
+    Copyright (C) 2026 Elear Solutions
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -22,7 +22,6 @@
 #include "connection.h"
 #include "devtools.h"
 #include "edge.h"
-#include "graph.h"
 #include "logger.h"
 #include "meshlink_internal.h"
 #include "net.h"
@@ -97,8 +96,7 @@ void start_upgrade_probe(meshlink_handle_t *mesh, node_t *n) {
 	sockaddr_t sa;
 
 	if(!pick_probe_address(n, &sa)) {
-		logger(mesh, MESHLINK_DEBUG, "No direct address to probe for %s", n->name);
-		apply_backoff(mesh, n);
+		upgrade_probe_failed(mesh, n, "no direct address left to try");
 		return;
 	}
 
@@ -116,8 +114,7 @@ void start_upgrade_probe(meshlink_handle_t *mesh, node_t *n) {
 
 	if(!connect_meta_socket(mesh, c)) {
 		free_connection(c);
-		apply_backoff(mesh, n);
-		devtool_upgrade_probe(mesh, (meshlink_node_t *)n, DEVTOOL_UPGRADE_PROBE_FAILED);
+		upgrade_probe_failed(mesh, n, "could not connect");
 		return;
 	}
 
@@ -131,10 +128,19 @@ void try_upgrade_probe(meshlink_handle_t *mesh, node_t *n) {
 	}
 }
 
-void upgrade_probe_failed(meshlink_handle_t *mesh, node_t *n) {
+void upgrade_probe_failed(meshlink_handle_t *mesh, node_t *n, const char *reason) {
+	connection_t *c = n->connection;
+
 	n->upgrade_probe = NULL;
-	apply_backoff(mesh, n);
-	logger(mesh, MESHLINK_INFO, "Direct probe to %s failed, next try in %d seconds", n->name, n->upgrade_backoff);
+
+	if(c && c->status.active && !c->status.via_canonical) {
+		/* A regular connection got there first: nothing left to upgrade, so no backoff. */
+		logger(mesh, MESHLINK_INFO, "Direct probe to %s abandoned: %s, already directly connected", n->name, reason);
+	} else {
+		apply_backoff(mesh, n);
+		logger(mesh, MESHLINK_INFO, "Direct probe to %s failed: %s, next try in %d seconds", n->name, reason, n->upgrade_backoff);
+	}
+
 	devtool_upgrade_probe(mesh, (meshlink_node_t *)n, DEVTOOL_UPGRADE_PROBE_FAILED);
 }
 
@@ -155,22 +161,43 @@ void upgrade_probe_succeeded(meshlink_handle_t *mesh, connection_t *c) {
 	devtool_upgrade_probe(mesh, (meshlink_node_t *)n, DEVTOOL_UPGRADE_PROBE_SUCCEEDED);
 }
 
+bool upgrade_defers_ack(const connection_t *c) {
+	return (c->flags & PROTOCOL_UPGRADE) && !c->status.initiator;
+}
+
+static connection_t *find_spare(meshlink_handle_t *mesh, const node_t *n) {
+	for list_each(connection_t, c, mesh->connections) {
+		if(c->status.spare && c->status.active && c->node == n) {
+			return c;
+		}
+	}
+
+	return NULL;
+}
+
+void upgrade_drop_spare(meshlink_handle_t *mesh, node_t *n) {
+	connection_t *spare = find_spare(mesh, n);
+
+	if(spare) {
+		logger(mesh, MESHLINK_INFO, "Dropping superseded spare connection with %s", n->name);
+		terminate_connection(mesh, spare, false);
+	}
+}
+
 /* The peer probed us to replace its canonical connection. Its old connection stays
    the node's connection until the peer closes it; this one is fully authenticated and
    pinged like any other, with its edge prepared but not yet in the graph. */
 void upgrade_hold_spare(meshlink_handle_t *mesh, connection_t *c, node_t *n, const char *hisport, int devclass) {
+	/* A re-probe means the peer gave up on the previous one (its ACK never made it
+	   there); that spare is half-open at best and must not be the one promoted. */
+	upgrade_drop_spare(mesh, n);
+
 	c->node = n;
 	c->allow_request = ALL;
 	c->last_key_renewal = mesh->loop.now.tv_sec;
 	c->status.active = true;
 	c->status.spare = true;
-
-	c->edge = new_edge();
-	c->edge->from = mesh->self;
-	c->edge->to = n;
-	sockaddrcpy_setport(&c->edge->address, &c->address, atoi(hisport));
-	c->edge->weight = mesh->dev_class_traits[devclass].edge_weight;
-	c->edge->connection = c;
+	c->edge = new_connection_edge(mesh, c, n, hisport, devclass);
 
 	node_add_recent_address(mesh, n, &c->address);
 
@@ -181,19 +208,16 @@ void upgrade_hold_spare(meshlink_handle_t *mesh, connection_t *c, node_t *n, con
 	}
 }
 
-connection_t *upgrade_find_spare(meshlink_handle_t *mesh, const node_t *n) {
-	for list_each(connection_t, c, mesh->connections) {
-		if(c->status.spare && c->status.active && c->node == n) {
-			return c;
-		}
-	}
-
-	return NULL;
+/* During meshlink_stop()/meshlink_close() every connection is torn down and a
+   blacklisted node has both of its sockets shut already: promoting would only
+   flap the node's status and broadcast an edge that is gone a moment later. */
+static bool may_promote(meshlink_handle_t *mesh, const node_t *n) {
+	return mesh->loop.running && !n->status.blacklisted;
 }
 
 /* old is going away: swap the node over to spare in one step, so the graph never
    sees the node without an edge. Caller (terminate_connection) finishes old. */
-void upgrade_promote_spare(meshlink_handle_t *mesh, connection_t *old, connection_t *spare) {
+static void promote_spare(meshlink_handle_t *mesh, connection_t *old, connection_t *spare) {
 	node_t *n = old->node;
 
 	logger(mesh, MESHLINK_INFO, "Promoting spare direct connection with %s, its previous connection is closing", n->name);
@@ -213,16 +237,40 @@ void upgrade_promote_spare(meshlink_handle_t *mesh, connection_t *old, connectio
 	}
 
 	spare->status.spare = false;
-	n->connection = spare;
-	n->nexthop = n;
-	n->last_successfull_connection = mesh->loop.now.tv_sec;
-
-	edge_add(mesh, spare->edge);
-	send_add_edge(mesh, mesh->everyone, spare->edge, 0);
-	graph(mesh);
+	install_node_connection(mesh, n, spare);
+	add_connection_edge(mesh, spare);
 
 	if(mesh->meta_status_cb) {
 		mesh->meta_status_cb(mesh, (meshlink_node_t *)n, true);
+	}
+}
+
+void upgrade_connection_closing(meshlink_handle_t *mesh, connection_t *c) {
+	if(c->status.upgrade_probe && !c->status.active) {
+		node_t *n = lookup_node(mesh, c->name);
+
+		if(n && n->upgrade_probe == c) {
+			upgrade_probe_failed(mesh, n, "connection closed before it authenticated");
+		}
+
+		return;
+	}
+
+	if(c->status.spare) {
+		/* Never became the node's connection: its prepared edge is not in the graph. */
+		free_edge(c->edge);
+		c->edge = NULL;
+		return;
+	}
+
+	if(!c->node || c->node->connection != c) {
+		return;
+	}
+
+	connection_t *spare = find_spare(mesh, c->node);
+
+	if(spare && may_promote(mesh, c->node)) {
+		promote_spare(mesh, c, spare);
 	}
 }
 

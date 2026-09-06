@@ -8,6 +8,7 @@
 #include <string.h>
 #include <errno.h>
 #include <assert.h>
+#include <time.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -26,10 +27,11 @@
    T13: invalid ranges are rejected with MESHLINK_EINVAL; without a range the
         port still comes from the default 4096-32767 band. */
 
-#define RANGE_A_LO 30000
-#define RANGE_A_HI 30009
-#define RANGE_B_LO 30010
-#define RANGE_B_HI 30019
+/* Two adjacent 10-port ranges, picked at startup from ports that are free right now
+   (see find_free_band) instead of a fixed band that could collide with other tests
+   or services bound on the wildcard address. */
+#define RANGE_SIZE 10
+static uint16_t RANGE_A_LO, RANGE_A_HI, RANGE_B_LO, RANGE_B_HI;
 
 static struct sockaddr_in any4(uint16_t port) {
 	struct sockaddr_in sa;
@@ -66,6 +68,45 @@ static void release_port(int fds[2]) {
 	close(fds[1]);
 	fds[0] = -1;
 	fds[1] = -1;
+}
+
+/* True if both a TCP and a UDP socket can be bound to port on the wildcard address right now. */
+static bool port_is_free(uint16_t port) {
+	struct sockaddr_in sa = any4(port);
+	int tcp = socket(AF_INET, SOCK_STREAM, 0);
+	int udp = socket(AF_INET, SOCK_DGRAM, 0);
+	assert(tcp != -1 && udp != -1);
+
+	bool free_now = bind(tcp, (struct sockaddr *)&sa, sizeof sa) == 0 && bind(udp, (struct sockaddr *)&sa, sizeof sa) == 0;
+
+	close(tcp);
+	close(udp);
+	return free_now;
+}
+
+/* Find count consecutive free ports above the Linux ephemeral range (so a connection
+   made in the meantime cannot grab one) and return the first. Starts at a random
+   offset so parallel runs of this test do not all settle on the same band. */
+static uint16_t find_free_band(int count) {
+	const int lo = 61000;
+	const int hi = 65535 - count;
+	srand((unsigned)(time(NULL) ^ getpid()));
+	int start = lo + rand() % (hi - lo);
+
+	for(int attempt = 0; attempt < hi - lo; attempt++) {
+		int base = lo + (start - lo + attempt) % (hi - lo);
+		int i;
+
+		for(i = 0; i < count && port_is_free((uint16_t)(base + i)); i++) {
+		}
+
+		if(i == count) {
+			return (uint16_t)base;
+		}
+	}
+
+	assert(!"no free port band found");
+	return 0;
 }
 
 static bool tcp_connects(int port) {
@@ -132,8 +173,8 @@ static void test_port_inside_range(void) {
 static void test_range_exhaustion(void) {
 	printf("\n=== T11: last free port is found, full range fails without port 0 fallback ===\n");
 
-	int taken[RANGE_A_HI - RANGE_A_LO + 1][2];
-	int count = RANGE_A_HI - RANGE_A_LO + 1;
+	int taken[RANGE_SIZE][2];
+	int count = RANGE_SIZE;
 
 	/* Everything but the last port is busy. */
 	for(int i = 0; i < count - 1; i++) {
@@ -249,7 +290,7 @@ static void test_invalid_and_default(void) {
 	assert(!meshlink_open_params_set_port_range(params, 0, 2000));
 	assert(meshlink_errno == MESHLINK_EINVAL);
 
-	assert(!meshlink_open_params_set_port_range(NULL, 30000, 30009));
+	assert(!meshlink_open_params_set_port_range(NULL, RANGE_A_LO, RANGE_A_HI));
 	assert(meshlink_errno == MESHLINK_EINVAL);
 
 	/* Both zero is "no range" and a single-port range is fine. */
@@ -273,6 +314,12 @@ static void test_invalid_and_default(void) {
 
 int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
+
+	RANGE_A_LO = find_free_band(2 * RANGE_SIZE);
+	RANGE_A_HI = RANGE_A_LO + RANGE_SIZE - 1;
+	RANGE_B_LO = RANGE_A_HI + 1;
+	RANGE_B_HI = RANGE_B_LO + RANGE_SIZE - 1;
+	printf("port bands: A %d-%d, B %d-%d\n", RANGE_A_LO, RANGE_A_HI, RANGE_B_LO, RANGE_B_HI);
 
 	test_port_inside_range();
 	test_range_exhaustion();

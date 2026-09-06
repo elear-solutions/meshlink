@@ -3,7 +3,7 @@
 
 /*
     net_upgrade.h -- upgrade a canonical (relay) meta connection to a direct one
-    Copyright (C) 2014-2017 Guus Sliepen <guus@meshlink.io>
+    Copyright (C) 2026 Elear Solutions
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -39,9 +39,11 @@ void start_upgrade_probe(struct meshlink_handle *mesh, node_t *n);
 /* Start a probe now if upgrade_probe_eligible(). */
 void try_upgrade_probe(struct meshlink_handle *mesh, node_t *n);
 
-/* Called from terminate_connection() for a probe that died before it became
-   the node's connection. Applies the backoff. */
-void upgrade_probe_failed(struct meshlink_handle *mesh, node_t *n);
+/* Every way a probe can fail ends here: no address left to try, the socket
+   could not be opened, or the connection died before ack_h(). Clears the probe,
+   applies the backoff (unless a regular connection already made the node direct)
+   and reports DEVTOOL_UPGRADE_PROBE_FAILED, so tests and logs see one shape. */
+void upgrade_probe_failed(struct meshlink_handle *mesh, node_t *n, const char *reason);
 
 /* Called from ack_h() when a probe authenticated. Clears probe state and backoff. */
 void upgrade_probe_succeeded(struct meshlink_handle *mesh, connection_t *c);
@@ -49,12 +51,29 @@ void upgrade_probe_succeeded(struct meshlink_handle *mesh, connection_t *c);
 /* Periodic sweep: start at most one probe per tick for an eligible node. */
 void upgrade_probe_sweep(struct meshlink_handle *mesh);
 
+/* The responder of a probe withholds its ACK during the SPTPS handshake and sends
+   it from ack_h() once the probe is held as a spare, so the prober only closes its
+   old connection when we are ready to take over without a gap. */
+bool upgrade_defers_ack(const connection_t *c) __attribute__((__warn_unused_result__));
+
 /* Responder side. A probe that authenticated while we still have an active
-   connection with the node is held as a spare (upgrade_hold_spare) and takes
-   over the moment the old connection closes (upgrade_promote_spare), so the
-   node never drops out of the graph. */
+   connection with the node is held as a spare next to it and takes over the
+   moment the old connection closes, so the node never drops out of the graph.
+   At most one spare per node: a newer probe evicts the older one. */
 void upgrade_hold_spare(struct meshlink_handle *mesh, connection_t *c, node_t *n, const char *hisport, int devclass);
-connection_t *upgrade_find_spare(struct meshlink_handle *mesh, const node_t *n) __attribute__((__warn_unused_result__));
-void upgrade_promote_spare(struct meshlink_handle *mesh, connection_t *old, connection_t *spare);
+
+/* Close the spare held for n, if any. A caller that installs a new
+   n->connection itself (ack_h) must do this before it terminates the old one,
+   so that upgrade_connection_closing() cannot promote the spare underneath it. */
+void upgrade_drop_spare(struct meshlink_handle *mesh, node_t *n);
+
+/* The single hook terminate_connection() runs before it takes c down:
+   - a probe that never authenticated -> upgrade_probe_failed()
+   - a spare -> its prepared edge, which is not in the graph, is freed
+   - the node's connection while a spare is held -> the spare becomes
+     n->connection and its edge replaces the old one in one step
+   Promotion is skipped while the event loop is not running (meshlink_stop,
+   meshlink_close) and for blacklisted nodes: the spare is about to go too. */
+void upgrade_connection_closing(struct meshlink_handle *mesh, connection_t *c);
 
 #endif

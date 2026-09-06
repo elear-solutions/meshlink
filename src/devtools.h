@@ -84,6 +84,9 @@ bool devtool_export_json_all_edges_state(meshlink_handle_t *mesh, FILE *stream);
 /// The status of a node.
 typedef struct devtool_node_status devtool_node_status_t;
 
+/// Number of recently seen addresses MeshLink remembers per node (node_t.recent[]).
+#define DEVTOOL_MAX_RECENT 5
+
 /// The status of a node.
 struct devtool_node_status {
 	uint32_t status;
@@ -126,7 +129,7 @@ struct devtool_node_status {
 
 	// Recently seen direct addresses (node_t.recent[]), front first
 	size_t recent_count;                  /// Number of valid entries in recent
-	struct sockaddr_storage recent[5];    /// Copies of node_t.recent[]
+	struct sockaddr_storage recent[DEVTOOL_MAX_RECENT]; /// Copies of node_t.recent[]
 };
 
 /// Get the status of a node.
@@ -231,8 +234,10 @@ typedef enum {
 } devtool_upgrade_probe_stage_t;
 
 /// Debug function pointer variable for canonical -> direct upgrade probes
-/** Called from MeshLink's own thread with the mesh mutex held, once per probe
- *  start, success or failure, so tests can wait on the migration.
+/** Called with the mesh mutex held, once per probe start, success or failure, so
+ *  tests can wait on the migration. Usually this happens on MeshLink's own thread,
+ *  but a probe started from meshlink_hint_address() reports STARTED (or FAILED) on
+ *  the thread that called that API, so the hook must not assume either thread.
  *
  *  @param mesh  The mesh the probe belongs to.
  *  @param node  The node being probed.

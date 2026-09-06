@@ -35,6 +35,7 @@ typedef struct edge_t {
 
 	int weight;                             /* weight of this edge */
 	uint32_t session_id;                     /* the session_id of the from node */
+	uint32_t options;                       /* OPTION_* bits carried in ADD_EDGE; OPTION_INDIRECT: address is a relay's, not the node's */
 } edge_t;
 
 void init_edges(struct meshlink_handle *mesh);

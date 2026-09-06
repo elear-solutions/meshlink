@@ -26,15 +26,6 @@
 
 static struct sync_flag bar_reachable;
 
-static struct sockaddr_in ipv4(const char *ip, uint16_t port) {
-	struct sockaddr_in sa;
-	memset(&sa, 0, sizeof sa);
-	sa.sin_family = AF_INET;
-	sa.sin_port = htons(port);
-	assert(inet_pton(AF_INET, ip, &sa.sin_addr) == 1);
-	return sa;
-}
-
 static bool dest_is_sin(const struct sockaddr_storage *dest, const struct sockaddr_in *want) {
 	if(dest->ss_family != AF_INET) {
 		return false;

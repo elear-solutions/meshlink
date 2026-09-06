@@ -332,8 +332,8 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 		sockaddr_t sa;
 		sockaddr_t self_ext;
 
-		if(!host_port_to_sockaddr(ip, port, &sa)) {
-			logger(mesh, MESHLINK_DEBUG, "Not remembering REQ_EXTERNAL address of %s: not a numeric host and port", from->name);
+		if(!host_port_to_sockaddr(ip, port, &sa) || !address_connectable(&sa)) {
+			logger(mesh, MESHLINK_DEBUG, "Not remembering REQ_EXTERNAL address of %s: not a connectable numeric host and port", from->name);
 			return true;
 		}
 
@@ -342,12 +342,33 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 			return true;
 		}
 
-		/* A newly learned address goes to the front of recent[]; make sure the next probe tries it first. */
-		if(node_add_recent_address(mesh, from, &sa)) {
-			from->upgrade_recent_idx = 0;
+		/* Only the peer itself, over our connection with it, can vouch for the address.
+		   Anyone else may have forwarded (or forged) it: keep it as a last-resort
+		   candidate behind the addresses we already know, and do not probe it. */
+
+		if(from->connection != c) {
+			if(node_append_recent_address(mesh, from, &sa)) {
+				logger(mesh, MESHLINK_DEBUG, "Remembering forwarded REQ_EXTERNAL address of %s as a fallback", from->name);
+			}
+
+			return true;
 		}
 
-		try_upgrade_probe(mesh, from);
+		/* While we reach the peer through its canonical address this is exactly what we
+		   want to probe first. Once we are directly connected, the address that just
+		   authenticated (which ack_h() put in front) is proven and this one is not: keep
+		   it as a fallback instead of paying a connect timeout on it at every reconnect. */
+
+		if(c->status.via_canonical) {
+			if(node_add_recent_address(mesh, from, &sa)) {
+				from->upgrade_recent_idx = 0;
+			}
+
+			try_upgrade_probe(mesh, from);
+		} else {
+			node_append_recent_address(mesh, from, &sa);
+		}
+
 		return true;
 	}
 

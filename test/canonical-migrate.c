@@ -22,63 +22,22 @@
 /* Hitless migration of a meta connection from the canonical (relay) address to a
    direct one, driven by the upgrade probe.
 
-   T5: connect via relay, learn a direct address from REQ_EXTERNAL, migrate: the
-       node never goes unreachable, a channel keeps streaming, the relay saw one connect.
-   T6: the first direct address is a black hole: probes back off (5s, 10s) while the
-       relay connection stays up and the channel keeps streaming; a real address then wins.
-   T7: two nodes that both reach each other via relays end with one connection each
-       and no "Two outgoing connections" warning.
-   T8: the peer dies while migrated: the reconnect tries its direct port first, falls
-       back to the relay once the peer is back on a new port, then re-migrates. */
+   T5:  connect via relay, learn a direct address from REQ_EXTERNAL, migrate: the
+        node never goes unreachable, a channel keeps streaming, the relay saw one connect.
+   T6:  the first direct address is a black hole: probes back off (5s, 10s) while the
+        relay connection stays up and the channel keeps streaming; a real address then wins.
+   T7:  two nodes that both reach each other via relays end with one connection each
+        and no "Two outgoing connections" warning.
+   T8:  the peer dies while migrated: the reconnect tries its direct port first, falls
+        back to the relay once the peer is back on a new port, then re-migrates.
+   T14: a third node connected to the peer keeps seeing the migrating node as
+        reachable and ends up with exactly one edge pair between the two. */
 
 #define MSG_LEN 6
 
-/* --- log capture ------------------------------------------------------------ */
-
-static pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
-static char *captured_log;
-static size_t captured_len;
-
-static void capture_log_cb(meshlink_handle_t *mesh, meshlink_log_level_t level, const char *text) {
-	log_cb(mesh, level, text);
-
-	assert(pthread_mutex_lock(&log_mutex) == 0);
-	size_t add = strlen(text) + 32;
-	captured_log = realloc(captured_log, captured_len + add + 1);
-	assert(captured_log);
-	captured_len += snprintf(captured_log + captured_len, add + 1, "%s: %s\n", mesh ? mesh->name : "-", text);
-	assert(pthread_mutex_unlock(&log_mutex) == 0);
-}
-
-static size_t log_mark(void) {
-	assert(pthread_mutex_lock(&log_mutex) == 0);
-	size_t mark = captured_len;
-	assert(pthread_mutex_unlock(&log_mutex) == 0);
-	return mark;
-}
-
-/* Offset of the first occurrence of needle at or after from, or -1. */
-static long log_find(size_t from, const char *needle) {
-	assert(pthread_mutex_lock(&log_mutex) == 0);
-	long result = -1;
-
-	if(captured_log && from < captured_len) {
-		const char *hit = strstr(captured_log + from, needle);
-
-		if(hit) {
-			result = hit - captured_log;
-		}
-	}
-
-	assert(pthread_mutex_unlock(&log_mutex) == 0);
-	return result;
-}
-
-static bool log_contains(const char *needle) {
-	return log_find(0, needle) >= 0;
-}
-
 /* --- upgrade probe hook ----------------------------------------------------- */
+
+static size_t stream_bytes(void);
 
 struct probe_event {
 	time_t when;
@@ -87,6 +46,7 @@ struct probe_event {
 	char node[16];
 	bool canonical_still_up;    /* peer's meta connection active and via canonical at this event */
 	int backoff;                /* peer's upgrade_backoff right after this event */
+	size_t streamed;            /* bytes the channel stream had delivered at this event */
 };
 
 static pthread_mutex_t probe_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -109,6 +69,7 @@ static void upgrade_probe_hook(meshlink_handle_t *mesh, meshlink_node_t *node, d
 		snprintf(ev->node, sizeof ev->node, "%s", node->name);
 		ev->canonical_still_up = st.meta_connected && st.meta_via_canonical;
 		ev->backoff = st.upgrade_backoff;
+		ev->streamed = stream_bytes();
 	}
 
 	assert(pthread_mutex_unlock(&probe_mutex) == 0);
@@ -147,6 +108,22 @@ static int count_probe_events(devtool_upgrade_probe_stage_t stage) {
 	return count;
 }
 
+/* Bytes the stream had delivered when the (first) SUCCEEDED event was recorded. */
+static size_t streamed_at_success(void) {
+	size_t streamed = 0;
+	assert(pthread_mutex_lock(&probe_mutex) == 0);
+
+	for(int i = 0; i < nprobe_events; i++) {
+		if(probe_events[i].stage == DEVTOOL_UPGRADE_PROBE_SUCCEEDED) {
+			streamed = probe_events[i].streamed;
+			break;
+		}
+	}
+
+	assert(pthread_mutex_unlock(&probe_mutex) == 0);
+	return streamed;
+}
+
 /* --- node / meta status ----------------------------------------------------- */
 
 static pthread_mutex_t status_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -156,8 +133,6 @@ static devtool_node_status_t status_at_reachable;
 static const char *watched_peer;
 static int unreachable_count;
 static int hint_port_on_reachable;  /* T6: direct address to hint the moment the peer comes up, 0 = none */
-
-static void hint(meshlink_handle_t *mesh, meshlink_node_t *node, const char *ip, int port);
 
 static void status_cb(meshlink_handle_t *mesh, meshlink_node_t *node, bool reachable) {
 	if(strcmp(node->name, watched_peer)) {
@@ -179,7 +154,7 @@ static void status_cb(meshlink_handle_t *mesh, meshlink_node_t *node, bool reach
 	/* Runs inside ack_h(), before the key exchange: nothing has been learned over
 	   UDP yet, so a hinted address is the only direct address and is probed first. */
 	if(hint_port_on_reachable) {
-		hint(mesh, node, "127.0.0.1", hint_port_on_reachable);
+		hint_address(mesh, node, "127.0.0.1", hint_port_on_reachable);
 	}
 
 	devtool_get_node_status(mesh, node, &status_at_reachable);
@@ -232,6 +207,12 @@ static void meta_status_cb(meshlink_handle_t *mesh, meshlink_node_t *node, bool 
 	}
 
 	meta_counts[i].net += up ? 1 : -1;
+	assert(pthread_mutex_unlock(&status_mutex) == 0);
+}
+
+static void reset_meta_counts(void) {
+	assert(pthread_mutex_lock(&status_mutex) == 0);
+	nmeta_counts = 0;
 	assert(pthread_mutex_unlock(&status_mutex) == 0);
 }
 
@@ -356,57 +337,34 @@ static void stream_send(meshlink_handle_t *a, meshlink_channel_t *channel, size_
 	assert(!"channel send kept failing");
 }
 
+/* Keep streaming until the probe succeeds (or deadline seconds pass), then send
+   after_count more messages so the stream provably continues on the new connection.
+   Returns the total number of messages sent. */
+static size_t stream_across_migration(meshlink_handle_t *a, meshlink_channel_t *channel, size_t after_count, int deadline) {
+	time_t started = time(NULL);
+	size_t seq = 0;
+
+	while(!check_sync_flag(&probe_succeeded)) {
+		stream_send(a, channel, seq++);
+		usleep(5000);
+		assert(time(NULL) - started < deadline);
+	}
+
+	for(size_t i = 0; i < after_count; i++) {
+		stream_send(a, channel, seq++);
+	}
+
+	assert_after(stream_bytes() == seq * MSG_LEN, 15);
+	assert(stream_ok());
+	return seq;
+}
+
 /* --- helpers ---------------------------------------------------------------- */
 
-static struct sockaddr_in ipv4(const char *ip, uint16_t port) {
-	struct sockaddr_in sa;
-	memset(&sa, 0, sizeof sa);
-	sa.sin_family = AF_INET;
-	sa.sin_port = htons(port);
-	assert(inet_pton(AF_INET, ip, &sa.sin_addr) == 1);
-	return sa;
-}
-
-static int port_of(const struct sockaddr_storage *ss) {
-	if(ss->ss_family == AF_INET) {
-		return ntohs(((const struct sockaddr_in *)ss)->sin_port);
-	}
-
-	if(ss->ss_family == AF_INET6) {
-		return ntohs(((const struct sockaddr_in6 *)ss)->sin6_port);
-	}
-
-	return -1;
-}
-
-static void forget_addresses(meshlink_handle_t *mesh, meshlink_node_t *node) {
-	struct sockaddr_in unset;
-	memset(&unset, 0, sizeof unset);
-	unset.sin_family = AF_UNSPEC;
-	devtool_update_node_udp(mesh, node, (struct sockaddr *)&unset);
-}
-
-static void hint(meshlink_handle_t *mesh, meshlink_node_t *node, const char *ip, int port) {
-	struct sockaddr_in sa = ipv4(ip, (uint16_t)port);
-	meshlink_hint_address(mesh, node, (struct sockaddr *)&sa);
-}
-
-static void exchange(meshlink_handle_t *a, meshlink_handle_t *b) {
-	char *data = meshlink_export(a);
-	assert(data);
-	assert(meshlink_import(b, data));
-	free(data);
-
-	data = meshlink_export(b);
-	assert(data);
-	assert(meshlink_import(a, data));
-	free(data);
-}
-
-static void set_canonical_port(meshlink_handle_t *mesh, int port) {
+static void set_canonical_address(meshlink_handle_t *mesh, const char *host, int port) {
 	char port_str[16];
 	snprintf(port_str, sizeof port_str, "%d", port);
-	assert(meshlink_set_canonical_address(mesh, meshlink_get_self(mesh), "127.0.0.1", port_str));
+	assert(meshlink_set_canonical_address(mesh, meshlink_get_self(mesh), host, port_str));
 }
 
 struct pair {
@@ -422,8 +380,10 @@ struct pair {
 };
 
 /* a (PORTABLE) reaches b (STATIONARY) only through a relay standing in for the
-   canonical address. With b_external set, b tells a its direct address via REQ_EXTERNAL. */
-static void open_relayed_pair(struct pair *p, const char *prefix, bool b_external) {
+   canonical address. With b_external set, b tells a its direct address via REQ_EXTERNAL.
+   relay_host is the loopback address the relay listens on: 127.0.0.1 makes the relay
+   indistinguishable from b by IP, another 127/8 address makes it recognisable. */
+static void open_relayed_pair_via(struct pair *p, const char *prefix, bool b_external, const char *relay_host) {
 	memset(p, 0, sizeof *p);
 	snprintf(p->conf_a, sizeof p->conf_a, "%s_conf.1", prefix);
 	snprintf(p->conf_b, sizeof p->conf_b, "%s_conf.2", prefix);
@@ -440,14 +400,14 @@ static void open_relayed_pair(struct pair *p, const char *prefix, bool b_externa
 	p->b_port = meshlink_get_port(p->b);
 	assert(p->b_port > 0);
 
-	p->relay = start_tcp_relay("127.0.0.1", &p->relay_port, "127.0.0.1", p->b_port);
-	set_canonical_port(p->b, p->relay_port);
+	p->relay = start_tcp_relay(relay_host, &p->relay_port, "127.0.0.1", p->b_port);
+	set_canonical_address(p->b, relay_host, p->relay_port);
 
 	if(b_external) {
 		devtool_set_external_ip_address(p->b, meshlink_get_self(p->b), "127.0.0.1");
 	}
 
-	exchange(p->a, p->b);
+	exchange_meshlink_pair(p->a, p->b);
 
 	p->a_b = meshlink_get_node(p->a, "b");
 	p->b_a = meshlink_get_node(p->b, "a");
@@ -455,6 +415,10 @@ static void open_relayed_pair(struct pair *p, const char *prefix, bool b_externa
 	forget_addresses(p->a, p->a_b);
 
 	meshlink_set_channel_accept_cb(p->b, accept_cb);
+}
+
+static void open_relayed_pair(struct pair *p, const char *prefix, bool b_external) {
+	open_relayed_pair_via(p, prefix, b_external, "127.0.0.1");
 }
 
 static void close_relayed_pair(struct pair *p) {
@@ -503,18 +467,16 @@ static void test_migrate_from_req_external(void) {
 	assert_via_canonical_at_reachable(&p);
 	assert(tcp_relay_accept_count(p.relay) == 1);
 
-	/* Stream across the swap. The probe fires as soon as REQ_EXTERNAL arrives, so
-	   part of the stream goes through the relay and the rest directly. */
+	/* Stream across the swap. The probe fires as soon as REQ_EXTERNAL arrives, which
+	   can be before the channel is even open, so how much went through the relay is
+	   reported rather than asserted (T6 pins the overlap); what is asserted is that
+	   the stream carries on, complete and in order, on the direct connection. */
 	meshlink_channel_t *channel = open_stream(p.a, p.a_b);
+	size_t sent = stream_across_migration(p.a, channel, 500, 20);
+	size_t before = streamed_at_success();
 
-	for(size_t seq = 0; seq < 1000; seq++) {
-		stream_send(p.a, channel, seq);
-		usleep(500);
-	}
-
-	assert(wait_sync_flag(&probe_succeeded, 20));
-	assert_after(stream_bytes() == 1000 * MSG_LEN, 15);
-	assert(stream_ok());
+	assert(check_sync_flag(&probe_succeeded));
+	assert(before < sent * MSG_LEN);
 
 	assert_direct(p.a, p.a_b, p.b_port);
 	assert(get_unreachable_count() == 0);
@@ -541,7 +503,7 @@ static void test_migrate_from_req_external(void) {
 
 	devtool_free_node_status(&st);
 
-	printf("T5 ok: migrated to port %d, %zu bytes streamed in order, relay accepts %d\n", p.b_port, stream_bytes(), tcp_relay_accept_count(p.relay));
+	printf("T5 ok: migrated to port %d, %zu bytes streamed in order (%zu before the swap), relay accepts %d\n", p.b_port, sent * MSG_LEN, before, tcp_relay_accept_count(p.relay));
 
 	meshlink_channel_close(p.a, channel);
 	meshlink_set_node_status_cb(p.a, NULL);
@@ -575,18 +537,16 @@ static void test_black_hole_backoff(void) {
 	assert(wait_sync_flag(&peer_reachable, 15));
 	assert_via_canonical_at_reachable(&p);
 
+	/* The first probe hangs for its 5 s timeout, so the stream provably runs through
+	   the relay before the swap and, with the extra batch, after it. */
 	meshlink_channel_t *channel = open_stream(p.a, p.a_b);
-	size_t seq = 0;
+	size_t sent = stream_across_migration(p.a, channel, 500, 90);
+	size_t before = streamed_at_success();
 
-	while(!check_sync_flag(&probe_succeeded)) {
-		stream_send(p.a, channel, seq++);
-		usleep(50000);
-		assert(time(NULL) - hinted_at < 90);
-	}
-
-	assert_after(stream_bytes() == seq * MSG_LEN, 15);
-	assert(stream_ok());
-	assert(seq > 100);
+	assert(time(NULL) - hinted_at < 90);
+	assert(sent > 500 + 100);
+	assert(before > 0);
+	assert(before < sent * MSG_LEN);
 
 	assert(get_unreachable_count() == 0);
 	assert(tcp_relay_accept_count(p.relay) == 1);
@@ -636,7 +596,7 @@ static void test_black_hole_backoff(void) {
 	assert(succeeded);
 	assert(failures >= 1 && failures <= 2);
 
-	printf("T6 ok: %d black-hole failures with doubling backoff, relay stayed up, %zu bytes streamed, migrated to port %d\n", failures, stream_bytes(), p.b_port);
+	printf("T6 ok: %d black-hole failures with doubling backoff, relay stayed up, %zu bytes streamed (%zu before the swap), migrated to port %d\n", failures, sent * MSG_LEN, before, p.b_port);
 
 	meshlink_channel_close(p.a, channel);
 	meshlink_set_node_status_cb(p.a, NULL);
@@ -666,12 +626,12 @@ static void test_both_sides_migrate(void) {
 	int relay_a_port = 0, relay_b_port = 0;
 	tcp_relay_t *relay_a = start_tcp_relay("127.0.0.1", &relay_a_port, "127.0.0.1", a_port);
 	tcp_relay_t *relay_b = start_tcp_relay("127.0.0.1", &relay_b_port, "127.0.0.1", b_port);
-	set_canonical_port(a, relay_a_port);
-	set_canonical_port(b, relay_b_port);
+	set_canonical_address(a, "127.0.0.1", relay_a_port);
+	set_canonical_address(b, "127.0.0.1", relay_b_port);
 	devtool_set_external_ip_address(a, meshlink_get_self(a), "127.0.0.1");
 	devtool_set_external_ip_address(b, meshlink_get_self(b), "127.0.0.1");
 
-	exchange(a, b);
+	exchange_meshlink_pair(a, b);
 
 	meshlink_node_t *a_b = meshlink_get_node(a, "b");
 	meshlink_node_t *b_a = meshlink_get_node(b, "a");
@@ -680,9 +640,7 @@ static void test_both_sides_migrate(void) {
 	forget_addresses(b, b_a);
 
 	reset_probe_events();
-	assert(pthread_mutex_lock(&status_mutex) == 0);
-	nmeta_counts = 0;
-	assert(pthread_mutex_unlock(&status_mutex) == 0);
+	reset_meta_counts();
 	devtool_set_meta_status_cb(a, meta_status_cb);
 	devtool_set_meta_status_cb(b, meta_status_cb);
 	watch_peer(a, "b");
@@ -792,6 +750,195 @@ static void test_peer_restart_on_new_port(void) {
 	close_relayed_pair(&p);
 }
 
+/* --- T14 -------------------------------------------------------------------- */
+
+/* Number of bidirectional edges between x and y in mesh's view of the graph
+   (devtool_get_all_edges reports each such pair once, in pointer order). */
+static int count_edge_pairs(meshlink_handle_t *mesh, const char *x, const char *y) {
+	size_t nedges = 0;
+	devtool_edge_t *edges = devtool_get_all_edges(mesh, NULL, &nedges);
+	assert(edges || !nedges);
+	int count = 0;
+
+	for(size_t i = 0; i < nedges; i++) {
+		const char *from = edges[i].from->name;
+		const char *to = edges[i].to->name;
+
+		if((!strcmp(from, x) && !strcmp(to, y)) || (!strcmp(from, y) && !strcmp(to, x))) {
+			count++;
+		}
+	}
+
+	free(edges);
+	return count;
+}
+
+static void test_third_node_view(void) {
+	printf("\n=== T14: a third node keeps seeing the migrating node, ends with one edge pair ===\n");
+
+	struct pair p;
+	open_relayed_pair(&p, "canonical_migrate_t14", true);
+
+	/* c (STATIONARY) connects directly to b and, like b, never initiates towards a
+	   (PORTABLE). a would autoconnect to c though, which would give c a second path
+	   to a and hide any flap of the a<->b edge; a blacklists c so c only ever sees a
+	   through b. */
+	assert(meshlink_destroy("canonical_migrate_t14_conf.3"));
+	meshlink_handle_t *c = meshlink_open("canonical_migrate_t14_conf.3", "c", "canonical_migrate_t14", DEV_CLASS_STATIONARY);
+	assert(c);
+	meshlink_enable_discovery(c, false);
+
+	exchange_meshlink_pair(p.a, c);
+	exchange_meshlink_pair(p.b, c);
+
+	meshlink_node_t *a_c = meshlink_get_node(p.a, "c");
+	meshlink_node_t *c_a = meshlink_get_node(c, "a");
+	meshlink_node_t *c_b = meshlink_get_node(c, "b");
+	assert(a_c && c_a && c_b);
+	assert(meshlink_blacklist(p.a, a_c));
+	forget_addresses(c, c_b);
+	hint_address(c, c_b, "127.0.0.1", p.b_port);
+
+	reset_probe_events();
+	reset_meta_counts();
+	devtool_set_meta_status_cb(p.b, meta_status_cb);
+	watch_peer(c, "a");
+
+	assert(meshlink_start(p.b));
+	assert(meshlink_start(c));
+	assert_after(count_edge_pairs(c, "b", "c") == 1, 15);
+
+	assert(meshlink_start(p.a));
+	assert(wait_sync_flag(&peer_reachable, 15));
+	devtool_free_node_status(&status_at_reachable);
+	assert_after(count_edge_pairs(c, "a", "b") == 1, 5);
+
+	assert(wait_sync_flag(&probe_succeeded, 20));
+	assert_direct(p.a, p.a_b, p.b_port);
+
+	/* Let the ADD_EDGE that replaced a's edge reach c, then check its view. */
+	sleep(3);
+
+	assert(get_unreachable_count() == 0);
+	assert(meshlink_get_node_reachability(c, c_a, NULL, NULL));
+	assert(count_edge_pairs(c, "a", "b") == 1);
+	assert(count_edge_pairs(c, "b", "c") == 1);
+	assert(count_edge_pairs(c, "a", "c") == 0);
+
+	/* Exactly those two pairs, and nothing in c's graph points at the relay. */
+	size_t nedges = 0;
+	devtool_edge_t *edges = devtool_get_all_edges(c, NULL, &nedges);
+	assert(edges && nedges == 2);
+
+	for(size_t i = 0; i < nedges; i++) {
+		assert(port_of(&edges[i].address) != p.relay_port);
+	}
+
+	free(edges);
+
+	/* b itself has exactly one live connection with a. */
+	assert(meta_net_count("b", "a") == 1);
+	assert(tcp_relay_accept_count(p.relay) == 1);
+
+	printf("T14 ok: c saw a reachable throughout, %zu edge pairs, one of them a<->b\n", nedges);
+
+	meshlink_set_node_status_cb(c, NULL);
+	devtool_set_meta_status_cb(p.b, NULL);
+	meshlink_stop(c);
+	meshlink_close(c);
+	assert(meshlink_destroy("canonical_migrate_t14_conf.3"));
+	close_relayed_pair(&p);
+}
+
+/* True if this host lets us bind a second loopback address (Linux: all of 127/8). */
+static bool loopback_alias_available(const char *ip) {
+	struct sockaddr_in sa = ipv4(ip, 0);
+	int fd = socket(AF_INET, SOCK_STREAM, 0);
+	assert(fd != -1);
+	bool ok = bind(fd, (struct sockaddr *)&sa, sizeof sa) == 0;
+	close(fd);
+	return ok;
+}
+
+/* T15: the relay edge is marked OPTION_INDIRECT, so a third node that learns b only
+   through a's edge does not seed the relay's address into its recent[] for b.
+
+   The relay listens on 127.0.0.2 here: with everything on 127.0.0.1 the edge address
+   (relay IP + b's port) is b's real address and the leak would be invisible. d connects
+   to a only and blacklists b, so the sole way an address for b can reach d's recent[]
+   is graph seeding from a's a->b edge. */
+static void test_third_node_does_not_seed_relay(void) {
+	printf("\n=== T15: third node does not seed the relay address from an indirect edge ===\n");
+
+	const char *relay_ip = "127.0.0.2";
+
+	if(!loopback_alias_available(relay_ip)) {
+		printf("T15 skipped: cannot bind %s on this host\n", relay_ip);
+		return;
+	}
+
+	struct pair p;
+	open_relayed_pair_via(&p, "canonical_migrate_t15", false, relay_ip);
+
+	assert(meshlink_destroy("canonical_migrate_t15_conf.3"));
+	meshlink_handle_t *d = meshlink_open("canonical_migrate_t15_conf.3", "d", "canonical_migrate_t15", DEV_CLASS_PORTABLE);
+	assert(d);
+	meshlink_enable_discovery(d, false);
+
+	exchange_meshlink_pair(p.a, d);
+	exchange_meshlink_pair(p.b, d);
+
+	meshlink_node_t *d_a = meshlink_get_node(d, "a");
+	meshlink_node_t *d_b = meshlink_get_node(d, "b");
+	assert(d_a && d_b);
+	assert(meshlink_blacklist(d, d_b));
+	forget_addresses(d, d_a);
+	forget_addresses(d, d_b);
+
+	/* d is attached to a before b comes up, so d hears a's relay edge the moment a
+	   authenticates with b, well before a's UDP probes can learn b's real address and
+	   the upgrade replaces the edge with a direct one. */
+	hint_address(d, d_a, "127.0.0.1", meshlink_get_port(p.a));
+	assert(meshlink_start(p.a));
+	assert(meshlink_start(d));
+	assert_after(meshlink_get_node_reachability(d, d_a, NULL, NULL), 15);
+
+	size_t mark = log_mark();
+	assert(meshlink_start(p.b));
+	assert_after(count_edge_pairs(d, "a", "b") == 1, 30);
+
+	/* d received a's edge to b with the relay's address and OPTION_INDIRECT: the ADD_EDGE
+	   body reads "<from> <devclass> <submesh> <to> <address> <port> <devclass> <submesh>
+	   <options> ..." with a PORTABLE (2), b STATIONARY (1) and options 5 =
+	   OPTION_INDIRECT | OPTION_PMTU_DISCOVERY. */
+	char needle[128];
+	snprintf(needle, sizeof needle, " a 2 . b %s %d 1 . 5 ", relay_ip, p.b_port);
+	assert(log_find(mark, needle) >= 0);
+
+	devtool_node_status_t st;
+	devtool_get_node_status(d, d_b, &st);
+
+	for(size_t i = 0; i < st.recent_count; i++) {
+		char ip[INET6_ADDRSTRLEN] = "?";
+		const struct sockaddr_in *sin = (const struct sockaddr_in *)&st.recent[i];
+
+		if(sin->sin_family == AF_INET) {
+			inet_ntop(AF_INET, &sin->sin_addr, ip, sizeof ip);
+		}
+
+		printf("d recent[%zu] for b: %s port %d\n", i, ip, port_of(&st.recent[i]));
+		assert(!addr_is(&st.recent[i], relay_ip, p.b_port));
+	}
+
+	printf("T15 ok: d reaches b through a's indirect edge, %zu recent[] entries for b, none the relay's\n", st.recent_count);
+	devtool_free_node_status(&st);
+
+	meshlink_stop(d);
+	meshlink_close(d);
+	assert(meshlink_destroy("canonical_migrate_t15_conf.3"));
+	close_relayed_pair(&p);
+}
+
 int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, capture_log_cb);
 	devtool_upgrade_probe = upgrade_probe_hook;
@@ -800,7 +947,9 @@ int main(void) {
 	test_black_hole_backoff();
 	test_both_sides_migrate();
 	test_peer_restart_on_new_port();
+	test_third_node_view();
+	test_third_node_does_not_seed_relay();
 
-	free(captured_log);
+	free_captured_log();
 	return 0;
 }

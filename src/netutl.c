@@ -286,8 +286,34 @@ bool udp_address_bound(const sockaddr_t *sa) {
 	return sa && (sa->sa.sa_family == AF_INET || sa->sa.sa_family == AF_INET6);
 }
 
-bool udp_address_usable(const sockaddr_t *sa) {
+/* A peer-announced address we could at least try to open a socket to: a real
+   IPv4/IPv6 address that is neither unspecified (0.0.0.0, ::) nor multicast. */
+bool address_connectable(const sockaddr_t *sa) {
 	if(!udp_address_bound(sa)) {
+		return false;
+	}
+
+	if(sa->sa.sa_family == AF_INET) {
+		const uint32_t a = ntohl(sa->in.sin_addr.s_addr);
+
+		if(a == INADDR_ANY || IN_MULTICAST(a)) {
+			return false;
+		}
+	}
+
+	if(sa->sa.sa_family == AF_INET6) {
+		if(IN6_IS_ADDR_UNSPECIFIED(&sa->in6.sin6_addr) || IN6_IS_ADDR_MULTICAST(&sa->in6.sin6_addr)) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+/* address_connectable() and not in a private range, so a UDP probe to it
+   has a chance of leaving the local network. */
+bool udp_address_usable(const sockaddr_t *sa) {
+	if(!address_connectable(sa)) {
 		return false;
 	}
 

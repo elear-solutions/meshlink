@@ -106,6 +106,9 @@ void setup_outgoing_connection(struct meshlink_handle *mesh, struct outgoing_t *
 void close_network_connections(struct meshlink_handle *mesh);
 void main_loop(struct meshlink_handle *mesh);
 void terminate_connection(struct meshlink_handle *mesh, struct connection_t *, bool);
+struct edge_t *new_connection_edge(struct meshlink_handle *mesh, struct connection_t *, struct node_t *, const char *hisport, int devclass) __attribute__((__warn_unused_result__));
+void install_node_connection(struct meshlink_handle *mesh, struct node_t *, struct connection_t *);
+void add_connection_edge(struct meshlink_handle *mesh, struct connection_t *);
 bool node_read_public_key(struct meshlink_handle *mesh, struct node_t *) __attribute__((__warn_unused_result__));
 bool node_read_from_config(struct meshlink_handle *mesh, struct node_t *, const config_t *config) __attribute__((__warn_unused_result__));
 bool read_ecdsa_public_key(struct meshlink_handle *mesh, struct connection_t *) __attribute__((__warn_unused_result__));

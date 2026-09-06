@@ -24,6 +24,7 @@
 #include "meshlink_internal.h"
 #include "meta.h"
 #include "net.h"
+#include "net_upgrade.h"
 #include "protocol.h"
 #include "utils.h"
 #include "xalloc.h"
@@ -97,10 +98,8 @@ bool receive_meta_sptps(void *handle, uint8_t type, const void *data, uint16_t l
 
 	if(type == SPTPS_HANDSHAKE) {
 		if(c->allow_request == ACK) {
-			/* The responder of an upgrade probe ACKs from ack_h(), once the probe is held
-			   as a spare, so that the prober only closes its old connection when we are
-			   ready to take over without a gap. */
-			if((c->flags & PROTOCOL_UPGRADE) && !c->status.initiator) {
+			/* The responder of an upgrade probe ACKs from ack_h() instead: see upgrade_defers_ack(). */
+			if(upgrade_defers_ack(c)) {
 				return true;
 			}
 
