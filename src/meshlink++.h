@@ -966,6 +966,18 @@ public:
 		meshlink_set_node_channel_timeout(handle, node, timeout);
 	}
 
+	/// Set the connection timeout used for a single channel.
+	/** This sets the timeout after which this channel will be reported as closed.
+	 *  A positive timeout applies to both send-unresponsive detection and idle-RX close.
+	 *  A timeout of 0 clears any per-channel setting so the channel inherits the node default.
+	 *
+	 *  @param channel      The channel to set the timeout for.
+	 *  @param timeout      The timeout in seconds. Must be >= 0.
+	 */
+	void set_channel_timeout(channel *channel, int timeout) {
+		meshlink_set_channel_timeout(handle, channel, timeout);
+	}
+
 	/// Open a reliable stream channel to another node.
 	/** This function is called whenever a remote node wants to open a channel to the local node.
 	 *  The application then has to decide whether to accept or reject this channel.

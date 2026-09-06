@@ -10,6 +10,7 @@ TESTS = \
 	channels-buffer-storage \
 	channels-cornercases \
 	channels-failure \
+	channels-timeout \
 	channels-fork \
 	channels-no-partial \
 	channels-udp \
@@ -61,6 +62,7 @@ check_PROGRAMS = \
 	channels-buffer-storage \
 	channels-cornercases \
 	channels-failure \
+	channels-timeout \
 	channels-fork \
 	channels-no-partial \
 	channels-udp \
@@ -126,6 +128,9 @@ channels_no_partial_LDADD = $(top_builddir)/src/libmeshlink.la
 
 channels_failure_SOURCES = channels-failure.c utils.c utils.h
 channels_failure_LDADD = $(top_builddir)/src/libmeshlink.la
+
+channels_timeout_SOURCES = channels-timeout.c utils.c utils.h
+channels_timeout_LDADD = $(top_builddir)/src/libmeshlink.la
 
 channels_fork_SOURCES = channels-fork.c utils.c utils.h
 channels_fork_LDADD = $(top_builddir)/src/libmeshlink.la

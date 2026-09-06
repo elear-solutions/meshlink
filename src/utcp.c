@@ -156,11 +156,27 @@ static void debug_cwnd(struct utcp_connection *c) {
 #define debug_cwnd(...) do {} while(0)
 #endif
 
+static void touch_last_rx(struct utcp_connection *c);
+
+static bool idle_rx_state(const struct utcp_connection *c) {
+	switch(c->state) {
+	case ESTABLISHED:
+	case FIN_WAIT_1:
+	case FIN_WAIT_2:
+	case CLOSE_WAIT:
+		return true;
+
+	default:
+		return false;
+	}
+}
+
 static void set_state(struct utcp_connection *c, enum state state) {
 	c->state = state;
 
 	if(state == ESTABLISHED) {
 		timespec_clear(&c->conn_timeout);
+		touch_last_rx(c);
 	}
 
 	debug(c, "state %s\n", strstate[state]);
@@ -184,6 +200,20 @@ static bool fin_wanted(struct utcp_connection *c, uint32_t seq) {
 
 static bool is_reliable(struct utcp_connection *c) {
 	return c->flags & UTCP_RELIABLE;
+}
+
+static int effective_timeout(const struct utcp_connection *c) {
+	return c->timeout > 0 ? c->timeout : c->utcp->timeout;
+}
+
+static void touch_last_rx(struct utcp_connection *c) {
+	if(c->timeout > 0 && is_reliable(c)) {
+		clock_gettime(UTCP_CLOCK, &c->last_rx);
+	}
+}
+
+static bool idle_rx_armed(struct utcp_connection *c) {
+	return c->timeout > 0 && is_reliable(c) && timespec_isset(&c->last_rx) && idle_rx_state(c);
 }
 
 static int32_t seqdiff(uint32_t a, uint32_t b) {
@@ -731,7 +761,7 @@ struct utcp_connection *utcp_connect_ex(struct utcp *utcp, uint16_t dst, utcp_re
 	utcp->send(utcp, &pkt, sizeof(pkt));
 
 	clock_gettime(UTCP_CLOCK, &c->conn_timeout);
-	c->conn_timeout.tv_sec += utcp->timeout;
+	c->conn_timeout.tv_sec += effective_timeout(c);
 
 	start_retransmit_timer(c);
 
@@ -930,7 +960,7 @@ ssize_t utcp_send(struct utcp_connection *c, const void *data, size_t len) {
 
 	if(is_reliable(c) && !timespec_isset(&c->conn_timeout)) {
 		clock_gettime(UTCP_CLOCK, &c->conn_timeout);
-		c->conn_timeout.tv_sec += c->utcp->timeout;
+		c->conn_timeout.tv_sec += effective_timeout(c);
 	}
 
 	return len;
@@ -1744,7 +1774,7 @@ synack:
 		case CLOSING:
 			if(c->snd.una == c->snd.last) {
 				clock_gettime(UTCP_CLOCK, &c->conn_timeout);
-				c->conn_timeout.tv_sec += utcp->timeout;
+				c->conn_timeout.tv_sec += effective_timeout(c);
 				set_state(c, TIME_WAIT);
 			}
 
@@ -1798,11 +1828,14 @@ synack:
 		} else if(is_reliable(c)) {
 			start_retransmit_timer(c);
 			clock_gettime(UTCP_CLOCK, &c->conn_timeout);
-			c->conn_timeout.tv_sec += utcp->timeout;
+			c->conn_timeout.tv_sec += effective_timeout(c);
 		}
 	}
 
 skip_ack:
+	// Header accepted (data or ACK-only). Dropped / ignored RST+ACK / bad ACK never reach here.
+	touch_last_rx(c);
+
 	// 5. Process SYN stuff
 
 	if(hdr.ctl & SYN) {
@@ -1930,7 +1963,7 @@ skip_ack:
 
 		case FIN_WAIT_2:
 			clock_gettime(UTCP_CLOCK, &c->conn_timeout);
-			c->conn_timeout.tv_sec += utcp->timeout;
+			c->conn_timeout.tv_sec += effective_timeout(c);
 			set_state(c, TIME_WAIT);
 			break;
 
@@ -2177,6 +2210,21 @@ int utcp_abort(struct utcp_connection *c) {
 	return 0;
 }
 
+static void close_timed_out(struct utcp_connection *c) {
+	errno = ETIMEDOUT;
+	c->state = CLOSED;
+	buffer_clear(&c->sndbuf);
+	buffer_clear(&c->rcvbuf);
+
+	if(c->recv) {
+		c->recv(c, NULL, 0);
+	}
+
+	if(c->poll && !c->reapable) {
+		c->poll(c, 0);
+	}
+}
+
 /* Handle timeouts.
  * One call to this function will loop through all connections,
  * checking if something needs to be resent or not.
@@ -2207,20 +2255,22 @@ struct timespec utcp_timeout(struct utcp *utcp) {
 		}
 
 		if(timespec_isset(&c->conn_timeout) && timespec_lt(&c->conn_timeout, &now)) {
-			errno = ETIMEDOUT;
-			c->state = CLOSED;
-			buffer_clear(&c->sndbuf);
-			buffer_clear(&c->rcvbuf);
-
-			if(c->recv) {
-				c->recv(c, NULL, 0);
-			}
-
-			if(c->poll && !c->reapable) {
-				c->poll(c, 0);
-			}
-
+			close_timed_out(c);
 			continue;
+		}
+
+		if(idle_rx_armed(c)) {
+			struct timespec idle_deadline = c->last_rx;
+			idle_deadline.tv_sec += c->timeout;
+
+			if(timespec_lt(&idle_deadline, &now)) {
+				close_timed_out(c);
+				continue;
+			}
+
+			if(timespec_lt(&idle_deadline, &next)) {
+				next = idle_deadline;
+			}
 		}
 
 		if(timespec_isset(&c->rtrx_timeout) && timespec_lt(&c->rtrx_timeout, &now)) {
@@ -2371,13 +2421,9 @@ void utcp_reset_timers(struct utcp *utcp) {
 		return;
 	}
 
-	struct timespec now, then;
+	struct timespec now;
 
 	clock_gettime(UTCP_CLOCK, &now);
-
-	then = now;
-
-	then.tv_sec += utcp->timeout;
 
 	for(int i = 0; i < utcp->nconnections; i++) {
 		struct utcp_connection *c = utcp->connections[i];
@@ -2391,7 +2437,8 @@ void utcp_reset_timers(struct utcp *utcp) {
 		}
 
 		if(timespec_isset(&c->conn_timeout)) {
-			c->conn_timeout = then;
+			c->conn_timeout = now;
+			c->conn_timeout.tv_sec += effective_timeout(c);
 		}
 
 		c->rtt_start.tv_sec = 0;
@@ -2475,6 +2522,29 @@ bool utcp_get_nodelay(struct utcp_connection *c) {
 	return c ? c->nodelay : false;
 }
 
+void utcp_set_timeout(struct utcp_connection *c, int seconds) {
+	if(!c) {
+		return;
+	}
+
+	if(seconds <= 0) {
+		c->timeout = 0;
+		timespec_clear(&c->last_rx);
+		return;
+	}
+
+	c->timeout = seconds;
+
+	if(!is_reliable(c)) {
+		timespec_clear(&c->last_rx);
+		return;
+	}
+
+	if(idle_rx_state(c)) {
+		clock_gettime(UTCP_CLOCK, &c->last_rx);
+	}
+}
+
 void utcp_set_nodelay(struct utcp_connection *c, bool nodelay) {
 	if(c) {
 		c->nodelay = nodelay;
@@ -2528,7 +2598,7 @@ void utcp_expect_data(struct utcp_connection *c, bool expect) {
 		// If we expect data, start the connection timer.
 		if(!timespec_isset(&c->conn_timeout)) {
 			clock_gettime(UTCP_CLOCK, &c->conn_timeout);
-			c->conn_timeout.tv_sec += c->utcp->timeout;
+			c->conn_timeout.tv_sec += effective_timeout(c);
 		}
 	} else {
 		// If we want to cancel expecting data, only clear the timer when there is no unACKed data.

@@ -1765,6 +1765,24 @@ size_t meshlink_channel_get_mss(struct meshlink_handle *mesh, struct meshlink_ch
  */
 void meshlink_set_node_channel_timeout(struct meshlink_handle *mesh, struct meshlink_node *node, int timeout);
 
+/// Set the connection timeout used for a single channel.
+/** This sets the timeout after which this channel will be reported as closed.
+ *  A positive timeout applies to both send-unresponsive detection and idle-RX close
+ *  (no inbound UTCP segments, including ACK-only, for that many seconds).
+ *  A timeout of 0 clears any per-channel setting so the channel inherits the node
+ *  default for unresponsive detection and disables idle-RX close.
+ *
+ *  Changing the node default with meshlink_set_node_channel_timeout() does not
+ *  rewrite a channel that already has a positive per-channel timeout.
+ *
+ *  \memberof meshlink_channel
+ *  @param mesh         A handle which represents an instance of MeshLink.
+ *  @param channel      A handle for the channel.
+ *  @param timeout      The timeout in seconds. Must be >= 0. A negative value is
+ *                      rejected with MESHLINK_EINVAL and leaves the channel unchanged.
+ */
+void meshlink_set_channel_timeout(struct meshlink_handle *mesh, struct meshlink_channel *channel, int timeout);
+
 /// Hint that a hostname may be found at an address
 /** This function indicates to meshlink that the given hostname is likely found
  *  at the given IP address and port.

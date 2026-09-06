@@ -65,6 +65,7 @@ test/channels-aio-fd
 test/channels-buffer-storage
 test/channels-cornercases
 test/channels-failure
+test/channels-timeout
 test/channels-fork
 test/channels-no-partial
 test/channels-udp
