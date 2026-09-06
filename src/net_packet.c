@@ -710,16 +710,16 @@ bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 		choose_udp_address(mesh, to, &sa, &sock, &sa_buf);
 	}
 
+	if(!sa || sock < 0 || sock >= mesh->listen_sockets) {
+		return true;
+	}
+
 	if(to->mtu_probe_request_len && mesh->log_level <= MESHLINK_DEBUG) {
 		char *address, *port;
 		sockaddr2str(sa, &address, &port);
 		logger(mesh, MESHLINK_DEBUG, "Sending MTU probe length %d to %s at %s port %s", to->mtu_probe_request_len, to->name, address, port);
 		free(address);
 		free(port);
-	}
-
-	if(!sa || sock < 0 || sock >= mesh->listen_sockets) {
-		return true;
 	}
 
 	if(sendto(mesh->listen_socket[sock].udp.fd, data, len, 0, &sa->sa, SALEN(sa->sa)) < 0 && !sockwouldblock(sockerrno)) {
