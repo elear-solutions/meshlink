@@ -465,6 +465,18 @@ bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 			return false;
 		}
 
+		/* If dest has no P2P UDP but the nexthop does, carry REQ_SPTPS on that UDP session. */
+		if(type < SPTPS_HANDSHAKE && type != PKT_PROBE && !to->status.udp_confirmed
+		                && to->nexthop != to && to->nexthop->status.udp_confirmed && to->nexthop->minmtu > 0) {
+			char req[len * 4 / 3 + 128];
+			int n = snprintf(req, sizeof(req), "%d %s %s %d %s", REQ_KEY, mesh->self->name, to->name, REQ_SPTPS, buf);
+
+			if(n > 0 && (size_t)n + 1 + SPTPS_DATAGRAM_OVERHEAD <= to->nexthop->minmtu) {
+				logger(mesh, MESHLINK_INFO, "Sending REQ_SPTPS via UDP to %s for %s", to->nexthop->name, to->name);
+				return sptps_send_record(&to->nexthop->sptps, PKT_REQ_SPTPS, req, (uint16_t)(n + 1));
+			}
+		}
+
 		/* If no valid key is known yet, send the packets using ANS_KEY requests,
 		   to ensure we get to learn the reflexive UDP address. */
 		if(!to->status.validkey) {
@@ -531,6 +543,16 @@ bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t
 	}
 
 	vpn_packet_t inpkt;
+
+	if(type == PKT_REQ_SPTPS) {
+		logger(mesh, MESHLINK_INFO, "Got REQ_SPTPS via UDP from %s", from->name);
+
+		if(!from->connection || !data || !len) {
+			return true;
+		}
+
+		return req_key_h(mesh, from->connection, data);
+	}
 
 	if(type == PKT_PROBE) {
 		inpkt.len = len;

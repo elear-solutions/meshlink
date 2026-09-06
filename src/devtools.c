@@ -481,3 +481,27 @@ bool devtool_choose_udp_address(meshlink_handle_t *mesh, meshlink_node_t *node, 
 	pthread_mutex_unlock(&mesh->mutex);
 	return true;
 }
+
+void devtool_force_relay_path(meshlink_handle_t *mesh, meshlink_node_t *dest, meshlink_node_t *nexthop) {
+	if(!mesh || !dest || !nexthop) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	node_t *d = (node_t *)dest;
+	node_t *h = (node_t *)nexthop;
+	d->nexthop = h;
+	d->status.udp_confirmed = false;
+	d->minmtu = 0;
+	h->status.udp_confirmed = true;
+
+	if(!h->minmtu) {
+		h->minmtu = 1400;
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+}

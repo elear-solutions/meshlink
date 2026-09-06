@@ -252,4 +252,7 @@ void devtool_update_node_udp(struct meshlink_handle *mesh, struct meshlink_node 
 /// Return the UDP destination choose_udp_address() would use right now.
 bool devtool_choose_udp_address(struct meshlink_handle *mesh, struct meshlink_node *node, struct sockaddr_storage *addr, int *sock);
 
+/// Pretend dest is only reachable via nexthop UDP (for relay tests).
+void devtool_force_relay_path(struct meshlink_handle *mesh, struct meshlink_node *dest, struct meshlink_node *nexthop);
+
 #endif

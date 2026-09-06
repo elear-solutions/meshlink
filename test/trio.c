@@ -19,6 +19,15 @@
 static struct sync_flag received;
 static struct sync_flag bar_learned_baz;
 static struct sync_flag baz_learned_bar;
+static bool saw_udp_req_sptps;
+
+static void trio_log_cb(meshlink_handle_t *mesh, meshlink_log_level_t level, const char *text) {
+	if(text && strstr(text, "REQ_SPTPS via UDP")) {
+		saw_udp_req_sptps = true;
+	}
+
+	log_cb(mesh, level, text);
+}
 
 static void receive_cb(meshlink_handle_t *mesh, meshlink_node_t *source, const void *data, size_t len) {
 	(void)mesh;
@@ -52,7 +61,7 @@ int main(void) {
 	init_sync_flag(&bar_learned_baz);
 	init_sync_flag(&baz_learned_bar);
 
-	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
+	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, trio_log_cb);
 
 	// Create three instances.
 
@@ -118,6 +127,17 @@ int main(void) {
 	}
 
 	assert(wait_sync_flag(&received, 15));
+
+	// Dest has no UDP, nexthop does: REQ_SPTPS should go UDP to foo
+	saw_udp_req_sptps = false;
+	devtool_force_relay_path(mesh[2], meshlink_get_node(mesh[2], name[1]), meshlink_get_node(mesh[2], name[0]));
+	assert(meshlink_send(mesh[2], meshlink_get_node(mesh[2], name[1]), "Hello", 5));
+
+	for(int i = 0; i < 20 && !saw_udp_req_sptps; i++) {
+		usleep(50000);
+	}
+
+	assert(saw_udp_req_sptps);
 
 	// Check that the second and third node have autoconnected to each other
 
