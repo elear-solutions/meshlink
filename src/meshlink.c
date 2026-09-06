@@ -39,6 +39,7 @@
 #include "ed25519/sha512.h"
 #include "discovery.h"
 #include "devtools.h"
+#include "external_address_http.h"
 #include "graph.h"
 
 #ifndef MSG_NOSIGNAL
@@ -261,8 +262,9 @@ char *meshlink_get_external_address_for_family(meshlink_handle_t *mesh, int fami
 
 	logger(mesh, MESHLINK_DEBUG, "Trying to discover externally visible hostname...\n");
 	struct addrinfo *ai = adns_blocking_request(mesh, xstrdup(host), xstrdup(port ? port : "80"), SOCK_STREAM, 5);
-	char line[256];
+	char line[1024];
 	char *hostname = NULL;
+	const char *path = (end && *end) ? end : "/";
 
 	for(struct addrinfo *aip = ai; aip; aip = aip->ai_next) {
 		if(family != AF_UNSPEC && aip->ai_family != family) {
@@ -286,23 +288,18 @@ char *meshlink_get_external_address_for_family(meshlink_handle_t *mesh, int fami
 		}
 
 		if(s >= 0) {
-			send(s, "GET ", 4, 0);
-			send(s, url, strlen(url), 0);
-			send(s, " HTTP/1.0\r\n\r\n", 13, 0);
+			char req[512];
+			int reqlen = external_address_format_http_request(req, sizeof(req), path, host);
+
+			if(reqlen > 0 && reqlen < (int)sizeof(req)) {
+				send(s, req, (size_t)reqlen, 0);
+			}
+
 			int len = recv(s, line, sizeof(line) - 1, MSG_WAITALL);
 
 			if(len > 0) {
 				line[len] = 0;
-
-				if(line[len - 1] == '\n') {
-					line[--len] = 0;
-				}
-
-				char *p = strrchr(line, '\n');
-
-				if(p && p[1]) {
-					hostname = xstrdup(p + 1);
-				}
+				hostname = external_address_hostname_from_http(line);
 			}
 
 			closesocket(s);
