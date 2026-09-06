@@ -6,12 +6,266 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <pthread.h>
 #include <assert.h>
 #include <errno.h>
 #include <time.h>
+#include <unistd.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include "utils.h"
+
+#define RELAY_MAX_CONNS 64
+
+struct tcp_relay {
+	int listen_fd;
+	int listen_port;
+	char target_host[64];
+	int target_port;
+	pthread_t thread;
+	pthread_mutex_t mutex;
+	int accept_count;
+	bool stopping;
+	size_t nconns;
+	struct relay_conn *conns[RELAY_MAX_CONNS];
+};
+
+struct relay_conn {
+	tcp_relay_t *relay;
+	int client_fd;
+	int target_fd;
+	pthread_t thread;
+	bool done;
+};
+
+static int listen_on(const char *host, int *port_inout) {
+	struct sockaddr_in sa;
+	memset(&sa, 0, sizeof sa);
+	sa.sin_family = AF_INET;
+	sa.sin_port = htons(*port_inout);
+	assert(inet_pton(AF_INET, host, &sa.sin_addr) == 1);
+
+	int fd = socket(AF_INET, SOCK_STREAM, 0);
+	assert(fd != -1);
+
+	int one = 1;
+	assert(setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one) == 0);
+	assert(bind(fd, (struct sockaddr *)&sa, sizeof sa) == 0);
+	assert(listen(fd, 16) == 0);
+
+	socklen_t salen = sizeof sa;
+	assert(getsockname(fd, (struct sockaddr *)&sa, &salen) == 0);
+	*port_inout = ntohs(sa.sin_port);
+
+	return fd;
+}
+
+static int connect_to(const char *host, int port) {
+	struct sockaddr_in sa;
+	memset(&sa, 0, sizeof sa);
+	sa.sin_family = AF_INET;
+	sa.sin_port = htons(port);
+
+	if(inet_pton(AF_INET, host, &sa.sin_addr) != 1) {
+		return -1;
+	}
+
+	int fd = socket(AF_INET, SOCK_STREAM, 0);
+
+	if(fd == -1) {
+		return -1;
+	}
+
+	if(connect(fd, (struct sockaddr *)&sa, sizeof sa) != 0) {
+		close(fd);
+		return -1;
+	}
+
+	return fd;
+}
+
+/* Copy bytes from one fd to the other until either side closes. */
+static bool pump(int from, int to) {
+	char buf[4096];
+	ssize_t len = recv(from, buf, sizeof buf, 0);
+
+	if(len <= 0) {
+		return false;
+	}
+
+	for(ssize_t off = 0; off < len;) {
+		ssize_t sent = send(to, buf + off, len - off, MSG_NOSIGNAL);
+
+		if(sent <= 0) {
+			return false;
+		}
+
+		off += sent;
+	}
+
+	return true;
+}
+
+static void *relay_conn_thread(void *arg) {
+	struct relay_conn *conn = arg;
+	struct pollfd fds[2] = {
+		{.fd = conn->client_fd, .events = POLLIN},
+		{.fd = conn->target_fd, .events = POLLIN},
+	};
+
+	while(true) {
+		if(poll(fds, 2, -1) < 0) {
+			if(errno == EINTR) {
+				continue;
+			}
+
+			break;
+		}
+
+		if(fds[0].revents && !pump(conn->client_fd, conn->target_fd)) {
+			break;
+		}
+
+		if(fds[1].revents && !pump(conn->target_fd, conn->client_fd)) {
+			break;
+		}
+	}
+
+	shutdown(conn->client_fd, SHUT_RDWR);
+	shutdown(conn->target_fd, SHUT_RDWR);
+	close(conn->client_fd);
+	close(conn->target_fd);
+
+	assert(pthread_mutex_lock(&conn->relay->mutex) == 0);
+	conn->done = true;
+	assert(pthread_mutex_unlock(&conn->relay->mutex) == 0);
+
+	return NULL;
+}
+
+static void *relay_accept_thread(void *arg) {
+	tcp_relay_t *relay = arg;
+
+	while(true) {
+		int client_fd = accept(relay->listen_fd, NULL, NULL);
+
+		if(client_fd < 0) {
+			if(errno == EINTR) {
+				continue;
+			}
+
+			break;
+		}
+
+		assert(pthread_mutex_lock(&relay->mutex) == 0);
+		relay->accept_count++;
+		bool stopping = relay->stopping;
+		int target_port = relay->target_port;
+		assert(pthread_mutex_unlock(&relay->mutex) == 0);
+
+		if(stopping) {
+			close(client_fd);
+			break;
+		}
+
+		int target_fd = connect_to(relay->target_host, target_port);
+
+		if(target_fd < 0) {
+			close(client_fd);
+			continue;
+		}
+
+		struct relay_conn *conn = calloc(1, sizeof *conn);
+		assert(conn);
+		conn->relay = relay;
+		conn->client_fd = client_fd;
+		conn->target_fd = target_fd;
+
+		assert(pthread_mutex_lock(&relay->mutex) == 0);
+		assert(relay->nconns < RELAY_MAX_CONNS);
+		relay->conns[relay->nconns++] = conn;
+		assert(pthread_mutex_unlock(&relay->mutex) == 0);
+
+		assert(pthread_create(&conn->thread, NULL, relay_conn_thread, conn) == 0);
+	}
+
+	return NULL;
+}
+
+tcp_relay_t *start_tcp_relay(const char *listen_host, int *listen_port_out, const char *target_host, int target_port) {
+	tcp_relay_t *relay = calloc(1, sizeof *relay);
+	assert(relay);
+
+	assert(pthread_mutex_init(&relay->mutex, NULL) == 0);
+	snprintf(relay->target_host, sizeof relay->target_host, "%s", target_host);
+	relay->target_port = target_port;
+	relay->listen_port = *listen_port_out;
+	relay->listen_fd = listen_on(listen_host, &relay->listen_port);
+	*listen_port_out = relay->listen_port;
+
+	assert(pthread_create(&relay->thread, NULL, relay_accept_thread, relay) == 0);
+
+	return relay;
+}
+
+int tcp_relay_accept_count(tcp_relay_t *relay) {
+	assert(pthread_mutex_lock(&relay->mutex) == 0);
+	int count = relay->accept_count;
+	assert(pthread_mutex_unlock(&relay->mutex) == 0);
+	return count;
+}
+
+void tcp_relay_set_target(tcp_relay_t *relay, int target_port) {
+	assert(pthread_mutex_lock(&relay->mutex) == 0);
+	relay->target_port = target_port;
+	assert(pthread_mutex_unlock(&relay->mutex) == 0);
+}
+
+void stop_tcp_relay(tcp_relay_t *relay) {
+	assert(pthread_mutex_lock(&relay->mutex) == 0);
+	relay->stopping = true;
+	assert(pthread_mutex_unlock(&relay->mutex) == 0);
+
+	/* Wake accept() with an error, then let the thread exit. */
+	shutdown(relay->listen_fd, SHUT_RDWR);
+	close(relay->listen_fd);
+	pthread_join(relay->thread, NULL);
+
+	for(size_t i = 0; i < relay->nconns; i++) {
+		struct relay_conn *conn = relay->conns[i];
+
+		assert(pthread_mutex_lock(&relay->mutex) == 0);
+		bool done = conn->done;
+		assert(pthread_mutex_unlock(&relay->mutex) == 0);
+
+		if(!done) {
+			shutdown(conn->client_fd, SHUT_RDWR);
+			shutdown(conn->target_fd, SHUT_RDWR);
+		}
+
+		pthread_join(conn->thread, NULL);
+		free(conn);
+	}
+
+	pthread_mutex_destroy(&relay->mutex);
+	free(relay);
+}
+
+int start_black_hole(const char *listen_host, int *port_out) {
+	*port_out = 0;
+	return listen_on(listen_host, port_out);
+}
+
+int find_closed_port(const char *listen_host) {
+	int port = 0;
+	int fd = listen_on(listen_host, &port);
+	close(fd);
+	return port;
+}
 
 void init_sync_flag(struct sync_flag *s) {
 	assert(pthread_mutex_init(&s->mutex, NULL) == 0);

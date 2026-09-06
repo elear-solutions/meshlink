@@ -39,6 +39,29 @@ extern void link_meshlink_pair(meshlink_handle_t *a, meshlink_handle_t *b);
 /// Default log callback
 extern void log_cb(meshlink_handle_t *mesh, meshlink_log_level_t level, const char *text);
 
+/// A TCP relay: accepts on listen_host:listen_port and byte-copies both ways to target_host:target_port.
+/// Stands in for a load balancer / demux so tests can tell "via relay" from "direct" by peer port and accept count.
+typedef struct tcp_relay tcp_relay_t;
+
+/// Start a relay. Pass *listen_port_out == 0 to let the OS pick a port; the chosen port is written back.
+extern tcp_relay_t *start_tcp_relay(const char *listen_host, int *listen_port_out, const char *target_host, int target_port);
+
+/// Number of client connections accepted so far.
+extern int tcp_relay_accept_count(tcp_relay_t *relay);
+
+/// Change where new connections are forwarded to. Existing connections are unaffected.
+extern void tcp_relay_set_target(tcp_relay_t *relay, int target_port);
+
+/// Stop the relay and close every connection it is carrying.
+extern void stop_tcp_relay(tcp_relay_t *relay);
+
+/// Bind and listen on listen_host with an OS-chosen port but never accept(): connects succeed, then hang.
+/// Returns the listen fd; the caller closes it. The port is written to *port_out.
+extern int start_black_hole(const char *listen_host, int *port_out);
+
+/// Bind a TCP socket on listen_host, learn its port, close it again: a port that is (very likely) closed.
+extern int find_closed_port(const char *listen_host);
+
 #define assert_after(cond, timeout)\
 	do {\
 		for(int i = 0; i++ <= timeout;) {\

@@ -20,6 +20,7 @@
 #include "system.h"
 #include <assert.h>
 
+#include "connection.h"
 #include "logger.h"
 #include "meshlink_internal.h"
 #include "net.h"
@@ -50,11 +51,19 @@ static void sptps_renewal_nop_probe(meshlink_node_t *node) {
 	return;
 }
 
+static void upgrade_nop_probe(meshlink_handle_t *mesh, meshlink_node_t *node, devtool_upgrade_probe_stage_t stage) {
+	(void)mesh;
+	(void)node;
+	(void)stage;
+	return;
+}
+
 void (*devtool_trybind_probe)(void) = nop_probe;
 void (*devtool_keyrotate_probe)(int stage) = keyrotate_nop_probe;
 void (*devtool_set_inviter_commits_first)(bool inviter_commited_first) = inviter_commits_first_nop_probe;
 void (*devtool_adns_resolve_probe)(void) = nop_probe;
 void (*devtool_sptps_renewal_probe)(meshlink_node_t *node) = sptps_renewal_nop_probe;
+void (*devtool_upgrade_probe)(meshlink_handle_t *mesh, meshlink_node_t *node, devtool_upgrade_probe_stage_t stage) = upgrade_nop_probe;
 
 /* Return an array of edges in the current network graph.
  * Data captures the current state and will not be updated.
@@ -284,6 +293,29 @@ static void devtool_get_reset_node_status(meshlink_handle_t *mesh, meshlink_node
 		// External address information (from REQ_EXTERNAL messages)
 		status->external_ip_address = internal->external_ip_address ? xstrdup(internal->external_ip_address) : NULL;
 		status->canonical_address = internal->canonical_address ? xstrdup(internal->canonical_address) : NULL;
+
+		// Meta connection information
+		connection_t *c = internal->connection;
+		memset(&status->meta_address, 0, sizeof status->meta_address);
+		status->meta_connected = c && c->status.active;
+		status->meta_via_canonical = c && c->status.via_canonical;
+		status->meta_is_outgoing = c && c->outgoing;
+
+		if(c) {
+			memcpy(&status->meta_address, &c->address, sizeof status->meta_address);
+		}
+
+		status->upgrade_probe_active = internal->upgrade_probe != NULL;
+		status->upgrade_backoff = internal->upgrade_backoff;
+
+		// Recent direct addresses
+		status->recent_count = 0;
+		memset(status->recent, 0, sizeof status->recent);
+
+		for(int i = 0; i < MAX_RECENT && internal->recent[i].sa.sa_family; i++) {
+			memcpy(&status->recent[i], &internal->recent[i], sizeof status->recent[i]);
+			status->recent_count++;
+		}
 
 		// Derive UDP connection status
 		if(internal == mesh->self) {

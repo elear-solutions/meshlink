@@ -29,6 +29,7 @@
 #include "meshlink_internal.h"
 #include "meta.h"
 #include "net.h"
+#include "net_upgrade.h"
 #include "netutl.h"
 #include "node.h"
 #include "packmsg.h"
@@ -64,7 +65,8 @@ static void transfer_outgoing(meshlink_handle_t *mesh, connection_t *from, conne
 }
 
 bool send_id(meshlink_handle_t *mesh, connection_t *c) {
-	return send_request(mesh, c, NULL, "%d %s %d.%d %s %u", ID, mesh->self->name, PROT_MAJOR, PROT_MINOR, mesh->appname, 0);
+	uint32_t flags = c->status.upgrade_probe ? PROTOCOL_UPGRADE : 0;
+	return send_request(mesh, c, NULL, "%d %s %d.%d %s %u", ID, mesh->self->name, PROT_MAJOR, PROT_MINOR, mesh->appname, flags);
 }
 
 static bool commit_invitation(meshlink_handle_t *mesh, connection_t *c, const void *data) {
@@ -255,9 +257,9 @@ bool id_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		return false;
 	}
 
-	/* If this is an outgoing connection, make sure we are connected to the right host */
+	/* If this is an outgoing connection or an upgrade probe, make sure we are connected to the right host */
 
-	if(c->outgoing) {
+	if(c->outgoing || c->status.upgrade_probe) {
 		if(strcmp(c->name, name)) {
 			logger(mesh, MESHLINK_ERROR, "Peer is %s instead of %s", name, c->name);
 			return false;
@@ -310,7 +312,7 @@ bool id_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	c->last_ping_time = mesh->loop.now.tv_sec;
 	char label[sizeof(meshlink_tcp_label) + strlen(mesh->self->name) + strlen(c->name) + 2];
 
-	if(c->outgoing) {
+	if(c->status.initiator) {
 		snprintf(label, sizeof(label), "%s %s %s", meshlink_tcp_label, mesh->self->name, c->name);
 	} else {
 		snprintf(label, sizeof(label), "%s %s %s", meshlink_tcp_label, c->name, mesh->self->name);
@@ -323,7 +325,7 @@ bool id_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		logger(mesh, MESHLINK_DEBUG, "Connection to %s mykey %s hiskey %s", c->name, buf1, buf2);
 	}
 
-	return sptps_start(&c->sptps, c, c->outgoing, false, mesh->private_key, n->ecdsa, label, sizeof(label) - 1, send_meta_sptps, receive_meta_sptps);
+	return sptps_start(&c->sptps, c, c->status.initiator, false, mesh->private_key, n->ecdsa, label, sizeof(label) - 1, send_meta_sptps, receive_meta_sptps);
 }
 
 bool send_ack(meshlink_handle_t *mesh, connection_t *c) {
@@ -394,6 +396,17 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		}
 	}
 
+	/* The peer is replacing its canonical connection to us with this direct one. Keep the
+	   old one until the peer closes it (it does so once it has our ACK), then promote
+	   this one in terminate_connection() so the node never leaves the graph. */
+
+	bool deferred_ack = (c->flags & PROTOCOL_UPGRADE) && !c->status.initiator;
+
+	if(deferred_ack && n->connection && n->connection != c && n->connection->status.active) {
+		upgrade_hold_spare(mesh, c, n, hisport, devclass);
+		return send_ack(mesh, c);
+	}
+
 	if(n->connection && n->connection != c) {
 		logger(mesh, MESHLINK_INFO, "Established a second connection with %s, closing old connection", n->connection->name);
 		transfer_outgoing(mesh, n->connection, c);
@@ -406,6 +419,13 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		terminate_connection(mesh, n->connection, false);
 	}
 
+	/* A probe that got this far replaces the canonical connection it was opened next to. */
+
+	if(c->status.upgrade_probe) {
+		c->node = n;
+		upgrade_probe_succeeded(mesh, c);
+	}
+
 	n->devclass = devclass;
 	n->status.dirty = true;
 	n->status.tiny = c->flags & PROTOCOL_TINY;
@@ -416,6 +436,12 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	n->nexthop = n;
 	c->node = n;
 
+	/* The address walk is done: if this connection drops, start over from recent[] instead of
+	   continuing with whatever was left after the address that just worked. */
+	if(c->outgoing) {
+		reset_outgoing(c->outgoing);
+	}
+
 	/* Activate this connection */
 
 	c->allow_request = ALL;
@@ -423,6 +449,10 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	c->status.active = true;
 
 	logger(mesh, MESHLINK_INFO, "Connection with %s activated", c->name);
+
+	if(deferred_ack && !send_ack(mesh, c)) {
+		return false;
+	}
 
 	if(mesh->meta_status_cb) {
 		mesh->meta_status_cb(mesh, (meshlink_node_t *)n, true);
@@ -455,7 +485,12 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	c->edge->weight = mesh->dev_class_traits[devclass].edge_weight;
 	c->edge->connection = c;
 
-	node_add_recent_address(mesh, n, &c->address);
+	/* The canonical address is a relay, not the node itself: never remember it as a direct address. */
+
+	if(!c->status.via_canonical) {
+		node_add_recent_address(mesh, n, &c->address);
+	}
+
 	edge_add(mesh, c->edge);
 
 	/* Notify everyone of the new edge */

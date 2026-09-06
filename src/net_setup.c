@@ -636,11 +636,26 @@ static bool setup_myself(meshlink_handle_t *mesh) {
 
 	mesh->listen_sockets = 0;
 
+	/* A persisted port outside the configured range (or "0") must be redrawn
+	   inside the range before we listen on it. */
+
+	if(mesh->port_range_lo && (!strcmp(mesh->myport, "0") || !port_in_range(mesh, atoi(mesh->myport)))) {
+		logger(mesh, MESHLINK_INFO, "Port %s is outside range %u-%u, drawing a new one", mesh->myport, mesh->port_range_lo, mesh->port_range_hi);
+
+		if(!check_port(mesh)) {
+			return false;
+		}
+	}
+
 	if(!add_listen_sockets(mesh)) {
 		if(strcmp(mesh->myport, "0")) {
 			logger(mesh, MESHLINK_WARNING, "Could not bind to port %s, trying to find an alternative port", mesh->myport);
 
 			if(!check_port(mesh)) {
+				if(mesh->port_range_lo) {
+					return false;
+				}
+
 				logger(mesh, MESHLINK_WARNING, "Could not bind to any port, trying to bind to port 0");
 				free(mesh->myport);
 				mesh->myport = xstrdup("0");

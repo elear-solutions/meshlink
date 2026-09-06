@@ -26,6 +26,7 @@
 #include "logger.h"
 #include "meshlink_internal.h"
 #include "net.h"
+#include "net_upgrade.h"
 #include "netutl.h"
 #include "node.h"
 #include "submesh.h"
@@ -705,19 +706,44 @@ static bool try_bind(meshlink_handle_t *mesh, int port) {
 	return success;
 }
 
+bool port_in_range(meshlink_handle_t *mesh, int port) {
+	if(!mesh->port_range_lo) {
+		return true;
+	}
+
+	return port >= mesh->port_range_lo && port <= mesh->port_range_hi;
+}
+
 int check_port(meshlink_handle_t *mesh) {
 	for(int i = 0; i < 1000; i++) {
-		int port = 0x1000 + prng(mesh, 0x7000);
+		int port;
+
+		if(mesh->port_range_lo) {
+			port = mesh->port_range_lo + prng(mesh, (uint64_t)mesh->port_range_hi - mesh->port_range_lo + 1);
+		} else {
+			port = 0x1000 + prng(mesh, 0x7000);
+		}
 
 		if(try_bind(mesh, port)) {
 			free(mesh->myport);
 			xasprintf(&mesh->myport, "%d", port);
+
+			if(mesh->port_range_lo) {
+				logger(mesh, MESHLINK_INFO, "Bound mesh port %d (range %u-%u)", port, mesh->port_range_lo, mesh->port_range_hi);
+			}
+
 			return port;
 		}
 	}
 
 	meshlink_errno = MESHLINK_ENETWORK;
-	logger(mesh, MESHLINK_DEBUG, "Could not find any available network port.\n");
+
+	if(mesh->port_range_lo) {
+		logger(mesh, MESHLINK_ERROR, "Could not find any available network port in range %u-%u", mesh->port_range_lo, mesh->port_range_hi);
+	} else {
+		logger(mesh, MESHLINK_DEBUG, "Could not find any available network port.\n");
+	}
+
 	return 0;
 }
 
@@ -866,9 +892,11 @@ static bool finalize_join(join_state_t *state, const void *buf, uint16_t len) {
 			return false;
 		}
 
-		if(i == 0) {
+		if(i == 0 && !n->canonical_address) {
 			/* The first host config file is of the inviter itself;
 			 * remember the address we are currently using for the invitation connection.
+			 * If the inviter has a canonical address, the invitation most likely went
+			 * through that relay, and recent[] must only hold direct addresses.
 			 */
 			sockaddr_t sa;
 			socklen_t salen = sizeof(sa);
@@ -1153,6 +1181,13 @@ static bool meshlink_setup(meshlink_handle_t *mesh) {
 	}
 
 	if(check_port(mesh) == 0) {
+		if(mesh->port_range_lo) {
+			// A port outside the configured range is never acceptable.
+			logger(mesh, MESHLINK_ERROR, "No free port in range %u-%u", mesh->port_range_lo, mesh->port_range_hi);
+			meshlink_errno = MESHLINK_ENETWORK;
+			return false;
+		}
+
 		// On restricted platforms (iOS, Android), check_port() may fail
 		// Allow fallback to port 0 for automatic OS assignment
 		logger(mesh, MESHLINK_DEBUG, "check_port() failed, allowing port 0 fallback");
@@ -1342,6 +1377,32 @@ bool meshlink_open_params_set_storage_policy(meshlink_open_params_t *params, mes
 	}
 
 	params->storage_policy = policy;
+
+	return true;
+}
+
+bool meshlink_open_params_set_port_range(meshlink_open_params_t *params, uint16_t lo, uint16_t hi) {
+	logger(NULL, MESHLINK_DEBUG, "meshlink_open_params_set_port_range(%u, %u)", lo, hi);
+
+	if(!params) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(lo == 0 && hi == 0) {
+		params->port_range_lo = 0;
+		params->port_range_hi = 0;
+		return true;
+	}
+
+	if(lo < 1024 || lo > hi) {
+		logger(NULL, MESHLINK_ERROR, "Invalid port range %u-%u given!\n", lo, hi);
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	params->port_range_lo = lo;
+	params->port_range_hi = hi;
 
 	return true;
 }
@@ -1598,6 +1659,8 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 
 	mesh->appname = xstrdup(params->appname);
 	mesh->devclass = params->devclass;
+	mesh->port_range_lo = params->port_range_lo;
+	mesh->port_range_hi = params->port_range_hi;
 	mesh->discovery.enabled = true;
 	mesh->invitation_timeout = 604800; // 1 week
 	mesh->netns = params->netns;
@@ -1666,8 +1729,10 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 		}
 
 		if(!meshlink_setup(mesh)) {
+			meshlink_errno_t err = meshlink_errno;
 			logger(NULL, MESHLINK_ERROR, "Cannot create initial configuration\n");
 			meshlink_close(mesh);
+			meshlink_errno = err;
 			return NULL;
 		}
 
@@ -1691,6 +1756,7 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 	// TODO: we should not open listening sockets yet
 
 	bool success = false;
+	char *persisted_port = xstrdup(mesh->myport);
 
 	if(mesh->netns != -1) {
 #ifdef HAVE_SETNS
@@ -1702,6 +1768,7 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 		}
 
 #else
+		free(persisted_port);
 		meshlink_errno = MESHLINK_EINTERNAL;
 		return NULL;
 
@@ -1711,10 +1778,24 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 	}
 
 	if(!success) {
+		free(persisted_port);
 		meshlink_close(mesh);
 		meshlink_errno = MESHLINK_ENETWORK;
 		return NULL;
 	}
+
+	/* setup_myself() may have drawn a different port (range redraw, bind failure,
+	   or port 0 resolved by the OS): persist it so the next start reuses it. */
+
+	if(strcmp(persisted_port, mesh->myport)) {
+		logger(NULL, MESHLINK_INFO, "Persisting new port %s (was %s)", mesh->myport, persisted_port);
+
+		if(!write_main_config_files(mesh) || !config_sync(mesh, "current")) {
+			logger(NULL, MESHLINK_WARNING, "Could not persist new port %s", mesh->myport);
+		}
+	}
+
+	free(persisted_port);
 
 	if(mesh->devclass == DEV_CLASS_BACKBONE) {
 		logger(NULL, MESHLINK_DEBUG, "Resolving external IP address as we are a backbone node\n");
@@ -1848,9 +1929,12 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 		return false;
 	}
 
-	// Reset node connection timers
+	// Reset node connection timers and canonical -> direct upgrade backoff
 	for splay_each(node_t, n, mesh->nodes) {
 		n->last_connect_try = 0;
+		n->upgrade_probe = NULL;
+		n->upgrade_next_try = 0;
+		n->upgrade_backoff = 0;
 	}
 
 	// TODO: open listening sockets first
@@ -3022,6 +3106,10 @@ bool meshlink_set_port(meshlink_handle_t *mesh, int port) {
 
 	devtool_trybind_probe();
 
+	/* An explicit port wins over a range given at open time. */
+	mesh->port_range_lo = 0;
+	mesh->port_range_hi = 0;
+
 	bool rval = false;
 	char *saved_external_ip = NULL;  // Initialize to NULL to avoid uninitialized warning
 
@@ -3981,13 +4069,17 @@ void meshlink_hint_address(meshlink_handle_t *mesh, meshlink_node_t *node, const
 	node_t *n = (node_t *)node;
 
 	if(node_add_recent_address(mesh, n, (sockaddr_t *)addr)) {
+		n->upgrade_recent_idx = 0;
+
 		if(!node_write_config(mesh, n, false)) {
 			logger(mesh, MESHLINK_DEBUG, "Could not update %s\n", n->name);
 		}
 	}
 
+	/* A fresh direct address for a peer we only reach via its canonical address is worth a probe right away. */
+	try_upgrade_probe(mesh, n);
+
 	pthread_mutex_unlock(&mesh->mutex);
-	// @TODO do we want to fire off a connection attempt right away?
 }
 
 static bool channel_pre_accept(struct utcp *utcp, uint16_t port) {

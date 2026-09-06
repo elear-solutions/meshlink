@@ -17,6 +17,7 @@ devtool_set_meta_status_cb
 devtool_set_udp_confirmed
 devtool_trybind_probe
 devtool_update_node_udp
+devtool_upgrade_probe
 meshlink_add_address
 meshlink_add_external_address
 meshlink_add_invitation_address
@@ -80,6 +81,7 @@ meshlink_open_params_free
 meshlink_open_params_init
 meshlink_open_params_set_lock_filename
 meshlink_open_params_set_netns
+meshlink_open_params_set_port_range
 meshlink_open_params_set_storage_key
 meshlink_open_params_set_storage_policy
 meshlink_reset_timers

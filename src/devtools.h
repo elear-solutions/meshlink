@@ -115,6 +115,18 @@ struct devtool_node_status {
 	char *canonical_address;             /// Canonical address if known
 	                                      /// Set by REQ_CANONICAL messages
 	                                      /// NULL if not known
+
+	// Meta connection information (from node_t.connection)
+	bool meta_connected;                  /// True if there is an active meta connection with this node
+	struct sockaddr_storage meta_address; /// Remote address of the meta connection (AF_UNSPEC if none)
+	bool meta_via_canonical;              /// True if the meta connection went to the node's canonical address
+	bool meta_is_outgoing;                /// True if we initiated the meta connection and own its outgoing_t
+	bool upgrade_probe_active;            /// True if a direct-upgrade probe is in flight
+	int upgrade_backoff;                  /// Current probe backoff in seconds (0 = none)
+
+	// Recently seen direct addresses (node_t.recent[]), front first
+	size_t recent_count;                  /// Number of valid entries in recent
+	struct sockaddr_storage recent[5];    /// Copies of node_t.recent[]
 };
 
 /// Get the status of a node.
@@ -210,6 +222,23 @@ extern void (*devtool_adns_resolve_probe)(void);
  *  @param node The node whose SPTPS key(s) are being renewed
  */
 extern void (*devtool_sptps_renewal_probe)(meshlink_node_t *node);
+
+/// Stages reported by devtool_upgrade_probe.
+typedef enum {
+	DEVTOOL_UPGRADE_PROBE_STARTED = 0,   /// A direct probe connection was opened next to the canonical one
+	DEVTOOL_UPGRADE_PROBE_SUCCEEDED = 1, /// The probe authenticated and the node migrated to it
+	DEVTOOL_UPGRADE_PROBE_FAILED = 2,    /// The probe died before authenticating; backoff applied
+} devtool_upgrade_probe_stage_t;
+
+/// Debug function pointer variable for canonical -> direct upgrade probes
+/** Called from MeshLink's own thread with the mesh mutex held, once per probe
+ *  start, success or failure, so tests can wait on the migration.
+ *
+ *  @param mesh  The mesh the probe belongs to.
+ *  @param node  The node being probed.
+ *  @param stage One of devtool_upgrade_probe_stage_t.
+ */
+extern void (*devtool_upgrade_probe)(meshlink_handle_t *mesh, meshlink_node_t *node, devtool_upgrade_probe_stage_t stage);
 
 /// Force renewal of SPTPS sessions with the given node.
 /** This causes the SPTPS sessions for both the UDP and TCP connections to renew their keys.

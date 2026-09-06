@@ -88,6 +88,12 @@ typedef struct node_t {
 	time_t last_connect_try;
 	time_t last_successfull_connection;
 
+	// Canonical -> direct upgrade probe state
+	struct connection_t *upgrade_probe;     /* In-flight probe connection, NULL if none */
+	time_t upgrade_next_try;                /* Earliest time for the next probe (0 = now) */
+	int upgrade_backoff;                    /* Current backoff in seconds; 0 until a probe fails */
+	uint8_t upgrade_recent_idx;             /* recent[] slot the next probe tries */
+
 	char *canonical_address;                /* The canonical address of this node, if known */
 	char *external_ip_address;              /* The external IP address of this node, if known */
 	int udp_choice;                         /* Per-node dest rotation when UDP is unconfirmed */

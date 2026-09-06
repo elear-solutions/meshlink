@@ -28,6 +28,7 @@
 #include "meshlink_internal.h"
 #include "meta.h"
 #include "net.h"
+#include "net_upgrade.h"
 #include "netutl.h"
 #include "protocol.h"
 #include "sptps.h"
@@ -54,6 +55,28 @@ static const int default_interval = 60;
 void terminate_connection(meshlink_handle_t *mesh, connection_t *c, bool report) {
 	if(c->status.active) {
 		logger(mesh, MESHLINK_INFO, "Closing connection with %s", c->name);
+	}
+
+	/* A probe that dies before ack_h() promoted it: back off, leave the canonical connection alone. */
+
+	if(c->status.upgrade_probe && !c->status.active) {
+		node_t *n = lookup_node(mesh, c->name);
+
+		if(n && n->upgrade_probe == c) {
+			upgrade_probe_failed(mesh, n);
+		}
+	}
+
+	if(c->status.spare) {
+		/* Never became the node's connection: its prepared edge is not in the graph. */
+		free_edge(c->edge);
+		c->edge = NULL;
+	} else if(c->node && c->node->connection == c) {
+		connection_t *spare = upgrade_find_spare(mesh, c->node);
+
+		if(spare) {
+			upgrade_promote_spare(mesh, c, spare);
+		}
 	}
 
 	if(c->node && c->node->connection == c) {
@@ -619,6 +642,10 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 
 		logger(mesh, MESHLINK_DEBUG, "--- autoconnect end ---");
 	}
+
+	/* Retry canonical -> direct upgrades whose backoff expired. */
+
+	upgrade_probe_sweep(mesh);
 
 	for splay_each(node_t, n, mesh->nodes) {
 		if(n->status.dirty) {
