@@ -89,6 +89,7 @@ typedef struct node_t {
 
 	char *canonical_address;                /* The canonical address of this node, if known */
 	char *external_ip_address;              /* The external IP address of this node, if known */
+	int udp_choice;                         /* Per-node dest rotation when UDP is unconfirmed */
 	sockaddr_t recent[MAX_RECENT];          /* Recently seen addresses */
 	sockaddr_t catta_address;               /* Latest address seen by Catta */
 
@@ -113,5 +114,6 @@ node_t *lookup_node(struct meshlink_handle *mesh, const char *name) __attribute_
 node_t *lookup_node_udp(struct meshlink_handle *mesh, const sockaddr_t *sa) __attribute__((__warn_unused_result__));
 void update_node_udp(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *sa);
 bool node_add_recent_address(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *addr);
+bool udp_address_usable(const sockaddr_t *sa);
 
 #endif

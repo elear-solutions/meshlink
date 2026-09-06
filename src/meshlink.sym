@@ -1,4 +1,5 @@
 __emutls_v.meshlink_errno
+devtool_choose_udp_address
 devtool_export_json_all_edges_state
 devtool_free_node_status
 devtool_get_all_edges
@@ -8,8 +9,10 @@ devtool_keyrotate_probe
 devtool_open_in_netns
 devtool_reset_node_counters
 devtool_set_meta_status_cb
+devtool_set_external_ip_address
 devtool_set_inviter_commits_first
 devtool_trybind_probe
+devtool_update_node_udp
 meshlink_add_address
 meshlink_add_external_address
 meshlink_add_invitation_address

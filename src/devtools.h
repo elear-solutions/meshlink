@@ -243,4 +243,13 @@ extern void (*devtool_set_inviter_commits_first)(bool inviter_commited_first);
  */
 void devtool_set_meta_status_cb(struct meshlink_handle *mesh, meshlink_node_status_cb_t cb);
 
+/// Set a node's learned REQ_EXTERNAL address (host and port, space-separated).
+void devtool_set_external_ip_address(struct meshlink_handle *mesh, struct meshlink_node *node, const char *external_ip_address);
+
+/// Apply update_node_udp() as if this address was learned from the graph or a peer.
+void devtool_update_node_udp(struct meshlink_handle *mesh, struct meshlink_node *node, const struct sockaddr *addr);
+
+/// Return the UDP destination choose_udp_address() would use right now.
+bool devtool_choose_udp_address(struct meshlink_handle *mesh, struct meshlink_node *node, struct sockaddr_storage *addr, int *sock);
+
 #endif

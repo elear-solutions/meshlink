@@ -115,6 +115,37 @@ node_t *lookup_node_udp(meshlink_handle_t *mesh, const sockaddr_t *sa) {
 	return hash_search(mesh->node_udp_cache, sa);
 }
 
+bool udp_address_usable(const sockaddr_t *sa) {
+	if(!sa || sa->sa.sa_family == AF_UNSPEC || sa->sa.sa_family == AF_UNKNOWN) {
+		return false;
+	}
+
+	if(sa->sa.sa_family == AF_INET) {
+		uint32_t a = ntohl(sa->in.sin_addr.s_addr);
+
+		if((a & 0xff000000) == 0x0a000000) {
+			return false;
+		}
+
+		if((a & 0xfff00000) == 0xac100000) {
+			return false;
+		}
+
+		if((a & 0xffff0000) == 0xc0a80000) {
+			return false;
+		}
+	}
+
+	if(sa->sa.sa_family == AF_INET6) {
+		/* Unique-local fc00::/7 */
+		if((sa->in6.sin6_addr.s6_addr[0] & 0xfe) == 0xfc) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
 void update_node_udp(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa) {
 	if(n == mesh->self) {
 		logger(mesh, MESHLINK_WARNING, "Trying to update UDP address of mesh->self!");

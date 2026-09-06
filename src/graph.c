@@ -119,7 +119,10 @@ static void sssp_bfs(meshlink_handle_t *mesh) {
 			e->to->prevedge = e;
 			e->to->distance = n->distance + 1;
 
-			if(!e->to->status.reachable || (e->to->address.sa.sa_family == AF_UNSPEC && e->address.sa.sa_family != AF_UNKNOWN)) {
+			if((!e->to->status.reachable || e->to->address.sa.sa_family == AF_UNSPEC)
+			                && e->address.sa.sa_family != AF_UNKNOWN
+			                && !e->to->status.udp_confirmed
+			                && udp_address_usable(&e->address)) {
 				update_node_udp(mesh, e->to, &e->address);
 			}
 
