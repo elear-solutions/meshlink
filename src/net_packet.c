@@ -37,10 +37,6 @@ int keylifetime = 0;
 
 static void send_udppacket(meshlink_handle_t *mesh, node_t *, vpn_packet_t *);
 
-/* Set only around sptps_send_record() for an outbound probe request (data[0] == 0).
-   send_sptps_data() is called synchronously on this thread; replies are also PKT_PROBE. */
-static uint16_t mtu_probe_request_len;
-
 #define MAX_SEQNO 1073741824
 #define PROBE_OVERHEAD (SPTPS_DATAGRAM_OVERHEAD + 40)
 
@@ -308,11 +304,11 @@ static void send_sptps_packet(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *
 	// If it's a probe, send it immediately without trying to compress it.
 	if(origpkt->probe) {
 		if(!origpkt->data[0]) {
-			mtu_probe_request_len = origpkt->len;
+			n->mtu_probe_request_len = origpkt->len;
 		}
 
 		sptps_send_record(&n->sptps, PKT_PROBE, origpkt->data, origpkt->len);
-		mtu_probe_request_len = 0;
+		n->mtu_probe_request_len = 0;
 		return;
 	}
 
@@ -714,10 +710,10 @@ bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 		choose_udp_address(mesh, to, &sa, &sock, &sa_buf);
 	}
 
-	if(mtu_probe_request_len && mesh->log_level <= MESHLINK_DEBUG) {
+	if(to->mtu_probe_request_len && mesh->log_level <= MESHLINK_DEBUG) {
 		char *address, *port;
 		sockaddr2str(sa, &address, &port);
-		logger(mesh, MESHLINK_DEBUG, "Sending MTU probe length %d to %s at %s port %s", mtu_probe_request_len, to->name, address, port);
+		logger(mesh, MESHLINK_DEBUG, "Sending MTU probe length %d to %s at %s port %s", to->mtu_probe_request_len, to->name, address, port);
 		free(address);
 		free(port);
 	}
