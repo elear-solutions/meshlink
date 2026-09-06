@@ -9,6 +9,7 @@
 #include <assert.h>
 #include <pthread.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
@@ -92,6 +93,11 @@ int main(void) {
 	assert(bind(fd, (struct sockaddr *)&sin, sizeof(sin)) == 0);
 	assert(listen(fd, 1) == 0);
 
+	struct timeval tv;
+	tv.tv_sec = 5;
+	tv.tv_usec = 0;
+	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
 	socklen_t slen = sizeof(sin);
 	assert(getsockname(fd, (struct sockaddr *)&sin, &slen) == 0);
 	int port = ntohs(sin.sin_port);
@@ -118,6 +124,10 @@ int main(void) {
 
 	check_address(mesh, fd, port, "/empty",
 	              "HTTP/1.0 200 OK\r\n\r\n",
+	              NULL);
+
+	check_address(mesh, fd, port, "/not-found",
+	              "HTTP/1.0 404 Not Found\r\n\r\nNot Found\n",
 	              NULL);
 
 	close(fd);

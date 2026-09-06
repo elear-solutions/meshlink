@@ -292,62 +292,64 @@ char *meshlink_get_external_address_for_family(meshlink_handle_t *mesh, int fami
 			                      "GET %s HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n",
 			                      path, host);
 
-			if(reqlen > 0 && reqlen < (int)sizeof(req)) {
-				send(s, req, (size_t)reqlen, 0);
-			}
+			if(reqlen > 0 && reqlen < (int)sizeof(req) && send(s, req, (size_t)reqlen, 0) == reqlen) {
+				int len = recv(s, line, sizeof(line) - 1, MSG_WAITALL);
 
-			int len = recv(s, line, sizeof(line) - 1, MSG_WAITALL);
+				if(len > 0) {
+					line[len] = 0;
 
-			if(len > 0) {
-				line[len] = 0;
+					char *hdr_end = strstr(line, "\r\n\r\n");
+					int hdr_skip = 4;
 
-				char *body = strstr(line, "\r\n\r\n");
-
-				if(body) {
-					body += 4;
-				} else if((body = strstr(line, "\n\n"))) {
-					body += 2;
-				} else {
-					body = line;
-				}
-
-				/* Skip a Transfer-Encoding: chunked size line (hex only). */
-				char *line_end = strpbrk(body, "\r\n");
-
-				if(line_end && line_end != body) {
-					bool hex_only = true;
-
-					for(char *p = body; p < line_end; p++) {
-						if(!isxdigit((unsigned char)*p)) {
-							hex_only = false;
-							break;
-						}
+					if(!hdr_end) {
+						hdr_end = strstr(line, "\n\n");
+						hdr_skip = 2;
 					}
 
-					if(hex_only) {
-						body = line_end;
+					int status = 0;
 
-						while(*body == '\r' || *body == '\n') {
+					if(hdr_end && sscanf(line, "HTTP/%*d.%*d %d", &status) == 1 && status >= 200 && status < 300) {
+						char *body = hdr_end + hdr_skip;
+
+						/* Skip a Transfer-Encoding: chunked size line (hex only). */
+						char *line_end = strpbrk(body, "\r\n");
+
+						if(line_end && line_end != body) {
+							bool hex_only = true;
+
+							for(char *p = body; p < line_end; p++) {
+								if(!isxdigit((unsigned char)*p)) {
+									hex_only = false;
+									break;
+								}
+							}
+
+							if(hex_only) {
+								body = line_end;
+
+								while(*body == '\r' || *body == '\n') {
+									body++;
+								}
+							}
+						}
+
+						while(*body == ' ' || *body == '\r' || *body == '\n') {
 							body++;
 						}
+
+						char *tok_end = body;
+
+						while(*tok_end && *tok_end != ' ' && *tok_end != '\r' && *tok_end != '\n') {
+							tok_end++;
+						}
+
+						if(tok_end != body) {
+							char saved = *tok_end;
+							*tok_end = 0;
+							hostname = xstrdup(body);
+							*tok_end = saved;
+						}
 					}
-				}
-
-				while(*body == ' ' || *body == '\r' || *body == '\n') {
-					body++;
-				}
-
-				char *tok_end = body;
-
-				while(*tok_end && *tok_end != ' ' && *tok_end != '\r' && *tok_end != '\n') {
-					tok_end++;
-				}
-
-				if(tok_end != body) {
-					char saved = *tok_end;
-					*tok_end = 0;
-					hostname = xstrdup(body);
-					*tok_end = saved;
 				}
 			}
 
