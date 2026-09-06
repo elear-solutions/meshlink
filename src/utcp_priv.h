@@ -166,7 +166,7 @@ struct utcp_connection {
 	bool keepalive;
 	bool shut_wr;
 	int timeout; // sec, 0 = inherit utcp->timeout; >0 also arms idle-RX
-	struct timespec last_rx;
+	struct timespec last_rx; // last inbound UTCP segment (payload or ACK); not send / offline
 
 	// Congestion avoidance state
 

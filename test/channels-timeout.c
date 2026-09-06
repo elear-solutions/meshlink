@@ -99,6 +99,21 @@ static void b8_receive_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, 
 	}
 }
 
+static bool accept_cb_arm_timeout(meshlink_handle_t *mesh, meshlink_channel_t *channel, uint16_t port, const void *data, size_t len) {
+	(void)data;
+	(void)len;
+
+	if(port == 7) {
+		accepted7 = channel;
+		meshlink_set_channel_receive_cb(mesh, channel, b7_receive_cb);
+		meshlink_set_channel_timeout(mesh, channel, 1);
+		set_sync_flag(&accept7_flag, true);
+		return true;
+	}
+
+	return false;
+}
+
 static bool accept_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, uint16_t port, const void *data, size_t len) {
 	(void)data;
 	(void)len;
@@ -257,6 +272,41 @@ static void test_sendonly_ack_refresh(void) {
 	close_meshlink_pair(mesh_a, mesh_b);
 }
 
+/* Accept-cb runs in SYN_RECEIVED, before utcp_accept(). Idle-RX must arm on the
+ * ESTABLISHED transition so a silent video accept still fires len==0.
+ * Dropped / ignored RST+ACK last_rx is utcp-internal; this suite cannot inject
+ * raw UTCP segments.
+ */
+static void test_accept_cb_arms_idle(void) {
+	reset_timeout_flags();
+
+	meshlink_handle_t *mesh_a, *mesh_b;
+	open_meshlink_pair(&mesh_a, &mesh_b, "channels_timeout_accept");
+
+	meshlink_set_channel_listen_cb(mesh_b, listen_cb);
+	meshlink_set_channel_accept_cb(mesh_b, accept_cb_arm_timeout);
+
+	meshlink_node_t *b = meshlink_get_node(mesh_a, "b");
+	assert(b);
+
+	meshlink_channel_t *ch7 = meshlink_channel_open(mesh_a, b, 7, a7_receive_cb, NULL, 0);
+	assert(ch7);
+
+	meshlink_set_channel_poll_cb(mesh_a, ch7, poll7_cb);
+
+	start_meshlink_pair(mesh_a, mesh_b);
+
+	assert(wait_sync_flag(&poll7_flag, 10));
+	assert(poll7_len != 0);
+	assert(wait_sync_flag(&accept7_flag, 10));
+
+	assert(wait_sync_flag(&b7_closed, 5));
+	assert(!check_sync_flag(&a7_closed));
+
+	meshlink_channel_close(mesh_a, ch7);
+	close_meshlink_pair(mesh_a, mesh_b);
+}
+
 int main(void) {
 	init_sync_flag(&accept7_flag);
 	init_sync_flag(&accept8_flag);
@@ -274,6 +324,7 @@ int main(void) {
 	test_per_channel_vs_node_default();
 	test_idle_dead_while_reachable();
 	test_sendonly_ack_refresh();
+	test_accept_cb_arms_idle();
 
 	return 0;
 }

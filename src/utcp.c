@@ -156,11 +156,27 @@ static void debug_cwnd(struct utcp_connection *c) {
 #define debug_cwnd(...) do {} while(0)
 #endif
 
+static void touch_last_rx(struct utcp_connection *c);
+
+static bool idle_rx_state(const struct utcp_connection *c) {
+	switch(c->state) {
+	case ESTABLISHED:
+	case FIN_WAIT_1:
+	case FIN_WAIT_2:
+	case CLOSE_WAIT:
+		return true;
+
+	default:
+		return false;
+	}
+}
+
 static void set_state(struct utcp_connection *c, enum state state) {
 	c->state = state;
 
 	if(state == ESTABLISHED) {
 		timespec_clear(&c->conn_timeout);
+		touch_last_rx(c);
 	}
 
 	debug(c, "state %s\n", strstate[state]);
@@ -197,20 +213,7 @@ static void touch_last_rx(struct utcp_connection *c) {
 }
 
 static bool idle_rx_armed(struct utcp_connection *c) {
-	if(c->timeout <= 0 || !is_reliable(c) || !timespec_isset(&c->last_rx)) {
-		return false;
-	}
-
-	switch(c->state) {
-	case ESTABLISHED:
-	case FIN_WAIT_1:
-	case FIN_WAIT_2:
-	case CLOSE_WAIT:
-		return true;
-
-	default:
-		return false;
-	}
+	return c->timeout > 0 && is_reliable(c) && timespec_isset(&c->last_rx) && idle_rx_state(c);
 }
 
 static int32_t seqdiff(uint32_t a, uint32_t b) {
@@ -1504,8 +1507,6 @@ synack:
 		goto reset;
 	}
 
-	touch_last_rx(c);
-
 	// It is for an existing connection.
 
 	// 1. Drop invalid packets.
@@ -1832,6 +1833,9 @@ synack:
 	}
 
 skip_ack:
+	// Header accepted (data or ACK-only). Dropped / ignored RST+ACK / bad ACK never reach here.
+	touch_last_rx(c);
+
 	// 5. Process SYN stuff
 
 	if(hdr.ctl & SYN) {
@@ -2206,12 +2210,6 @@ int utcp_abort(struct utcp_connection *c) {
 	return 0;
 }
 
-/* Handle timeouts.
- * One call to this function will loop through all connections,
- * checking if something needs to be resent or not.
- * The return value is the time to the next timeout in milliseconds,
- * or maybe a negative value if the timeout is infinite.
- */
 static void close_timed_out(struct utcp_connection *c) {
 	errno = ETIMEDOUT;
 	c->state = CLOSED;
@@ -2227,6 +2225,12 @@ static void close_timed_out(struct utcp_connection *c) {
 	}
 }
 
+/* Handle timeouts.
+ * One call to this function will loop through all connections,
+ * checking if something needs to be resent or not.
+ * The return value is the time to the next timeout in milliseconds,
+ * or maybe a negative value if the timeout is infinite.
+ */
 struct timespec utcp_timeout(struct utcp *utcp) {
 	struct timespec now;
 	clock_gettime(UTCP_CLOCK, &now);
@@ -2536,16 +2540,8 @@ void utcp_set_timeout(struct utcp_connection *c, int seconds) {
 		return;
 	}
 
-	switch(c->state) {
-	case ESTABLISHED:
-	case FIN_WAIT_1:
-	case FIN_WAIT_2:
-	case CLOSE_WAIT:
+	if(idle_rx_state(c)) {
 		clock_gettime(UTCP_CLOCK, &c->last_rx);
-		break;
-
-	default:
-		break;
 	}
 }
 
