@@ -521,6 +521,14 @@ int main(void) {
 	assert(lan_hits == 3);
 	assert(wan_hits == 3);
 
+	/* The same holds when the WAN dest sits in n->address (a public graph edge
+	   seeds it there): the catta and edge slots fall back to n->address and
+	   must skip it too. */
+	devtool_update_node_udp(mesh_foo, peer, (struct sockaddr *)&ext_dest);
+	advance_dests(mesh_foo, peer, 6, &lan_hint, &ext_dest, &ext_self, &lan_hits, &wan_hits);
+	assert(lan_hits == 3);
+	assert(wan_hits == 3);
+
 	/* Own public IP unknown (only backbone nodes resolve it): a same-NAT peer
 	   cannot be told from a remote one, so the LAN/WAN rotation still runs. */
 	devtool_set_external_ip_address(mesh_foo, self, NULL);

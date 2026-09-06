@@ -459,15 +459,21 @@ static bool try_ext(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **sa, i
 	return true;
 }
 
+/* A dest a LAN turn may use: bound, not ourselves, and not the WAN dest the
+   WAN turns already probe (skip), wherever that address was learned from. */
+static bool lan_candidate(const sockaddr_t *sa, const sockaddr_t *self_ext, const sockaddr_t *skip) {
+	if(!udp_address_bound(sa) || is_self_external(self_ext, sa)) {
+		return false;
+	}
+
+	return !skip || sockaddrcmp(sa, skip);
+}
+
 static bool try_recent(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **sa, int *sock, const sockaddr_t *self_ext, const sockaddr_t *skip) {
 	for(int i = 0; i < MAX_RECENT && n->recent[i].sa.sa_family; i++) {
 		const sockaddr_t *candidate = &n->recent[i];
 
-		if(!udp_address_bound(candidate) || is_self_external(self_ext, candidate)) {
-			continue;
-		}
-
-		if(skip && !sockaddrcmp(candidate, skip)) {
+		if(!lan_candidate(candidate, self_ext, skip)) {
 			continue;
 		}
 
@@ -557,15 +563,15 @@ void choose_udp_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **s
 		return;
 	}
 
-	/* A reflexive WAN entry in recent[] is the hairpin dest itself; it must
-	   not consume a LAN turn. */
+	/* The WAN dest may also sit in recent[], n->address (seeded from a public
+	   graph edge) or an edge address; it must not consume a LAN turn. */
 	const sockaddr_t *skip = rotate_wan ? &ext : NULL;
 
 	if(lan_slot == UDP_LAN_SLOT_RECENT) {
 		if(try_recent(mesh, n, sa, sock, self_ext, skip)) {
 			return;
 		}
-	} else if(lan_slot == UDP_LAN_SLOT_CATTA && udp_address_bound(&n->catta_address)) {
+	} else if(lan_slot == UDP_LAN_SLOT_CATTA && lan_candidate(&n->catta_address, self_ext, skip)) {
 		*sa = &n->catta_address;
 	}
 
@@ -577,7 +583,7 @@ void choose_udp_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **s
 		int usable = 0;
 
 		for splay_each(edge_t, e, n->edge_tree) {
-			if(e->reverse && udp_address_bound(&e->reverse->address)) {
+			if(e->reverse && lan_candidate(&e->reverse->address, self_ext, skip)) {
 				if(prng(mesh, ++usable) == 0) {
 					candidate = e->reverse;
 				}
@@ -586,7 +592,7 @@ void choose_udp_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **s
 
 		if(candidate) {
 			*sa = &candidate->address;
-		} else if(udp_address_bound(&n->address)) {
+		} else if(lan_candidate(&n->address, self_ext, skip)) {
 			*sa = &n->address;
 		} else if(lan_slot != UDP_LAN_SLOT_RECENT && try_recent(mesh, n, sa, sock, self_ext, skip)) {
 			return;
