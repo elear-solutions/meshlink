@@ -342,8 +342,28 @@ int main(void) {
 	devtool_free_node_status(&st);
 
 	devtool_set_external_ip_address(mesh_foo, peer, NULL);
+
+	printf("\n=== Dest pick: skip same-public-IP hairpin ===\n");
+	devtool_set_external_ip_address(mesh_foo, meshlink_get_self(mesh_foo), "183.83.169.155 1");
+	devtool_set_external_ip_address(mesh_foo, peer, "183.83.169.155 55098");
+
+	struct sockaddr_in wan;
+	memset(&wan, 0, sizeof(wan));
+	wan.sin_family = AF_INET;
+	wan.sin_port = htons(55098);
+	assert(inet_pton(AF_INET, "183.83.169.155", &wan.sin_addr) == 1);
+	devtool_update_node_udp(mesh_foo, peer, (struct sockaddr *)&wan);
+
+	struct sockaddr_in lan;
+	memset(&lan, 0, sizeof(lan));
+	lan.sin_family = AF_INET;
+	lan.sin_port = htons(9000);
+	assert(inet_pton(AF_INET, "172.17.0.4", &lan.sin_addr) == 1);
+	meshlink_hint_address(mesh_foo, peer, (struct sockaddr *)&lan);
+
 	assert(devtool_choose_udp_address(mesh_foo, peer, &dest, &sock));
-	assert(((struct sockaddr_in *)&dest)->sin_addr.s_addr != inet_addr("10.20.1.254"));
+	assert(((struct sockaddr_in *)&dest)->sin_addr.s_addr != inet_addr("183.83.169.155"));
+	assert(((struct sockaddr_in *)&dest)->sin_addr.s_addr == inet_addr("172.17.0.4"));
 
 	meshlink_close(mesh_foo);
 	meshlink_close(mesh_bar);
