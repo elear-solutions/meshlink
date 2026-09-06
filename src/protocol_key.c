@@ -85,9 +85,12 @@ static bool send_initial_sptps_data(void *handle, uint8_t type, const void *data
 
 bool send_external_ip_address(meshlink_handle_t *mesh, node_t *to) {
 	if(!mesh->self->external_ip_address) {
+		logger(mesh, MESHLINK_INFO, "Skipping REQ_EXTERNAL to %s: no external IP learned", to->name);
 		return true;
 	}
 
+	logger(mesh, MESHLINK_INFO, "Sending REQ_EXTERNAL %s %s to %s",
+	       mesh->self->external_ip_address, mesh->myport, to->name);
 	return send_request(mesh, to->nexthop->connection, NULL, "%d %s %s %d %s %s", REQ_KEY, mesh->self->name, to->name, REQ_EXTERNAL, mesh->self->external_ip_address, mesh->myport);
 }
 
@@ -304,7 +307,7 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 	case REQ_EXTERNAL: {
 		char ip[MAX_STRING_SIZE];
 		char port[MAX_STRING_SIZE];
-		logger(mesh, MESHLINK_DEBUG, "Got %s from %s with data: %s", "REQ_EXTERNAL", from->name, request);
+		logger(mesh, MESHLINK_INFO, "Got %s from %s with data: %s", "REQ_EXTERNAL", from->name, request);
 
 		if(sscanf(request, "%*d %*s %*s %*d " MAX_STRING " " MAX_STRING, ip, port) != 2) {
 			logger(mesh, MESHLINK_ERROR, "Got bad %s from %s: %s", "REQ_EXTERNAL", from->name, request);

@@ -261,8 +261,9 @@ char *meshlink_get_external_address_for_family(meshlink_handle_t *mesh, int fami
 
 	logger(mesh, MESHLINK_DEBUG, "Trying to discover externally visible hostname...\n");
 	struct addrinfo *ai = adns_blocking_request(mesh, xstrdup(host), xstrdup(port ? port : "80"), SOCK_STREAM, 5);
-	char line[256];
+	char line[1024];
 	char *hostname = NULL;
+	const char *path = (end && *end) ? end : "/";
 
 	for(struct addrinfo *aip = ai; aip; aip = aip->ai_next) {
 		if(family != AF_UNSPEC && aip->ai_family != family) {
@@ -286,22 +287,77 @@ char *meshlink_get_external_address_for_family(meshlink_handle_t *mesh, int fami
 		}
 
 		if(s >= 0) {
-			send(s, "GET ", 4, 0);
-			send(s, url, strlen(url), 0);
-			send(s, " HTTP/1.0\r\n\r\n", 13, 0);
-			int len = recv(s, line, sizeof(line) - 1, MSG_WAITALL);
+			char req[512];
+			int reqlen;
 
-			if(len > 0) {
-				line[len] = 0;
+			if(port) {
+				reqlen = snprintf(req, sizeof(req),
+				                  "GET %s HTTP/1.0\r\nHost: %s:%s\r\nConnection: close\r\n\r\n",
+				                  path, host, port);
+			} else {
+				reqlen = snprintf(req, sizeof(req),
+				                  "GET %s HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n",
+				                  path, host);
+			}
 
-				if(line[len - 1] == '\n') {
-					line[--len] = 0;
-				}
+			if(reqlen > 0 && reqlen < (int)sizeof(req) && send(s, req, (size_t)reqlen, 0) == reqlen) {
+				int len = recv(s, line, sizeof(line) - 1, MSG_WAITALL);
 
-				char *p = strrchr(line, '\n');
+				if(len > 0) {
+					line[len] = 0;
 
-				if(p && p[1]) {
-					hostname = xstrdup(p + 1);
+					char *hdr_end = strstr(line, "\r\n\r\n");
+					int hdr_skip = 4;
+
+					if(!hdr_end) {
+						hdr_end = strstr(line, "\n\n");
+						hdr_skip = 2;
+					}
+
+					int status = 0;
+
+					if(hdr_end && sscanf(line, "HTTP/%*d.%*d %d", &status) == 1 && status >= 200 && status < 300) {
+						char *body = hdr_end + hdr_skip;
+
+						/* Skip a Transfer-Encoding: chunked size line (hex only). */
+						char *line_end = strpbrk(body, "\r\n");
+
+						if(line_end && line_end != body) {
+							bool hex_only = true;
+
+							for(char *p = body; p < line_end; p++) {
+								if(!isxdigit((unsigned char)*p)) {
+									hex_only = false;
+									break;
+								}
+							}
+
+							if(hex_only) {
+								body = line_end;
+
+								while(*body == '\r' || *body == '\n') {
+									body++;
+								}
+							}
+						}
+
+						while(*body == ' ' || *body == '\r' || *body == '\n') {
+							body++;
+						}
+
+						char *tok_end = body;
+
+						while(*tok_end && *tok_end != ' ' && *tok_end != '\r' && *tok_end != '\n') {
+							tok_end++;
+						}
+
+						if(tok_end != body) {
+							char saved = *tok_end;
+							*tok_end = 0;
+							hostname = xstrdup(body);
+							*tok_end = saved;
+						}
+					}
 				}
 			}
 
