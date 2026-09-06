@@ -630,6 +630,18 @@ static void send_udppacket(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *ori
 	send_sptps_packet(mesh, n, origpkt);
 }
 
+/* Dest has no P2P UDP but the nexthop does: carry REQ_SPTPS on that UDP session.
+   Handshake records stay on META. PKT_PROBE never reaches the TCP fallback, so
+   it is not tested here. */
+static bool can_relay_req_sptps_udp(const node_t *to, uint8_t type) {
+	return type < SPTPS_HANDSHAKE
+	       && !to->status.udp_confirmed
+	       && to->nexthop && to->nexthop != to
+	       && to->nexthop->status.udp_confirmed
+	       && to->nexthop->status.validkey
+	       && to->nexthop->minmtu > 0;
+}
+
 bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 	assert(handle);
 	assert(data);
@@ -654,22 +666,29 @@ bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 			return false;
 		}
 
-		/* If dest has no P2P UDP but the nexthop does, carry REQ_SPTPS on that UDP session. */
-		if(type < SPTPS_HANDSHAKE && type != PKT_PROBE && !to->status.udp_confirmed
-		                && to->nexthop != to && to->nexthop->status.udp_confirmed && to->nexthop->minmtu > 0) {
-			char req[len * 4 / 3 + 128];
-			int n = snprintf(req, sizeof(req), "%d %s %s %d %s", REQ_KEY, mesh->self->name, to->name, REQ_SPTPS, buf);
+		char req[MAXBUFSIZE];
+		int reqlen = snprintf(req, sizeof(req), "%d %s %s %d %s", REQ_KEY, mesh->self->name, to->name, REQ_SPTPS, buf);
 
-			if(n > 0 && (size_t)n + 1 + SPTPS_DATAGRAM_OVERHEAD <= to->nexthop->minmtu) {
-				logger(mesh, MESHLINK_INFO, "Sending REQ_SPTPS via UDP to %s for %s", to->nexthop->name, to->name);
-				return sptps_send_record(&to->nexthop->sptps, PKT_REQ_SPTPS, req, (uint16_t)(n + 1));
+		/* If dest has no P2P UDP but the nexthop does, carry REQ_SPTPS on that UDP session. */
+		if(can_relay_req_sptps_udp(to, type)
+		                && reqlen > 0 && (size_t)reqlen < sizeof(req)
+		                && (size_t)reqlen + 1 + SPTPS_DATAGRAM_OVERHEAD <= to->nexthop->minmtu) {
+			logger(mesh, MESHLINK_DEBUG, "Sending REQ_SPTPS via UDP to %s for %s", to->nexthop->name, to->name);
+
+			/* Include the trailing NUL so req_key_h sees a C string. */
+			if(sptps_send_record(&to->nexthop->sptps, PKT_REQ_SPTPS, req, (uint16_t)(reqlen + 1))) {
+				return true;
 			}
+
+			/* UDP send failed (e.g. rekey); fall through to META. */
 		}
 
 		/* If no valid key is known yet, send the packets using ANS_KEY requests,
 		   to ensure we get to learn the reflexive UDP address. */
 		if(!to->status.validkey) {
 			return send_request(mesh, to->nexthop->connection, NULL, "%d %s %s %s -1 -1 -1 %d", ANS_KEY, mesh->self->name, to->name, buf, 0);
+		} else if(reqlen > 0 && (size_t)reqlen < sizeof(req)) {
+			return send_request(mesh, to->nexthop->connection, NULL, "%s", req);
 		} else {
 			return send_request(mesh, to->nexthop->connection, NULL, "%d %s %s %d %s", REQ_KEY, mesh->self->name, to->name, REQ_SPTPS, buf);
 		}
@@ -735,17 +754,30 @@ bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t
 		return false;
 	}
 
-	vpn_packet_t inpkt;
-
 	if(type == PKT_REQ_SPTPS) {
-		logger(mesh, MESHLINK_INFO, "Got REQ_SPTPS via UDP from %s", from->name);
+		logger(mesh, MESHLINK_DEBUG, "Got REQ_SPTPS via UDP from %s", from->name);
 
 		if(!from->connection || !data || !len) {
 			return true;
 		}
 
-		return req_key_h(mesh, from->connection, data);
+		/* Sender includes the trailing NUL in len (sptps also writes decrypted_buffer[len - 20] = 0). */
+		if(((const char *)data)[len - 1] != '\0') {
+			return true;
+		}
+
+		/* from->connection is the meta session with the UDP sender (the nexthop), used
+		   for logging and req_key_h's from->connection != c check. A false return from
+		   req_key_h means "drop this meta connection"; on the datagram path that would
+		   abort() in sptps_receive_data_datagram, so ignore the result. */
+		if(!req_key_h(mesh, from->connection, data)) {
+			logger(mesh, MESHLINK_DEBUG, "Ignoring failed REQ_SPTPS via UDP from %s", from->name);
+		}
+
+		return true;
 	}
+
+	vpn_packet_t inpkt;
 
 	if(type == PKT_PROBE) {
 		inpkt.len = len;
