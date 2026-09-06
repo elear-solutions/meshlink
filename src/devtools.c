@@ -22,6 +22,7 @@
 
 #include "logger.h"
 #include "meshlink_internal.h"
+#include "net.h"
 #include "node.h"
 #include "submesh.h"
 #include "splay_tree.h"
@@ -424,4 +425,96 @@ void devtool_set_meta_status_cb(meshlink_handle_t *mesh, meshlink_node_status_cb
 
 	mesh->meta_status_cb = cb;
 	pthread_mutex_unlock(&mesh->mutex);
+}
+
+void devtool_set_external_ip_address(meshlink_handle_t *mesh, meshlink_node_t *node, const char *external_ip_address) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	node_t *n = (node_t *)node;
+	free(n->external_ip_address);
+	n->external_ip_address = external_ip_address ? xstrdup(external_ip_address) : NULL;
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+void devtool_update_node_udp(meshlink_handle_t *mesh, meshlink_node_t *node, const struct sockaddr *addr) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	update_node_udp(mesh, (node_t *)node, addr ? (const sockaddr_t *)addr : NULL);
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+bool devtool_choose_udp_address(meshlink_handle_t *mesh, meshlink_node_t *node, struct sockaddr_storage *addr, int *sock) {
+	if(!mesh || !node || !addr || !sock) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	node_t *n = (node_t *)node;
+	int saved_choice = n->udp_choice;
+	uint64_t saved_prng[4];
+	memcpy(saved_prng, mesh->prng_state, sizeof saved_prng);
+
+	sockaddr_t sa_buf;
+	const sockaddr_t *sa = NULL;
+	choose_udp_address(mesh, n, &sa, sock, &sa_buf);
+
+	n->udp_choice = saved_choice;
+	memcpy(mesh->prng_state, saved_prng, sizeof saved_prng);
+
+	if(!sa || sa->sa.sa_family == AF_UNSPEC || sa->sa.sa_family == AF_UNKNOWN) {
+		pthread_mutex_unlock(&mesh->mutex);
+		return false;
+	}
+
+	memset(addr, 0, sizeof(*addr));
+	memcpy(addr, &sa->storage, sizeof(*addr));
+	pthread_mutex_unlock(&mesh->mutex);
+	return true;
+}
+
+void devtool_set_udp_confirmed(meshlink_handle_t *mesh, meshlink_node_t *node, bool confirmed) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	((node_t *)node)->status.udp_confirmed = confirmed;
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+bool devtool_graph_may_seed_udp(meshlink_handle_t *mesh, meshlink_node_t *node, const struct sockaddr *addr) {
+	if(!mesh || !node || !addr) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	bool ok = graph_may_seed_udp((node_t *)node, (const sockaddr_t *)addr);
+	pthread_mutex_unlock(&mesh->mutex);
+	return ok;
 }

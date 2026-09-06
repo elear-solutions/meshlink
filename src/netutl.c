@@ -282,6 +282,49 @@ void sockaddrcpy_setport(sockaddr_t *a, const sockaddr_t *b, uint16_t port) {
 	}
 }
 
+bool udp_address_bound(const sockaddr_t *sa) {
+	return sa && (sa->sa.sa_family == AF_INET || sa->sa.sa_family == AF_INET6);
+}
+
+bool udp_address_usable(const sockaddr_t *sa) {
+	if(!udp_address_bound(sa)) {
+		return false;
+	}
+
+	if(sa->sa.sa_family == AF_INET) {
+		const uint32_t a = ntohl(sa->in.sin_addr.s_addr);
+		const uint32_t rfc1918_10_net = 0x0a000000;   /* 10.0.0.0/8 */
+		const uint32_t rfc1918_10_mask = 0xff000000;
+		const uint32_t rfc1918_172_net = 0xac100000;  /* 172.16.0.0/12 */
+		const uint32_t rfc1918_172_mask = 0xfff00000;
+		const uint32_t rfc1918_192_net = 0xc0a80000;  /* 192.168.0.0/16 */
+		const uint32_t rfc1918_192_mask = 0xffff0000;
+
+		if((a & rfc1918_10_mask) == rfc1918_10_net) {
+			return false;
+		}
+
+		if((a & rfc1918_172_mask) == rfc1918_172_net) {
+			return false;
+		}
+
+		if((a & rfc1918_192_mask) == rfc1918_192_net) {
+			return false;
+		}
+	}
+
+	if(sa->sa.sa_family == AF_INET6) {
+		const uint8_t ula_prefix = 0xfc; /* Unique-local fc00::/7 */
+		const uint8_t ula_mask = 0xfe;
+
+		if((sa->in6.sin6_addr.s6_addr[0] & ula_mask) == ula_prefix) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
 void sockaddrfree(sockaddr_t *a) {
 	if(a->sa.sa_family == AF_UNKNOWN) {
 		free(a->unknown.address);

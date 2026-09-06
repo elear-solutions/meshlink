@@ -243,4 +243,42 @@ extern void (*devtool_set_inviter_commits_first)(bool inviter_commited_first);
  */
 void devtool_set_meta_status_cb(struct meshlink_handle *mesh, meshlink_node_status_cb_t cb);
 
+/// Set a node's learned REQ_EXTERNAL address (host and port, space-separated).
+/** @param mesh                   Mesh handle.
+ *  @param node                   Node whose REQ_EXTERNAL string to replace.
+ *  @param external_ip_address    "host port", or NULL to clear.
+ */
+void devtool_set_external_ip_address(struct meshlink_handle *mesh, struct meshlink_node *node, const char *external_ip_address);
+
+/// Apply update_node_udp() as if this address was learned from the graph or a peer.
+/** @param mesh  Mesh handle.
+ *  @param node  Node whose UDP dest to set.
+ *  @param addr  New dest, or NULL to only drop the UDP cache entry.
+ */
+void devtool_update_node_udp(struct meshlink_handle *mesh, struct meshlink_node *node, const struct sockaddr *addr);
+
+/// Peek at the UDP destination choose_udp_address() would use, without advancing rotation.
+/** @param mesh  Mesh handle.
+ *  @param node  Peer to pick a dest for.
+ *  @param addr  Filled with the chosen dest on success.
+ *  @param sock  Filled with the listen-socket index on success.
+ *  @return      true if a usable dest with a matching listen fd exists.
+ */
+bool devtool_choose_udp_address(struct meshlink_handle *mesh, struct meshlink_node *node, struct sockaddr_storage *addr, int *sock);
+
+/// Pin or clear node_t.status.udp_confirmed for dest-pick tests.
+/** @param mesh       Mesh handle.
+ *  @param node       Node to update.
+ *  @param confirmed  New udp_confirmed flag.
+ */
+void devtool_set_udp_confirmed(struct meshlink_handle *mesh, struct meshlink_node *node, bool confirmed);
+
+/// True when sssp_bfs would seed n->address from this edge dest.
+/** @param mesh  Mesh handle.
+ *  @param node  Node the edge points to.
+ *  @param addr  Candidate edge address.
+ *  @return      true if graph_may_seed_udp() accepts the candidate.
+ */
+bool devtool_graph_may_seed_udp(struct meshlink_handle *mesh, struct meshlink_node *node, const struct sockaddr *addr);
+
 #endif

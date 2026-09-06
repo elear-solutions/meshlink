@@ -115,6 +115,22 @@ node_t *lookup_node_udp(meshlink_handle_t *mesh, const sockaddr_t *sa) {
 	return hash_search(mesh->node_udp_cache, sa);
 }
 
+bool graph_may_seed_udp(const node_t *n, const sockaddr_t *edge_addr) {
+	if(!n || !edge_addr) {
+		return false;
+	}
+
+	if(n->status.reachable && n->address.sa.sa_family != AF_UNSPEC) {
+		return false;
+	}
+
+	if(edge_addr->sa.sa_family == AF_UNKNOWN || n->status.udp_confirmed) {
+		return false;
+	}
+
+	return udp_address_usable(edge_addr);
+}
+
 void update_node_udp(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa) {
 	if(n == mesh->self) {
 		logger(mesh, MESHLINK_WARNING, "Trying to update UDP address of mesh->self!");
