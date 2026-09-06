@@ -165,6 +165,8 @@ struct utcp_connection {
 	bool nodelay;
 	bool keepalive;
 	bool shut_wr;
+	int timeout; // sec, 0 = inherit utcp->timeout; >0 also arms idle-RX
+	struct timespec last_rx;
 
 	// Congestion avoidance state
 

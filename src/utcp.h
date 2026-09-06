@@ -109,6 +109,8 @@ size_t utcp_get_rcvbuf_free(struct utcp_connection *connection);
 size_t utcp_get_sendq(struct utcp_connection *connection);
 size_t utcp_get_recvq(struct utcp_connection *connection);
 
+void utcp_set_timeout(struct utcp_connection *connection, int seconds);
+
 bool utcp_get_nodelay(struct utcp_connection *connection);
 void utcp_set_nodelay(struct utcp_connection *connection, bool nodelay);
 
