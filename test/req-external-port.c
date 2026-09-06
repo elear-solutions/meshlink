@@ -528,6 +528,12 @@ int main(void) {
 	assert(lan_hits == 3);
 	assert(wan_hits == 3);
 
+	/* Own public IP in the other family says nothing about the NAT either. */
+	devtool_set_external_ip_address(mesh_foo, self, "2001:db8::1 1");
+	advance_dests(mesh_foo, peer, 6, &lan_hint, &ext_dest, NULL, &lan_hits, &wan_hits);
+	assert(lan_hits == 3);
+	assert(wan_hits == 3);
+
 	/* Self dest: peer REQ_EXTERNAL equal to our own IP:port is never a dest,
 	   whether self is pinned as "IP PORT" or learned as "IP" (port = myport).
 	   The recent[] entry equal to self is skipped too, so with no WAN dest left

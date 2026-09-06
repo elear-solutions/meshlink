@@ -456,16 +456,19 @@ void devtool_update_node_udp(meshlink_handle_t *mesh, meshlink_node_t *node, con
 	node_t *n = (node_t *)node;
 	const sockaddr_t *sa = (const sockaddr_t *)addr;
 
-	if(sa && sa->sa.sa_family == AF_UNSPEC) {
+	if(n != mesh->self && sa && sa->sa.sa_family == AF_UNSPEC) {
 		/* Forget every learned dest: cache entry, n->address and recent[].
 		   update_node_udp() cannot take the address itself, it would log it
 		   through sockaddr2hostname(), which aborts on AF_UNSPEC at DEBUG level.
 		   n->address may own AF_UNKNOWN strings; recent[] only holds shallow
-		   copies of them, so free once and zero both. */
+		   copies of them, so free once and zero both. recent[] is persisted,
+		   so mark the node dirty like node_add_recent_address() does. Self is
+		   left to update_node_udp(), which refuses it with a warning. */
 		update_node_udp(mesh, n, NULL);
 		sockaddrfree(&n->address);
 		memset(&n->address, 0, sizeof n->address);
 		memset(n->recent, 0, sizeof n->recent);
+		n->status.dirty = true;
 	} else {
 		update_node_udp(mesh, n, sa);
 	}
