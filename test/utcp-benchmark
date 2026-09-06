@@ -1,8 +1,16 @@
 #!/bin/bash
 set -e
 
-# Require root permissions
+# Require root + a usable netns (Docker without CAP_SYS_ADMIN cannot create one)
 test "$(id -u)" = "0" || exit 77
+command -v ip >/dev/null || { echo "SKIP: ip not found (need iproute2)" >&2; exit 77; }
+PROBE="utcp-netns-probe-$$"
+ip netns delete "$PROBE" >/dev/null 2>&1 || true
+if ! ip netns add "$PROBE" >/dev/null 2>&1; then
+	echo "SKIP: cannot create netns (need CAP_SYS_ADMIN and shared /run/netns)" >&2
+	exit 77
+fi
+ip netns delete "$PROBE" >/dev/null 2>&1 || true
 
 # Configuration
 LOG_PREFIX=/dev/shm/utcp-benchmark-log

@@ -2,14 +2,35 @@
 #undef NDEBUG
 #endif
 
+#include <stdbool.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <assert.h>
 
 #include "utils.h"
 #include "../src/meshlink.h"
 
+static bool saw_multicast_if_error;
+
+static void discovery_log_cb(meshlink_handle_t *mesh, meshlink_log_level_t level, const char *text) {
+	if(text && strstr(text, "Could not set outgoing multicast interface")) {
+		saw_multicast_if_error = true;
+	}
+
+	log_cb(mesh, level, text);
+}
+
+static void pair_status_cb(meshlink_handle_t *mesh, meshlink_node_t *node, bool reachable) {
+	(void)node;
+
+	if(reachable && meshlink_get_self(mesh) != node) {
+		set_sync_flag(mesh->priv, true);
+	}
+}
+
 int main(void) {
-	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
+	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, discovery_log_cb);
 
 	// Open two new meshlink instance.
 
@@ -46,7 +67,30 @@ int main(void) {
 	meshlink_enable_discovery(mesh_a, true);
 	meshlink_enable_discovery(mesh_b, true);
 
-	start_meshlink_pair(mesh_a, mesh_b);
+	struct sync_flag pair_status = {.flag = false};
+	init_sync_flag(&pair_status);
+
+	mesh_a->priv = &pair_status;
+	meshlink_set_node_status_cb(mesh_a, pair_status_cb);
+
+	assert(meshlink_start(mesh_a));
+	assert(meshlink_start(mesh_b));
+
+	if(!wait_sync_flag(&pair_status, 5)) {
+		meshlink_set_node_status_cb(mesh_a, NULL);
+		mesh_a->priv = NULL;
+		close_meshlink_pair(mesh_a, mesh_b);
+
+		if(saw_multicast_if_error) {
+			fprintf(stderr, "SKIP: mDNS discovery unavailable (cannot set multicast interface)\n");
+			exit(77);
+		}
+
+		assert(!"nodes failed to discover each other");
+	}
+
+	meshlink_set_node_status_cb(mesh_a, NULL);
+	mesh_a->priv = NULL;
 
 	// Clean up.
 

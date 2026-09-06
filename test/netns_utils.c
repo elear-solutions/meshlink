@@ -9,6 +9,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <unistd.h>
 
 #include "../src/meshlink.h"
 #include "netns_utils.h"
@@ -16,12 +17,40 @@
 
 static int ip = 1;
 
-/// Create meshlink instances and network namespaces for a list of peers
-static void create_peers(peer_config_t *peers, int npeers, const char *prefix) {
-	// We require root for network namespaces
+/// SKIP (exit 77) when this environment cannot create netns.
+static void require_netns(void) {
 	if(getuid() != 0) {
+		fprintf(stderr, "SKIP: netns tests require root\n");
 		exit(77);
 	}
+
+	if(access("/bin/ip", X_OK) != 0) {
+		fprintf(stderr, "SKIP: /bin/ip not found (need iproute2)\n");
+		exit(77);
+	}
+
+	/* PID-unique name + delete-first so a leftover or parallel probe cannot false-SKIP. */
+	char *add_cmd = NULL;
+	char *del_cmd = NULL;
+	assert(asprintf(&add_cmd, "/bin/ip netns add meshlink-netns-probe-%d >/dev/null 2>&1", getpid()) > 0);
+	assert(asprintf(&del_cmd, "/bin/ip netns delete meshlink-netns-probe-%d >/dev/null 2>&1", getpid()) > 0);
+	(void)system(del_cmd);
+
+	if(system(add_cmd) != 0) {
+		free(add_cmd);
+		free(del_cmd);
+		fprintf(stderr, "SKIP: cannot create netns (need CAP_SYS_ADMIN and shared /run/netns)\n");
+		exit(77);
+	}
+
+	(void)system(del_cmd);
+	free(add_cmd);
+	free(del_cmd);
+}
+
+/// Create meshlink instances and network namespaces for a list of peers
+static void create_peers(peer_config_t *peers, int npeers, const char *prefix) {
+	require_netns();
 
 	for(int i = 0; i < npeers; i++) {
 		assert(asprintf(&peers[i].netns_name, "%s%d", prefix, i) > 0);
