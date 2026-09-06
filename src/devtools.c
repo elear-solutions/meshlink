@@ -453,11 +453,30 @@ void devtool_update_node_udp(meshlink_handle_t *mesh, meshlink_node_t *node, con
 		abort();
 	}
 
-	update_node_udp(mesh, (node_t *)node, addr ? (const sockaddr_t *)addr : NULL);
+	node_t *n = (node_t *)node;
+	const sockaddr_t *sa = (const sockaddr_t *)addr;
+
+	if(n != mesh->self && sa && sa->sa.sa_family == AF_UNSPEC) {
+		/* Forget every learned dest: cache entry, n->address and recent[].
+		   update_node_udp() cannot take the address itself, it would log it
+		   through sockaddr2hostname(), which aborts on AF_UNSPEC at DEBUG level.
+		   n->address may own AF_UNKNOWN strings; recent[] only holds shallow
+		   copies of them, so free once and zero both. recent[] is persisted,
+		   so mark the node dirty like node_add_recent_address() does. Self is
+		   left to update_node_udp(), which refuses it with a warning. */
+		update_node_udp(mesh, n, NULL);
+		sockaddrfree(&n->address);
+		memset(&n->address, 0, sizeof n->address);
+		memset(n->recent, 0, sizeof n->recent);
+		n->status.dirty = true;
+	} else {
+		update_node_udp(mesh, n, sa);
+	}
+
 	pthread_mutex_unlock(&mesh->mutex);
 }
 
-bool devtool_choose_udp_address(meshlink_handle_t *mesh, meshlink_node_t *node, struct sockaddr_storage *addr, int *sock) {
+static bool devtool_pick_udp_address(meshlink_handle_t *mesh, meshlink_node_t *node, struct sockaddr_storage *addr, int *sock, bool advance) {
 	if(!mesh || !node || !addr || !sock) {
 		meshlink_errno = MESHLINK_EINVAL;
 		return false;
@@ -476,8 +495,10 @@ bool devtool_choose_udp_address(meshlink_handle_t *mesh, meshlink_node_t *node, 
 	const sockaddr_t *sa = NULL;
 	choose_udp_address(mesh, n, &sa, sock, &sa_buf);
 
-	n->udp_choice = saved_choice;
-	memcpy(mesh->prng_state, saved_prng, sizeof saved_prng);
+	if(!advance) {
+		n->udp_choice = saved_choice;
+		memcpy(mesh->prng_state, saved_prng, sizeof saved_prng);
+	}
 
 	if(!sa || sa->sa.sa_family == AF_UNSPEC || sa->sa.sa_family == AF_UNKNOWN) {
 		pthread_mutex_unlock(&mesh->mutex);
@@ -488,6 +509,14 @@ bool devtool_choose_udp_address(meshlink_handle_t *mesh, meshlink_node_t *node, 
 	memcpy(addr, &sa->storage, sizeof(*addr));
 	pthread_mutex_unlock(&mesh->mutex);
 	return true;
+}
+
+bool devtool_choose_udp_address(meshlink_handle_t *mesh, meshlink_node_t *node, struct sockaddr_storage *addr, int *sock) {
+	return devtool_pick_udp_address(mesh, node, addr, sock, false);
+}
+
+bool devtool_choose_udp_address_advance(meshlink_handle_t *mesh, meshlink_node_t *node, struct sockaddr_storage *addr, int *sock) {
+	return devtool_pick_udp_address(mesh, node, addr, sock, true);
 }
 
 void devtool_set_udp_confirmed(meshlink_handle_t *mesh, meshlink_node_t *node, bool confirmed) {

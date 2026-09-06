@@ -253,7 +253,9 @@ void devtool_set_external_ip_address(struct meshlink_handle *mesh, struct meshli
 /// Apply update_node_udp() as if this address was learned from the graph or a peer.
 /** @param mesh  Mesh handle.
  *  @param node  Node whose UDP dest to set.
- *  @param addr  New dest, or NULL to only drop the UDP cache entry.
+ *  @param addr  New dest; NULL only drops the UDP cache entry; an AF_UNSPEC
+ *               sockaddr forgets everything learned (cache entry, node_t.address
+ *               and node_t.recent[]).
  */
 void devtool_update_node_udp(struct meshlink_handle *mesh, struct meshlink_node *node, const struct sockaddr *addr);
 
@@ -265,6 +267,18 @@ void devtool_update_node_udp(struct meshlink_handle *mesh, struct meshlink_node 
  *  @return      true if a usable dest with a matching listen fd exists.
  */
 bool devtool_choose_udp_address(struct meshlink_handle *mesh, struct meshlink_node *node, struct sockaddr_storage *addr, int *sock);
+
+/// Same as devtool_choose_udp_address(), but consumes a rotation slot like a real send would.
+/** The rotation state is shared with the event-loop send path, so call this on
+ *  a stopped mesh when the sequence of picks must be deterministic.
+ *
+ *  @param mesh  Mesh handle.
+ *  @param node  Peer to pick a dest for.
+ *  @param addr  Filled with the chosen dest on success.
+ *  @param sock  Filled with the listen-socket index on success.
+ *  @return      true if a usable dest with a matching listen fd exists.
+ */
+bool devtool_choose_udp_address_advance(struct meshlink_handle *mesh, struct meshlink_node *node, struct sockaddr_storage *addr, int *sock);
 
 /// Pin or clear node_t.status.udp_confirmed for dest-pick tests.
 /** @param mesh       Mesh handle.

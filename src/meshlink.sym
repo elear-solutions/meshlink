@@ -1,5 +1,6 @@
 __emutls_v.meshlink_errno
 devtool_choose_udp_address
+devtool_choose_udp_address_advance
 devtool_export_json_all_edges_state
 devtool_free_node_status
 devtool_get_all_edges
