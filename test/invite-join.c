@@ -215,6 +215,11 @@ int main(void) {
 	assert(invalid5 < localhost);
 	free(grault_url);
 
+	// Drop the bogus addresses again. Otherwise they leak into every later invitation and
+	// meshlink_join() blocks on resolving each of them (up to 30s per name).
+
+	meshlink_clear_invitation_addresses(mesh1);
+
 	// Check inviting nodes into a submesh
 
 	assert(!meshlink_get_node_submesh(mesh1, meshlink_get_self(mesh1)));
@@ -267,9 +272,22 @@ int main(void) {
 	assert(!strcmp(mesh5_submesh->name, "submesh1"));
 	assert(!strcmp(mesh6_submesh->name, "submesh2"));
 
-	// Wait for nodes to connect, and check that foo sees the right submeshes
+	// Wait for nodes to connect, and check that foo sees the right submeshes.
+	// foo changed its listen port above, so baz only knows a stale address and the mesh
+	// can only heal from foo's side, gated by retry_outgoing's 5s-step backoff. A fixed
+	// sleep races that timer; poll for full convergence instead.
 
-	sleep(2);
+	assert_after(meshlink_get_node(mesh1, mesh4->name)
+	             && meshlink_get_node(mesh1, mesh6->name)
+	             && meshlink_get_node(mesh2, mesh4->name)
+	             && meshlink_get_node(mesh2, mesh5->name)
+	             && meshlink_get_node(mesh2, mesh6->name)
+	             && meshlink_get_node(mesh4, mesh2->name)
+	             && meshlink_get_node(mesh5, mesh2->name)
+	             && meshlink_get_node(mesh6, mesh2->name)
+	             && meshlink_get_node(mesh4, mesh5->name)
+	             && meshlink_get_node(mesh5, mesh4->name), 30);
+
 	meshlink_node_t *mesh1_four = meshlink_get_node(mesh1, mesh4->name);
 	meshlink_node_t *mesh1_six = meshlink_get_node(mesh1, mesh6->name);
 	assert(meshlink_get_node_submesh(mesh1, meshlink_get_self(mesh1)) == NULL);
