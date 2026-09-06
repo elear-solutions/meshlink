@@ -48,14 +48,20 @@ bool wait_sync_flag(struct sync_flag *s, int seconds) {
 	assert(pthread_mutex_lock(&s->mutex) == 0);
 
 	while(!s->flag) {
-		if(!pthread_cond_timedwait(&s->cond, &s->mutex, &timeout) || errno != EINTR) {
+		int rc = pthread_cond_timedwait(&s->cond, &s->mutex, &timeout);
+
+		if(rc == ETIMEDOUT) {
+			break;
+		}
+
+		if(rc != 0 && rc != EINTR) {
 			break;
 		}
 	}
 
+	bool flag = s->flag;
 	assert(pthread_mutex_unlock(&s->mutex) == 0);
-
-	return s->flag;
+	return flag;
 }
 
 void link_meshlink_pair(meshlink_handle_t *a, meshlink_handle_t *b) {
