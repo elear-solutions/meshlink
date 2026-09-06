@@ -547,3 +547,36 @@ bool devtool_graph_may_seed_udp(meshlink_handle_t *mesh, meshlink_node_t *node, 
 	pthread_mutex_unlock(&mesh->mutex);
 	return ok;
 }
+
+bool devtool_force_relay_path(meshlink_handle_t *mesh, meshlink_node_t *dest, meshlink_node_t *nexthop) {
+	if(!mesh || !dest || !nexthop) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	node_t *d = (node_t *)dest;
+	node_t *h = (node_t *)nexthop;
+
+	if(d == h || !h->status.validkey) {
+		pthread_mutex_unlock(&mesh->mutex);
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	d->nexthop = h;
+	d->status.udp_confirmed = false;
+	/* minmtu = 0 forces the (len - 21) > to->minmtu TCP branch so the relay predicate is reached. */
+	d->minmtu = 0;
+	h->status.udp_confirmed = true;
+
+	if(!h->minmtu) {
+		h->minmtu = MTU;
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return true;
+}

@@ -19,6 +19,15 @@
 static struct sync_flag received;
 static struct sync_flag bar_learned_baz;
 static struct sync_flag baz_learned_bar;
+static struct sync_flag saw_udp_req_sptps;
+
+static void trio_log_cb(meshlink_handle_t *mesh, meshlink_log_level_t level, const char *text) {
+	if(text && strstr(text, "Sending REQ_SPTPS via UDP")) {
+		set_sync_flag(&saw_udp_req_sptps, true);
+	}
+
+	log_cb(mesh, level, text);
+}
 
 static void receive_cb(meshlink_handle_t *mesh, meshlink_node_t *source, const void *data, size_t len) {
 	(void)mesh;
@@ -51,8 +60,9 @@ int main(void) {
 	init_sync_flag(&received);
 	init_sync_flag(&bar_learned_baz);
 	init_sync_flag(&baz_learned_bar);
+	init_sync_flag(&saw_udp_req_sptps);
 
-	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
+	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, trio_log_cb);
 
 	// Create three instances.
 
@@ -125,6 +135,48 @@ int main(void) {
 	size_t nedges = 0;
 	assert_after((edges = devtool_get_all_edges(mesh[1], edges, &nedges), nedges == 3), 15);
 	free(edges);
+
+	// Dest has no UDP, nexthop does: REQ_SPTPS should go UDP to foo, and Hello must arrive.
+	set_sync_flag(&received, false);
+	set_sync_flag(&saw_udp_req_sptps, false);
+
+	for(int i = 0; i < 15; i++) {
+		assert(devtool_force_relay_path(mesh[2], meshlink_get_node(mesh[2], name[1]), meshlink_get_node(mesh[2], name[0])));
+		assert(meshlink_send(mesh[2], meshlink_get_node(mesh[2], name[1]), "Hello", 5));
+
+		if(wait_sync_flag(&saw_udp_req_sptps, 1) && wait_sync_flag(&received, 1)) {
+			break;
+		}
+
+		set_sync_flag(&received, false);
+		set_sync_flag(&saw_udp_req_sptps, false);
+	}
+
+	assert(check_sync_flag(&saw_udp_req_sptps));
+	assert(wait_sync_flag(&received, 15));
+
+	// dest == nexthop is rejected
+	assert(!devtool_force_relay_path(mesh[2], meshlink_get_node(mesh[2], name[1]), meshlink_get_node(mesh[2], name[1])));
+
+	// Negative: nexthop UDP unconfirmed → skip the UDP relay, Hello still arrives via META.
+	set_sync_flag(&received, false);
+	set_sync_flag(&saw_udp_req_sptps, false);
+
+	for(int i = 0; i < 15; i++) {
+		assert(devtool_force_relay_path(mesh[2], meshlink_get_node(mesh[2], name[1]), meshlink_get_node(mesh[2], name[0])));
+		devtool_set_udp_confirmed(mesh[2], meshlink_get_node(mesh[2], name[0]), false);
+		assert(meshlink_send(mesh[2], meshlink_get_node(mesh[2], name[1]), "Hello", 5));
+
+		if(wait_sync_flag(&received, 1) && !check_sync_flag(&saw_udp_req_sptps)) {
+			break;
+		}
+
+		set_sync_flag(&received, false);
+		set_sync_flag(&saw_udp_req_sptps, false);
+	}
+
+	assert(wait_sync_flag(&received, 15));
+	assert(!check_sync_flag(&saw_udp_req_sptps));
 
 	// Stop the first node
 

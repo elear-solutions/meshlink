@@ -295,4 +295,17 @@ void devtool_set_udp_confirmed(struct meshlink_handle *mesh, struct meshlink_nod
  */
 bool devtool_graph_may_seed_udp(struct meshlink_handle *mesh, struct meshlink_node *node, const struct sockaddr *addr);
 
+/// Pretend dest is only reachable via nexthop UDP (for relay tests).
+/** Pins dest's nexthop, clears dest's P2P UDP (udp_confirmed / minmtu = 0 so
+ *  the TCP-fallback branch is taken), and marks nexthop UDP-confirmed. The next
+ *  graph recompute or probe reply overwrites these fields. nexthop must already
+ *  have a live SPTPS session (validkey).
+ *
+ *  @param mesh     Mesh handle.
+ *  @param dest     Node that should be reached only via nexthop.
+ *  @param nexthop  Relay with a confirmed UDP session. Must not be dest.
+ *  @return         true on success.
+ */
+bool devtool_force_relay_path(struct meshlink_handle *mesh, struct meshlink_node *dest, struct meshlink_node *nexthop);
+
 #endif
