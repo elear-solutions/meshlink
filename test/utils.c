@@ -155,7 +155,7 @@ void start_meshlink_pair(meshlink_handle_t *a, meshlink_handle_t *b) {
 	assert(meshlink_start(a));
 	assert(meshlink_start(b));
 
-	assert(wait_sync_flag(&pair_status, 30));
+	assert(wait_sync_flag(&pair_status, 5));
 
 	meshlink_set_node_status_cb(a, NULL);
 	a->priv = NULL;
