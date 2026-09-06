@@ -58,7 +58,10 @@ static void check_address(meshlink_handle_t *mesh, int fd, int port, const char 
 	assert(strstr(r.request, "GET "));
 	assert(strstr(r.request, " HTTP/1.0"));
 	assert(!strstr(r.request, "GET http://"));
-	assert(strstr(r.request, "Host: 127.0.0.1"));
+
+	char hosthdr[64];
+	assert(snprintf(hosthdr, sizeof(hosthdr), "Host: 127.0.0.1:%d", port) > 0);
+	assert(strstr(r.request, hosthdr));
 
 	if(expected) {
 		assert(addr);

@@ -288,9 +288,17 @@ char *meshlink_get_external_address_for_family(meshlink_handle_t *mesh, int fami
 
 		if(s >= 0) {
 			char req[512];
-			int reqlen = snprintf(req, sizeof(req),
-			                      "GET %s HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n",
-			                      path, host);
+			int reqlen;
+
+			if(port) {
+				reqlen = snprintf(req, sizeof(req),
+				                  "GET %s HTTP/1.0\r\nHost: %s:%s\r\nConnection: close\r\n\r\n",
+				                  path, host, port);
+			} else {
+				reqlen = snprintf(req, sizeof(req),
+				                  "GET %s HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n",
+				                  path, host);
+			}
 
 			if(reqlen > 0 && reqlen < (int)sizeof(req) && send(s, req, (size_t)reqlen, 0) == reqlen) {
 				int len = recv(s, line, sizeof(line) - 1, MSG_WAITALL);
