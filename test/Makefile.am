@@ -26,6 +26,7 @@ TESTS = \
 	metering-slowping \
 	metering-tcponly \		
 	meta-connections \
+	parse-external-http \
 	port \
 	req-external-port \
 	sign-verify \
@@ -77,6 +78,7 @@ check_PROGRAMS = \
 	metering-slowping \
 	metering-tcponly \
 	meta-connections \
+	parse-external-http \
 	port \
 	req-external-port \
 	sign-verify \
@@ -175,6 +177,9 @@ metering_tcponly_LDADD = $(top_builddir)/src/libmeshlink.la
 
 meta_connections_SOURCES = meta-connections.c netns_utils.c netns_utils.h utils.c utils.h
 meta_connections_LDADD = $(top_builddir)/src/libmeshlink.la
+
+parse_external_http_SOURCES = parse-external-http.c ../src/external_address_http.c
+parse_external_http_LDADD =
 
 port_SOURCES = port.c utils.c utils.h
 port_LDADD = $(top_builddir)/src/libmeshlink.la
