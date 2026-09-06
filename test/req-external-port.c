@@ -26,6 +26,62 @@
 
 static struct sync_flag bar_reachable;
 
+static struct sockaddr_in ipv4(const char *ip, uint16_t port) {
+	struct sockaddr_in sa;
+	memset(&sa, 0, sizeof sa);
+	sa.sin_family = AF_INET;
+	sa.sin_port = htons(port);
+	assert(inet_pton(AF_INET, ip, &sa.sin_addr) == 1);
+	return sa;
+}
+
+static bool dest_is(const struct sockaddr_storage *dest, const char *ip, uint16_t port) {
+	if(dest->ss_family != AF_INET) {
+		return false;
+	}
+
+	struct sockaddr_in want = ipv4(ip, port);
+	const struct sockaddr_in *got = (const struct sockaddr_in *)dest;
+	return got->sin_addr.s_addr == want.sin_addr.s_addr && got->sin_port == want.sin_port;
+}
+
+static bool dest_is6(const struct sockaddr_storage *dest, const char *ip, uint16_t port) {
+	if(dest->ss_family != AF_INET6) {
+		return false;
+	}
+
+	struct in6_addr want;
+	assert(inet_pton(AF_INET6, ip, &want) == 1);
+	const struct sockaddr_in6 *got = (const struct sockaddr_in6 *)dest;
+	return !memcmp(&got->sin6_addr, &want, sizeof want) && got->sin6_port == htons(port);
+}
+
+/* Consume `count` real rotation slots; report which dests showed up. */
+static void advance_dests(meshlink_handle_t *mesh, meshlink_node_t *peer, int count, const char *lan_ip, uint16_t lan_port, const char *wan_ip, uint16_t wan_port, const char *self_ip, uint16_t self_port, bool *saw_lan, bool *saw_wan) {
+	*saw_lan = false;
+	*saw_wan = false;
+
+	for(int i = 0; i < count; i++) {
+		struct sockaddr_storage dest;
+		int sock = -1;
+
+		if(!devtool_choose_udp_address_advance(mesh, peer, &dest, &sock)) {
+			continue;
+		}
+
+		assert(sock >= 0);
+		assert(!dest_is(&dest, self_ip, self_port));
+
+		if(lan_ip && dest_is(&dest, lan_ip, lan_port)) {
+			*saw_lan = true;
+		}
+
+		if(wan_ip && dest_is(&dest, wan_ip, wan_port)) {
+			*saw_wan = true;
+		}
+	}
+}
+
 static void status_cb(meshlink_handle_t *mesh, meshlink_node_t *node, bool reachable) {
 	(void)mesh;
 
@@ -383,24 +439,16 @@ int main(void) {
 	assert(((struct sockaddr_in *)&dest)->sin_addr.s_addr == expect_rfc.s_addr);
 	devtool_set_udp_confirmed(mesh_foo, peer, false);
 
-	/* RFC1918 / ULA REQ_EXTERNAL does not win. */
+	/* RFC1918 / ULA REQ_EXTERNAL is never used as the WAN dest. */
 	devtool_set_external_ip_address(mesh_foo, peer, "10.1.2.3 9");
 	assert(devtool_choose_udp_address(mesh_foo, peer, &dest, &sock));
-	assert(((struct sockaddr_in *)&dest)->sin_addr.s_addr != expect_rfc.s_addr);
-	assert((((struct sockaddr_in *)&dest)->sin_addr.s_addr & htonl(0xff000000)) != htonl(0x0a000000));
+	assert(!dest_is(&dest, "10.1.2.3", 9));
 
-	/* Hairpin: same public IP as self is skipped; leftover may be RFC1918 LAN. */
-	devtool_update_node_udp(mesh_foo, peer, (struct sockaddr *)&rfc1918);
-	devtool_set_external_ip_address(mesh_foo, self, "203.0.113.10 1");
-	devtool_set_external_ip_address(mesh_foo, peer, "203.0.113.10 30777");
+	devtool_set_external_ip_address(mesh_foo, peer, "fd00::1 9");
 	assert(devtool_choose_udp_address(mesh_foo, peer, &dest, &sock));
-	assert(((struct sockaddr_in *)&dest)->sin_addr.s_addr != expect_ext.s_addr);
-	devtool_set_external_ip_address(mesh_foo, self, NULL);
+	assert(!dest_is6(&dest, "fd00::1", 9));
 
 	devtool_set_external_ip_address(mesh_foo, peer, NULL);
-	assert(devtool_choose_udp_address(mesh_foo, peer, &dest, &sock));
-	assert(((struct sockaddr_in *)&dest)->sin_addr.s_addr != expect_rfc.s_addr);
-	assert((((struct sockaddr_in *)&dest)->sin_addr.s_addr & htonl(0xff000000)) != htonl(0x0a000000));
 
 	/* graph_may_seed_udp: reachable + set dest never clobbers; RFC1918/ULA never seed. */
 	assert(!devtool_graph_may_seed_udp(mesh_foo, peer, (struct sockaddr *)&rfc1918));
@@ -422,6 +470,76 @@ int main(void) {
 	assert(!devtool_graph_may_seed_udp(mesh_foo, peer, (struct sockaddr *)&ula));
 	assert(devtool_graph_may_seed_udp(mesh_foo, peer, (struct sockaddr *)&public_dest));
 	assert(devtool_graph_may_seed_udp(mesh_foo, peer, (struct sockaddr *)&canonical_ip));
+
+	printf("\n=== Dest pick: same public IP rotates LAN and WAN hairpin ===\n");
+
+	/* Rotation is per real send. Stop both meshes so no probe thread advances
+	   udp_choice underneath us; listen sockets stay open until meshlink_close(). */
+	int self_port = meshlink_get_port(mesh_foo);
+	assert(self_port > 0);
+	meshlink_stop(mesh_foo);
+	meshlink_stop(mesh_bar);
+
+	bool saw_lan, saw_wan;
+
+	/* Case 4: same house, different AP. No LAN address known at all: the WAN
+	   hairpin (same IP, peer's port) is the only dest and must actually be tried. */
+	devtool_set_udp_confirmed(mesh_foo, peer, false);
+	devtool_set_external_ip_address(mesh_foo, self, "203.0.113.10 1");
+	devtool_set_external_ip_address(mesh_foo, peer, "203.0.113.10 30777");
+	advance_dests(mesh_foo, peer, 2, NULL, 0, "203.0.113.10", 30777, "203.0.113.10", 1, &saw_lan, &saw_wan);
+	assert(saw_wan);
+
+	/* Case 1: same LAN. A hinted LAN address is tried, and the WAN hairpin still
+	   gets its turn. Peek must equal the next real pick. */
+	struct sockaddr_in lan_hint = ipv4("192.0.2.10", 9000);
+	meshlink_hint_address(mesh_foo, peer, (struct sockaddr *)&lan_hint);
+
+	struct sockaddr_storage peeked, picked;
+	int peek_sock = -1, pick_sock = -1;
+	assert(devtool_choose_udp_address(mesh_foo, peer, &peeked, &peek_sock));
+	assert(devtool_choose_udp_address_advance(mesh_foo, peer, &picked, &pick_sock));
+	assert(peeked.ss_family == picked.ss_family);
+	assert(!memcmp(&peeked, &picked, sizeof(struct sockaddr_in)));
+	assert(peek_sock == pick_sock);
+
+	advance_dests(mesh_foo, peer, 2, "192.0.2.10", 9000, "203.0.113.10", 30777, "203.0.113.10", 1, &saw_lan, &saw_wan);
+	assert(saw_lan);
+	assert(saw_wan);
+
+	/* Self dest: peer REQ_EXTERNAL equal to our own IP:port is never a dest,
+	   whether self is pinned as "IP PORT" or learned as "IP" (port = myport).
+	   A recent[] entry equal to self is skipped too. */
+	devtool_set_external_ip_address(mesh_foo, self, "203.0.113.10 30777");
+	struct sockaddr_in self_hint = ipv4("203.0.113.10", 30777);
+	meshlink_hint_address(mesh_foo, peer, (struct sockaddr *)&self_hint);
+	advance_dests(mesh_foo, peer, 4, "192.0.2.10", 9000, NULL, 0, "203.0.113.10", 30777, &saw_lan, &saw_wan);
+	assert(saw_lan);
+
+	char peer_ext[64];
+	snprintf(peer_ext, sizeof peer_ext, "203.0.113.10 %d", self_port);
+	devtool_set_external_ip_address(mesh_foo, self, "203.0.113.10");
+	devtool_set_external_ip_address(mesh_foo, peer, peer_ext);
+
+	for(int i = 0; i < 4; i++) {
+		assert(devtool_choose_udp_address_advance(mesh_foo, peer, &dest, &sock));
+		assert(!dest_is(&dest, "203.0.113.10", (uint16_t)self_port));
+	}
+
+	/* Case 5: phone on 4G, camera at home. Different public IPs: REQ_EXTERNAL
+	   always wins; a stale LAN hint must not steal the slot. */
+	struct sockaddr_in stale_lan = ipv4("192.168.1.50", 9000);
+	meshlink_hint_address(mesh_foo, peer, (struct sockaddr *)&stale_lan);
+	devtool_set_external_ip_address(mesh_foo, self, "203.0.113.1 1");
+	devtool_set_external_ip_address(mesh_foo, peer, "203.0.113.10 30777");
+
+	for(int i = 0; i < 4; i++) {
+		assert(devtool_choose_udp_address_advance(mesh_foo, peer, &dest, &sock));
+		assert(dest_is(&dest, "203.0.113.10", 30777));
+	}
+
+	devtool_set_external_ip_address(mesh_foo, self, NULL);
+	devtool_set_external_ip_address(mesh_foo, peer, NULL);
 
 	meshlink_close(mesh_foo);
 	meshlink_close(mesh_bar);

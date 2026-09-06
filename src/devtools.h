@@ -266,6 +266,15 @@ void devtool_update_node_udp(struct meshlink_handle *mesh, struct meshlink_node 
  */
 bool devtool_choose_udp_address(struct meshlink_handle *mesh, struct meshlink_node *node, struct sockaddr_storage *addr, int *sock);
 
+/// Same as devtool_choose_udp_address(), but consumes a rotation slot like a real send would.
+/** @param mesh  Mesh handle.
+ *  @param node  Peer to pick a dest for.
+ *  @param addr  Filled with the chosen dest on success.
+ *  @param sock  Filled with the listen-socket index on success.
+ *  @return      true if a usable dest with a matching listen fd exists.
+ */
+bool devtool_choose_udp_address_advance(struct meshlink_handle *mesh, struct meshlink_node *node, struct sockaddr_storage *addr, int *sock);
+
 /// Pin or clear node_t.status.udp_confirmed for dest-pick tests.
 /** @param mesh       Mesh handle.
  *  @param node       Node to update.

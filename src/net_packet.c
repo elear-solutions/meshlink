@@ -392,72 +392,56 @@ static bool parse_host_port_field(const char *field, char **host_out, char **por
 	return true;
 }
 
-static bool leftover_ok(const sockaddr_t *sa, bool allow_private) {
-	return allow_private ? udp_address_bound(sa) : udp_address_usable(sa);
+/* Our own findmyip dest. self->external_ip_address is "IP" (the port is
+   myport) when learned, or "IP PORT" when pinned through devtools. */
+static bool self_external_sockaddr(meshlink_handle_t *mesh, sockaddr_t *out) {
+	if(!mesh->self || !mesh->self->external_ip_address) {
+		return false;
+	}
+
+	char *host = xstrdup(mesh->self->external_ip_address);
+	char *port = strchr(host, ' ');
+
+	if(port) {
+		*port++ = 0;
+	} else {
+		port = mesh->myport;
+	}
+
+	bool ok = host_port_to_sockaddr(host, port, out);
+	free(host);
+	return ok;
 }
 
-static bool try_req_external(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **sa, int *sock, sockaddr_t *sa_buf, bool *hairpin_skip) {
+static bool is_self_external(meshlink_handle_t *mesh, const sockaddr_t *sa) {
+	sockaddr_t self_sa;
+	return self_external_sockaddr(mesh, &self_sa) && !sockaddrcmp(sa, &self_sa);
+}
+
+/* Peer REQ_EXTERNAL as a public dest. Only our own exact IP:port is refused;
+   the same IP on another port is a NAT hairpin candidate, not ourselves. */
+static bool req_external_dest(meshlink_handle_t *mesh, node_t *n, sockaddr_t *out) {
 	char *host = NULL;
 	char *port = NULL;
-
-	if(hairpin_skip) {
-		*hairpin_skip = false;
-	}
 
 	if(!parse_host_port_field(n->external_ip_address, &host, &port)) {
 		logger(mesh, MESHLINK_DEBUG, "Couldn't find port, so skipping external IP address...");
 		return false;
 	}
 
-	if(!host_port_to_sockaddr(host, port, sa_buf) || !udp_address_usable(sa_buf)) {
+	bool ok = host_port_to_sockaddr(host, port, out) && udp_address_usable(out);
+	free(host);
+
+	if(!ok) {
 		logger(mesh, MESHLINK_DEBUG, "Couldn't create usable sockaddr, so skipping external IP address...");
-		free(host);
 		return false;
 	}
 
-	if(mesh->self && same_external_host(n->external_ip_address, mesh->self->external_ip_address)) {
-		logger(mesh, MESHLINK_DEBUG, "Skipping external UDP dest for %s: same public IP as self", n->name);
-		free(host);
-
-		if(hairpin_skip) {
-			*hairpin_skip = true;
-		}
-
+	if(is_self_external(mesh, out)) {
+		logger(mesh, MESHLINK_DEBUG, "Skipping external UDP dest for %s: it is our own IP and port", n->name);
 		return false;
 	}
 
-	logger(mesh, MESHLINK_DEBUG, "UDP dest for %s: external %s %s", n->name, host, port);
-	free(host);
-
-	if(!select_listen_socket(mesh, sa_buf, sock)) {
-		return false;
-	}
-
-	*sa = sa_buf;
-	return true;
-}
-
-static bool try_canonical(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **sa, int *sock, sockaddr_t *sa_buf, bool allow_private) {
-	char *host = NULL;
-	char *port = NULL;
-
-	if(!parse_host_port_field(n->canonical_address, &host, &port)) {
-		return false;
-	}
-
-	if(!host_port_to_sockaddr(host, port, sa_buf) || !leftover_ok(sa_buf, allow_private)) {
-		free(host);
-		return false;
-	}
-
-	logger(mesh, MESHLINK_DEBUG, "UDP dest for %s: canonical %s %s", n->name, host, port);
-	free(host);
-
-	if(!select_listen_socket(mesh, sa_buf, sock)) {
-		return false;
-	}
-
-	*sa = sa_buf;
 	return true;
 }
 
@@ -474,6 +458,54 @@ static bool finish_udp_dest(meshlink_handle_t *mesh, const sockaddr_t **sa, int 
 	return true;
 }
 
+static bool try_recent(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **sa, int *sock, const sockaddr_t *skip) {
+	for(int i = 0; i < MAX_RECENT && n->recent[i].sa.sa_family; i++) {
+		const sockaddr_t *candidate = &n->recent[i];
+
+		if(!udp_address_bound(candidate) || is_self_external(mesh, candidate)) {
+			continue;
+		}
+
+		if(skip && !sockaddrcmp(candidate, skip)) {
+			continue;
+		}
+
+		*sa = candidate;
+
+		if(finish_udp_dest(mesh, sa, sock)) {
+			logger(mesh, MESHLINK_DEBUG, "UDP dest for %s: recent[%d]", n->name, i);
+			return true;
+		}
+	}
+
+	*sa = NULL;
+	return false;
+}
+
+static bool try_canonical(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **sa, int *sock, sockaddr_t *sa_buf) {
+	char *host = NULL;
+	char *port = NULL;
+
+	if(!parse_host_port_field(n->canonical_address, &host, &port)) {
+		return false;
+	}
+
+	if(!host_port_to_sockaddr(host, port, sa_buf) || !udp_address_bound(sa_buf)) {
+		free(host);
+		return false;
+	}
+
+	logger(mesh, MESHLINK_DEBUG, "UDP dest for %s: canonical %s %s", n->name, host, port);
+	free(host);
+
+	if(!select_listen_socket(mesh, sa_buf, sock)) {
+		return false;
+	}
+
+	*sa = sa_buf;
+	return true;
+}
+
 void choose_udp_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **sa, int *sock, sockaddr_t *sa_buf) {
 	*sa = NULL;
 	*sock = n->sock;
@@ -484,28 +516,57 @@ void choose_udp_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **s
 		return;
 	}
 
-	/* Unconfirmed: usable REQ_EXTERNAL wins over graph/META seeds and canonical.
-	   Skip when it is our own public IP — same-host / same-NAT cannot hairpin.
-	   After a hairpin skip, leftover may use RFC1918/ULA (LAN/VPC). Graph still
-	   will not seed those. */
-	bool hairpin_skip = false;
+	/* Unconfirmed. A REQ_EXTERNAL behind a different public IP is the only dest
+	   worth probing: any LAN address we remember is stale once the peer sits on
+	   another network. */
+	sockaddr_t ext;
+	bool have_ext = n->external_ip_address && req_external_dest(mesh, n, &ext);
+	bool same_nat = have_ext && mesh->self && same_external_host(n->external_ip_address, mesh->self->external_ip_address);
 
-	if(n->external_ip_address && try_req_external(mesh, n, sa, sock, sa_buf, &hairpin_skip)) {
+	if(have_ext && !same_nat) {
+		*sa_buf = ext;
+		*sa = sa_buf;
+
+		if(finish_udp_dest(mesh, sa, sock)) {
+			logger(mesh, MESHLINK_DEBUG, "UDP dest for %s: external", n->name);
+			return;
+		}
+	}
+
+	/* Same public IP as us (or no REQ_EXTERNAL at all): the peer shares our NAT
+	   or our host. Alternate LAN and WAN hairpin so whichever path the router
+	   supports gets a chance to confirm. Odd turns go WAN; even turns walk the
+	   LAN candidates (recent, catta, n->address / edges). */
+	n->udp_choice = (n->udp_choice + 1) % 6;
+	bool wan_turn = n->udp_choice & 1;
+	int lan_slot = n->udp_choice / 2;
+
+	if(same_nat && wan_turn) {
+		*sa_buf = ext;
+		*sa = sa_buf;
+
+		if(finish_udp_dest(mesh, sa, sock)) {
+			logger(mesh, MESHLINK_DEBUG, "UDP dest for %s: external hairpin", n->name);
+			return;
+		}
+	}
+
+	const sockaddr_t *skip = same_nat ? &ext : NULL;
+
+	if(lan_slot == 0 && try_recent(mesh, n, sa, sock, skip)) {
 		return;
 	}
 
-	n->udp_choice = (n->udp_choice + 1) % 3;
-
-	if(n->udp_choice == 1 && leftover_ok(&n->catta_address, hairpin_skip)) {
+	if(lan_slot == 1 && udp_address_bound(&n->catta_address)) {
 		*sa = &n->catta_address;
-	} else if(n->udp_choice == 2 && leftover_ok(&n->address, hairpin_skip)) {
+	} else if(lan_slot == 2 && udp_address_bound(&n->address)) {
 		*sa = &n->address;
 	} else {
 		edge_t *candidate = NULL;
 		int usable = 0;
 
 		for splay_each(edge_t, e, n->edge_tree) {
-			if(e->reverse && leftover_ok(&e->reverse->address, hairpin_skip)) {
+			if(e->reverse && udp_address_bound(&e->reverse->address)) {
 				if(prng(mesh, ++usable) == 0) {
 					candidate = e->reverse;
 				}
@@ -514,11 +575,19 @@ void choose_udp_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **s
 
 		if(candidate) {
 			*sa = &candidate->address;
-		} else if(leftover_ok(&n->address, hairpin_skip)) {
+		} else if(udp_address_bound(&n->address)) {
 			*sa = &n->address;
-		} else if(try_canonical(mesh, n, sa, sock, sa_buf, hairpin_skip)) {
+		} else if(try_recent(mesh, n, sa, sock, skip)) {
+			return;
+		} else if(try_canonical(mesh, n, sa, sock, sa_buf)) {
 			return;
 		}
+	}
+
+	if(!*sa && same_nat) {
+		/* No LAN candidate at all: the hairpin is the only thing left to try. */
+		*sa_buf = ext;
+		*sa = sa_buf;
 	}
 
 	finish_udp_dest(mesh, sa, sock);
