@@ -29,12 +29,23 @@ static void require_netns(void) {
 		exit(77);
 	}
 
-	if(system("/bin/ip netns add meshlink-netns-probe >/dev/null 2>&1") != 0) {
+	/* PID-unique name + delete-first so a leftover or parallel probe cannot false-SKIP. */
+	char *add_cmd = NULL;
+	char *del_cmd = NULL;
+	assert(asprintf(&add_cmd, "/bin/ip netns add meshlink-netns-probe-%d >/dev/null 2>&1", getpid()) > 0);
+	assert(asprintf(&del_cmd, "/bin/ip netns delete meshlink-netns-probe-%d >/dev/null 2>&1", getpid()) > 0);
+	(void)system(del_cmd);
+
+	if(system(add_cmd) != 0) {
+		free(add_cmd);
+		free(del_cmd);
 		fprintf(stderr, "SKIP: cannot create netns (need CAP_SYS_ADMIN and shared /run/netns)\n");
 		exit(77);
 	}
 
-	(void)system("/bin/ip netns delete meshlink-netns-probe >/dev/null 2>&1");
+	(void)system(del_cmd);
+	free(add_cmd);
+	free(del_cmd);
 }
 
 /// Create meshlink instances and network namespaces for a list of peers
