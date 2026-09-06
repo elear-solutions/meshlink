@@ -303,7 +303,7 @@ bool devtool_graph_may_seed_udp(struct meshlink_handle *mesh, struct meshlink_no
  *
  *  @param mesh     Mesh handle.
  *  @param dest     Node that should be reached only via nexthop.
- *  @param nexthop  Relay with a confirmed UDP session.
+ *  @param nexthop  Relay with a confirmed UDP session. Must not be dest.
  *  @return         true on success.
  */
 bool devtool_force_relay_path(struct meshlink_handle *mesh, struct meshlink_node *dest, struct meshlink_node *nexthop);

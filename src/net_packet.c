@@ -669,9 +669,13 @@ bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 		char req[MAXBUFSIZE];
 		int reqlen = snprintf(req, sizeof(req), "%d %s %s %d %s", REQ_KEY, mesh->self->name, to->name, REQ_SPTPS, buf);
 
+		if(reqlen < 0 || (size_t)reqlen >= sizeof(req)) {
+			logger(mesh, MESHLINK_ERROR, "Output buffer overflow while sending REQ_SPTPS to %s", to->name);
+			return false;
+		}
+
 		/* If dest has no P2P UDP but the nexthop does, carry REQ_SPTPS on that UDP session. */
 		if(can_relay_req_sptps_udp(to, type)
-		                && reqlen > 0 && (size_t)reqlen < sizeof(req)
 		                && (size_t)reqlen + 1 + SPTPS_DATAGRAM_OVERHEAD <= to->nexthop->minmtu) {
 			logger(mesh, MESHLINK_DEBUG, "Sending REQ_SPTPS via UDP to %s for %s", to->nexthop->name, to->name);
 
@@ -687,10 +691,8 @@ bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 		   to ensure we get to learn the reflexive UDP address. */
 		if(!to->status.validkey) {
 			return send_request(mesh, to->nexthop->connection, NULL, "%d %s %s %s -1 -1 -1 %d", ANS_KEY, mesh->self->name, to->name, buf, 0);
-		} else if(reqlen > 0 && (size_t)reqlen < sizeof(req)) {
-			return send_request(mesh, to->nexthop->connection, NULL, "%s", req);
 		} else {
-			return send_request(mesh, to->nexthop->connection, NULL, "%d %s %s %d %s", REQ_KEY, mesh->self->name, to->name, REQ_SPTPS, buf);
+			return send_request(mesh, to->nexthop->connection, NULL, "%s", req);
 		}
 	}
 
@@ -761,8 +763,9 @@ bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t
 			return true;
 		}
 
-		/* Sender includes the trailing NUL in len (sptps also writes decrypted_buffer[len - 20] = 0). */
-		if(((const char *)data)[len - 1] != '\0') {
+		/* Sender includes the trailing NUL in len (sptps also writes decrypted_buffer[len - 20] = 0).
+		   Reject empty / leading-NUL payloads: req_key_h assert(*request) would abort(). */
+		if(len < 2 || ((const char *)data)[0] == '\0' || ((const char *)data)[len - 1] != '\0') {
 			return true;
 		}
 

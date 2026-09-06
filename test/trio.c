@@ -155,13 +155,28 @@ int main(void) {
 	assert(check_sync_flag(&saw_udp_req_sptps));
 	assert(wait_sync_flag(&received, 15));
 
-	// Negative: dest is its own nexthop → skip the UDP relay, Hello still arrives via META.
+	// dest == nexthop is rejected
+	assert(!devtool_force_relay_path(mesh[2], meshlink_get_node(mesh[2], name[1]), meshlink_get_node(mesh[2], name[1])));
+
+	// Negative: nexthop UDP unconfirmed → skip the UDP relay, Hello still arrives via META.
 	set_sync_flag(&received, false);
 	set_sync_flag(&saw_udp_req_sptps, false);
-	assert(devtool_force_relay_path(mesh[2], meshlink_get_node(mesh[2], name[1]), meshlink_get_node(mesh[2], name[1])));
-	assert(meshlink_send(mesh[2], meshlink_get_node(mesh[2], name[1]), "Hello", 5));
+
+	for(int i = 0; i < 15; i++) {
+		assert(devtool_force_relay_path(mesh[2], meshlink_get_node(mesh[2], name[1]), meshlink_get_node(mesh[2], name[0])));
+		devtool_set_udp_confirmed(mesh[2], meshlink_get_node(mesh[2], name[0]), false);
+		assert(meshlink_send(mesh[2], meshlink_get_node(mesh[2], name[1]), "Hello", 5));
+
+		if(wait_sync_flag(&received, 1) && !check_sync_flag(&saw_udp_req_sptps)) {
+			break;
+		}
+
+		set_sync_flag(&received, false);
+		set_sync_flag(&saw_udp_req_sptps, false);
+	}
+
 	assert(wait_sync_flag(&received, 15));
-	assert(!wait_sync_flag(&saw_udp_req_sptps, 1));
+	assert(!check_sync_flag(&saw_udp_req_sptps));
 
 	// Stop the first node
 

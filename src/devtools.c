@@ -561,7 +561,7 @@ bool devtool_force_relay_path(meshlink_handle_t *mesh, meshlink_node_t *dest, me
 	node_t *d = (node_t *)dest;
 	node_t *h = (node_t *)nexthop;
 
-	if(!h->status.validkey) {
+	if(d == h || !h->status.validkey) {
 		pthread_mutex_unlock(&mesh->mutex);
 		meshlink_errno = MESHLINK_EINVAL;
 		return false;
