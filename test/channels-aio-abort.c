@@ -35,9 +35,13 @@ static void aio_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, const v
 	clock_gettime(CLOCK_MONOTONIC, &info->ts);
 	info->callbacks++;
 	info->size += len;
-	set_sync_flag(&info->flag, true);
 	meshlink_channel_abort(mesh, channel);
 	free(info->data);
+	info->data = NULL;
+
+	/* Set the flag last: main reallocates info->data for the next round as
+	   soon as it wakes, so touching info after this point races with it. */
+	set_sync_flag(&info->flag, true);
 }
 
 static bool accept_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, uint16_t port, const void *data, size_t len) {
