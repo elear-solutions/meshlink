@@ -245,6 +245,13 @@ typedef enum {
  */
 extern void (*devtool_upgrade_probe)(meshlink_handle_t *mesh, meshlink_node_t *node, devtool_upgrade_probe_stage_t stage);
 
+/// Test knob: send the next ACK twice, like a peer that repeats its ACK would.
+/** A repeated ACK is a protocol violation which the receiving side must reject instead
+ *  of activating (or holding as a spare) the same connection a second time. The knob is
+ *  process-wide: set it right before the ACK to double; send_ack() clears it after use.
+ */
+extern bool devtool_repeat_next_ack;
+
 /// Force renewal of SPTPS sessions with the given node.
 /** This causes the SPTPS sessions for both the UDP and TCP connections to renew their keys.
  *

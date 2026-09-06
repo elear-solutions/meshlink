@@ -31,7 +31,7 @@
    (see find_free_band) instead of a fixed band that could collide with other tests
    or services bound on the wildcard address. */
 #define RANGE_SIZE 10
-static uint16_t RANGE_A_LO, RANGE_A_HI, RANGE_B_LO, RANGE_B_HI;
+static uint16_t range_a_lo, range_a_hi, range_b_lo, range_b_hi;
 
 static struct sockaddr_in any4(uint16_t port) {
 	struct sockaddr_in sa;
@@ -154,17 +154,17 @@ static void test_port_inside_range(void) {
 	printf("\n=== T10: port drawn inside the range, TCP and UDP bound ===\n");
 
 	assert(meshlink_destroy("port_range_conf.1"));
-	meshlink_handle_t *mesh = open_with_range("port_range_conf.1", "foo", RANGE_A_LO, RANGE_A_HI);
+	meshlink_handle_t *mesh = open_with_range("port_range_conf.1", "foo", range_a_lo, range_a_hi);
 	assert(mesh);
 	meshlink_enable_discovery(mesh, false);
 	assert(meshlink_start(mesh));
 
 	int port = meshlink_get_port(mesh);
-	assert(port >= RANGE_A_LO && port <= RANGE_A_HI);
+	assert(port >= range_a_lo && port <= range_a_hi);
 	assert(tcp_connects(port));
 	assert(udp_listening(port));
 
-	printf("T10 ok: port %d in %d-%d, TCP and UDP listening\n", port, RANGE_A_LO, RANGE_A_HI);
+	printf("T10 ok: port %d in %d-%d, TCP and UDP listening\n", port, range_a_lo, range_a_hi);
 
 	meshlink_close(mesh);
 	assert(meshlink_destroy("port_range_conf.1"));
@@ -178,31 +178,31 @@ static void test_range_exhaustion(void) {
 
 	/* Everything but the last port is busy. */
 	for(int i = 0; i < count - 1; i++) {
-		occupy_port((uint16_t)(RANGE_A_LO + i), taken[i]);
+		occupy_port((uint16_t)(range_a_lo + i), taken[i]);
 	}
 
 	assert(meshlink_destroy("port_range_conf.1"));
-	meshlink_handle_t *mesh = open_with_range("port_range_conf.1", "foo", RANGE_A_LO, RANGE_A_HI);
+	meshlink_handle_t *mesh = open_with_range("port_range_conf.1", "foo", range_a_lo, range_a_hi);
 	assert(mesh);
 	meshlink_enable_discovery(mesh, false);
 	assert(meshlink_start(mesh));
-	assert(meshlink_get_port(mesh) == RANGE_A_HI);
-	printf("T11: got the only free port %d\n", RANGE_A_HI);
+	assert(meshlink_get_port(mesh) == range_a_hi);
+	printf("T11: got the only free port %d\n", range_a_hi);
 	meshlink_close(mesh);
 
 	/* Now the whole range is busy: a fresh instance must not come up on some other port. */
-	occupy_port(RANGE_A_HI, taken[count - 1]);
+	occupy_port(range_a_hi, taken[count - 1]);
 
 	assert(meshlink_destroy("port_range_conf.2"));
 	meshlink_errno = MESHLINK_OK;
-	mesh = open_with_range("port_range_conf.2", "bar", RANGE_A_LO, RANGE_A_HI);
+	mesh = open_with_range("port_range_conf.2", "bar", range_a_lo, range_a_hi);
 	assert(!mesh);
 	assert(meshlink_errno == MESHLINK_ENETWORK);
 	printf("T11: fresh open with a full range failed with %s\n", meshlink_strerror(meshlink_errno));
 
 	/* The same for an existing configuration whose persisted port is now taken. */
 	meshlink_errno = MESHLINK_OK;
-	mesh = open_with_range("port_range_conf.1", "foo", RANGE_A_LO, RANGE_A_HI);
+	mesh = open_with_range("port_range_conf.1", "foo", range_a_lo, range_a_hi);
 	assert(!mesh);
 	assert(meshlink_errno == MESHLINK_ENETWORK);
 	printf("T11: reopen with a full range failed with %s\n", meshlink_strerror(meshlink_errno));
@@ -212,9 +212,9 @@ static void test_range_exhaustion(void) {
 	}
 
 	/* Sanity: with the range free again the persisted configuration opens on its old port. */
-	mesh = open_with_range("port_range_conf.1", "foo", RANGE_A_LO, RANGE_A_HI);
+	mesh = open_with_range("port_range_conf.1", "foo", range_a_lo, range_a_hi);
 	assert(mesh);
-	assert(meshlink_get_port(mesh) == RANGE_A_HI);
+	assert(meshlink_get_port(mesh) == range_a_hi);
 	meshlink_close(mesh);
 
 	printf("T11 ok\n");
@@ -227,17 +227,17 @@ static void test_persisted_port(void) {
 	printf("\n=== T12: persisted port first, redraw only when it leaves the range ===\n");
 
 	assert(meshlink_destroy("port_range_conf.1"));
-	meshlink_handle_t *mesh = open_with_range("port_range_conf.1", "foo", RANGE_A_LO, RANGE_A_HI);
+	meshlink_handle_t *mesh = open_with_range("port_range_conf.1", "foo", range_a_lo, range_a_hi);
 	assert(mesh);
 	meshlink_enable_discovery(mesh, false);
 	assert(meshlink_start(mesh));
 	int first = meshlink_get_port(mesh);
-	assert(first >= RANGE_A_LO && first <= RANGE_A_HI);
+	assert(first >= range_a_lo && first <= range_a_hi);
 	meshlink_stop(mesh);
 	meshlink_close(mesh);
 
 	/* Same range: same port. */
-	mesh = open_with_range("port_range_conf.1", "foo", RANGE_A_LO, RANGE_A_HI);
+	mesh = open_with_range("port_range_conf.1", "foo", range_a_lo, range_a_hi);
 	assert(mesh);
 	assert(meshlink_start(mesh));
 	assert(meshlink_get_port(mesh) == first);
@@ -246,17 +246,17 @@ static void test_persisted_port(void) {
 	printf("T12: reopened on the persisted port %d\n", first);
 
 	/* A range that excludes the persisted port: a new port inside the new range. */
-	mesh = open_with_range("port_range_conf.1", "foo", RANGE_B_LO, RANGE_B_HI);
+	mesh = open_with_range("port_range_conf.1", "foo", range_b_lo, range_b_hi);
 	assert(mesh);
 	assert(meshlink_start(mesh));
 	int second = meshlink_get_port(mesh);
-	assert(second >= RANGE_B_LO && second <= RANGE_B_HI);
+	assert(second >= range_b_lo && second <= range_b_hi);
 	meshlink_stop(mesh);
 	meshlink_close(mesh);
-	printf("T12: range %d-%d moved the port to %d\n", RANGE_B_LO, RANGE_B_HI, second);
+	printf("T12: range %d-%d moved the port to %d\n", range_b_lo, range_b_hi, second);
 
 	/* The redrawn port is persisted: reopening with the new range keeps it... */
-	mesh = open_with_range("port_range_conf.1", "foo", RANGE_B_LO, RANGE_B_HI);
+	mesh = open_with_range("port_range_conf.1", "foo", range_b_lo, range_b_hi);
 	assert(mesh);
 	assert(meshlink_get_port(mesh) == second);
 	meshlink_close(mesh);
@@ -290,7 +290,7 @@ static void test_invalid_and_default(void) {
 	assert(!meshlink_open_params_set_port_range(params, 0, 2000));
 	assert(meshlink_errno == MESHLINK_EINVAL);
 
-	assert(!meshlink_open_params_set_port_range(NULL, RANGE_A_LO, RANGE_A_HI));
+	assert(!meshlink_open_params_set_port_range(NULL, range_a_lo, range_a_hi));
 	assert(meshlink_errno == MESHLINK_EINVAL);
 
 	/* Both zero is "no range" and a single-port range is fine. */
@@ -315,11 +315,11 @@ static void test_invalid_and_default(void) {
 int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
 
-	RANGE_A_LO = find_free_band(2 * RANGE_SIZE);
-	RANGE_A_HI = RANGE_A_LO + RANGE_SIZE - 1;
-	RANGE_B_LO = RANGE_A_HI + 1;
-	RANGE_B_HI = RANGE_B_LO + RANGE_SIZE - 1;
-	printf("port bands: A %d-%d, B %d-%d\n", RANGE_A_LO, RANGE_A_HI, RANGE_B_LO, RANGE_B_HI);
+	range_a_lo = find_free_band(2 * RANGE_SIZE);
+	range_a_hi = range_a_lo + RANGE_SIZE - 1;
+	range_b_lo = range_a_hi + 1;
+	range_b_hi = range_b_lo + RANGE_SIZE - 1;
+	printf("port bands: A %d-%d, B %d-%d\n", range_a_lo, range_a_hi, range_b_lo, range_b_hi);
 
 	test_port_inside_range();
 	test_range_exhaustion();

@@ -337,7 +337,19 @@ bool send_ack(meshlink_handle_t *mesh, connection_t *c) {
 	}
 
 	c->last_ping_time = mesh->loop.now.tv_sec;
-	return send_request(mesh, c, NULL, "%d %s %d %x", ACK, mesh->myport, mesh->devclass, OPTION_PMTU_DISCOVERY | (PROT_MINOR << 24));
+
+	if(!send_request(mesh, c, NULL, "%d %s %d %x", ACK, mesh->myport, mesh->devclass, OPTION_PMTU_DISCOVERY | (PROT_MINOR << 24))) {
+		return false;
+	}
+
+	/* Test knob: behave like a peer that repeats its ACK, which ack_h() must reject. */
+
+	if(devtool_repeat_next_ack) {
+		devtool_repeat_next_ack = false;
+		return send_request(mesh, c, NULL, "%d %s %d %x", ACK, mesh->myport, mesh->devclass, OPTION_PMTU_DISCOVERY | (PROT_MINOR << 24));
+	}
+
+	return true;
 }
 
 static void send_everything(meshlink_handle_t *mesh, connection_t *c) {
@@ -353,7 +365,7 @@ static void send_everything(meshlink_handle_t *mesh, connection_t *c) {
 /* c authenticated while n->connection is another, active connection: c takes over.
    A spare held behind the old connection must go first, otherwise
    terminate_connection() would promote it and we would end up with two self->n
-   edges (see upgrade_connection_closing). Leaves n->connection dangling for the
+   edges (see upgrade_connection_closing). Leaves n->connection NULL for the
    caller to install c. */
 static void replace_existing_connection(meshlink_handle_t *mesh, node_t *n, connection_t *c) {
 	connection_t *old = n->connection;
@@ -380,6 +392,15 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	int devclass;
 	uint32_t options;
 	node_t *n;
+
+	/* ACK ends the handshake; a second one on a connection that is already active, or
+	   held as a spare, is a protocol violation. Running the activation again would leak
+	   the edge, and upgrade_hold_spare() would evict c itself and then keep using it. */
+
+	if(c->status.active) {
+		logger(mesh, MESHLINK_ERROR, "Got bad %s from %s: %s", "ACK", c->name, "connection already active");
+		return false;
+	}
 
 	if(sscanf(request, "%*d " MAX_STRING " %d %x", hisport, &devclass, &options) != 3) {
 		logger(mesh, MESHLINK_ERROR, "Got bad %s from %s", "ACK", c->name);
@@ -447,7 +468,8 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	install_node_connection(mesh, n, c);
 
 	/* The address walk is done: if this connection drops, start over from recent[] instead of
-	   continuing with whatever was left after the address that just worked. */
+	   continuing with whatever was left after the address that just worked. A drop shortly
+	   after this point still backs off first (see terminate_connection). */
 	if(c->outgoing) {
 		reset_outgoing(c->outgoing);
 	}

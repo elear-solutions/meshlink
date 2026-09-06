@@ -31,9 +31,15 @@
    T8:  the peer dies while migrated: the reconnect tries its direct port first, falls
         back to the relay once the peer is back on a new port, then re-migrates.
    T14: a third node connected to the peer keeps seeing the migrating node as
-        reachable and ends up with exactly one edge pair between the two. */
+        reachable and ends up with exactly one edge pair between the two.
+   T15: a third node does not seed the relay's address from the indirect edge.
+   T16: a peer that repeats its ACK over a probe held as a spare is rejected. */
 
 #define MSG_LEN 6
+
+/* Edge option bits as they appear on the wire in ADD_EDGE (OPTION_* in src/connection.h). */
+#define EDGE_OPTION_INDIRECT 0x0001
+#define EDGE_OPTION_PMTU_DISCOVERY 0x0004
 
 /* --- upgrade probe hook ----------------------------------------------------- */
 
@@ -132,7 +138,8 @@ static struct sync_flag peer_unreachable;
 static devtool_node_status_t status_at_reachable;
 static const char *watched_peer;
 static int unreachable_count;
-static int hint_port_on_reachable;  /* T6: direct address to hint the moment the peer comes up, 0 = none */
+static int hint_port_on_reachable;  /* T6/T16: direct address to hint the moment the peer comes up, 0 = none */
+static bool repeat_ack_on_reachable; /* T16: make the probe started by that hint send its ACK twice */
 
 static void status_cb(meshlink_handle_t *mesh, meshlink_node_t *node, bool reachable) {
 	if(strcmp(node->name, watched_peer)) {
@@ -152,8 +159,10 @@ static void status_cb(meshlink_handle_t *mesh, meshlink_node_t *node, bool reach
 	}
 
 	/* Runs inside ack_h(), before the key exchange: nothing has been learned over
-	   UDP yet, so a hinted address is the only direct address and is probed first. */
+	   UDP yet, so a hinted address is the only direct address and is probed first.
+	   Our own ACK for this connection has already been sent, so the next one is the probe's. */
 	if(hint_port_on_reachable) {
+		devtool_repeat_next_ack = repeat_ack_on_reachable;
 		hint_address(mesh, node, "127.0.0.1", hint_port_on_reachable);
 	}
 
@@ -171,6 +180,7 @@ static int get_unreachable_count(void) {
 static void watch_peer(meshlink_handle_t *mesh, const char *peer) {
 	watched_peer = peer;
 	hint_port_on_reachable = 0;
+	repeat_ack_on_reachable = false;
 	init_sync_flag(&peer_reachable);
 	init_sync_flag(&peer_unreachable);
 	memset(&status_at_reachable, 0, sizeof status_at_reachable);
@@ -449,6 +459,15 @@ static void assert_direct(meshlink_handle_t *mesh, meshlink_node_t *node, int po
 	assert(!st.upgrade_probe_active);
 	assert(st.upgrade_backoff == 0);
 	devtool_free_node_status(&st);
+}
+
+/* True once mesh's meta connection with node is up, direct and not via anything. */
+static bool connected_direct(meshlink_handle_t *mesh, meshlink_node_t *node, int port) {
+	devtool_node_status_t st;
+	devtool_get_node_status(mesh, node, &st);
+	bool direct = st.meta_connected && !st.meta_via_canonical && port_of(&st.meta_address) == port && !st.upgrade_probe_active;
+	devtool_free_node_status(&st);
+	return direct;
 }
 
 /* --- T5 --------------------------------------------------------------------- */
@@ -808,6 +827,12 @@ static void test_third_node_view(void) {
 	assert(meshlink_start(c));
 	assert_after(count_edge_pairs(c, "b", "c") == 1, 15);
 
+	/* b and c connect to each other at the same time; when c loses the tie-break its
+	   address walk moves on to b's canonical address, so c may have touched the relay
+	   once before its pending connection was closed. Only a's use of the relay is
+	   what T14 measures. */
+	int relay_accepts_before_a = tcp_relay_accept_count(p.relay);
+
 	assert(meshlink_start(p.a));
 	assert(wait_sync_flag(&peer_reachable, 15));
 	devtool_free_node_status(&status_at_reachable);
@@ -836,9 +861,9 @@ static void test_third_node_view(void) {
 
 	free(edges);
 
-	/* b itself has exactly one live connection with a. */
+	/* b itself has exactly one live connection with a, and a went through the relay once. */
 	assert(meta_net_count("b", "a") == 1);
-	assert(tcp_relay_accept_count(p.relay) == 1);
+	assert(tcp_relay_accept_count(p.relay) == relay_accepts_before_a + 1);
 
 	printf("T14 ok: c saw a reachable throughout, %zu edge pairs, one of them a<->b\n", nedges);
 
@@ -909,10 +934,9 @@ static void test_third_node_does_not_seed_relay(void) {
 
 	/* d received a's edge to b with the relay's address and OPTION_INDIRECT: the ADD_EDGE
 	   body reads "<from> <devclass> <submesh> <to> <address> <port> <devclass> <submesh>
-	   <options> ..." with a PORTABLE (2), b STATIONARY (1) and options 5 =
-	   OPTION_INDIRECT | OPTION_PMTU_DISCOVERY. */
+	   <options> ..." with "." for the core mesh and options in hex. */
 	char needle[128];
-	snprintf(needle, sizeof needle, " a 2 . b %s %d 1 . 5 ", relay_ip, p.b_port);
+	snprintf(needle, sizeof needle, " a %d . b %s %d %d . %x ", DEV_CLASS_PORTABLE, relay_ip, p.b_port, DEV_CLASS_STATIONARY, EDGE_OPTION_INDIRECT | EDGE_OPTION_PMTU_DISCOVERY);
 	assert(log_find(mark, needle) >= 0);
 
 	devtool_node_status_t st;
@@ -939,6 +963,70 @@ static void test_third_node_does_not_seed_relay(void) {
 	close_relayed_pair(&p);
 }
 
+/* T16: b holds a's probe as a spare and a, misbehaving, sends its ACK twice. The second
+   ACK must be rejected: handling it like the first would make upgrade_hold_spare() evict
+   the very connection it is about to hold and go on using it after it was freed. b drops
+   the spare instead, and both sides still end up with exactly one, direct, connection. */
+static void test_repeated_ack_on_spare_is_rejected(void) {
+	printf("\n=== T16: a repeated ACK on a held spare is rejected, no double hold ===\n");
+
+	struct pair p;
+	open_relayed_pair(&p, "canonical_migrate_t16", false);
+	reset_probe_events();
+	reset_meta_counts();
+	devtool_set_meta_status_cb(p.a, meta_status_cb);
+	devtool_set_meta_status_cb(p.b, meta_status_cb);
+	watch_peer(p.a, "b");
+
+	/* Like T6, the direct address is hinted from the reachable callback so the probe it
+	   starts is the first one (before UDP learns b's address), and that probe's ACK is
+	   the one a doubles. */
+	hint_port_on_reachable = p.b_port;
+	repeat_ack_on_reachable = true;
+
+	size_t mark = log_mark();
+	assert(meshlink_start(p.b));
+	assert(meshlink_start(p.a));
+	assert(wait_sync_flag(&peer_reachable, 15));
+	assert_via_canonical_at_reachable(&p);
+	assert(tcp_relay_accept_count(p.relay) == 1);
+
+	/* b holds the probe as a spare on the first ACK and drops it on the second; it must
+	   not "supersede" the spare with itself, which is what the use-after-free looked like. */
+	assert_after(log_find(mark, "b: Got bad ACK from a: connection already active") >= 0, 15);
+	assert(!devtool_repeat_next_ack);
+	long held_at = log_find(mark, "b: Holding direct connection from a at 127.0.0.1 port ");
+	long rejected_at = log_find(mark, "b: Got bad ACK from a: connection already active");
+	assert(held_at >= 0 && held_at < rejected_at);
+	assert(log_find(mark, "b: Dropping superseded spare connection with a") < 0);
+
+	/* b's deferred ACK may or may not have left before it dropped the spare, so a either
+	   migrated onto a connection that dies at once (and reconnects directly after the
+	   backoff) or saw its probe fail and probes again. Either way: one direct connection
+	   per side, nothing left over. */
+	assert_after(connected_direct(p.a, p.a_b, p.b_port) && meta_net_count("a", "b") == 1 && meta_net_count("b", "a") == 1, 45);
+	sleep(2);
+	assert_direct(p.a, p.a_b, p.b_port);
+	assert(meta_net_count("a", "b") == 1);
+	assert(meta_net_count("b", "a") == 1);
+	assert(tcp_relay_accept_count(p.relay) == 1);
+	assert(log_find(mark, "Two outgoing connections to the same node!") < 0);
+
+	devtool_node_status_t st;
+	devtool_get_node_status(p.b, p.b_a, &st);
+	assert(st.meta_connected);
+	assert(!st.meta_via_canonical);
+	devtool_free_node_status(&st);
+
+	printf("T16 ok: repeated ACK rejected by b, both sides settled on one direct connection (a probes: %d started, %d failed)\n",
+	       count_probe_events(DEVTOOL_UPGRADE_PROBE_STARTED), count_probe_events(DEVTOOL_UPGRADE_PROBE_FAILED));
+
+	meshlink_set_node_status_cb(p.a, NULL);
+	devtool_set_meta_status_cb(p.a, NULL);
+	devtool_set_meta_status_cb(p.b, NULL);
+	close_relayed_pair(&p);
+}
+
 int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, capture_log_cb);
 	devtool_upgrade_probe = upgrade_probe_hook;
@@ -949,6 +1037,7 @@ int main(void) {
 	test_peer_restart_on_new_port();
 	test_third_node_view();
 	test_third_node_does_not_seed_relay();
+	test_repeated_ack_on_spare_is_rejected();
 
 	free_captured_log();
 	return 0;

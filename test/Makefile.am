@@ -34,6 +34,7 @@ TESTS = \
 	req-external-recent \
 	port \
 	port-range \
+	reconnect-backoff \
 	req-external-port \
 	sign-verify \
 	storage-policy \
@@ -93,6 +94,7 @@ check_PROGRAMS = \
 	req-external-recent \
 	port \
 	port-range \
+	reconnect-backoff \
 	req-external-port \
 	sign-verify \
 	storage-policy \
@@ -215,6 +217,9 @@ port_LDADD = $(top_builddir)/src/libmeshlink.la
 
 port_range_SOURCES = port-range.c utils.c utils.h
 port_range_LDADD = $(top_builddir)/src/libmeshlink.la
+
+reconnect_backoff_SOURCES = reconnect-backoff.c utils.c utils.h
+reconnect_backoff_LDADD = $(top_builddir)/src/libmeshlink.la
 
 req_external_port_SOURCES = req-external-port.c utils.c utils.h
 req_external_port_LDADD = $(top_builddir)/src/libmeshlink.la

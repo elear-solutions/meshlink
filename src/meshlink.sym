@@ -10,6 +10,7 @@ devtool_get_node_status
 devtool_graph_may_seed_udp
 devtool_keyrotate_probe
 devtool_open_in_netns
+devtool_repeat_next_ack
 devtool_reset_node_counters
 devtool_set_external_ip_address
 devtool_set_inviter_commits_first

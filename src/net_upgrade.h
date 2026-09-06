@@ -59,7 +59,8 @@ bool upgrade_defers_ack(const connection_t *c) __attribute__((__warn_unused_resu
 /* Responder side. A probe that authenticated while we still have an active
    connection with the node is held as a spare next to it and takes over the
    moment the old connection closes, so the node never drops out of the graph.
-   At most one spare per node: a newer probe evicts the older one. */
+   At most one spare per node: a newer probe evicts the older one. c must not be
+   active yet (ack_h rejects a repeated ACK, so a held spare never comes back here). */
 void upgrade_hold_spare(struct meshlink_handle *mesh, connection_t *c, node_t *n, const char *hisport, int devclass);
 
 /* Close the spare held for n, if any. A caller that installs a new

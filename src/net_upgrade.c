@@ -31,6 +31,8 @@
 #include "protocol.h"
 #include "xalloc.h"
 
+#include <assert.h>
+
 /* Only the side that owns the outgoing_t probes; the peer migrates when the
    probe shows up as a second inbound connection. */
 bool upgrade_probe_eligible(meshlink_handle_t *mesh, node_t *n) {
@@ -188,6 +190,10 @@ void upgrade_drop_spare(meshlink_handle_t *mesh, node_t *n) {
    the node's connection until the peer closes it; this one is fully authenticated and
    pinged like any other, with its edge prepared but not yet in the graph. */
 void upgrade_hold_spare(meshlink_handle_t *mesh, connection_t *c, node_t *n, const char *hisport, int devclass) {
+	/* ack_h() rejects a repeated ACK before it gets here, so c cannot be the spare
+	   about to be dropped. */
+	assert(!c->status.active && !c->status.spare);
+
 	/* A re-probe means the peer gave up on the previous one (its ACK never made it
 	   there); that spare is half-open at best and must not be the one promoted. */
 	upgrade_drop_spare(mesh, n);

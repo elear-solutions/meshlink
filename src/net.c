@@ -45,6 +45,11 @@ static inline int min(int a, int b) {
 static const int default_timeout = 5;
 static const int default_interval = 60;
 
+/* An outgoing connection that dies this soon after it activated did not really work:
+   the peer dropped it on purpose (simultaneous-connect tie-break, connection limit) and
+   will do so again, so reconnecting at once only produces a handshake per round trip. */
+static const int min_connection_lifetime = 5;
+
 /* Build the self->n edge that represents c. Not yet in the graph: see add_connection_edge(). */
 edge_t *new_connection_edge(meshlink_handle_t *mesh, connection_t *c, node_t *n, const char *hisport, int devclass) {
 	assert(devclass >= 0 && devclass < DEV_CLASS_COUNT);
@@ -89,6 +94,10 @@ void add_connection_edge(meshlink_handle_t *mesh, connection_t *c) {
   - Check if we need to retry making an outgoing connection
 */
 void terminate_connection(meshlink_handle_t *mesh, connection_t *c, bool report) {
+	/* last_key_renewal is set when the connection activates (and again on every hourly
+	   key renewal, so a drop right after one of those costs one extra backoff step). */
+	bool flapped = c->status.active && mesh->loop.now.tv_sec - c->last_key_renewal < min_connection_lifetime;
+
 	if(c->status.active) {
 		logger(mesh, MESHLINK_INFO, "Closing connection with %s", c->name);
 	}
@@ -135,10 +144,16 @@ void terminate_connection(meshlink_handle_t *mesh, connection_t *c, bool report)
 	outgoing_t *outgoing = c->outgoing;
 	connection_del(mesh, c);
 
-	/* Check if this was our outgoing connection */
+	/* Check if this was our outgoing connection. ack_h() reset the address walk when it
+	   activated, so either path starts over at recent[]; a connection that flapped goes
+	   through retry_outgoing()'s backoff first instead of reconnecting straight away. */
 
 	if(outgoing) {
-		do_outgoing_connection(mesh, outgoing);
+		if(flapped) {
+			retry_outgoing(mesh, outgoing);
+		} else {
+			do_outgoing_connection(mesh, outgoing);
+		}
 	}
 }
 

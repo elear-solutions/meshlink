@@ -66,6 +66,7 @@ void (*devtool_set_inviter_commits_first)(bool inviter_commited_first) = inviter
 void (*devtool_adns_resolve_probe)(void) = nop_probe;
 void (*devtool_sptps_renewal_probe)(meshlink_node_t *node) = sptps_renewal_nop_probe;
 void (*devtool_upgrade_probe)(meshlink_handle_t *mesh, meshlink_node_t *node, devtool_upgrade_probe_stage_t stage) = upgrade_nop_probe;
+bool devtool_repeat_next_ack = false;
 
 /* Return an array of edges in the current network graph.
  * Data captures the current state and will not be updated.

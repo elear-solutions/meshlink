@@ -200,7 +200,9 @@ bool add_edge_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	e = lookup_edge(from, to);
 
 	if(e) {
-		if(e->weight != weight || e->session_id != session_id || sockaddrcmp(&e->address, &address)) {
+		/* OPTION_INDIRECT is part of the edge's state too: the same address can go from
+		   relayed to direct (or back) without anything else changing. */
+		if(e->weight != weight || e->session_id != session_id || sockaddrcmp(&e->address, &address) || e->options != (options & OPTION_INDIRECT)) {
 			if(from == mesh->self) {
 				/* The sender has outdated information, we own this edge to send a correction back */
 				logger(mesh, MESHLINK_DEBUG, "Got %s from %s for ourself which does not match existing entry", "ADD_EDGE", c->name);
