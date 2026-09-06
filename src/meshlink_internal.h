@@ -152,7 +152,6 @@ struct meshlink_handle {
 	dev_class_t devclass;
 
 	int invitation_timeout;
-	int udp_choice;
 
 	dev_class_traits_t dev_class_traits[DEV_CLASS_COUNT];
 

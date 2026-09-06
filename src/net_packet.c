@@ -314,75 +314,172 @@ static void send_sptps_packet(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *
 	return;
 }
 
-static void select_listen_socket(meshlink_handle_t *mesh, const sockaddr_t *sa, int *sock) {
-	if(*sock < 0 || *sock >= mesh->listen_sockets
-	                || mesh->listen_socket[*sock].sa.sa.sa_family != sa->sa.sa_family) {
-		for(int i = 0; i < mesh->listen_sockets; i++) {
-			if(mesh->listen_socket[i].sa.sa.sa_family == sa->sa.sa_family) {
-				*sock = i;
-				return;
-			}
+static bool select_listen_socket(meshlink_handle_t *mesh, const sockaddr_t *sa, int *sock) {
+	if(*sock >= 0 && *sock < mesh->listen_sockets
+	                && mesh->listen_socket[*sock].sa.sa.sa_family == sa->sa.sa_family) {
+		return true;
+	}
+
+	for(int i = 0; i < mesh->listen_sockets; i++) {
+		if(mesh->listen_socket[i].sa.sa.sa_family == sa->sa.sa_family) {
+			*sock = i;
+			return true;
 		}
 	}
+
+	return false;
+}
+
+/* Numeric host/port only — no getaddrinfo, no AF_UNKNOWN heap. */
+static bool host_port_to_sockaddr(const char *host, const char *port, sockaddr_t *out) {
+	memset(out, 0, sizeof(*out));
+
+	if(!host || !port || !*host || !*port) {
+		return false;
+	}
+
+	char *end = NULL;
+	long p = strtol(port, &end, 10);
+
+	if(!end || *end || p <= 0 || p > 65535) {
+		return false;
+	}
+
+	if(inet_pton(AF_INET, host, &out->in.sin_addr) == 1) {
+		out->in.sin_family = AF_INET;
+		out->in.sin_port = htons((uint16_t)p);
+		return true;
+	}
+
+	if(inet_pton(AF_INET6, host, &out->in6.sin6_addr) == 1) {
+		out->in6.sin6_family = AF_INET6;
+		out->in6.sin6_port = htons((uint16_t)p);
+		return true;
+	}
+
+	return false;
+}
+
+static bool same_external_host(const char *a, const char *b) {
+	if(!a || !b) {
+		return false;
+	}
+
+	const char *a_end = strchr(a, ' ');
+	const char *b_end = strchr(b, ' ');
+	size_t a_len = a_end ? (size_t)(a_end - a) : strlen(a);
+	size_t b_len = b_end ? (size_t)(b_end - b) : strlen(b);
+
+	return a_len && a_len == b_len && !strncmp(a, b, a_len);
+}
+
+static bool parse_host_port_field(const char *field, char **host_out, char **port_out) {
+	if(!field) {
+		return false;
+	}
+
+	char *copy = xstrdup(field);
+	char *port = strchr(copy, ' ');
+
+	if(!port || !port[1]) {
+		free(copy);
+		return false;
+	}
+
+	*port++ = 0;
+	*host_out = copy;
+	*port_out = port;
+	return true;
+}
+
+static bool try_req_external(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **sa, int *sock, sockaddr_t *sa_buf) {
+	char *host = NULL;
+	char *port = NULL;
+
+	if(!parse_host_port_field(n->external_ip_address, &host, &port)) {
+		logger(mesh, MESHLINK_DEBUG, "Couldn't find port, so skipping external IP address...");
+		return false;
+	}
+
+	if(!host_port_to_sockaddr(host, port, sa_buf) || !udp_address_usable(sa_buf)) {
+		logger(mesh, MESHLINK_DEBUG, "Couldn't create usable sockaddr, so skipping external IP address...");
+		free(host);
+		return false;
+	}
+
+	if(mesh->self && same_external_host(n->external_ip_address, mesh->self->external_ip_address)) {
+		logger(mesh, MESHLINK_DEBUG, "Skipping external UDP dest for %s: same public IP as self", n->name);
+		free(host);
+		return false;
+	}
+
+	logger(mesh, MESHLINK_DEBUG, "UDP dest for %s: external %s %s", n->name, host, port);
+	free(host);
+
+	if(!select_listen_socket(mesh, sa_buf, sock)) {
+		return false;
+	}
+
+	*sa = sa_buf;
+	return true;
+}
+
+static bool try_canonical(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **sa, int *sock, sockaddr_t *sa_buf) {
+	char *host = NULL;
+	char *port = NULL;
+
+	if(!parse_host_port_field(n->canonical_address, &host, &port)) {
+		return false;
+	}
+
+	if(!host_port_to_sockaddr(host, port, sa_buf) || !udp_address_usable(sa_buf)) {
+		free(host);
+		return false;
+	}
+
+	logger(mesh, MESHLINK_DEBUG, "UDP dest for %s: canonical %s %s", n->name, host, port);
+	free(host);
+
+	if(!select_listen_socket(mesh, sa_buf, sock)) {
+		return false;
+	}
+
+	*sa = sa_buf;
+	return true;
+}
+
+static bool finish_udp_dest(meshlink_handle_t *mesh, const sockaddr_t **sa, int *sock) {
+	if(!*sa) {
+		return false;
+	}
+
+	if(!select_listen_socket(mesh, *sa, sock)) {
+		*sa = NULL;
+		return false;
+	}
+
+	return true;
 }
 
 void choose_udp_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **sa, int *sock, sockaddr_t *sa_buf) {
-	*sa = &n->address;
+	*sa = NULL;
 	*sock = n->sock;
 
 	if(n->status.udp_confirmed) {
-		select_listen_socket(mesh, *sa, sock);
+		*sa = &n->address;
+		finish_udp_dest(mesh, sa, sock);
 		return;
 	}
 
-	/* Unconfirmed: REQ_EXTERNAL wins over graph/META seeds and canonical.
+	/* Unconfirmed: usable REQ_EXTERNAL wins over graph/META seeds and canonical.
 	   Skip when it is our own public IP — same-host / same-NAT cannot hairpin. */
-	if(n->external_ip_address) {
-		char *host = xstrdup(n->external_ip_address);
-		char *port = strchr(host, ' ');
-
-		if(port) {
-			*port++ = 0;
-			*sa_buf = str2sockaddr(host, port);
-
-			if(sa_buf->sa.sa_family != AF_UNKNOWN && sa_buf->sa.sa_family != AF_UNSPEC) {
-				bool self_external = false;
-
-				if(mesh->self && mesh->self->external_ip_address) {
-					char *self_host = xstrdup(mesh->self->external_ip_address);
-					char *self_port = strchr(self_host, ' ');
-
-					if(self_port) {
-						*self_port = 0;
-					}
-
-					sockaddr_t self_sa = str2sockaddr(self_host, "0");
-					self_external = self_sa.sa.sa_family != AF_UNKNOWN && !sockaddrcmp_noport(sa_buf, &self_sa);
-					free(self_host);
-				}
-
-				if(!self_external) {
-					logger(mesh, MESHLINK_INFO, "UDP dest for %s: external %s %s", n->name, host, port);
-					*sa = sa_buf;
-					free(host);
-					select_listen_socket(mesh, *sa, sock);
-					return;
-				}
-
-				logger(mesh, MESHLINK_INFO, "Skipping external UDP dest for %s: same public IP as self", n->name);
-			} else {
-				logger(mesh, MESHLINK_INFO, "Couldn't create str2sockaddr, so skipping external IP address...");
-			}
-		} else {
-			logger(mesh, MESHLINK_INFO, "Couldn't find port, so skipping external IP address...");
-		}
-
-		free(host);
+	if(n->external_ip_address && try_req_external(mesh, n, sa, sock, sa_buf)) {
+		return;
 	}
 
 	n->udp_choice = (n->udp_choice + 1) % 3;
 
-	if(n->udp_choice == 1 && n->catta_address.sa.sa_family != AF_UNSPEC) {
+	if(n->udp_choice == 1 && n->catta_address.sa.sa_family != AF_UNSPEC && udp_address_usable(&n->catta_address)) {
 		*sa = &n->catta_address;
 	} else if(n->udp_choice == 2 && udp_address_usable(&n->address)) {
 		*sa = &n->address;
@@ -402,10 +499,12 @@ void choose_udp_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **s
 			*sa = &candidate->address;
 		} else if(udp_address_usable(&n->address)) {
 			*sa = &n->address;
+		} else if(try_canonical(mesh, n, sa, sock, sa_buf)) {
+			return;
 		}
 	}
 
-	select_listen_socket(mesh, *sa, sock);
+	finish_udp_dest(mesh, sa, sock);
 }
 
 static void choose_broadcast_address(meshlink_handle_t *mesh, const node_t *n, const sockaddr_t **sa, int *sock) {
@@ -466,13 +565,17 @@ bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 	/* Otherwise, send the packet via UDP */
 
 	sockaddr_t sa_buf;
-	const sockaddr_t *sa;
-	int sock;
+	const sockaddr_t *sa = NULL;
+	int sock = -1;
 
 	if(to->status.broadcast) {
 		choose_broadcast_address(mesh, to, &sa, &sock);
 	} else {
 		choose_udp_address(mesh, to, &sa, &sock, &sa_buf);
+	}
+
+	if(!sa || sock < 0 || sock >= mesh->listen_sockets) {
+		return true;
 	}
 
 	if(sendto(mesh->listen_socket[sock].udp.fd, data, len, 0, &sa->sa, SALEN(sa->sa)) < 0 && !sockwouldblock(sockerrno)) {

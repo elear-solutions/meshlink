@@ -34,6 +34,7 @@ void sockaddrunmap(sockaddr_t *);
 void sockaddrfree(sockaddr_t *);
 void sockaddrcpy(sockaddr_t *, const sockaddr_t *);
 void sockaddrcpy_setport(sockaddr_t *, const sockaddr_t *, uint16_t port);
+bool udp_address_usable(const sockaddr_t *sa);
 
 void packmsg_add_sockaddr(struct packmsg_output *out, const sockaddr_t *);
 sockaddr_t packmsg_get_sockaddr(struct packmsg_input *in) __attribute__((__warn_unused_result__));

@@ -317,33 +317,110 @@ int main(void) {
 	assert(wait_sync_flag(&bar_reachable, 20));
 
 	meshlink_node_t *peer = meshlink_get_node(mesh_foo, "bar");
-	assert(peer);
+	meshlink_node_t *self = meshlink_get_self(mesh_foo);
+	assert(peer && self);
 
-	struct sockaddr_in rfc1918;
-	memset(&rfc1918, 0, sizeof(rfc1918));
+	struct sockaddr_in rfc1918, rfc172, rfc192, public_dest, canonical_ip;
+	struct sockaddr_in6 ula;
+	memset(&rfc1918, 0, sizeof rfc1918);
+	memset(&rfc172, 0, sizeof rfc172);
+	memset(&rfc192, 0, sizeof rfc192);
+	memset(&public_dest, 0, sizeof public_dest);
+	memset(&canonical_ip, 0, sizeof canonical_ip);
+	memset(&ula, 0, sizeof ula);
 	rfc1918.sin_family = AF_INET;
 	rfc1918.sin_port = htons(32072);
+	rfc172.sin_family = AF_INET;
+	rfc172.sin_port = htons(32072);
+	rfc192.sin_family = AF_INET;
+	rfc192.sin_port = htons(32072);
+	public_dest.sin_family = AF_INET;
+	public_dest.sin_port = htons(32073);
+	canonical_ip.sin_family = AF_INET;
+	canonical_ip.sin_port = htons(32074);
+	ula.sin6_family = AF_INET6;
+	ula.sin6_port = htons(32072);
 	assert(inet_pton(AF_INET, "10.0.0.254", &rfc1918.sin_addr) == 1);
-	devtool_update_node_udp(mesh_foo, peer, (struct sockaddr *)&rfc1918);
+	assert(inet_pton(AF_INET, "172.16.1.1", &rfc172.sin_addr) == 1);
+	assert(inet_pton(AF_INET, "192.168.1.1", &rfc192.sin_addr) == 1);
+	assert(inet_pton(AF_INET, "198.51.100.20", &public_dest.sin_addr) == 1);
+	assert(inet_pton(AF_INET, "198.51.100.30", &canonical_ip.sin_addr) == 1);
+	assert(inet_pton(AF_INET6, "fd00::1", &ula.sin6_addr) == 1);
 
+	devtool_set_udp_confirmed(mesh_foo, peer, false);
+	devtool_update_node_udp(mesh_foo, peer, (struct sockaddr *)&rfc1918);
 	devtool_set_external_ip_address(mesh_foo, peer, "203.0.113.10 30777");
 
-	struct sockaddr_storage dest;
-	int sock = -1;
+	struct sockaddr_storage dest, dest2;
+	int sock = -1, sock2 = -1;
+	struct in_addr expect_ext, expect_rfc, got;
+
+	assert(inet_pton(AF_INET, "203.0.113.10", &expect_ext) == 1);
+	assert(inet_pton(AF_INET, "10.0.0.254", &expect_rfc) == 1);
+
 	assert(devtool_choose_udp_address(mesh_foo, peer, &dest, &sock));
 	assert(dest.ss_family == AF_INET);
-	assert(((struct sockaddr_in *)&dest)->sin_addr.s_addr == inet_addr("203.0.113.10"));
+	got = ((struct sockaddr_in *)&dest)->sin_addr;
+	assert(got.s_addr == expect_ext.s_addr);
 	assert(ntohs(((struct sockaddr_in *)&dest)->sin_port) == 30777);
 	assert(sock >= 0);
 
+	/* Peek must not advance per-node rotation / PRNG. */
+	assert(devtool_choose_udp_address(mesh_foo, peer, &dest2, &sock2));
+	assert(dest2.ss_family == dest.ss_family);
+	assert(((struct sockaddr_in *)&dest2)->sin_addr.s_addr == got.s_addr);
+	assert(sock2 == sock);
+
 	devtool_node_status_t st;
 	devtool_get_node_status(mesh_foo, peer, &st);
-	assert(((struct sockaddr_in *)&st.address)->sin_addr.s_addr == inet_addr("10.0.0.254"));
+	assert(st.address.ss_family == AF_INET);
+	assert(((struct sockaddr_in *)&st.address)->sin_addr.s_addr == expect_rfc.s_addr);
 	devtool_free_node_status(&st);
+
+	/* Confirmed path uses n->address even when it is RFC1918. */
+	devtool_set_udp_confirmed(mesh_foo, peer, true);
+	assert(devtool_choose_udp_address(mesh_foo, peer, &dest, &sock));
+	assert(((struct sockaddr_in *)&dest)->sin_addr.s_addr == expect_rfc.s_addr);
+	devtool_set_udp_confirmed(mesh_foo, peer, false);
+
+	/* RFC1918 / ULA REQ_EXTERNAL does not win. */
+	devtool_set_external_ip_address(mesh_foo, peer, "10.1.2.3 9");
+	assert(devtool_choose_udp_address(mesh_foo, peer, &dest, &sock));
+	assert(((struct sockaddr_in *)&dest)->sin_addr.s_addr != expect_rfc.s_addr);
+	assert((((struct sockaddr_in *)&dest)->sin_addr.s_addr & htonl(0xff000000)) != htonl(0x0a000000));
+
+	/* Hairpin: same public IP as self is skipped. */
+	devtool_set_external_ip_address(mesh_foo, self, "203.0.113.10 1");
+	devtool_set_external_ip_address(mesh_foo, peer, "203.0.113.10 30777");
+	assert(devtool_choose_udp_address(mesh_foo, peer, &dest, &sock));
+	assert(((struct sockaddr_in *)&dest)->sin_addr.s_addr != expect_ext.s_addr);
+	devtool_set_external_ip_address(mesh_foo, self, NULL);
 
 	devtool_set_external_ip_address(mesh_foo, peer, NULL);
 	assert(devtool_choose_udp_address(mesh_foo, peer, &dest, &sock));
-	assert(((struct sockaddr_in *)&dest)->sin_addr.s_addr != inet_addr("10.0.0.254"));
+	assert(((struct sockaddr_in *)&dest)->sin_addr.s_addr != expect_rfc.s_addr);
+	assert((((struct sockaddr_in *)&dest)->sin_addr.s_addr & htonl(0xff000000)) != htonl(0x0a000000));
+
+	/* graph_may_seed_udp: reachable + set dest never clobbers; RFC1918/ULA never seed. */
+	assert(!devtool_graph_may_seed_udp(mesh_foo, peer, (struct sockaddr *)&rfc1918));
+	assert(!devtool_graph_may_seed_udp(mesh_foo, peer, (struct sockaddr *)&rfc172));
+	assert(!devtool_graph_may_seed_udp(mesh_foo, peer, (struct sockaddr *)&rfc192));
+	assert(!devtool_graph_may_seed_udp(mesh_foo, peer, (struct sockaddr *)&ula));
+
+	devtool_update_node_udp(mesh_foo, peer, (struct sockaddr *)&public_dest);
+	assert(!devtool_graph_may_seed_udp(mesh_foo, peer, (struct sockaddr *)&rfc1918));
+	assert(!devtool_graph_may_seed_udp(mesh_foo, peer, (struct sockaddr *)&public_dest));
+
+	struct sockaddr_in unset;
+	memset(&unset, 0, sizeof unset);
+	unset.sin_family = AF_UNSPEC;
+	devtool_update_node_udp(mesh_foo, peer, (struct sockaddr *)&unset);
+	assert(!devtool_graph_may_seed_udp(mesh_foo, peer, (struct sockaddr *)&rfc1918));
+	assert(!devtool_graph_may_seed_udp(mesh_foo, peer, (struct sockaddr *)&rfc172));
+	assert(!devtool_graph_may_seed_udp(mesh_foo, peer, (struct sockaddr *)&rfc192));
+	assert(!devtool_graph_may_seed_udp(mesh_foo, peer, (struct sockaddr *)&ula));
+	assert(devtool_graph_may_seed_udp(mesh_foo, peer, (struct sockaddr *)&public_dest));
+	assert(devtool_graph_may_seed_udp(mesh_foo, peer, (struct sockaddr *)&canonical_ip));
 
 	meshlink_close(mesh_foo);
 	meshlink_close(mesh_bar);

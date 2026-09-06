@@ -467,9 +467,17 @@ bool devtool_choose_udp_address(meshlink_handle_t *mesh, meshlink_node_t *node, 
 		abort();
 	}
 
+	node_t *n = (node_t *)node;
+	int saved_choice = n->udp_choice;
+	uint64_t saved_prng[4];
+	memcpy(saved_prng, mesh->prng_state, sizeof saved_prng);
+
 	sockaddr_t sa_buf;
 	const sockaddr_t *sa = NULL;
-	choose_udp_address(mesh, (node_t *)node, &sa, sock, &sa_buf);
+	choose_udp_address(mesh, n, &sa, sock, &sa_buf);
+
+	n->udp_choice = saved_choice;
+	memcpy(mesh->prng_state, saved_prng, sizeof saved_prng);
 
 	if(!sa || sa->sa.sa_family == AF_UNSPEC || sa->sa.sa_family == AF_UNKNOWN) {
 		pthread_mutex_unlock(&mesh->mutex);
@@ -480,4 +488,33 @@ bool devtool_choose_udp_address(meshlink_handle_t *mesh, meshlink_node_t *node, 
 	memcpy(addr, &sa->storage, sizeof(*addr));
 	pthread_mutex_unlock(&mesh->mutex);
 	return true;
+}
+
+void devtool_set_udp_confirmed(meshlink_handle_t *mesh, meshlink_node_t *node, bool confirmed) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	((node_t *)node)->status.udp_confirmed = confirmed;
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+bool devtool_graph_may_seed_udp(meshlink_handle_t *mesh, meshlink_node_t *node, const struct sockaddr *addr) {
+	if(!mesh || !node || !addr) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	bool ok = graph_may_seed_udp((node_t *)node, (const sockaddr_t *)addr);
+	pthread_mutex_unlock(&mesh->mutex);
+	return ok;
 }
