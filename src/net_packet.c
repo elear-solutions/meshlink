@@ -769,6 +769,14 @@ bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t
 			return true;
 		}
 
+		/* META receive_request bounds-checks the leading request number before any
+		   handler. req_key_h may forward via send_request("%s", request), which
+		   indexes request_name[atoi(request)] — so a first token outside REQ_KEY
+		   is an out-of-bounds read. Only the REQ_KEY wire format is valid here. */
+		if(atoi((const char *)data) != REQ_KEY) {
+			return true;
+		}
+
 		/* from->connection is the meta session with the UDP sender (the nexthop), used
 		   for logging and req_key_h's from->connection != c check. A false return from
 		   req_key_h means "drop this meta connection"; on the datagram path that would
