@@ -76,7 +76,7 @@ test/metering
 test/metering-relayed
 test/metering-slowping
 test/metering-tcponly
-test/parse-external-http
+test/get-external-address
 test/port
 test/req-external-port
 test/sign-verify
