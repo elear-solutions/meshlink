@@ -8,6 +8,9 @@
 #include <string.h>
 #include <sys/time.h>
 #include <assert.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include "meshlink.h"
 #include "devtools.h"
@@ -283,6 +286,69 @@ int main(void) {
 	printf("\n=== REQ_EXTERNAL Port 0 Test Complete ===\n");
 	printf("✅ Tested both BACKBONE+BACKBONE and BACKBONE+PORTABLE scenarios\n");
 	printf("✅ Bug fix verified in both scenarios\n");
+
+	printf("\n=== Dest pick: REQ_EXTERNAL first, RFC1918 does not win ===\n");
+
+	assert(meshlink_destroy("req_external_conf.1"));
+	assert(meshlink_destroy("req_external_conf.2"));
+
+	mesh_foo = meshlink_open("req_external_conf.1", "foo", "req-external", DEV_CLASS_STATIONARY);
+	mesh_bar = meshlink_open("req_external_conf.2", "bar", "req-external", DEV_CLASS_STATIONARY);
+	assert(mesh_foo && mesh_bar);
+
+	meshlink_enable_discovery(mesh_foo, false);
+	meshlink_enable_discovery(mesh_bar, false);
+	assert(meshlink_set_canonical_address(mesh_foo, meshlink_get_self(mesh_foo), "localhost", NULL));
+	assert(meshlink_set_canonical_address(mesh_bar, meshlink_get_self(mesh_bar), "localhost", NULL));
+
+	char *data3 = meshlink_export(mesh_foo);
+	assert(data3);
+	assert(meshlink_import(mesh_bar, data3));
+	free(data3);
+	data3 = meshlink_export(mesh_bar);
+	assert(data3);
+	assert(meshlink_import(mesh_foo, data3));
+	free(data3);
+
+	init_sync_flag(&bar_reachable);
+	meshlink_set_node_status_cb(mesh_foo, status_cb);
+	assert(meshlink_start(mesh_foo));
+	assert(meshlink_start(mesh_bar));
+	assert(wait_sync_flag(&bar_reachable, 20));
+
+	meshlink_node_t *peer = meshlink_get_node(mesh_foo, "bar");
+	assert(peer);
+
+	struct sockaddr_in rfc1918;
+	memset(&rfc1918, 0, sizeof(rfc1918));
+	rfc1918.sin_family = AF_INET;
+	rfc1918.sin_port = htons(32072);
+	assert(inet_pton(AF_INET, "10.20.1.254", &rfc1918.sin_addr) == 1);
+	devtool_update_node_udp(mesh_foo, peer, (struct sockaddr *)&rfc1918);
+
+	devtool_set_external_ip_address(mesh_foo, peer, "16.112.61.125 30777");
+
+	struct sockaddr_storage dest;
+	int sock = -1;
+	assert(devtool_choose_udp_address(mesh_foo, peer, &dest, &sock));
+	assert(dest.ss_family == AF_INET);
+	assert(((struct sockaddr_in *)&dest)->sin_addr.s_addr == inet_addr("16.112.61.125"));
+	assert(ntohs(((struct sockaddr_in *)&dest)->sin_port) == 30777);
+	assert(sock >= 0);
+
+	devtool_node_status_t st;
+	devtool_get_node_status(mesh_foo, peer, &st);
+	assert(((struct sockaddr_in *)&st.address)->sin_addr.s_addr == inet_addr("10.20.1.254"));
+	devtool_free_node_status(&st);
+
+	devtool_set_external_ip_address(mesh_foo, peer, NULL);
+	assert(devtool_choose_udp_address(mesh_foo, peer, &dest, &sock));
+	assert(((struct sockaddr_in *)&dest)->sin_addr.s_addr != inet_addr("10.20.1.254"));
+
+	meshlink_close(mesh_foo);
+	meshlink_close(mesh_bar);
+	assert(meshlink_destroy("req_external_conf.1"));
+	assert(meshlink_destroy("req_external_conf.2"));
 
 	return 0;
 }

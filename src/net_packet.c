@@ -314,115 +314,98 @@ static void send_sptps_packet(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *
 	return;
 }
 
-static void choose_udp_address(meshlink_handle_t *mesh, const node_t *n, const sockaddr_t **sa, int *sock, sockaddr_t *sa_buf) {
-	/* Latest guess */
+static void select_listen_socket(meshlink_handle_t *mesh, const sockaddr_t *sa, int *sock) {
+	if(*sock < 0 || *sock >= mesh->listen_sockets
+	                || mesh->listen_socket[*sock].sa.sa.sa_family != sa->sa.sa_family) {
+		for(int i = 0; i < mesh->listen_sockets; i++) {
+			if(mesh->listen_socket[i].sa.sa.sa_family == sa->sa.sa_family) {
+				*sock = i;
+				return;
+			}
+		}
+	}
+}
+
+void choose_udp_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **sa, int *sock, sockaddr_t *sa_buf) {
 	*sa = &n->address;
 	*sock = n->sock;
 
-	/* If the UDP address is confirmed, use it. */
 	if(n->status.udp_confirmed) {
+		select_listen_socket(mesh, *sa, sock);
 		return;
 	}
 
-	/* Send every third packet to n->address; that could be set
-	   to the node's reflexive UDP address discovered during key
-	   exchange. */
-
-	if(++mesh->udp_choice >= 3) {
-		mesh->udp_choice = 0;
-		return;
-	}
-
-	/* If we have learned an address via Catta, try this once every batch */
-	if(mesh->udp_choice == 1 && n->catta_address.sa.sa_family != AF_UNSPEC) {
-		*sa = &n->catta_address;
-		goto check_socket;
-	}
-
-	/* Else, if we have a external IP address, try this once every batch */
-	if(mesh->udp_choice == 1 && n->external_ip_address) {
-		logger(mesh, MESHLINK_DEBUG, "Trying the external IP address...\n");
-
+	/* Unconfirmed: REQ_EXTERNAL wins over graph/META seeds and canonical.
+	   Skip when it is our own public IP — same-host / same-NAT cannot hairpin. */
+	if(n->external_ip_address) {
 		char *host = xstrdup(n->external_ip_address);
 		char *port = strchr(host, ' ');
 
 		if(port) {
 			*port++ = 0;
-			logger(mesh, MESHLINK_DEBUG, "Using external IP host: %s and port %s\n", host, port);
 			*sa_buf = str2sockaddr(host, port);
-			*sa = sa_buf;
 
-			if(sa_buf->sa.sa_family != AF_UNKNOWN) {
-				free(host);
-				goto check_socket;
+			if(sa_buf->sa.sa_family != AF_UNKNOWN && sa_buf->sa.sa_family != AF_UNSPEC) {
+				bool self_external = false;
+
+				if(mesh->self && mesh->self->external_ip_address) {
+					char *self_host = xstrdup(mesh->self->external_ip_address);
+					char *self_port = strchr(self_host, ' ');
+
+					if(self_port) {
+						*self_port = 0;
+					}
+
+					sockaddr_t self_sa = str2sockaddr(self_host, "0");
+					self_external = self_sa.sa.sa_family != AF_UNKNOWN && !sockaddrcmp_noport(sa_buf, &self_sa);
+					free(self_host);
+				}
+
+				if(!self_external) {
+					logger(mesh, MESHLINK_INFO, "UDP dest for %s: external %s %s", n->name, host, port);
+					*sa = sa_buf;
+					free(host);
+					select_listen_socket(mesh, *sa, sock);
+					return;
+				}
+
+				logger(mesh, MESHLINK_INFO, "Skipping external UDP dest for %s: same public IP as self", n->name);
 			} else {
-				logger(mesh, MESHLINK_DEBUG, "Couldn't create str2sockaddr, so skipping external IP address...\n");
+				logger(mesh, MESHLINK_INFO, "Couldn't create str2sockaddr, so skipping external IP address...");
 			}
 		} else {
-			logger(mesh, MESHLINK_DEBUG, "Couldn't find port, so skipping external IP address...\n");
+			logger(mesh, MESHLINK_INFO, "Couldn't find port, so skipping external IP address...");
 		}
 
 		free(host);
 	}
 
-	/* Else, if we have a canonical address, try this once every batch */
-	if(mesh->udp_choice == 1 && n->canonical_address) {
-		logger(mesh, MESHLINK_DEBUG, "Trying the canonical host...\n");
-		char *host = xstrdup(n->canonical_address);
-		char *port = strchr(host, ' ');
+	n->udp_choice = (n->udp_choice + 1) % 3;
 
-		if(port) {
-			*port++ = 0;
-			logger(mesh, MESHLINK_DEBUG, "Using canonical host: %s and port %s\n", host, port);
-			*sa_buf = str2sockaddr_random(mesh, host, port);
-			*sa = sa_buf;
-
-			if(sa_buf->sa.sa_family != AF_UNKNOWN) {
-				free(host);
-				goto check_socket;
-			} else {
-				logger(mesh, MESHLINK_DEBUG, "Couldn't create str2sockaddr, so skipping canonical host...\n");
-			}
-		} else {
-			logger(mesh, MESHLINK_DEBUG, "Couldn't find port, so skipping canonical host...\n");
-		}
-
-		free(host);
-	}
-
-	/* Otherwise, address are found in edges to this node.
-	   So we pick a random edge and a random socket. */
-
-	edge_t *candidate = NULL;
-
-	{
-		int i = 0;
-		int j = prng(mesh, n->edge_tree->count);
+	if(n->udp_choice == 1 && n->catta_address.sa.sa_family != AF_UNSPEC) {
+		*sa = &n->catta_address;
+	} else if(n->udp_choice == 2 && udp_address_usable(&n->address)) {
+		*sa = &n->address;
+	} else {
+		edge_t *candidate = NULL;
+		int usable = 0;
 
 		for splay_each(edge_t, e, n->edge_tree) {
-			if(i++ == j) {
-				candidate = e->reverse;
-				break;
+			if(e->reverse && udp_address_usable(&e->reverse->address)) {
+				if(prng(mesh, ++usable) == 0) {
+					candidate = e->reverse;
+				}
 			}
+		}
+
+		if(candidate) {
+			*sa = &candidate->address;
+		} else if(udp_address_usable(&n->address)) {
+			*sa = &n->address;
 		}
 	}
 
-	if(candidate) {
-		*sa = &candidate->address;
-		*sock = prng(mesh, mesh->listen_sockets);
-	}
-
-check_socket:
-
-	/* Make sure we have a suitable socket for the chosen address */
-	if(mesh->listen_socket[*sock].sa.sa.sa_family != (*sa)->sa.sa_family) {
-		for(int i = 0; i < mesh->listen_sockets; i++) {
-			if(mesh->listen_socket[i].sa.sa.sa_family == (*sa)->sa.sa_family) {
-				*sock = i;
-				break;
-			}
-		}
-	}
+	select_listen_socket(mesh, *sa, sock);
 }
 
 static void choose_broadcast_address(meshlink_handle_t *mesh, const node_t *n, const sockaddr_t **sa, int *sock) {
