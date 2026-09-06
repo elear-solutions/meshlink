@@ -144,15 +144,22 @@ int main(void) {
 	wait_sync_flag(&b_responded, 1);
 	wait_sync_flag(&b_closed, 1);
 
-	// Try to send data on a closed channel
+	// Try to send data on a closed channel. Under qemu the UTCP close can take
+	// well over 100ms; wait up to 2s for send() to start returning -1.
 
-	for(int i = 0; i < 10; i++) {
-		if(meshlink_channel_send(a, channel, "Hello", 5) == -1) {
-			break;
+	{
+		bool closed_send = false;
+
+		for(int i = 0; i < 100; i++) {
+			if(meshlink_channel_send(a, channel, "Hello", 5) == -1) {
+				closed_send = true;
+				break;
+			}
+
+			usleep(20000);
 		}
 
-		assert(i != 9);
-		usleep(10000);
+		assert(closed_send);
 	}
 
 	// Try to create a second channel
@@ -164,7 +171,7 @@ int main(void) {
 	assert(channel2);
 	meshlink_set_channel_poll_cb(a, channel2, poll_cb2);
 
-	assert(wait_sync_flag(&channel_polled, 5));
+	assert(wait_sync_flag(&channel_polled, 15));
 
 	assert(0 == a_poll_cb_len);
 

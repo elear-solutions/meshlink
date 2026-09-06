@@ -14,8 +14,13 @@
 #include "utils.h"
 
 void init_sync_flag(struct sync_flag *s) {
+	pthread_condattr_t attr;
+
 	assert(pthread_mutex_init(&s->mutex, NULL) == 0);
-	assert(pthread_cond_init(&s->cond, NULL) == 0);
+	assert(pthread_condattr_init(&attr) == 0);
+	assert(pthread_condattr_setclock(&attr, CLOCK_MONOTONIC) == 0);
+	assert(pthread_cond_init(&s->cond, &attr) == 0);
+	assert(pthread_condattr_destroy(&attr) == 0);
 	s->flag = false;
 }
 
@@ -42,20 +47,27 @@ bool check_sync_flag(struct sync_flag *s) {
 
 bool wait_sync_flag(struct sync_flag *s, int seconds) {
 	struct timespec timeout;
-	clock_gettime(CLOCK_REALTIME, &timeout);
+
+	clock_gettime(CLOCK_MONOTONIC, &timeout);
 	timeout.tv_sec += seconds;
 
 	assert(pthread_mutex_lock(&s->mutex) == 0);
 
 	while(!s->flag) {
-		if(!pthread_cond_timedwait(&s->cond, &s->mutex, &timeout) || errno != EINTR) {
+		int rc = pthread_cond_timedwait(&s->cond, &s->mutex, &timeout);
+
+		if(rc == ETIMEDOUT) {
+			break;
+		}
+
+		if(rc != 0 && rc != EINTR) {
 			break;
 		}
 	}
 
+	bool flag = s->flag;
 	assert(pthread_mutex_unlock(&s->mutex) == 0);
-
-	return s->flag;
+	return flag;
 }
 
 void link_meshlink_pair(meshlink_handle_t *a, meshlink_handle_t *b) {
@@ -148,7 +160,7 @@ void start_meshlink_pair(meshlink_handle_t *a, meshlink_handle_t *b) {
 	assert(meshlink_start(a));
 	assert(meshlink_start(b));
 
-	assert(wait_sync_flag(&pair_status, 5));
+	assert(wait_sync_flag(&pair_status, 30));
 
 	meshlink_set_node_status_cb(a, NULL);
 	a->priv = NULL;
