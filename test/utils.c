@@ -14,13 +14,8 @@
 #include "utils.h"
 
 void init_sync_flag(struct sync_flag *s) {
-	pthread_condattr_t attr;
-
 	assert(pthread_mutex_init(&s->mutex, NULL) == 0);
-	assert(pthread_condattr_init(&attr) == 0);
-	assert(pthread_condattr_setclock(&attr, CLOCK_MONOTONIC) == 0);
-	assert(pthread_cond_init(&s->cond, &attr) == 0);
-	assert(pthread_condattr_destroy(&attr) == 0);
+	assert(pthread_cond_init(&s->cond, NULL) == 0);
 	s->flag = false;
 }
 
@@ -48,7 +43,7 @@ bool check_sync_flag(struct sync_flag *s) {
 bool wait_sync_flag(struct sync_flag *s, int seconds) {
 	struct timespec timeout;
 
-	clock_gettime(CLOCK_MONOTONIC, &timeout);
+	clock_gettime(CLOCK_REALTIME, &timeout);
 	timeout.tv_sec += seconds;
 
 	assert(pthread_mutex_lock(&s->mutex) == 0);
