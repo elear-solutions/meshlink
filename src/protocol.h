@@ -66,6 +66,8 @@ typedef struct past_request_t {
 /* Protocol support flags */
 
 static const uint32_t PROTOCOL_TINY = 1; // Peer is using meshlink-tiny
+static const uint32_t PROTOCOL_UPGRADE = 2; // Connection replaces the peer's canonical connection to us: hold it as a spare, ACK only once held
+static const uint32_t PROTOCOL_VIA_CANONICAL = 4; // Initiator reached us via a relay (canonical or indirect-edge address)
 
 /* Maximum size of strings in a request.
  * scanf terminates %2048s with a NUL character,

@@ -64,6 +64,9 @@ struct meshlink_open_params {
 	const void *key;
 	size_t keylen;
 	meshlink_storage_policy_t storage_policy;
+
+	uint16_t port_range_lo;         /* Inclusive listen port range, both 0 = unconstrained */
+	uint16_t port_range_hi;
 };
 
 /// Device class traits
@@ -145,6 +148,8 @@ struct meshlink_handle {
 	// Mesh parameters
 	char *appname;
 	char *myport;
+	uint16_t port_range_lo;         /* Runtime-only listen port range, not persisted; both 0 = unconstrained */
+	uint16_t port_range_hi;
 
 	struct ecdsa *private_key;
 	struct ecdsa *invitation_key;

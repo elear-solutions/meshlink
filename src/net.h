@@ -69,6 +69,7 @@ typedef struct outgoing_t {
 		OUTGOING_CANONICAL,
 		OUTGOING_RECENT,
 		OUTGOING_KNOWN,
+		OUTGOING_KNOWN_INDIRECT,
 		OUTGOING_END,
 		OUTGOING_NO_KNOWN_ADDRESSES,
 	} state;
@@ -76,6 +77,7 @@ typedef struct outgoing_t {
 	timeout_t ev;
 	struct addrinfo *ai;
 	struct addrinfo *aip;
+	bool ai_is_getaddrinfo;         /* true if ai came from getaddrinfo() (free with freeaddrinfo), false if built locally */
 } outgoing_t;
 
 /* Yes, very strange placement indeed, but otherwise the typedefs get all tangled up */
@@ -88,6 +90,7 @@ void exit_outgoings(struct meshlink_handle *mesh);
 void retry_outgoing(struct meshlink_handle *mesh, outgoing_t *);
 void handle_incoming_vpn_data(struct event_loop_t *loop, void *, int);
 void finish_connecting(struct meshlink_handle *mesh, struct connection_t *);
+bool connect_meta_socket(struct meshlink_handle *mesh, struct connection_t *) __attribute__((__warn_unused_result__));
 void do_outgoing_connection(struct meshlink_handle *mesh, struct outgoing_t *);
 void handle_new_meta_connection(struct event_loop_t *loop, void *, int);
 int setup_tcp_listen_socket(struct meshlink_handle *mesh, const struct addrinfo *aip) __attribute__((__warn_unused_result__));
@@ -104,6 +107,9 @@ void setup_outgoing_connection(struct meshlink_handle *mesh, struct outgoing_t *
 void close_network_connections(struct meshlink_handle *mesh);
 void main_loop(struct meshlink_handle *mesh);
 void terminate_connection(struct meshlink_handle *mesh, struct connection_t *, bool);
+struct edge_t *new_connection_edge(struct meshlink_handle *mesh, struct connection_t *, struct node_t *, const char *hisport, int devclass) __attribute__((__warn_unused_result__));
+void install_node_connection(struct meshlink_handle *mesh, struct node_t *, struct connection_t *);
+void add_connection_edge(struct meshlink_handle *mesh, struct connection_t *);
 bool node_read_public_key(struct meshlink_handle *mesh, struct node_t *) __attribute__((__warn_unused_result__));
 bool node_read_from_config(struct meshlink_handle *mesh, struct node_t *, const config_t *config) __attribute__((__warn_unused_result__));
 bool read_ecdsa_public_key(struct meshlink_handle *mesh, struct connection_t *) __attribute__((__warn_unused_result__));
@@ -111,9 +117,12 @@ bool read_ecdsa_private_key(struct meshlink_handle *mesh) __attribute__((__warn_
 bool node_write_config(struct meshlink_handle *mesh, struct node_t *, bool new_key) __attribute__((__warn_unused_result__));
 void send_mtu_probe(struct meshlink_handle *mesh, struct node_t *);
 void choose_udp_address(struct meshlink_handle *mesh, struct node_t *n, const sockaddr_t **sa, int *sock, sockaddr_t *sa_buf);
+bool host_port_to_sockaddr(const char *host, const char *port, sockaddr_t *out) __attribute__((__warn_unused_result__));
+bool self_external_sockaddr(struct meshlink_handle *mesh, sockaddr_t *out) __attribute__((__warn_unused_result__));
 void handle_meta_connection_data(struct meshlink_handle *mesh, struct connection_t *);
 void retry(struct meshlink_handle *mesh);
 int check_port(struct meshlink_handle *mesh);
+bool port_in_range(struct meshlink_handle *mesh, int port) __attribute__((__warn_unused_result__));
 void flush_meta(struct meshlink_handle *mesh, struct connection_t *);
 
 #ifndef HAVE_MINGW

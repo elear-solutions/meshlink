@@ -35,6 +35,7 @@ void sockaddrfree(sockaddr_t *);
 void sockaddrcpy(sockaddr_t *, const sockaddr_t *);
 void sockaddrcpy_setport(sockaddr_t *, const sockaddr_t *, uint16_t port);
 bool udp_address_bound(const sockaddr_t *sa);
+bool address_connectable(const sockaddr_t *sa);
 bool udp_address_usable(const sockaddr_t *sa);
 
 void packmsg_add_sockaddr(struct packmsg_output *out, const sockaddr_t *);

@@ -29,7 +29,12 @@ TESTS = \
 	meta-connections \
 	get-external-address \
 	mtu-probe-log \
+	outgoing-order \
+	canonical-migrate \
+	req-external-recent \
 	port \
+	port-range \
+	reconnect-backoff \
 	req-external-port \
 	sign-verify \
 	storage-policy \
@@ -84,7 +89,12 @@ check_PROGRAMS = \
 	meta-connections \
 	get-external-address \
 	mtu-probe-log \
+	outgoing-order \
+	canonical-migrate \
+	req-external-recent \
 	port \
+	port-range \
+	reconnect-backoff \
 	req-external-port \
 	sign-verify \
 	storage-policy \
@@ -193,8 +203,23 @@ get_external_address_LDADD = $(top_builddir)/src/libmeshlink.la
 mtu_probe_log_SOURCES = mtu-probe-log.c utils.c utils.h
 mtu_probe_log_LDADD = $(top_builddir)/src/libmeshlink.la
 
+outgoing_order_SOURCES = outgoing-order.c utils.c utils.h
+outgoing_order_LDADD = $(top_builddir)/src/libmeshlink.la
+
+canonical_migrate_SOURCES = canonical-migrate.c utils.c utils.h
+canonical_migrate_LDADD = $(top_builddir)/src/libmeshlink.la
+
+req_external_recent_SOURCES = req-external-recent.c utils.c utils.h
+req_external_recent_LDADD = $(top_builddir)/src/libmeshlink.la
+
 port_SOURCES = port.c utils.c utils.h
 port_LDADD = $(top_builddir)/src/libmeshlink.la
+
+port_range_SOURCES = port-range.c utils.c utils.h
+port_range_LDADD = $(top_builddir)/src/libmeshlink.la
+
+reconnect_backoff_SOURCES = reconnect-backoff.c utils.c utils.h
+reconnect_backoff_LDADD = $(top_builddir)/src/libmeshlink.la
 
 req_external_port_SOURCES = req-external-port.c utils.c utils.h
 req_external_port_LDADD = $(top_builddir)/src/libmeshlink.la

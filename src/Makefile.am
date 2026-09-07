@@ -63,6 +63,7 @@ libmeshlink_la_SOURCES = \
 	net_packet.c \
 	net_setup.c \
 	net_socket.c \
+	net_upgrade.c net_upgrade.h \
 	netutl.c netutl.h \
 	node.c node.h \
 	submesh.c submesh.h \

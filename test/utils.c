@@ -6,12 +6,290 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <pthread.h>
 #include <assert.h>
 #include <errno.h>
 #include <time.h>
+#include <unistd.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include "utils.h"
+#include "../src/devtools.h"
+
+#define RELAY_MAX_CONNS 64
+
+struct tcp_relay {
+	int listen_fd;
+	int listen_port;
+	char target_host[64];
+	int target_port;
+	pthread_t thread;
+	pthread_mutex_t mutex;
+	int accept_count;
+	bool stopping;
+	size_t nconns;
+	struct relay_conn *conns[RELAY_MAX_CONNS];
+};
+
+/* fd ownership: a conn thread only ever shutdown()s its two sockets; stop_tcp_relay()
+   close()s them after joining the thread. Closing from the thread would let the kernel
+   hand the same fd numbers to a meshlink socket in this process before stop_tcp_relay()
+   gets to shutdown() them, cutting a live meta connection instead of a dead relay one. */
+struct relay_conn {
+	tcp_relay_t *relay;
+	int client_fd;
+	int target_fd;
+	pthread_t thread;
+};
+
+static int listen_on(const char *host, int *port_inout) {
+	struct sockaddr_in sa;
+	memset(&sa, 0, sizeof sa);
+	sa.sin_family = AF_INET;
+	sa.sin_port = htons(*port_inout);
+	assert(inet_pton(AF_INET, host, &sa.sin_addr) == 1);
+
+	int fd = socket(AF_INET, SOCK_STREAM, 0);
+	assert(fd != -1);
+
+	int one = 1;
+	assert(setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one) == 0);
+	assert(bind(fd, (struct sockaddr *)&sa, sizeof sa) == 0);
+	assert(listen(fd, 16) == 0);
+
+	socklen_t salen = sizeof sa;
+	assert(getsockname(fd, (struct sockaddr *)&sa, &salen) == 0);
+	*port_inout = ntohs(sa.sin_port);
+
+	return fd;
+}
+
+static int connect_to(const char *host, int port) {
+	struct sockaddr_in sa;
+	memset(&sa, 0, sizeof sa);
+	sa.sin_family = AF_INET;
+	sa.sin_port = htons(port);
+
+	if(inet_pton(AF_INET, host, &sa.sin_addr) != 1) {
+		return -1;
+	}
+
+	int fd = socket(AF_INET, SOCK_STREAM, 0);
+
+	if(fd == -1) {
+		return -1;
+	}
+
+	if(connect(fd, (struct sockaddr *)&sa, sizeof sa) != 0) {
+		close(fd);
+		return -1;
+	}
+
+	return fd;
+}
+
+/* Copy bytes from one fd to the other until either side closes. */
+static bool pump(int from, int to) {
+	char buf[4096];
+	ssize_t len = recv(from, buf, sizeof buf, 0);
+
+	if(len <= 0) {
+		return false;
+	}
+
+	for(ssize_t off = 0; off < len;) {
+		ssize_t sent = send(to, buf + off, len - off, MSG_NOSIGNAL);
+
+		if(sent <= 0) {
+			return false;
+		}
+
+		off += sent;
+	}
+
+	return true;
+}
+
+static void *relay_conn_thread(void *arg) {
+	struct relay_conn *conn = arg;
+	struct pollfd fds[2] = {
+		{.fd = conn->client_fd, .events = POLLIN},
+		{.fd = conn->target_fd, .events = POLLIN},
+	};
+
+	while(true) {
+		if(poll(fds, 2, -1) < 0) {
+			if(errno == EINTR) {
+				continue;
+			}
+
+			break;
+		}
+
+		if(fds[0].revents && !pump(conn->client_fd, conn->target_fd)) {
+			break;
+		}
+
+		if(fds[1].revents && !pump(conn->target_fd, conn->client_fd)) {
+			break;
+		}
+	}
+
+	shutdown(conn->client_fd, SHUT_RDWR);
+	shutdown(conn->target_fd, SHUT_RDWR);
+
+	return NULL;
+}
+
+static void *relay_accept_thread(void *arg) {
+	tcp_relay_t *relay = arg;
+
+	while(true) {
+		int client_fd = accept(relay->listen_fd, NULL, NULL);
+
+		if(client_fd < 0) {
+			if(errno == EINTR) {
+				continue;
+			}
+
+			break;
+		}
+
+		assert(pthread_mutex_lock(&relay->mutex) == 0);
+		relay->accept_count++;
+		bool stopping = relay->stopping;
+		int target_port = relay->target_port;
+		assert(pthread_mutex_unlock(&relay->mutex) == 0);
+
+		if(stopping) {
+			close(client_fd);
+			break;
+		}
+
+		int target_fd = connect_to(relay->target_host, target_port);
+
+		if(target_fd < 0) {
+			close(client_fd);
+			continue;
+		}
+
+		struct relay_conn *conn = calloc(1, sizeof *conn);
+		assert(conn);
+		conn->relay = relay;
+		conn->client_fd = client_fd;
+		conn->target_fd = target_fd;
+
+		assert(pthread_mutex_lock(&relay->mutex) == 0);
+		assert(relay->nconns < RELAY_MAX_CONNS);
+		relay->conns[relay->nconns++] = conn;
+		assert(pthread_mutex_unlock(&relay->mutex) == 0);
+
+		assert(pthread_create(&conn->thread, NULL, relay_conn_thread, conn) == 0);
+	}
+
+	return NULL;
+}
+
+tcp_relay_t *start_tcp_relay(const char *listen_host, int *listen_port_out, const char *target_host, int target_port) {
+	tcp_relay_t *relay = calloc(1, sizeof *relay);
+	assert(relay);
+
+	assert(pthread_mutex_init(&relay->mutex, NULL) == 0);
+	snprintf(relay->target_host, sizeof relay->target_host, "%s", target_host);
+	relay->target_port = target_port;
+	relay->listen_port = *listen_port_out;
+	relay->listen_fd = listen_on(listen_host, &relay->listen_port);
+	*listen_port_out = relay->listen_port;
+
+	assert(pthread_create(&relay->thread, NULL, relay_accept_thread, relay) == 0);
+
+	return relay;
+}
+
+int tcp_relay_accept_count(tcp_relay_t *relay) {
+	assert(pthread_mutex_lock(&relay->mutex) == 0);
+	int count = relay->accept_count;
+	assert(pthread_mutex_unlock(&relay->mutex) == 0);
+	return count;
+}
+
+void tcp_relay_set_target(tcp_relay_t *relay, int target_port) {
+	assert(pthread_mutex_lock(&relay->mutex) == 0);
+	relay->target_port = target_port;
+	assert(pthread_mutex_unlock(&relay->mutex) == 0);
+}
+
+void stop_tcp_relay(tcp_relay_t *relay) {
+	assert(pthread_mutex_lock(&relay->mutex) == 0);
+	relay->stopping = true;
+	assert(pthread_mutex_unlock(&relay->mutex) == 0);
+
+	/* Wake accept() with an error and let the thread exit before the fd is closed,
+	   so it cannot come back to accept() on a reused fd number. */
+	shutdown(relay->listen_fd, SHUT_RDWR);
+	pthread_join(relay->thread, NULL);
+	close(relay->listen_fd);
+
+	/* Every conn fd is still open (only the thread's shutdown() may have run), so
+	   these shutdown()s hit our own sockets, never a reused fd number. */
+	for(size_t i = 0; i < relay->nconns; i++) {
+		struct relay_conn *conn = relay->conns[i];
+
+		shutdown(conn->client_fd, SHUT_RDWR);
+		shutdown(conn->target_fd, SHUT_RDWR);
+		pthread_join(conn->thread, NULL);
+		close(conn->client_fd);
+		close(conn->target_fd);
+		free(conn);
+	}
+
+	pthread_mutex_destroy(&relay->mutex);
+	free(relay);
+}
+
+int start_black_hole(const char *listen_host, int *port_out) {
+	*port_out = 0;
+	return listen_on(listen_host, port_out);
+}
+
+int find_closed_port(const char *listen_host) {
+	int port = 0;
+	int fd = listen_on(listen_host, &port);
+	close(fd);
+	return port;
+}
+
+bool loopback_alias_available(const char *ip) {
+	struct sockaddr_in sa = ipv4(ip, 0);
+	int fd = socket(AF_INET, SOCK_STREAM, 0);
+	assert(fd != -1);
+	bool ok = bind(fd, (struct sockaddr *)&sa, sizeof sa) == 0;
+	close(fd);
+	return ok;
+}
+
+int count_edge_pairs(meshlink_handle_t *mesh, const char *x, const char *y) {
+	size_t nedges = 0;
+	devtool_edge_t *edges = devtool_get_all_edges(mesh, NULL, &nedges);
+	assert(edges || !nedges);
+	int count = 0;
+
+	for(size_t i = 0; i < nedges; i++) {
+		const char *from = edges[i].from->name;
+		const char *to = edges[i].to->name;
+
+		if((!strcmp(from, x) && !strcmp(to, y)) || (!strcmp(from, y) && !strcmp(to, x))) {
+			count++;
+		}
+	}
+
+	free(edges);
+	return count;
+}
 
 void init_sync_flag(struct sync_flag *s) {
 	assert(pthread_mutex_init(&s->mutex, NULL) == 0);
@@ -196,4 +474,129 @@ void log_cb(meshlink_handle_t *mesh, meshlink_log_level_t level, const char *tex
 	        mesh ? mesh->name : "",
 	        levelstr[level],
 	        text);
+}
+
+static pthread_mutex_t captured_log_mutex = PTHREAD_MUTEX_INITIALIZER;
+static char *captured_log;
+static size_t captured_len;
+
+void capture_log_cb(meshlink_handle_t *mesh, meshlink_log_level_t level, const char *text) {
+	log_cb(mesh, level, text);
+
+	assert(pthread_mutex_lock(&captured_log_mutex) == 0);
+	size_t add = strlen(text) + 32;
+	captured_log = realloc(captured_log, captured_len + add + 1);
+	assert(captured_log);
+	captured_len += snprintf(captured_log + captured_len, add + 1, "%s: %s\n", mesh ? mesh->name : "-", text);
+	assert(pthread_mutex_unlock(&captured_log_mutex) == 0);
+}
+
+size_t log_mark(void) {
+	assert(pthread_mutex_lock(&captured_log_mutex) == 0);
+	size_t mark = captured_len;
+	assert(pthread_mutex_unlock(&captured_log_mutex) == 0);
+	return mark;
+}
+
+long log_find(size_t from, const char *needle) {
+	assert(pthread_mutex_lock(&captured_log_mutex) == 0);
+	long result = -1;
+
+	if(captured_log && from < captured_len) {
+		const char *hit = strstr(captured_log + from, needle);
+
+		if(hit) {
+			result = hit - captured_log;
+		}
+	}
+
+	assert(pthread_mutex_unlock(&captured_log_mutex) == 0);
+	return result;
+}
+
+bool log_contains(const char *needle) {
+	return log_find(0, needle) >= 0;
+}
+
+int log_count_from(size_t from, const char *needle) {
+	int count = 0;
+	size_t len = strlen(needle);
+
+	assert(pthread_mutex_lock(&captured_log_mutex) == 0);
+
+	if(captured_log && from < captured_len) {
+		for(const char *p = captured_log + from; (p = strstr(p, needle)); p += len) {
+			count++;
+		}
+	}
+
+	assert(pthread_mutex_unlock(&captured_log_mutex) == 0);
+	return count;
+}
+
+int log_count(const char *needle) {
+	return log_count_from(0, needle);
+}
+
+void free_captured_log(void) {
+	assert(pthread_mutex_lock(&captured_log_mutex) == 0);
+	free(captured_log);
+	captured_log = NULL;
+	captured_len = 0;
+	assert(pthread_mutex_unlock(&captured_log_mutex) == 0);
+}
+
+struct sockaddr_in ipv4(const char *ip, uint16_t port) {
+	struct sockaddr_in sa;
+	memset(&sa, 0, sizeof sa);
+	sa.sin_family = AF_INET;
+	sa.sin_port = htons(port);
+	assert(inet_pton(AF_INET, ip, &sa.sin_addr) == 1);
+	return sa;
+}
+
+int port_of(const struct sockaddr_storage *ss) {
+	if(ss->ss_family == AF_INET) {
+		return ntohs(((const struct sockaddr_in *)ss)->sin_port);
+	}
+
+	if(ss->ss_family == AF_INET6) {
+		return ntohs(((const struct sockaddr_in6 *)ss)->sin6_port);
+	}
+
+	return -1;
+}
+
+bool addr_is(const struct sockaddr_storage *ss, const char *ip, int port) {
+	if(ss->ss_family != AF_INET) {
+		return false;
+	}
+
+	struct sockaddr_in want = ipv4(ip, (uint16_t)port);
+	const struct sockaddr_in *got = (const struct sockaddr_in *)ss;
+	return got->sin_addr.s_addr == want.sin_addr.s_addr && got->sin_port == want.sin_port;
+}
+
+void forget_addresses(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	struct sockaddr_in unset;
+	memset(&unset, 0, sizeof unset);
+	unset.sin_family = AF_UNSPEC;
+	devtool_update_node_udp(mesh, node, (struct sockaddr *)&unset);
+}
+
+void hint_address(meshlink_handle_t *mesh, meshlink_node_t *node, const char *ip, int port) {
+	struct sockaddr_in sa = ipv4(ip, (uint16_t)port);
+	meshlink_hint_address(mesh, node, (struct sockaddr *)&sa);
+}
+
+void exchange_meshlink_pair(meshlink_handle_t *a, meshlink_handle_t *b) {
+	char *data = meshlink_export(a);
+	assert(data);
+	assert(meshlink_import(b, data));
+	free(data);
+
+	data = meshlink_export(b);
+	assert(data);
+	assert(meshlink_import(a, data));
+	free(data);
 }

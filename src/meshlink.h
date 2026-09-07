@@ -1117,6 +1117,27 @@ int meshlink_get_port(struct meshlink_handle *mesh) __attribute__((__warn_unused
 
 bool meshlink_set_port(struct meshlink_handle *mesh, int port) __attribute__((__warn_unused_result__));
 
+/// Constrain the network port MeshLink listens on to a range.
+/** This function sets an inclusive range of ports from which MeshLink draws its
+ *  listen port. A random free port inside the range is chosen when a new
+ *  configuration is created, or when an existing configuration's persisted port
+ *  is outside the range (or is 0). A persisted port inside the range is kept.
+ *  If no port in the range can be bound, meshlink_open_ex() fails with
+ *  MESHLINK_ENETWORK instead of falling back to a port outside the range.
+ *
+ *  The range is a runtime parameter and is not stored in the configuration.
+ *  An explicit meshlink_set_port() call after opening overrides the range.
+ *
+ *  \memberof meshlink_open_params
+ *  @param params   A pointer to a meshlink_open_params_t which must have been created earlier with meshlink_open_params_init().
+ *  @param lo       Lowest port to use, at least 1024. Pass 0 with @a hi 0 to remove the constraint.
+ *  @param hi       Highest port to use, must be >= @a lo.
+ *
+ *  @return         This function will return true if the range was accepted, false otherwise
+ *                  (meshlink_errno is set to MESHLINK_EINVAL).
+ */
+bool meshlink_open_params_set_port_range(meshlink_open_params_t *params, uint16_t lo, uint16_t hi) __attribute__((__warn_unused_result__));
+
 /// Set the timeout for invitations.
 /** This function sets the timeout for invitations.
  *  Note that timeouts are only checked at the time a node tries to join using an invitation.

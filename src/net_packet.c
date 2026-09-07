@@ -26,6 +26,7 @@
 #include "logger.h"
 #include "meshlink_internal.h"
 #include "net.h"
+#include "net_upgrade.h"
 #include "netutl.h"
 #include "protocol.h"
 #include "route.h"
@@ -202,6 +203,15 @@ static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet
 			free(address);
 			free(port);
 			n->status.udp_confirmed = true;
+
+			/* The confirmed UDP address is a direct path to the node (UDP and TCP share
+			   a port): remember it and see if it can replace a canonical meta connection. */
+
+			if(n->address.sa.sa_family != AF_UNSPEC && node_add_recent_address(mesh, n, &n->address)) {
+				n->upgrade_recent_idx = 0;
+			}
+
+			try_upgrade_probe(mesh, n);
 		}
 
 		/* If we haven't established the PMTU yet, restart the discovery process. */
@@ -333,7 +343,7 @@ static bool select_listen_socket(meshlink_handle_t *mesh, const sockaddr_t *sa, 
 }
 
 /* Numeric host/port only — no getaddrinfo, no AF_UNKNOWN heap. */
-static bool host_port_to_sockaddr(const char *host, const char *port, sockaddr_t *out) {
+bool host_port_to_sockaddr(const char *host, const char *port, sockaddr_t *out) {
 	memset(out, 0, sizeof(*out));
 
 	if(!host || !port || !*host || !*port) {
@@ -390,7 +400,7 @@ static bool parse_host_port_field(const char *field, const char *default_port, c
 
 /* Our own findmyip dest. self->external_ip_address is "IP" (the port is
    myport) when learned, or "IP PORT" when pinned through devtools. */
-static bool self_external_sockaddr(meshlink_handle_t *mesh, sockaddr_t *out) {
+bool self_external_sockaddr(meshlink_handle_t *mesh, sockaddr_t *out) {
 	char *host = NULL;
 	const char *port = NULL;
 

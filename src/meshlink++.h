@@ -1413,6 +1413,19 @@ static inline const char *strerror(errno_t err = meshlink_errno) {
 static inline bool destroy(const char *confbase) {
 	return meshlink_destroy(confbase);
 }
+
+/// Constrain the listen port of a MeshLink instance to a range.
+/** Wrapper around meshlink_open_params_set_port_range(); see there for the semantics.
+ *
+ *  @param params   Open parameters created with meshlink_open_params_init().
+ *  @param lo       Lowest port to use, at least 1024. 0 together with @a hi 0 removes the constraint.
+ *  @param hi       Highest port to use, must be >= @a lo.
+ *
+ *  @return         true if the range was accepted, false otherwise.
+ */
+static inline bool open_params_set_port_range(meshlink_open_params_t *params, uint16_t lo, uint16_t hi) {
+	return meshlink_open_params_set_port_range(params, lo, hi);
+}
 }
 
 #endif

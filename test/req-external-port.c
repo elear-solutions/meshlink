@@ -1,3 +1,5 @@
+#define _GNU_SOURCE
+
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
@@ -25,15 +27,6 @@
 // 3. The fact that direct connections fail due to port 0
 
 static struct sync_flag bar_reachable;
-
-static struct sockaddr_in ipv4(const char *ip, uint16_t port) {
-	struct sockaddr_in sa;
-	memset(&sa, 0, sizeof sa);
-	sa.sin_family = AF_INET;
-	sa.sin_port = htons(port);
-	assert(inet_pton(AF_INET, ip, &sa.sin_addr) == 1);
-	return sa;
-}
 
 static bool dest_is_sin(const struct sockaddr_storage *dest, const struct sockaddr_in *want) {
 	if(dest->ss_family != AF_INET) {
@@ -86,6 +79,45 @@ static void advance_dests(meshlink_handle_t *mesh, meshlink_node_t *peer, int co
 			(*wan_hits)++;
 		}
 	}
+}
+
+/* Poll until mesh knows node's REQ_EXTERNAL address, or timeout seconds pass. */
+static bool wait_external_known(meshlink_handle_t *mesh, meshlink_node_t *node, int timeout) {
+	for(int i = 0; i < timeout * 10; i++) {
+		devtool_node_status_t st;
+		devtool_get_node_status(mesh, node, &st);
+		bool known = st.external_ip_address != NULL;
+		devtool_free_node_status(&st);
+
+		if(known) {
+			return true;
+		}
+
+		usleep(100000);
+	}
+
+	return false;
+}
+
+/* Poll until mesh has finished PMTU discovery towards node (mtuprobes >= 31, the
+   pinginterval sleep), or timeout seconds pass. Until then every probe reply may
+   flip udp_confirmed and every ANS_KEY may rewrite n->address underneath a test
+   that pins them; afterwards the next burst is pinginterval (60 s) away. */
+static bool wait_pmtu_settled(meshlink_handle_t *mesh, meshlink_node_t *node, int timeout) {
+	for(int i = 0; i < timeout * 10; i++) {
+		devtool_node_status_t st;
+		devtool_get_node_status(mesh, node, &st);
+		bool settled = st.mtuprobes >= 31;
+		devtool_free_node_status(&st);
+
+		if(settled) {
+			return true;
+		}
+
+		usleep(100000);
+	}
+
+	return false;
 }
 
 static void status_cb(meshlink_handle_t *mesh, meshlink_node_t *node, bool reachable) {
@@ -168,15 +200,16 @@ int main(void) {
 	assert(wait_sync_flag(&bar_reachable, 20));
 	printf("✅ Nodes connected successfully\n");
 
-	// Give some time for REQ_EXTERNAL to be exchanged
-	sleep(3);
-
-	printf("✅ Verifying REQ_EXTERNAL bidirectional learning...\n");
-	
 	// Get nodes for testing
 	meshlink_node_t *node_foo = meshlink_get_node(mesh_bar, "foo");
 	meshlink_node_t *node_bar = meshlink_get_node(mesh_foo, "bar");
 	assert(node_foo && node_bar);
+
+	// Wait for REQ_EXTERNAL to be exchanged in both directions
+	assert(wait_external_known(mesh_bar, node_foo, 20));
+	assert(wait_external_known(mesh_foo, node_bar, 20));
+
+	printf("✅ Verifying REQ_EXTERNAL bidirectional learning...\n");
 	
 	// Test bidirectional learning: bar should learn foo's external info
 	devtool_node_status_t bar_view_of_foo;
@@ -289,19 +322,21 @@ int main(void) {
 
 	// Wait for connection
 	printf("Waiting for nodes to connect...\n");
-	assert(wait_sync_flag(&bar_reachable, 5));
+	assert(wait_sync_flag(&bar_reachable, 20));
 	printf("✅ Nodes connected successfully\n");
 
-	// Give more time for REQ_EXTERNAL messages to be exchanged
-	printf("Waiting for REQ_EXTERNAL message exchange...\n");
-	sleep(3);  // Give time for protocol messages to be sent
-
-	printf("✅ Verifying REQ_EXTERNAL bidirectional learning...\n");
-	
 	// Get nodes for testing
 	meshlink_node_t *node_foo2 = meshlink_get_node(mesh_bar, "foo");
 	meshlink_node_t *node_bar2 = meshlink_get_node(mesh_foo, "bar");
 	assert(node_foo2 && node_bar2);
+
+	// Wait for foo's REQ_EXTERNAL to reach bar, then give bar (portable, never
+	// sends REQ_EXTERNAL) the same window so the negative check below means something
+	printf("Waiting for REQ_EXTERNAL message exchange...\n");
+	assert(wait_external_known(mesh_bar, node_foo2, 20));
+	sleep(1);
+
+	printf("✅ Verifying REQ_EXTERNAL bidirectional learning...\n");
 	
 	// Test bidirectional learning: bar should learn foo's external info
 	devtool_node_status_t bar_view_of_foo2;
@@ -409,6 +444,20 @@ int main(void) {
 	assert(inet_pton(AF_INET, "198.51.100.30", &canonical_ip.sin_addr) == 1);
 	assert(inet_pton(AF_INET6, "fd00::1", &ula.sin6_addr) == 1);
 
+	/* Both meshes stay live for the graph_may_seed_udp() checks below, which need
+	   bar reachable. Let PMTU discovery finish on both sides first: until then a
+	   late probe reply re-confirms UDP and the reflexive ANS_KEY it triggers
+	   rewrites n->address, undoing the state pinned here. */
+	meshlink_node_t *bar_view_of_foo3 = meshlink_get_node(mesh_bar, "foo");
+	assert(bar_view_of_foo3);
+	assert(wait_pmtu_settled(mesh_foo, peer, 60));
+	assert(wait_pmtu_settled(mesh_bar, bar_view_of_foo3, 60));
+	sleep(1);
+
+	/* Stationary nodes never resolve their own public IP; pin one that differs
+	   from the peer's so the REQ_EXTERNAL dest is provably on another NAT and
+	   wins outright, independent of where the LAN/WAN rotation stands. */
+	devtool_set_external_ip_address(mesh_foo, self, "198.51.100.1 1");
 	devtool_set_udp_confirmed(mesh_foo, peer, false);
 	devtool_update_node_udp(mesh_foo, peer, (struct sockaddr *)&rfc1918);
 	devtool_set_external_ip_address(mesh_foo, peer, "203.0.113.10 30777");

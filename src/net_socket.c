@@ -178,12 +178,19 @@ static void handle_meta_io(event_loop_t *loop, void *data, int flags) {
 	}
 }
 
-// Find edges pointing to this node, and use them to build a list of unique, known addresses.
-static struct addrinfo *get_known_addresses(node_t *n) {
+/* Find edges pointing to this node, and use them to build a list of unique, known addresses.
+   An edge marked OPTION_INDIRECT carries the address of a relay the other node reached
+   n through, not n's own: with indirect set, only those are returned, otherwise only
+   the addresses of direct edges. */
+static struct addrinfo *get_known_addresses(node_t *n, bool indirect) {
 	struct addrinfo *ai = NULL;
 
 	for splay_each(edge_t, e, n->edge_tree) {
 		if(!e->reverse) {
+			continue;
+		}
+
+		if(!!(e->reverse->options & OPTION_INDIRECT) != indirect) {
 			continue;
 		}
 
@@ -269,6 +276,7 @@ static void canonical_resolve_cb(meshlink_handle_t *mesh, char *host, char *serv
 			if(outgoing->state == OUTGOING_CANONICAL_RESOLVE) {
 				outgoing->ai = ai;
 				outgoing->aip = NULL;
+				outgoing->ai_is_getaddrinfo = true;
 				outgoing->state = OUTGOING_CANONICAL;
 				do_outgoing_connection(mesh, outgoing);
 			}
@@ -278,13 +286,68 @@ static void canonical_resolve_cb(meshlink_handle_t *mesh, char *host, char *serv
 	}
 }
 
-static bool get_next_outgoing_address(meshlink_handle_t *mesh, outgoing_t *outgoing) {
-	(void)mesh;
+// Free whatever address list the outgoing currently holds, honouring its origin.
+static void free_outgoing_addresses(outgoing_t *outgoing) {
+	if(outgoing->ai) {
+		if(outgoing->ai_is_getaddrinfo) {
+			freeaddrinfo(outgoing->ai);
+		} else {
+			free_known_addresses(outgoing->ai);
+		}
+	}
 
+	outgoing->ai = NULL;
+	outgoing->aip = NULL;
+	outgoing->ai_is_getaddrinfo = false;
+}
+
+/* Where the address an outgoing_t is about to try came from, for the logs. */
+static const char *outgoing_address_source(const outgoing_t *outgoing) {
+	switch(outgoing->state) {
+	case OUTGOING_RECENT:
+		return "recent";
+
+	case OUTGOING_CANONICAL:
+		return "canonical";
+
+	case OUTGOING_KNOWN:
+		return "known";
+
+	case OUTGOING_KNOWN_INDIRECT:
+		return "known-indirect";
+
+	default:
+		return "unknown";
+	}
+}
+
+/* Walk RECENT (direct addresses we saw the peer on) -> CANONICAL (its relay /
+   load balancer address) -> KNOWN (addresses learned from direct edges) ->
+   KNOWN_INDIRECT (relay addresses learned from OPTION_INDIRECT edges). Direct
+   first keeps the canonical path as a fallback only; a connection made in the
+   last stage counts as canonical too, since its address is a relay's. */
+static bool get_next_outgoing_address(meshlink_handle_t *mesh, outgoing_t *outgoing) {
 	bool start = false;
 
 	if(outgoing->state == OUTGOING_START) {
 		start = true;
+		outgoing->state = OUTGOING_RECENT;
+	}
+
+	if(outgoing->state == OUTGOING_RECENT) {
+		if(!outgoing->aip) {
+			outgoing->ai = get_recent_addresses(outgoing->node);
+			outgoing->aip = outgoing->ai;
+			outgoing->ai_is_getaddrinfo = false;
+		} else {
+			outgoing->aip = outgoing->aip->ai_next;
+		}
+
+		if(outgoing->aip) {
+			return true;
+		}
+
+		free_outgoing_addresses(outgoing);
 		outgoing->state = OUTGOING_CANONICAL_RESOLVE;
 	}
 
@@ -303,11 +366,11 @@ static bool get_next_outgoing_address(meshlink_handle_t *mesh, outgoing_t *outgo
 			} else {
 				logger(mesh, MESHLINK_ERROR, "Canonical address for %s is missing port number", n->name);
 				free(address);
-				outgoing->state = OUTGOING_RECENT;
+				outgoing->state = OUTGOING_KNOWN;
 			}
 
 		} else {
-			outgoing->state = OUTGOING_RECENT;
+			outgoing->state = OUTGOING_KNOWN;
 		}
 	}
 
@@ -322,37 +385,15 @@ static bool get_next_outgoing_address(meshlink_handle_t *mesh, outgoing_t *outgo
 			return true;
 		}
 
-		if(outgoing->ai) {
-			freeaddrinfo(outgoing->ai);
-		}
-
-		outgoing->ai = NULL;
-		outgoing->aip = NULL;
-		outgoing->state = OUTGOING_END;
-	}
-
-	if(outgoing->state == OUTGOING_RECENT) {
-		if(!outgoing->aip) {
-			outgoing->ai = get_recent_addresses(outgoing->node);
-			outgoing->aip = outgoing->ai;
-		} else {
-			outgoing->aip = outgoing->aip->ai_next;
-		}
-
-		if(outgoing->aip) {
-			return true;
-		}
-
-		free_known_addresses(outgoing->ai);
-		outgoing->ai = NULL;
-		outgoing->aip = NULL;
+		free_outgoing_addresses(outgoing);
 		outgoing->state = OUTGOING_KNOWN;
 	}
 
 	if(outgoing->state == OUTGOING_KNOWN) {
 		if(!outgoing->aip) {
-			outgoing->ai = get_known_addresses(outgoing->node);
+			outgoing->ai = get_known_addresses(outgoing->node, false);
 			outgoing->aip = outgoing->ai;
+			outgoing->ai_is_getaddrinfo = false;
 		} else {
 			outgoing->aip = outgoing->aip->ai_next;
 		}
@@ -361,9 +402,24 @@ static bool get_next_outgoing_address(meshlink_handle_t *mesh, outgoing_t *outgo
 			return true;
 		}
 
-		free_known_addresses(outgoing->ai);
-		outgoing->ai = NULL;
-		outgoing->aip = NULL;
+		free_outgoing_addresses(outgoing);
+		outgoing->state = OUTGOING_KNOWN_INDIRECT;
+	}
+
+	if(outgoing->state == OUTGOING_KNOWN_INDIRECT) {
+		if(!outgoing->aip) {
+			outgoing->ai = get_known_addresses(outgoing->node, true);
+			outgoing->aip = outgoing->ai;
+			outgoing->ai_is_getaddrinfo = false;
+		} else {
+			outgoing->aip = outgoing->aip->ai_next;
+		}
+
+		if(outgoing->aip) {
+			return true;
+		}
+
+		free_outgoing_addresses(outgoing);
 		outgoing->state = OUTGOING_END;
 	}
 
@@ -393,15 +449,27 @@ begin:
 
 	connection_t *c = new_connection();
 	c->outgoing = outgoing;
+	c->name = xstrdup(outgoing->node->name);
+	c->status.via_canonical = outgoing->state == OUTGOING_CANONICAL || outgoing->state == OUTGOING_KNOWN_INDIRECT;
 
 	memcpy(&c->address, outgoing->aip->ai_addr, outgoing->aip->ai_addrlen);
 
 	if(mesh->log_level <= MESHLINK_INFO) {
 		char *hostname = sockaddr2hostname(&c->address);
-		logger(mesh, MESHLINK_INFO, "Trying to connect to %s at %s", outgoing->node->name, hostname);
+		logger(mesh, MESHLINK_INFO, "Trying to connect to %s at %s (%s)", outgoing->node->name, hostname, outgoing_address_source(outgoing));
 		free(hostname);
 	}
 
+	if(!connect_meta_socket(mesh, c)) {
+		free_connection(c);
+		goto begin;
+	}
+}
+
+/* Create a non-blocking TCP socket for c->address, start connecting, and register
+   the connection with the event loop. c->name and c->address must already be set.
+   On failure the caller owns c and must free it. */
+bool connect_meta_socket(meshlink_handle_t *mesh, connection_t *c) {
 	c->socket = socket(c->address.sa.sa_family, SOCK_STREAM, IPPROTO_TCP);
 
 	if(c->socket == -1) {
@@ -411,8 +479,7 @@ begin:
 			free(hostname);
 		}
 
-		free_connection(c);
-		goto begin;
+		return false;
 	}
 
 	configure_tcp(c);
@@ -437,37 +504,28 @@ begin:
 	if(result == -1 && !sockinprogress(sockerrno)) {
 		if(mesh->log_level <= MESHLINK_ERROR) {
 			char *hostname = sockaddr2hostname(&c->address);
-			logger(mesh, MESHLINK_ERROR, "Could not connect to %s: %s", outgoing->node->name, sockstrerror(sockerrno));
+			logger(mesh, MESHLINK_ERROR, "Could not connect to %s at %s: %s", c->name, hostname, sockstrerror(sockerrno));
 			free(hostname);
 		}
 
-		free_connection(c);
-		goto begin;
+		return false;
 	}
 
 	/* Now that there is a working socket, fill in the rest and register this connection. */
 
 	c->status.connecting = true;
 	c->status.initiator = true;
-	c->name = xstrdup(outgoing->node->name);
 	c->last_ping_time = mesh->loop.now.tv_sec;
 
 	connection_add(mesh, c);
 
 	io_add(&mesh->loop, &c->io, handle_meta_io, c, c->socket, IO_READ | IO_WRITE);
+
+	return true;
 }
 
 void reset_outgoing(outgoing_t *outgoing) {
-	if(outgoing->ai) {
-		if(outgoing->state == OUTGOING_RECENT || outgoing->state == OUTGOING_KNOWN) {
-			free_known_addresses(outgoing->ai);
-		} else {
-			freeaddrinfo(outgoing->ai);
-		}
-	}
-
-	outgoing->ai = NULL;
-	outgoing->aip = NULL;
+	free_outgoing_addresses(outgoing);
 	outgoing->state = OUTGOING_START;
 }
 
@@ -585,15 +643,7 @@ static void free_outgoing(outgoing_t *outgoing) {
 	meshlink_handle_t *mesh = outgoing->node->mesh;
 
 	timeout_del(&mesh->loop, &outgoing->ev);
-
-	if(outgoing->ai) {
-		if(outgoing->state == OUTGOING_RECENT || outgoing->state == OUTGOING_KNOWN) {
-			free_known_addresses(outgoing->ai);
-		} else {
-			freeaddrinfo(outgoing->ai);
-		}
-	}
-
+	free_outgoing_addresses(outgoing);
 	free(outgoing);
 }
 

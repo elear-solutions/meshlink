@@ -76,7 +76,7 @@ bool send_add_edge(meshlink_handle_t *mesh, connection_t *c, const edge_t *e, in
 
 	x = send_request(mesh, c, s, "%d %x %s %d %s %s %s %s %d %s %x %d %d %x", ADD_EDGE, prng(mesh, UINT_MAX),
 	                 e->from->name, e->from->devclass, from_submesh, e->to->name, address, port,
-	                 e->to->devclass, to_submesh, OPTION_PMTU_DISCOVERY, e->weight, contradictions, e->from->session_id);
+	                 e->to->devclass, to_submesh, OPTION_PMTU_DISCOVERY | e->options, e->weight, contradictions, e->from->session_id);
 	free(address);
 	free(port);
 
@@ -98,14 +98,15 @@ bool add_edge_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	int to_devclass;
 	char to_submesh_name[MAX_STRING_SIZE] = "";
 	sockaddr_t address;
+	uint32_t options;
 	int weight;
 	int contradictions = 0;
 	uint32_t session_id = 0;
 	submesh_t *s = NULL;
 
-	if(sscanf(request, "%*d %*x "MAX_STRING" %d "MAX_STRING" "MAX_STRING" "MAX_STRING" "MAX_STRING" %d "MAX_STRING" %*x %d %d %x",
+	if(sscanf(request, "%*d %*x "MAX_STRING" %d "MAX_STRING" "MAX_STRING" "MAX_STRING" "MAX_STRING" %d "MAX_STRING" %x %d %d %x",
 	                from_name, &from_devclass, from_submesh_name, to_name, to_address, to_port, &to_devclass, to_submesh_name,
-	                &weight, &contradictions, &session_id) < 9) {
+	                &options, &weight, &contradictions, &session_id) < 10) {
 		logger(mesh, MESHLINK_ERROR, "Got bad %s from %s", "ADD_EDGE", c->name);
 		return false;
 	}
@@ -199,7 +200,9 @@ bool add_edge_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	e = lookup_edge(from, to);
 
 	if(e) {
-		if(e->weight != weight || e->session_id != session_id || sockaddrcmp(&e->address, &address)) {
+		/* OPTION_INDIRECT is part of the edge's state too: the same address can go from
+		   relayed to direct (or back) without anything else changing. */
+		if(e->weight != weight || e->session_id != session_id || sockaddrcmp(&e->address, &address) || e->options != (options & OPTION_INDIRECT)) {
 			if(from == mesh->self) {
 				/* The sender has outdated information, we own this edge to send a correction back */
 				logger(mesh, MESHLINK_DEBUG, "Got %s from %s for ourself which does not match existing entry", "ADD_EDGE", c->name);
@@ -235,6 +238,7 @@ bool add_edge_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	e->address = address;
 	e->weight = weight;
 	e->session_id = session_id;
+	e->options = options & OPTION_INDIRECT;
 	edge_add(mesh, e);
 
 	/* Run MST before or after we tell the rest? */

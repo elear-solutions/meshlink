@@ -119,7 +119,11 @@ static void sssp_bfs(meshlink_handle_t *mesh) {
 			e->to->prevedge = e;
 			e->to->distance = n->distance + 1;
 
-			if(graph_may_seed_udp(e->to, &e->address)) {
+			/* An edge over a canonical connection carries the relay's address, not
+			   the node's: never seed it as a UDP or recent[] address. The owner marks
+			   it OPTION_INDIRECT in ADD_EDGE, so this holds for third parties too. */
+
+			if(!(e->options & OPTION_INDIRECT) && graph_may_seed_udp(e->to, &e->address)) {
 				update_node_udp(mesh, e->to, &e->address);
 			}
 

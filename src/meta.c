@@ -24,6 +24,7 @@
 #include "meshlink_internal.h"
 #include "meta.h"
 #include "net.h"
+#include "net_upgrade.h"
 #include "protocol.h"
 #include "utils.h"
 #include "xalloc.h"
@@ -97,6 +98,11 @@ bool receive_meta_sptps(void *handle, uint8_t type, const void *data, uint16_t l
 
 	if(type == SPTPS_HANDSHAKE) {
 		if(c->allow_request == ACK) {
+			/* The responder of an upgrade probe ACKs from ack_h() instead: see upgrade_defers_ack(). */
+			if(upgrade_defers_ack(c)) {
+				return true;
+			}
+
 			return send_ack(mesh, c);
 		} else {
 			return true;

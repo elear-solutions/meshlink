@@ -23,6 +23,7 @@
 #include "logger.h"
 #include "meshlink_internal.h"
 #include "net.h"
+#include "net_upgrade.h"
 #include "netutl.h"
 #include "node.h"
 #include "prf.h"
@@ -323,6 +324,53 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 
 		free(from->external_ip_address);
 		from->external_ip_address = external_ip_address;
+
+		/* A REQ_EXTERNAL is the peer telling us where it can be reached directly:
+		   remember it so the next (re)connect and the upgrade probe try it before
+		   the canonical address. Our own external IP:port is a hairpin, skip it. */
+
+		sockaddr_t sa;
+		sockaddr_t self_ext;
+
+		if(!host_port_to_sockaddr(ip, port, &sa) || !address_connectable(&sa)) {
+			logger(mesh, MESHLINK_DEBUG, "Not remembering REQ_EXTERNAL address of %s: not a connectable numeric host and port", from->name);
+			return true;
+		}
+
+		if(self_external_sockaddr(mesh, &self_ext) && !sockaddrcmp(&sa, &self_ext)) {
+			logger(mesh, MESHLINK_DEBUG, "Not remembering REQ_EXTERNAL address of %s: it is our own external address", from->name);
+			return true;
+		}
+
+		/* Only the peer itself, over our connection with it, can vouch for the address.
+		   Anyone else may have forwarded (or forged) it: keep it as a last-resort
+		   candidate behind the addresses we already know, and do not probe it. */
+
+		if(from->connection != c) {
+			if(node_append_recent_address(mesh, from, &sa)) {
+				logger(mesh, MESHLINK_DEBUG, "Remembering forwarded REQ_EXTERNAL address of %s as a fallback", from->name);
+			} else if(!from->recent[0].sa.sa_family) {
+				logger(mesh, MESHLINK_DEBUG, "Not remembering forwarded REQ_EXTERNAL address of %s: no proven address to rank it behind", from->name);
+			}
+
+			return true;
+		}
+
+		/* While we reach the peer through its canonical address this is exactly what we
+		   want to probe first. Once we are directly connected, the address that just
+		   authenticated (which ack_h() put in front) is proven and this one is not: keep
+		   it as a fallback instead of paying a connect timeout on it at every reconnect. */
+
+		if(c->status.via_canonical) {
+			if(node_add_recent_address(mesh, from, &sa)) {
+				from->upgrade_recent_idx = 0;
+			}
+
+			try_upgrade_probe(mesh, from);
+		} else {
+			node_append_recent_address(mesh, from, &sa);
+		}
+
 		return true;
 	}
 

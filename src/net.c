@@ -28,6 +28,7 @@
 #include "meshlink_internal.h"
 #include "meta.h"
 #include "net.h"
+#include "net_upgrade.h"
 #include "netutl.h"
 #include "protocol.h"
 #include "sptps.h"
@@ -44,6 +45,47 @@ static inline int min(int a, int b) {
 static const int default_timeout = 5;
 static const int default_interval = 60;
 
+/* An outgoing connection that dies this soon after it activated did not really work:
+   the peer dropped it on purpose (simultaneous-connect tie-break, connection limit) and
+   will do so again, so reconnecting at once only produces a handshake per round trip. */
+static const int min_connection_lifetime = 5;
+
+/* Build the self->n edge that represents c. Not yet in the graph: see add_connection_edge(). */
+edge_t *new_connection_edge(meshlink_handle_t *mesh, connection_t *c, node_t *n, const char *hisport, int devclass) {
+	assert(devclass >= 0 && devclass < DEV_CLASS_COUNT);
+
+	edge_t *e = new_edge();
+	e->from = mesh->self;
+	e->to = n;
+	sockaddrcpy_setport(&e->address, &c->address, atoi(hisport));
+	e->weight = mesh->dev_class_traits[devclass].edge_weight;
+	e->connection = c;
+
+	/* Over a canonical connection the address is the relay's, not the node's.
+	   Say so in the edge, so that nodes learning it via ADD_EDGE do not seed it
+	   as a UDP or recent[] address either (see sssp_bfs). */
+	if(c->status.via_canonical) {
+		e->options |= OPTION_INDIRECT;
+	}
+
+	return e;
+}
+
+/* Make c the connection we reach n through. */
+void install_node_connection(meshlink_handle_t *mesh, node_t *n, connection_t *c) {
+	n->connection = c;
+	n->nexthop = n;
+	n->last_successfull_connection = mesh->loop.now.tv_sec;
+	c->node = n;
+}
+
+/* Put c->edge in the graph, tell everyone, and recompute routes. */
+void add_connection_edge(meshlink_handle_t *mesh, connection_t *c) {
+	edge_add(mesh, c->edge);
+	send_add_edge(mesh, mesh->everyone, c->edge, 0);
+	graph(mesh);
+}
+
 /*
   Terminate a connection:
   - Mark it as inactive
@@ -52,9 +94,17 @@ static const int default_interval = 60;
   - Check if we need to retry making an outgoing connection
 */
 void terminate_connection(meshlink_handle_t *mesh, connection_t *c, bool report) {
+	/* last_key_renewal is set when the connection activates (and again on every hourly
+	   key renewal, so a drop right after one of those costs one extra backoff step). */
+	bool flapped = c->status.active && mesh->loop.now.tv_sec - c->last_key_renewal < min_connection_lifetime;
+
 	if(c->status.active) {
 		logger(mesh, MESHLINK_INFO, "Closing connection with %s", c->name);
 	}
+
+	/* Probe bookkeeping and, if a spare is held for this node, hand the node over to it. */
+
+	upgrade_connection_closing(mesh, c);
 
 	if(c->node && c->node->connection == c) {
 		if(c->status.active && mesh->meta_status_cb) {
@@ -94,10 +144,16 @@ void terminate_connection(meshlink_handle_t *mesh, connection_t *c, bool report)
 	outgoing_t *outgoing = c->outgoing;
 	connection_del(mesh, c);
 
-	/* Check if this was our outgoing connection */
+	/* Check if this was our outgoing connection. ack_h() reset the address walk when it
+	   activated, so either path starts over at recent[]; a connection that flapped goes
+	   through retry_outgoing()'s backoff first instead of reconnecting straight away. */
 
 	if(outgoing) {
-		do_outgoing_connection(mesh, outgoing);
+		if(flapped) {
+			retry_outgoing(mesh, outgoing);
+		} else {
+			do_outgoing_connection(mesh, outgoing);
+		}
 	}
 }
 
@@ -403,7 +459,7 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 		unsigned int cur_connects = 0;
 
 		for list_each(connection_t, c, mesh->connections) {
-			if(c->status.active) {
+			if(c->status.active && !c->status.spare) {
 				cur_connects += 1;
 			}
 		}
@@ -452,7 +508,7 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 
 			for(dev_class_t devclass = 0; devclass <= mesh->devclass; ++devclass) {
 				for list_each(connection_t, c, mesh->connections) {
-					if(c->status.active && c->node && c->node->devclass == devclass) {
+					if(c->status.active && !c->status.spare && c->node && c->node->devclass == devclass) {
 						connects += 1;
 					}
 				}
@@ -547,7 +603,7 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 
 			for(dev_class_t devclass = 0; devclass <= mesh->devclass; ++devclass) {
 				for list_each(connection_t, c, mesh->connections) {
-					if(c->status.active && c->node && c->node->devclass == devclass) {
+					if(c->status.active && !c->status.spare && c->node && c->node->devclass == devclass) {
 						connects += 1;
 					}
 				}
@@ -556,7 +612,7 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 					splay_tree_t *nodes = splay_alloc_tree(node_compare_devclass_desc, NULL);
 
 					for list_each(connection_t, c, mesh->connections) {
-						if(c->outgoing && c->node && c->node->devclass >= devclass) {
+						if(c->outgoing && !c->status.spare && c->node && c->node->devclass >= devclass) {
 							splay_insert(nodes, c->node);
 						}
 					}
@@ -583,7 +639,7 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 			splay_tree_t *nodes = splay_alloc_tree(node_compare_devclass_desc, NULL);
 
 			for list_each(connection_t, c, mesh->connections) {
-				if(c->status.active && c->node) {
+				if(c->status.active && !c->status.spare && c->node) {
 					splay_insert(nodes, c->node);
 				}
 			}
@@ -619,6 +675,10 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 
 		logger(mesh, MESHLINK_DEBUG, "--- autoconnect end ---");
 	}
+
+	/* Retry canonical -> direct upgrades whose backoff expired. */
+
+	upgrade_probe_sweep(mesh);
 
 	for splay_each(node_t, n, mesh->nodes) {
 		if(n->status.dirty) {

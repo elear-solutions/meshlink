@@ -29,6 +29,7 @@
 #include "meshlink_internal.h"
 #include "meta.h"
 #include "net.h"
+#include "net_upgrade.h"
 #include "netutl.h"
 #include "node.h"
 #include "packmsg.h"
@@ -64,7 +65,17 @@ static void transfer_outgoing(meshlink_handle_t *mesh, connection_t *from, conne
 }
 
 bool send_id(meshlink_handle_t *mesh, connection_t *c) {
-	return send_request(mesh, c, NULL, "%d %s %d.%d %s %u", ID, mesh->self->name, PROT_MAJOR, PROT_MINOR, mesh->appname, 0);
+	uint32_t flags = 0;
+
+	if(c->status.upgrade_probe) {
+		flags |= PROTOCOL_UPGRADE;
+	}
+
+	if(c->status.via_canonical) {
+		flags |= PROTOCOL_VIA_CANONICAL;
+	}
+
+	return send_request(mesh, c, NULL, "%d %s %d.%d %s %u", ID, mesh->self->name, PROT_MAJOR, PROT_MINOR, mesh->appname, flags);
 }
 
 static bool commit_invitation(meshlink_handle_t *mesh, connection_t *c, const void *data) {
@@ -213,6 +224,13 @@ bool id_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		return false;
 	}
 
+	/* The initiator knows it dialled a relay; tell the responder so its reverse
+	   edge is OPTION_INDIRECT and the relay source is kept out of recent[]. */
+
+	if(c->flags & PROTOCOL_VIA_CANONICAL) {
+		c->status.via_canonical = true;
+	}
+
 	/* Check if this is an invitation  */
 
 	if(name[0] == '?') {
@@ -255,9 +273,9 @@ bool id_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		return false;
 	}
 
-	/* If this is an outgoing connection, make sure we are connected to the right host */
+	/* If this is an outgoing connection or an upgrade probe, make sure we are connected to the right host */
 
-	if(c->outgoing) {
+	if(c->outgoing || c->status.upgrade_probe) {
 		if(strcmp(c->name, name)) {
 			logger(mesh, MESHLINK_ERROR, "Peer is %s instead of %s", name, c->name);
 			return false;
@@ -310,7 +328,7 @@ bool id_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	c->last_ping_time = mesh->loop.now.tv_sec;
 	char label[sizeof(meshlink_tcp_label) + strlen(mesh->self->name) + strlen(c->name) + 2];
 
-	if(c->outgoing) {
+	if(c->status.initiator) {
 		snprintf(label, sizeof(label), "%s %s %s", meshlink_tcp_label, mesh->self->name, c->name);
 	} else {
 		snprintf(label, sizeof(label), "%s %s %s", meshlink_tcp_label, c->name, mesh->self->name);
@@ -323,7 +341,11 @@ bool id_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		logger(mesh, MESHLINK_DEBUG, "Connection to %s mykey %s hiskey %s", c->name, buf1, buf2);
 	}
 
-	return sptps_start(&c->sptps, c, c->outgoing, false, mesh->private_key, n->ecdsa, label, sizeof(label) - 1, send_meta_sptps, receive_meta_sptps);
+	return sptps_start(&c->sptps, c, c->status.initiator, false, mesh->private_key, n->ecdsa, label, sizeof(label) - 1, send_meta_sptps, receive_meta_sptps);
+}
+
+static bool send_ack_request(meshlink_handle_t *mesh, connection_t *c) {
+	return send_request(mesh, c, NULL, "%d %s %d %x", ACK, mesh->myport, mesh->devclass, OPTION_PMTU_DISCOVERY | (PROT_MINOR << 24));
 }
 
 bool send_ack(meshlink_handle_t *mesh, connection_t *c) {
@@ -335,7 +357,19 @@ bool send_ack(meshlink_handle_t *mesh, connection_t *c) {
 	}
 
 	c->last_ping_time = mesh->loop.now.tv_sec;
-	return send_request(mesh, c, NULL, "%d %s %d %x", ACK, mesh->myport, mesh->devclass, OPTION_PMTU_DISCOVERY | (PROT_MINOR << 24));
+
+	if(!send_ack_request(mesh, c)) {
+		return false;
+	}
+
+	/* Test knob: behave like a peer that repeats its ACK, which ack_h() must reject. */
+
+	if(devtool_repeat_next_ack) {
+		devtool_repeat_next_ack = false;
+		return send_ack_request(mesh, c);
+	}
+
+	return true;
 }
 
 static void send_everything(meshlink_handle_t *mesh, connection_t *c) {
@@ -348,6 +382,28 @@ static void send_everything(meshlink_handle_t *mesh, connection_t *c) {
 	}
 }
 
+/* c authenticated while n->connection is another, active connection: c takes over.
+   A spare held behind the old connection must go first, otherwise
+   terminate_connection() would promote it and we would end up with two self->n
+   edges (see upgrade_connection_closing). Leaves n->connection NULL for the
+   caller to install c. */
+static void replace_existing_connection(meshlink_handle_t *mesh, node_t *n, connection_t *c) {
+	connection_t *old = n->connection;
+
+	upgrade_drop_spare(mesh, n);
+
+	logger(mesh, MESHLINK_INFO, "Established a second connection with %s, closing old connection", old->name);
+	transfer_outgoing(mesh, old, c);
+
+	if(old->edge) {
+		edge_del(mesh, old->edge);
+		old->edge = NULL;
+	}
+
+	terminate_connection(mesh, old, false);
+	assert(!n->connection);
+}
+
 bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	assert(request);
 	assert(*request);
@@ -356,6 +412,15 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	int devclass;
 	uint32_t options;
 	node_t *n;
+
+	/* ACK ends the handshake; a second one on a connection that is already active, or
+	   held as a spare, is a protocol violation. Running the activation again would leak
+	   the edge, and upgrade_hold_spare() would evict c itself and then keep using it. */
+
+	if(c->status.active) {
+		logger(mesh, MESHLINK_ERROR, "Got bad %s from %s: %s", "ACK", c->name, "connection already active");
+		return false;
+	}
 
 	if(sscanf(request, "%*d " MAX_STRING " %d %x", hisport, &devclass, &options) != 3) {
 		logger(mesh, MESHLINK_ERROR, "Got bad %s from %s", "ACK", c->name);
@@ -394,27 +459,40 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		}
 	}
 
+	/* The peer is replacing its canonical connection to us with this direct one. Keep the
+	   old one until the peer closes it (it does so once it has our ACK), then
+	   terminate_connection() promotes this one so the node never leaves the graph. */
+
+	bool deferred_ack = upgrade_defers_ack(c);
+
+	if(deferred_ack && n->connection && n->connection != c && n->connection->status.active) {
+		upgrade_hold_spare(mesh, c, n, hisport, devclass);
+		return send_ack(mesh, c);
+	}
+
 	if(n->connection && n->connection != c) {
-		logger(mesh, MESHLINK_INFO, "Established a second connection with %s, closing old connection", n->connection->name);
-		transfer_outgoing(mesh, n->connection, c);
+		replace_existing_connection(mesh, n, c);
+	}
 
-		if(n->connection->edge) {
-			edge_del(mesh, n->connection->edge);
-			n->connection->edge = NULL;
-		}
+	/* A probe that got this far replaces the canonical connection it was opened next to. */
 
-		terminate_connection(mesh, n->connection, false);
+	if(c->status.upgrade_probe) {
+		c->node = n;
+		upgrade_probe_succeeded(mesh, c);
 	}
 
 	n->devclass = devclass;
 	n->status.dirty = true;
 	n->status.tiny = c->flags & PROTOCOL_TINY;
 
-	n->last_successfull_connection = mesh->loop.now.tv_sec;
+	install_node_connection(mesh, n, c);
 
-	n->connection = c;
-	n->nexthop = n;
-	c->node = n;
+	/* The address walk is done: if this connection drops, start over from recent[] instead of
+	   continuing with whatever was left after the address that just worked. A drop shortly
+	   after this point still backs off first (see terminate_connection). */
+	if(c->outgoing) {
+		reset_outgoing(c->outgoing);
+	}
 
 	/* Activate this connection */
 
@@ -423,6 +501,12 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	c->status.active = true;
 
 	logger(mesh, MESHLINK_INFO, "Connection with %s activated", c->name);
+
+	/* No connection to hold this one behind, so we did not ACK during the handshake. */
+
+	if(deferred_ack && !send_ack(mesh, c)) {
+		return false;
+	}
 
 	if(mesh->meta_status_cb) {
 		mesh->meta_status_cb(mesh, (meshlink_node_t *)n, true);
@@ -446,25 +530,18 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 
 	/* Create an edge_t for this connection */
 
-	assert(devclass >= 0 && devclass < DEV_CLASS_COUNT);
+	c->edge = new_connection_edge(mesh, c, n, hisport, devclass);
 
-	c->edge = new_edge();
-	c->edge->from = mesh->self;
-	c->edge->to = n;
-	sockaddrcpy_setport(&c->edge->address, &c->address, atoi(hisport));
-	c->edge->weight = mesh->dev_class_traits[devclass].edge_weight;
-	c->edge->connection = c;
+	/* The canonical address, like one taken from another node's indirect edge, is a relay,
+	   not the node itself: never remember it as a direct address. */
 
-	node_add_recent_address(mesh, n, &c->address);
-	edge_add(mesh, c->edge);
+	if(!c->status.via_canonical) {
+		node_add_recent_address(mesh, n, &c->address);
+	}
 
-	/* Notify everyone of the new edge */
+	/* Put it in the graph and notify everyone */
 
-	send_add_edge(mesh, mesh->everyone, c->edge, 0);
-
-	/* Run MST and SSSP algorithms */
-
-	graph(mesh);
+	add_connection_edge(mesh, c);
 
 	/* Request a session key to jump start UDP traffic */
 
