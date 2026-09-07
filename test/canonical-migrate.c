@@ -767,8 +767,6 @@ static void test_peer_restart_on_new_port(void) {
 
 /* --- T14 -------------------------------------------------------------------- */
 
-/* Number of bidirectional edges between x and y in mesh's view of the graph
-   (devtool_get_all_edges reports each such pair once, in pointer order). */
 static void test_third_node_view(void) {
 	printf("\n=== T14: a third node keeps seeing the migrating node, ends with one edge pair ===\n");
 

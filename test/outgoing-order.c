@@ -16,7 +16,8 @@
 #include "devtools.h"
 #include "utils.h"
 
-/* Outgoing connection order: RECENT (direct) -> CANONICAL (relay) -> KNOWN (edges).
+/* Outgoing connection order: RECENT (direct) -> CANONICAL (relay) -> KNOWN (edges)
+   -> KNOWN_INDIRECT (relay addresses from indirect edges).
 
    T1: a direct recent[] address wins over the canonical relay.
    T2: a dead recent[] address falls back to the canonical relay.
