@@ -136,7 +136,8 @@ int main(void) {
 	assert_after((edges = devtool_get_all_edges(mesh[1], edges, &nedges), nedges == 3), 15);
 	free(edges);
 
-	// Dest has no UDP, nexthop does: REQ_SPTPS should go UDP to foo, and Hello must arrive.
+	// Dest has no UDP, nexthop does: data must still stay on one transport (META),
+	// never the UDP REQ_SPTPS relay, and Hello must arrive.
 	set_sync_flag(&received, false);
 	set_sync_flag(&saw_udp_req_sptps, false);
 
@@ -144,7 +145,7 @@ int main(void) {
 		assert(devtool_force_relay_path(mesh[2], meshlink_get_node(mesh[2], name[1]), meshlink_get_node(mesh[2], name[0])));
 		assert(meshlink_send(mesh[2], meshlink_get_node(mesh[2], name[1]), "Hello", 5));
 
-		if(wait_sync_flag(&saw_udp_req_sptps, 1) && wait_sync_flag(&received, 1)) {
+		if(wait_sync_flag(&received, 1) && !check_sync_flag(&saw_udp_req_sptps)) {
 			break;
 		}
 
@@ -152,8 +153,8 @@ int main(void) {
 		set_sync_flag(&saw_udp_req_sptps, false);
 	}
 
-	assert(check_sync_flag(&saw_udp_req_sptps));
 	assert(wait_sync_flag(&received, 15));
+	assert(!check_sync_flag(&saw_udp_req_sptps));
 
 	// dest == nexthop is rejected
 	assert(!devtool_force_relay_path(mesh[2], meshlink_get_node(mesh[2], name[1]), meshlink_get_node(mesh[2], name[1])));

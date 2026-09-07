@@ -633,15 +633,18 @@ static void send_udppacket(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *ori
 }
 
 /* Dest has no P2P UDP but the nexthop does: carry REQ_SPTPS on that UDP session.
-   Handshake records stay on META. PKT_PROBE never reaches the TCP fallback, so
-   it is not tested here. */
+
+   Disabled for now. The relay only fits records whose base64 REQ_SPTPS is under
+   the nexthop MTU (~1030 bytes raw), so a media stream ends up split per packet:
+   full-size chunks on META via TCP, tail fragments on UDP via the relay. Two
+   paths with different latency and loss reorder the utcp stream and stall it on
+   every lost fragment, which shows up as dropped frames at the receiver. Until
+   the relay can carry every packet (binary framing, no base64), keep a
+   destination on a single transport. The receive side stays enabled. */
 static bool can_relay_req_sptps_udp(const node_t *to, uint8_t type) {
-	return type < SPTPS_HANDSHAKE
-	       && !to->status.udp_confirmed
-	       && to->nexthop && to->nexthop != to
-	       && to->nexthop->status.udp_confirmed
-	       && to->nexthop->status.validkey
-	       && to->nexthop->minmtu > 0;
+	(void)to;
+	(void)type;
+	return false;
 }
 
 bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
