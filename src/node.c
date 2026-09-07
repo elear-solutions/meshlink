@@ -204,7 +204,10 @@ bool node_append_recent_address(meshlink_handle_t *mesh, node_t *n, const sockad
 		}
 	}
 
-	if(i >= MAX_RECENT) {
+	/* Nothing to stand behind: putting sa at recent[0] would make the next
+	   outgoing walk try this untrusted address first. */
+
+	if(i == 0 || i >= MAX_RECENT) {
 		return false;
 	}
 

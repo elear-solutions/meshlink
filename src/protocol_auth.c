@@ -65,7 +65,16 @@ static void transfer_outgoing(meshlink_handle_t *mesh, connection_t *from, conne
 }
 
 bool send_id(meshlink_handle_t *mesh, connection_t *c) {
-	uint32_t flags = c->status.upgrade_probe ? PROTOCOL_UPGRADE : 0;
+	uint32_t flags = 0;
+
+	if(c->status.upgrade_probe) {
+		flags |= PROTOCOL_UPGRADE;
+	}
+
+	if(c->status.via_canonical) {
+		flags |= PROTOCOL_VIA_CANONICAL;
+	}
+
 	return send_request(mesh, c, NULL, "%d %s %d.%d %s %u", ID, mesh->self->name, PROT_MAJOR, PROT_MINOR, mesh->appname, flags);
 }
 
@@ -213,6 +222,13 @@ bool id_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	if(sscanf(request, "%*d " MAX_STRING " %d.%d %*s %u", name, &c->protocol_major, &c->protocol_minor, &c->flags) < 2) {
 		logger(mesh, MESHLINK_ERROR, "Got bad %s from %s", "ID", c->name);
 		return false;
+	}
+
+	/* The initiator knows it dialled a relay; tell the responder so its reverse
+	   edge is OPTION_INDIRECT and the relay source is kept out of recent[]. */
+
+	if(c->flags & PROTOCOL_VIA_CANONICAL) {
+		c->status.via_canonical = true;
 	}
 
 	/* Check if this is an invitation  */

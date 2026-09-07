@@ -349,6 +349,8 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 		if(from->connection != c) {
 			if(node_append_recent_address(mesh, from, &sa)) {
 				logger(mesh, MESHLINK_DEBUG, "Remembering forwarded REQ_EXTERNAL address of %s as a fallback", from->name);
+			} else if(!from->recent[0].sa.sa_family) {
+				logger(mesh, MESHLINK_DEBUG, "Not remembering forwarded REQ_EXTERNAL address of %s: no proven address to rank it behind", from->name);
 			}
 
 			return true;

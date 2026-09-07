@@ -24,7 +24,9 @@
    T3: no canonical, no recent[]: the KNOWN (edge) path still connects.
    T4: after T2 the relay address must not have ended up in recent[].
    T5: a KNOWN address taken from another node's indirect (relayed) edge is treated
-       as canonical: not remembered in recent[], edge marked indirect, upgraded later. */
+       as canonical: not remembered in recent[], edge marked indirect, upgraded later.
+       The responder (b) learns via_canonical from the initiator's ID flag, so its
+       reverse edge is also indirect and the relay stays out of b's recent[] for a. */
 
 static struct sync_flag peer_reachable;
 static devtool_node_status_t status_at_reachable;
@@ -455,6 +457,22 @@ static void test_known_indirect_counts_as_canonical(void) {
 	assert(status_at_reachable.meta_via_canonical);
 	assert(port_of(&status_at_reachable.meta_address) == relay_port);
 	devtool_free_node_status(&status_at_reachable);
+
+	/* b accepted a's relayed session: ID carried PROTOCOL_VIA_CANONICAL, so the
+	   reverse edge is indirect and the relay source is not in recent[]. */
+	meshlink_node_t *b_a = meshlink_get_node(b, "a");
+	assert(b_a);
+	devtool_get_node_status(b, b_a, &st);
+	assert(st.meta_connected);
+	assert(st.meta_via_canonical);
+	assert(!st.meta_is_outgoing);
+
+	for(size_t i = 0; i < st.recent_count; i++) {
+		assert(!addr_is(&st.recent[i], relay_ip, a_port));
+		assert(!addr_is(&st.recent[i], relay_ip, b_port));
+	}
+
+	devtool_free_node_status(&st);
 
 	/* a's edge to b, relay address plus OPTION_INDIRECT, reaches d. Poll fast: a stays on
 	   the relay for the black hole's 5 s probe timeout plus a 5 s backoff, and d must have

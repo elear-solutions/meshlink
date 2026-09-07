@@ -213,11 +213,86 @@ static void test_own_external_not_added(void) {
 	close_direct_pair(&p);
 }
 
+/* T9c: a learns b only through c. A forwarded REQ_EXTERNAL must not land at
+   recent[0] when a has no proven address for b — that would make the next
+   outgoing walk dial the untrusted address first. */
+static void test_forwarded_empty_recent(void) {
+	printf("\n=== T9c: forwarded REQ_EXTERNAL is not remembered when recent[] is empty ===\n");
+
+	assert(meshlink_destroy("req_ext_t9c_conf.1"));
+	assert(meshlink_destroy("req_ext_t9c_conf.2"));
+	assert(meshlink_destroy("req_ext_t9c_conf.3"));
+
+	meshlink_handle_t *a = meshlink_open("req_ext_t9c_conf.1", "a", "req_ext_t9c", DEV_CLASS_STATIONARY);
+	meshlink_handle_t *b = meshlink_open("req_ext_t9c_conf.2", "b", "req_ext_t9c", DEV_CLASS_STATIONARY);
+	meshlink_handle_t *c = meshlink_open("req_ext_t9c_conf.3", "c", "req_ext_t9c", DEV_CLASS_BACKBONE);
+	assert(a && b && c);
+
+	meshlink_enable_discovery(a, false);
+	meshlink_enable_discovery(b, false);
+	meshlink_enable_discovery(c, false);
+
+	int c_port = meshlink_get_port(c);
+	int b_port = meshlink_get_port(b);
+	assert(c_port > 0 && b_port > 0);
+
+	devtool_set_external_ip_address(b, meshlink_get_self(b), EXT_IP);
+
+	exchange_meshlink_pair(a, c);
+	exchange_meshlink_pair(b, c);
+	exchange_meshlink_pair(a, b);
+
+	meshlink_node_t *a_c = meshlink_get_node(a, "c");
+	meshlink_node_t *a_b = meshlink_get_node(a, "b");
+	meshlink_node_t *b_c = meshlink_get_node(b, "c");
+	assert(a_c && a_b && b_c);
+
+	forget_addresses(a, a_c);
+	hint_address(a, a_c, "127.0.0.1", c_port);
+	forget_addresses(a, a_b);
+	assert(meshlink_clear_canonical_address(a, a_b));
+	forget_addresses(b, b_c);
+	hint_address(b, b_c, "127.0.0.1", c_port);
+
+	assert(meshlink_start(c));
+	assert(meshlink_start(a));
+	assert(meshlink_start(b));
+	assert_after(meshlink_get_node_reachability(a, a_c, NULL, NULL), 15);
+	assert_after(meshlink_get_node_reachability(b, b_c, NULL, NULL), 15);
+
+	/* Reachable through c is enough for the UDP key path to forward REQ_EXTERNAL. */
+	assert_after(meshlink_get_node_reachability(a, a_b, NULL, NULL), 15);
+	forget_addresses(a, a_b);
+	assert_after(log_count("a: Got REQ_EXTERNAL from b") >= 1, 10);
+
+	devtool_node_status_t st;
+	devtool_get_node_status(a, a_b, &st);
+
+	if(recent_occurrences(&st, EXT_IP, b_port) > 0) {
+		assert(!addr_is(&st.recent[0], EXT_IP, b_port));
+	}
+
+	devtool_free_node_status(&st);
+
+	printf("T9c ok: forwarded REQ_EXTERNAL did not become recent[0]\n");
+
+	meshlink_stop(a);
+	meshlink_stop(b);
+	meshlink_stop(c);
+	meshlink_close(a);
+	meshlink_close(b);
+	meshlink_close(c);
+	assert(meshlink_destroy("req_ext_t9c_conf.1"));
+	assert(meshlink_destroy("req_ext_t9c_conf.2"));
+	assert(meshlink_destroy("req_ext_t9c_conf.3"));
+}
+
 int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, capture_log_cb);
 
 	test_learn_and_dedupe();
 	test_own_external_not_added();
+	test_forwarded_empty_recent();
 
 	free_captured_log();
 	return 0;

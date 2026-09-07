@@ -122,7 +122,7 @@ struct devtool_node_status {
 	// Meta connection information (from node_t.connection)
 	bool meta_connected;                  /// True if there is an active meta connection with this node
 	struct sockaddr_storage meta_address; /// Remote address of the meta connection (AF_UNSPEC if none)
-	bool meta_via_canonical;              /// True if the meta connection went to a relay: the node's canonical address or a relay address from an indirect edge
+	bool meta_via_canonical;              /// True if the meta connection went via a relay (we dialled canonical/indirect-edge, or the peer reached us that way)
 	bool meta_is_outgoing;                /// True if we initiated the meta connection and own its outgoing_t
 	bool upgrade_probe_active;            /// True if a direct-upgrade probe is in flight
 	int upgrade_backoff;                  /// Current probe backoff in seconds (0 = none)
