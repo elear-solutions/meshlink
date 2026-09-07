@@ -42,7 +42,7 @@ typedef struct connection_status_t {
 	uint16_t invitation_used: 1;        /* 1 if the invitation has been consumed */
 	uint16_t initiator: 1;              /* 1 if we initiated this connection */
 	uint16_t raw_packet: 1;             /* 1 if we are expecting a raw packet next */
-	uint16_t via_canonical: 1;          /* 1 if we connected to the peer's canonical address (relay/NLB), not a direct one */
+	uint16_t via_canonical: 1;          /* 1 if we connected to a relay (the peer's canonical address, or a relay address from an indirect edge), not a direct one */
 	uint16_t upgrade_probe: 1;          /* 1 if this is a probe trying to replace a canonical connection with a direct one */
 	uint16_t spare: 1;                  /* 1 if authenticated but held behind the node's current connection until that one closes */
 } connection_status_t;

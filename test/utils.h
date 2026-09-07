@@ -105,6 +105,16 @@ extern int start_black_hole(const char *listen_host, int *port_out);
 /// Bind a TCP socket on listen_host, learn its port, close it again: a port that is (very likely) closed.
 extern int find_closed_port(const char *listen_host);
 
+/// True if this host lets us bind a second loopback address (Linux: all of 127/8).
+extern bool loopback_alias_available(const char *ip);
+
+/// Number of edge pairs between nodes x and y in mesh's view of the graph (devtool_get_all_edges).
+extern int count_edge_pairs(meshlink_handle_t *mesh, const char *x, const char *y);
+
+/// Edge option bits as they appear on the wire in ADD_EDGE (OPTION_* in src/connection.h, not exported).
+#define EDGE_OPTION_INDIRECT 0x0001
+#define EDGE_OPTION_PMTU_DISCOVERY 0x0004
+
 #define assert_after(cond, timeout)\
 	do {\
 		for(int i = 0; i++ <= timeout;) {\

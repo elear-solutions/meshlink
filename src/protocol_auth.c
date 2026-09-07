@@ -516,7 +516,8 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 
 	c->edge = new_connection_edge(mesh, c, n, hisport, devclass);
 
-	/* The canonical address is a relay, not the node itself: never remember it as a direct address. */
+	/* The canonical address, like one taken from another node's indirect edge, is a relay,
+	   not the node itself: never remember it as a direct address. */
 
 	if(!c->status.via_canonical) {
 		node_add_recent_address(mesh, n, &c->address);

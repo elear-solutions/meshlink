@@ -37,10 +37,6 @@
 
 #define MSG_LEN 6
 
-/* Edge option bits as they appear on the wire in ADD_EDGE (OPTION_* in src/connection.h). */
-#define EDGE_OPTION_INDIRECT 0x0001
-#define EDGE_OPTION_PMTU_DISCOVERY 0x0004
-
 /* --- upgrade probe hook ----------------------------------------------------- */
 
 static size_t stream_bytes(void);
@@ -773,25 +769,6 @@ static void test_peer_restart_on_new_port(void) {
 
 /* Number of bidirectional edges between x and y in mesh's view of the graph
    (devtool_get_all_edges reports each such pair once, in pointer order). */
-static int count_edge_pairs(meshlink_handle_t *mesh, const char *x, const char *y) {
-	size_t nedges = 0;
-	devtool_edge_t *edges = devtool_get_all_edges(mesh, NULL, &nedges);
-	assert(edges || !nedges);
-	int count = 0;
-
-	for(size_t i = 0; i < nedges; i++) {
-		const char *from = edges[i].from->name;
-		const char *to = edges[i].to->name;
-
-		if((!strcmp(from, x) && !strcmp(to, y)) || (!strcmp(from, y) && !strcmp(to, x))) {
-			count++;
-		}
-	}
-
-	free(edges);
-	return count;
-}
-
 static void test_third_node_view(void) {
 	printf("\n=== T14: a third node keeps seeing the migrating node, ends with one edge pair ===\n");
 
@@ -876,16 +853,6 @@ static void test_third_node_view(void) {
 	meshlink_close(c);
 	assert(meshlink_destroy("canonical_migrate_t14_conf.3"));
 	close_relayed_pair(&p);
-}
-
-/* True if this host lets us bind a second loopback address (Linux: all of 127/8). */
-static bool loopback_alias_available(const char *ip) {
-	struct sockaddr_in sa = ipv4(ip, 0);
-	int fd = socket(AF_INET, SOCK_STREAM, 0);
-	assert(fd != -1);
-	bool ok = bind(fd, (struct sockaddr *)&sa, sizeof sa) == 0;
-	close(fd);
-	return ok;
 }
 
 /* T15: the relay edge is marked OPTION_INDIRECT, so a third node that learns b only

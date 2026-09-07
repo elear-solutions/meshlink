@@ -178,12 +178,19 @@ static void handle_meta_io(event_loop_t *loop, void *data, int flags) {
 	}
 }
 
-// Find edges pointing to this node, and use them to build a list of unique, known addresses.
-static struct addrinfo *get_known_addresses(node_t *n) {
+/* Find edges pointing to this node, and use them to build a list of unique, known addresses.
+   An edge marked OPTION_INDIRECT carries the address of a relay the other node reached
+   n through, not n's own: with indirect set, only those are returned, otherwise only
+   the addresses of direct edges. */
+static struct addrinfo *get_known_addresses(node_t *n, bool indirect) {
 	struct addrinfo *ai = NULL;
 
 	for splay_each(edge_t, e, n->edge_tree) {
 		if(!e->reverse) {
+			continue;
+		}
+
+		if(!!(e->reverse->options & OPTION_INDIRECT) != indirect) {
 			continue;
 		}
 
@@ -306,14 +313,19 @@ static const char *outgoing_address_source(const outgoing_t *outgoing) {
 	case OUTGOING_KNOWN:
 		return "known";
 
+	case OUTGOING_KNOWN_INDIRECT:
+		return "known-indirect";
+
 	default:
 		return "unknown";
 	}
 }
 
 /* Walk RECENT (direct addresses we saw the peer on) -> CANONICAL (its relay /
-   load balancer address) -> KNOWN (addresses learned from edges). Direct first
-   keeps the canonical path as a fallback only. */
+   load balancer address) -> KNOWN (addresses learned from direct edges) ->
+   KNOWN_INDIRECT (relay addresses learned from OPTION_INDIRECT edges). Direct
+   first keeps the canonical path as a fallback only; a connection made in the
+   last stage counts as canonical too, since its address is a relay's. */
 static bool get_next_outgoing_address(meshlink_handle_t *mesh, outgoing_t *outgoing) {
 	bool start = false;
 
@@ -379,7 +391,24 @@ static bool get_next_outgoing_address(meshlink_handle_t *mesh, outgoing_t *outgo
 
 	if(outgoing->state == OUTGOING_KNOWN) {
 		if(!outgoing->aip) {
-			outgoing->ai = get_known_addresses(outgoing->node);
+			outgoing->ai = get_known_addresses(outgoing->node, false);
+			outgoing->aip = outgoing->ai;
+			outgoing->ai_is_getaddrinfo = false;
+		} else {
+			outgoing->aip = outgoing->aip->ai_next;
+		}
+
+		if(outgoing->aip) {
+			return true;
+		}
+
+		free_outgoing_addresses(outgoing);
+		outgoing->state = OUTGOING_KNOWN_INDIRECT;
+	}
+
+	if(outgoing->state == OUTGOING_KNOWN_INDIRECT) {
+		if(!outgoing->aip) {
+			outgoing->ai = get_known_addresses(outgoing->node, true);
 			outgoing->aip = outgoing->ai;
 			outgoing->ai_is_getaddrinfo = false;
 		} else {
@@ -421,7 +450,7 @@ begin:
 	connection_t *c = new_connection();
 	c->outgoing = outgoing;
 	c->name = xstrdup(outgoing->node->name);
-	c->status.via_canonical = outgoing->state == OUTGOING_CANONICAL;
+	c->status.via_canonical = outgoing->state == OUTGOING_CANONICAL || outgoing->state == OUTGOING_KNOWN_INDIRECT;
 
 	memcpy(&c->address, outgoing->aip->ai_addr, outgoing->aip->ai_addrlen);
 

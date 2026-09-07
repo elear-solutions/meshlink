@@ -263,6 +263,34 @@ int find_closed_port(const char *listen_host) {
 	return port;
 }
 
+bool loopback_alias_available(const char *ip) {
+	struct sockaddr_in sa = ipv4(ip, 0);
+	int fd = socket(AF_INET, SOCK_STREAM, 0);
+	assert(fd != -1);
+	bool ok = bind(fd, (struct sockaddr *)&sa, sizeof sa) == 0;
+	close(fd);
+	return ok;
+}
+
+int count_edge_pairs(meshlink_handle_t *mesh, const char *x, const char *y) {
+	size_t nedges = 0;
+	devtool_edge_t *edges = devtool_get_all_edges(mesh, NULL, &nedges);
+	assert(edges || !nedges);
+	int count = 0;
+
+	for(size_t i = 0; i < nedges; i++) {
+		const char *from = edges[i].from->name;
+		const char *to = edges[i].to->name;
+
+		if((!strcmp(from, x) && !strcmp(to, y)) || (!strcmp(from, y) && !strcmp(to, x))) {
+			count++;
+		}
+	}
+
+	free(edges);
+	return count;
+}
+
 void init_sync_flag(struct sync_flag *s) {
 	assert(pthread_mutex_init(&s->mutex, NULL) == 0);
 	assert(pthread_cond_init(&s->cond, NULL) == 0);
