@@ -490,18 +490,24 @@ bool log_contains(const char *needle) {
 	return log_find(0, needle) >= 0;
 }
 
-int log_count(const char *needle) {
+int log_count_from(size_t from, const char *needle) {
 	int count = 0;
 	size_t len = strlen(needle);
 
 	assert(pthread_mutex_lock(&captured_log_mutex) == 0);
 
-	for(const char *p = captured_log; p && (p = strstr(p, needle)); p += len) {
-		count++;
+	if(captured_log && from < captured_len) {
+		for(const char *p = captured_log + from; (p = strstr(p, needle)); p += len) {
+			count++;
+		}
 	}
 
 	assert(pthread_mutex_unlock(&captured_log_mutex) == 0);
 	return count;
+}
+
+int log_count(const char *needle) {
+	return log_count_from(0, needle);
 }
 
 void free_captured_log(void) {

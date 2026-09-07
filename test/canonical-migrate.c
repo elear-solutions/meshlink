@@ -828,10 +828,13 @@ static void test_third_node_view(void) {
 	assert_after(count_edge_pairs(c, "b", "c") == 1, 15);
 
 	/* b and c connect to each other at the same time; when c loses the tie-break its
-	   address walk moves on to b's canonical address, so c may have touched the relay
-	   once before its pending connection was closed. Only a's use of the relay is
-	   what T14 measures. */
-	int relay_accepts_before_a = tcp_relay_accept_count(p.relay);
+	   address walk moves on to b's canonical address, so c may touch the relay once,
+	   possibly after the b<->c edge pair is already visible. The relay's accept count
+	   therefore cannot tell a's use apart from c's; a's own connect attempts to the
+	   canonical address can. */
+	char canonical_needle[128];
+	snprintf(canonical_needle, sizeof canonical_needle, "a: Trying to connect to b at 127.0.0.1 port %d (canonical)", p.relay_port);
+	size_t mark = log_mark();
 
 	assert(meshlink_start(p.a));
 	assert(wait_sync_flag(&peer_reachable, 15));
@@ -863,7 +866,7 @@ static void test_third_node_view(void) {
 
 	/* b itself has exactly one live connection with a, and a went through the relay once. */
 	assert(meta_net_count("b", "a") == 1);
-	assert(tcp_relay_accept_count(p.relay) == relay_accepts_before_a + 1);
+	assert(log_count_from(mark, canonical_needle) == 1);
 
 	printf("T14 ok: c saw a reachable throughout, %zu edge pairs, one of them a<->b\n", nedges);
 

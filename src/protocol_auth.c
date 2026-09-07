@@ -328,6 +328,10 @@ bool id_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	return sptps_start(&c->sptps, c, c->status.initiator, false, mesh->private_key, n->ecdsa, label, sizeof(label) - 1, send_meta_sptps, receive_meta_sptps);
 }
 
+static bool send_ack_request(meshlink_handle_t *mesh, connection_t *c) {
+	return send_request(mesh, c, NULL, "%d %s %d %x", ACK, mesh->myport, mesh->devclass, OPTION_PMTU_DISCOVERY | (PROT_MINOR << 24));
+}
+
 bool send_ack(meshlink_handle_t *mesh, connection_t *c) {
 	node_t *n = lookup_node(mesh, c->name);
 
@@ -338,7 +342,7 @@ bool send_ack(meshlink_handle_t *mesh, connection_t *c) {
 
 	c->last_ping_time = mesh->loop.now.tv_sec;
 
-	if(!send_request(mesh, c, NULL, "%d %s %d %x", ACK, mesh->myport, mesh->devclass, OPTION_PMTU_DISCOVERY | (PROT_MINOR << 24))) {
+	if(!send_ack_request(mesh, c)) {
 		return false;
 	}
 
@@ -346,7 +350,7 @@ bool send_ack(meshlink_handle_t *mesh, connection_t *c) {
 
 	if(devtool_repeat_next_ack) {
 		devtool_repeat_next_ack = false;
-		return send_request(mesh, c, NULL, "%d %s %d %x", ACK, mesh->myport, mesh->devclass, OPTION_PMTU_DISCOVERY | (PROT_MINOR << 24));
+		return send_ack_request(mesh, c);
 	}
 
 	return true;

@@ -54,6 +54,9 @@ extern long log_find(size_t from, const char *needle);
 /// True if needle occurs anywhere in the captured log.
 extern bool log_contains(const char *needle);
 
+/// Number of (non-overlapping) occurrences of needle in the captured log at or after from.
+extern int log_count_from(size_t from, const char *needle);
+
 /// Number of (non-overlapping) occurrences of needle in the captured log.
 extern int log_count(const char *needle);
 
