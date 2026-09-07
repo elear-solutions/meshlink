@@ -192,8 +192,9 @@ bool node_add_recent_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_
 }
 
 /* Remember sa as a lower-priority candidate: it goes after the addresses we already
-   know, or is dropped if we know one already or the list is full. Returns true if it
-   was added. */
+   know, or is dropped if the list is empty (nothing proven to rank it behind — putting
+   it at recent[0] would make the next walk dial it first), we already have it, or the
+   list is full. Returns true if it was added. */
 bool node_append_recent_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa) {
 	(void)mesh;
 	int i;
