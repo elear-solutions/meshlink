@@ -1,6 +1,11 @@
 #ifndef MESHLINK_DEVTOOLS_H
 #define MESHLINK_DEVTOOLS_H
 
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+
 /*
     devtools.h -- header for devtools.h
     Copyright (C) 2014, 2017 Guus Sliepen <guus@meshlink.io>
@@ -226,5 +231,47 @@ extern void (*devtool_set_inviter_commits_first)(bool inviter_commited_first);
  *                   If a NULL pointer is given, the callback will be disabled.
  */
 void devtool_set_meta_status_cb(struct meshlink_handle *mesh, meshlink_node_status_cb_t cb);
+
+/// Pretend dest is only reachable via nexthop UDP (for relay tests).
+/** Pins dest's nexthop, clears dest's direct UDP confirmation, marks nexthop
+ *  UDP-confirmed, stops dest probes, resets dest probe count, and clears dest's
+ *  stored relay budget. Does not write minmtu. nexthop must already have a
+ *  valid key.
+ *
+ *  @param mesh     Mesh handle.
+ *  @param dest     Node that should be reached only via nexthop.
+ *  @param nexthop  Relay with a confirmed UDP session. Must not be dest.
+ *  @return         true on success.
+ */
+bool devtool_force_relay_path(struct meshlink_handle *mesh, struct meshlink_node *dest, struct meshlink_node *nexthop);
+
+/// Set a node's UDP confirmation flag.
+/** @param mesh      Mesh handle.
+ *  @param node      Node to update.
+ *  @param confirmed New confirmation value.
+ */
+void devtool_set_udp_confirmed(struct meshlink_handle *mesh, struct meshlink_node *node, bool confirmed);
+
+/// Inject a raw SPTPS record, or a constructed inner record when data is NULL.
+/** When data is non-NULL, encrypts and sends `type` with that payload to `to`.
+ *  When data is NULL, encrypts a dummy record of `type` using `to`'s session
+ *  and wraps it as type 8 or sends META REQ_SPTPS.
+ *
+ *  @param mesh  Mesh handle.
+ *  @param to    Neighbor or destination node.
+ *  @param type  SPTPS record type.
+ *  @param data  Payload, or NULL to construct an inner record.
+ *  @param len   Payload length.
+ *  @return      true on success.
+ */
+bool devtool_send_raw_record(struct meshlink_handle *mesh, struct meshlink_node *to, uint8_t type, const void *data, size_t len);
+
+/// Set a node's measured minimum packet size.
+/** @param mesh  Mesh handle.
+ *  @param node  Node to update.
+ *  @param mtu   New minmtu value.
+ *  @return      true on success.
+ */
+bool devtool_set_minmtu(struct meshlink_handle *mesh, struct meshlink_node *node, uint16_t mtu);
 
 #endif

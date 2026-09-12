@@ -31,6 +31,7 @@ TESTS = \
 	storage-policy \
 	trio \
 	trio2 \
+	udp-relay \
 	utcp-benchmark \
 	utcp-benchmark-stream
 
@@ -81,7 +82,8 @@ check_PROGRAMS = \
 	storage-policy \
 	stream \
 	trio \
-	trio2
+	trio2 \
+	udp-relay
 
 if INSTALL_TESTS
 bin_PROGRAMS = $(check_PROGRAMS)
@@ -188,3 +190,6 @@ trio_LDADD = $(top_builddir)/src/libmeshlink.la
 
 trio2_SOURCES = trio2.c utils.c utils.h
 trio2_LDADD = $(top_builddir)/src/libmeshlink.la
+
+udp_relay_SOURCES = udp-relay.c utils.c utils.h
+udp_relay_LDADD = $(top_builddir)/src/libmeshlink.la

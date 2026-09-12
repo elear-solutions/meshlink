@@ -1,8 +1,12 @@
 __emutls_v.meshlink_errno
 devtool_export_json_all_edges_state
+devtool_force_relay_path
 devtool_get_all_edges
 devtool_get_all_submeshes
 devtool_get_node_status
+devtool_send_raw_record
+devtool_set_minmtu
+devtool_set_udp_confirmed
 devtool_keyrotate_probe
 devtool_open_in_netns
 devtool_reset_node_counters

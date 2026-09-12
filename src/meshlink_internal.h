@@ -190,6 +190,12 @@ struct meshlink_handle {
 #endif
 	} discovery;
 
+	// UDP relay report table
+	struct list_t *relay_reports;
+	uint8_t relay_capture_buf[2048];
+	size_t relay_capture_len;
+	char relay_send_dest[256];
+
 	// ADNS
 	pthread_t adns_thread;
 	pthread_cond_t adns_cond;

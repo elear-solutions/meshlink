@@ -27,6 +27,7 @@
 #include "node.h"
 #include "prf.h"
 #include "protocol.h"
+#include "relay.h"
 #include "sptps.h"
 #include "utils.h"
 #include "xalloc.h"
@@ -127,7 +128,7 @@ bool send_req_key(meshlink_handle_t *mesh, node_t *to) {
 	char label[sizeof(meshlink_udp_label) + strlen(mesh->self->name) + strlen(to->name) + 2];
 	snprintf(label, sizeof(label), "%s %s %s", meshlink_udp_label, mesh->self->name, to->name);
 	sptps_stop(&to->sptps);
-	to->status.validkey = false;
+	node_set_validkey(mesh, to, false);
 	to->status.waitingforkey = true;
 	to->last_req_key = mesh->loop.now.tv_sec;
 	return sptps_start(&to->sptps, to, true, true, mesh->private_key, to->ecdsa, label, sizeof(label) - 1, send_initial_sptps_data, receive_sptps_record);
@@ -136,7 +137,9 @@ bool send_req_key(meshlink_handle_t *mesh, node_t *to) {
 /* REQ_KEY is overloaded to allow arbitrary requests to be routed between two nodes. */
 
 static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *request, node_t *from, int reqno) {
-	(void)c;
+	if(reqno == REQ_RELAY_MTU) {
+		return relay_handle_req_relay_mtu(mesh, c, request, from);
+	}
 
 	if(!from->nexthop || !from->nexthop->connection) {
 		logger(mesh, MESHLINK_WARNING, "Cannot answer REQ_KEY from %s via %s", from->name, from->nexthop ? from->nexthop->name : from->name);
@@ -235,7 +238,7 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 		char label[sizeof(meshlink_udp_label) + strlen(from->name) + strlen(mesh->self->name) + 2];
 		snprintf(label, sizeof(label), "%s %s %s", meshlink_udp_label, from->name, mesh->self->name);
 		sptps_stop(&from->sptps);
-		from->status.validkey = false;
+		node_set_validkey(mesh, from, false);
 		from->status.waitingforkey = true;
 		from->last_req_key = mesh->loop.now.tv_sec;
 
@@ -272,11 +275,13 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 			return true;
 		}
 
+		from->status.in_req_sptps = true;
+
 		if(!sptps_receive_data(&from->sptps, buf, len)) {
 			logger(mesh, MESHLINK_ERROR, "Could not process SPTPS data from %s: %s", from->name, strerror(errno));
-			return true;
 		}
 
+		from->status.in_req_sptps = false;
 		return true;
 	}
 
@@ -509,7 +514,7 @@ bool ans_key_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 
 	if(*key != '.') {
 		/* Don't use key material until every check has passed. */
-		from->status.validkey = false;
+		node_set_validkey(mesh, from, false);
 
 		/* Compression is not supported. */
 		if(compression != 0) {

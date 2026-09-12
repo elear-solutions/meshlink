@@ -29,7 +29,9 @@
 #include "meta.h"
 #include "net.h"
 #include "netutl.h"
+#include "node.h"
 #include "protocol.h"
+#include "relay.h"
 #include "sptps.h"
 #include "xalloc.h"
 
@@ -633,7 +635,7 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 
 			if(!sptps_force_kex(&n->sptps)) {
 				logger(mesh, MESHLINK_ERROR, "SPTPS key renewal for node %s failed", n->name);
-				n->status.validkey = false;
+				node_set_validkey(mesh, n, false);
 				sptps_stop(&n->sptps);
 				n->status.waitingforkey = false;
 				n->last_req_key = -3600;

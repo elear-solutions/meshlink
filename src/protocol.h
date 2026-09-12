@@ -50,6 +50,7 @@ typedef enum request_t {
 	REQ_SPTPS,
 	REQ_CANONICAL,
 	REQ_EXTERNAL,
+	REQ_RELAY_MTU,
 	NUM_REQUESTS
 } request_t;
 

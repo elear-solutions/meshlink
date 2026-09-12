@@ -73,6 +73,7 @@ libmeshlink_la_SOURCES = \
 	protocol_edge.c \
 	protocol_key.c \
 	protocol_misc.c \
+	relay.c relay.h \
 	route.c route.h \
 	sockaddr.h \
 	splay_tree.c splay_tree.h \

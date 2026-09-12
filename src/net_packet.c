@@ -28,6 +28,7 @@
 #include "net.h"
 #include "netutl.h"
 #include "protocol.h"
+#include "relay.h"
 #include "route.h"
 #include "sptps.h"
 #include "utils.h"
@@ -83,6 +84,8 @@ static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 		n->maxmtu = MTU;
 
 		update_node_pmtu(mesh, n);
+		recompute_relay_dependents(mesh, n);
+		update_destination_transport(mesh, n);
 	}
 
 	if(n->mtuprobes >= 10 && n->mtuprobes < 32 && !n->minmtu) {
@@ -90,7 +93,7 @@ static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 		n->mtuprobes = 31;
 	}
 
-	if(n->mtuprobes == 30 || (n->mtuprobes < 30 && n->minmtu >= n->maxmtu)) {
+	if(n->status.udp_confirmed && (n->mtuprobes == 30 || (n->mtuprobes < 30 && n->minmtu >= n->maxmtu))) {
 		if(n->minmtu > n->maxmtu) {
 			n->minmtu = n->maxmtu;
 			update_node_pmtu(mesh, n);
@@ -182,11 +185,17 @@ static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet
 		   back exactly the way it came in. */
 
 		bool udp_confirmed = n->status.udp_confirmed;
+		n->status.temp_udp_confirmed = true;
 		n->status.udp_confirmed = true;
 		logger(mesh, MESHLINK_DEBUG, "Sending MTU probe reply %d to %s", packet->len, n->name);
 		n->out_meta += packet->len + PROBE_OVERHEAD;
 		send_udppacket(mesh, n, packet);
-		n->status.udp_confirmed = udp_confirmed;
+
+		if(n->status.udp_confirmed) {
+			n->status.udp_confirmed = udp_confirmed;
+		}
+
+		n->status.temp_udp_confirmed = false;
 	} else {
 		/* It's a valid reply: now we know bidirectional communication
 		   is possible using the address and socket that the reply
@@ -205,6 +214,8 @@ static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet
 			free(address);
 			free(port);
 			n->status.udp_confirmed = true;
+			update_destination_transport(mesh, n);
+			recompute_relay_dependents(mesh, n);
 		}
 
 		/* If we haven't established the PMTU yet, restart the discovery process. */
@@ -447,41 +458,23 @@ static void send_udppacket(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *ori
 	send_sptps_packet(mesh, n, origpkt);
 }
 
-bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
-	assert(handle);
-	assert(data);
-	assert(len);
+static bool send_sptps_via_meta(meshlink_handle_t *mesh, node_t *to, const void *data, size_t len) {
+	char buf[len * 4 / 3 + 5];
+	b64encode(data, buf, len);
 
-	node_t *to = handle;
-	meshlink_handle_t *mesh = to->mesh;
-
-	if(!to->status.reachable) {
-		logger(mesh, MESHLINK_ERROR, "Trying to send SPTPS data to unreachable node %s", to->name);
+	if(!to->nexthop || !to->nexthop->connection) {
+		logger(mesh, MESHLINK_WARNING, "Unable to forward SPTPS packet to %s via %s", to->name, to->nexthop ? to->nexthop->name : to->name);
 		return false;
 	}
 
-	/* Send it via TCP if it is a handshake packet, TCPOnly is in use, or this packet is larger than the MTU. */
-
-	if(type >= SPTPS_HANDSHAKE || (type != PKT_PROBE && (len - 21) > to->minmtu)) {
-		char buf[len * 4 / 3 + 5];
-		b64encode(data, buf, len);
-
-		if(!to->nexthop || !to->nexthop->connection) {
-			logger(mesh, MESHLINK_WARNING, "Unable to forward SPTPS packet to %s via %s", to->name, to->nexthop ? to->nexthop->name : to->name);
-			return false;
-		}
-
-		/* If no valid key is known yet, send the packets using ANS_KEY requests,
-		   to ensure we get to learn the reflexive UDP address. */
-		if(!to->status.validkey) {
-			return send_request(mesh, to->nexthop->connection, NULL, "%d %s %s %s -1 -1 -1 %d", ANS_KEY, mesh->self->name, to->name, buf, 0);
-		} else {
-			return send_request(mesh, to->nexthop->connection, NULL, "%d %s %s %d %s", REQ_KEY, mesh->self->name, to->name, REQ_SPTPS, buf);
-		}
+	if(!to->status.validkey) {
+		return send_request(mesh, to->nexthop->connection, NULL, "%d %s %s %s -1 -1 -1 %d", ANS_KEY, mesh->self->name, to->name, buf, 0);
 	}
 
-	/* Otherwise, send the packet via UDP */
+	return send_request(mesh, to->nexthop->connection, NULL, "%d %s %s %d %s", REQ_KEY, mesh->self->name, to->name, REQ_SPTPS, buf);
+}
 
+static bool send_sptps_via_udp(meshlink_handle_t *mesh, node_t *to, const void *data, size_t len) {
 	sockaddr_t sa_buf;
 	const sockaddr_t *sa;
 	int sock;
@@ -503,11 +496,86 @@ bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 			}
 		} else {
 			logger(mesh, MESHLINK_WARNING, "Error sending UDP SPTPS packet to %s: %s", to->name, sockstrerror(sockerrno));
+			relay_on_hard_send_error(mesh, to);
 			return false;
 		}
 	}
 
 	return true;
+}
+
+static bool send_relay_outer(meshlink_handle_t *mesh, node_t *hop, const void *data, size_t len) {
+	size_t payload = len - RELAY_INNER_MIN;
+	uint16_t limit = hop->minmtu > MINMTU ? hop->minmtu : MINMTU;
+
+	if(payload > limit) {
+		return true;
+	}
+
+	if(!send_sptps_via_udp(mesh, hop, data, len)) {
+		return false;
+	}
+
+	logger(mesh, MESHLINK_DEBUG, "Relaying type-8 via UDP to %s for %s", hop->name, mesh->relay_send_dest[0] ? mesh->relay_send_dest : hop->name);
+	relay_wake_probes(mesh, hop);
+	return true;
+}
+
+static bool send_application_record(meshlink_handle_t *mesh, node_t *to, const void *data, size_t len) {
+	if(to->status.udp_confirmed) {
+		if(!send_sptps_via_udp(mesh, to, data, len)) {
+			return false;
+		}
+
+		relay_wake_probes(mesh, to);
+		return true;
+	}
+
+	if(relay_names_unusable(mesh->self->name, to->name)) {
+		return send_sptps_via_meta(mesh, to, data, len);
+	}
+
+	if(to->nexthop && hop_udp_ready(to->nexthop)) {
+		uint8_t wrapped[MAXSIZE];
+		size_t wlen = sizeof(wrapped);
+
+		if(relay_encode(mesh->self->name, to->name, data, len, wrapped, &wlen)) {
+			snprintf(mesh->relay_send_dest, sizeof(mesh->relay_send_dest), "%s", to->name);
+			bool sent = sptps_send_record(&to->nexthop->sptps, PKT_RELAY_SPTPS, wrapped, (uint16_t)wlen);
+			mesh->relay_send_dest[0] = 0;
+			return sent;
+		}
+	}
+
+	return send_sptps_via_meta(mesh, to, data, len);
+}
+
+bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
+	assert(handle);
+	assert(data);
+	assert(len);
+
+	node_t *to = handle;
+	meshlink_handle_t *mesh = to->mesh;
+
+	if(!to->status.reachable) {
+		logger(mesh, MESHLINK_ERROR, "Trying to send SPTPS data to unreachable node %s", to->name);
+		return false;
+	}
+
+	if(type >= SPTPS_HANDSHAKE) {
+		return send_sptps_via_meta(mesh, to, data, len);
+	}
+
+	if(type == PKT_PROBE) {
+		return send_sptps_via_udp(mesh, to, data, len);
+	}
+
+	if(type == PKT_RELAY_SPTPS) {
+		return send_relay_outer(mesh, to, data, len);
+	}
+
+	return send_application_record(mesh, to, data, len);
 }
 
 bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t len) {
@@ -520,7 +588,7 @@ bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t
 	if(type == SPTPS_HANDSHAKE) {
 		if(!from->status.validkey) {
 			logger(mesh, MESHLINK_INFO, "SPTPS key exchange with %s successful", from->name);
-			from->status.validkey = true;
+			node_set_validkey(mesh, from, true);
 			from->status.waitingforkey = false;
 
 			if(from->utcp) {
@@ -534,6 +602,14 @@ bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t
 	if(len > MAXSIZE) {
 		logger(mesh, MESHLINK_ERROR, "Packet from %s larger than maximum supported size (%d > %d)", from->name, len, MAXSIZE);
 		return false;
+	}
+
+	if(type == PKT_RELAY_SPTPS) {
+		return handle_relay_record(mesh, from, data, len);
+	}
+
+	if(from->status.in_req_sptps && type != 0) {
+		return true;
 	}
 
 	vpn_packet_t inpkt;
@@ -550,10 +626,14 @@ bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t
 
 	if(type & ~(PKT_COMPRESSED)) {
 		logger(mesh, MESHLINK_ERROR, "Unexpected SPTPS record type %d len %d from %s", type, len, from->name);
-		return false;
+		return from->status.in_req_sptps;
 	}
 
 	if(type & PKT_COMPRESSED) {
+		if(from->status.in_req_sptps) {
+			return true;
+		}
+
 		logger(mesh, MESHLINK_ERROR, "Error while decompressing packet from %s", from->name);
 		return false;
 	}

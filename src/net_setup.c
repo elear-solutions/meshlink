@@ -29,6 +29,7 @@
 #include "netutl.h"
 #include "packmsg.h"
 #include "protocol.h"
+#include "relay.h"
 #include "route.h"
 #include "utils.h"
 #include "xalloc.h"
@@ -628,6 +629,7 @@ bool setup_network(meshlink_handle_t *mesh) {
 	init_nodes(mesh);
 	init_edges(mesh);
 	init_requests(mesh);
+	relay_init(mesh);
 
 	if(!setup_myself(mesh)) {
 		return false;
@@ -657,6 +659,7 @@ void close_network_connections(meshlink_handle_t *mesh) {
 	}
 
 	exit_requests(mesh);
+	relay_exit(mesh);
 	exit_edges(mesh);
 	exit_nodes(mesh);
 	exit_submeshes(mesh);

@@ -39,6 +39,9 @@ typedef struct node_status_t {
 	uint16_t dirty: 1;                  /* 1 if the configuration of the node is dirty and needs to be written out */
 	uint16_t want_udp: 1;               /* 1 if we want working UDP because we have data to send */
 	uint16_t tiny: 1;                   /* 1 if this is a tiny node */
+	uint16_t in_req_sptps: 1;           /* 1 while processing dest META REQ_SPTPS */
+	uint16_t temp_udp_confirmed: 1;     /* 1 while sending a probe reply */
+	uint16_t forced_relay: 1;           /* 1 if destool pinned nexthop */
 } node_status_t;
 
 #define MAX_RECENT 5
@@ -51,6 +54,7 @@ typedef struct node_t {
 	// Private member variables
 	node_status_t status;
 	uint16_t minmtu;                        /* Probed minimum MTU */
+	uint16_t relay_budget;                  /* Last accepted final-hop encrypted-record budget */
 	dev_class_t devclass;
 
 	// Used for packet I/O
@@ -98,6 +102,7 @@ typedef struct node_t {
 
 	int distance;
 	struct node_t *nexthop;                 /* nearest node from us to him */
+	struct node_t *prev_nexthop;            /* nexthop at last graph apply */
 	struct edge_t *prevedge;                /* nearest node from him to us */
 
 	struct splay_tree_t *edge_tree;         /* Edges with this node as one of the endpoints */

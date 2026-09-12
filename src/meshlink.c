@@ -32,6 +32,7 @@
 #include "packmsg.h"
 #include "prf.h"
 #include "protocol.h"
+#include "relay.h"
 #include "route.h"
 #include "sockaddr.h"
 #include "utils.h"
@@ -3655,6 +3656,8 @@ static bool blacklist(meshlink_handle_t *mesh, node_t *n) {
 	n->maxmtu = MTU;
 	n->mtuprobes = 0;
 	n->status.udp_confirmed = false;
+	n->relay_budget = 0;
+	recompute_relay_dependents(mesh, n);
 
 	if(n->status.reachable) {
 		n->last_unreachable = time(NULL);
@@ -4246,8 +4249,9 @@ void meshlink_set_channel_accept_cb(meshlink_handle_t *mesh, meshlink_channel_ac
 	for splay_each(node_t, n, mesh->nodes) {
 		if(!n->utcp && n != mesh->self) {
 			n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, n);
-			utcp_set_mtu(n->utcp, n->mtu - sizeof(meshlink_packethdr_t));
+			utcp_set_mtu(n->utcp, MTU - sizeof(meshlink_packethdr_t));
 			utcp_set_retransmit_cb(n->utcp, channel_retransmit);
+			update_destination_transport(mesh, n);
 		}
 	}
 
@@ -4334,8 +4338,9 @@ meshlink_channel_t *meshlink_channel_open_ex(meshlink_handle_t *mesh, meshlink_n
 
 	if(!n->utcp) {
 		n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, n);
-		utcp_set_mtu(n->utcp, n->mtu - sizeof(meshlink_packethdr_t));
+		utcp_set_mtu(n->utcp, MTU - sizeof(meshlink_packethdr_t));
 		utcp_set_retransmit_cb(n->utcp, channel_retransmit);
+		update_destination_transport(mesh, n);
 
 		if(!n->utcp) {
 			meshlink_errno = errno == ENOMEM ? MESHLINK_ENOMEM : MESHLINK_EINTERNAL;
@@ -4710,8 +4715,9 @@ void meshlink_set_node_channel_timeout(meshlink_handle_t *mesh, meshlink_node_t 
 
 	if(!n->utcp) {
 		n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, n);
-		utcp_set_mtu(n->utcp, n->mtu - sizeof(meshlink_packethdr_t));
+		utcp_set_mtu(n->utcp, MTU - sizeof(meshlink_packethdr_t));
 		utcp_set_retransmit_cb(n->utcp, channel_retransmit);
+		update_destination_transport(mesh, n);
 	}
 
 	utcp_set_user_timeout(n->utcp, timeout);
@@ -4722,8 +4728,9 @@ void meshlink_set_node_channel_timeout(meshlink_handle_t *mesh, meshlink_node_t 
 void update_node_status(meshlink_handle_t *mesh, node_t *n) {
 	if(n->status.reachable && mesh->channel_accept_cb && !n->utcp) {
 		n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, n);
-		utcp_set_mtu(n->utcp, n->mtu - sizeof(meshlink_packethdr_t));
+		utcp_set_mtu(n->utcp, MTU - sizeof(meshlink_packethdr_t));
 		utcp_set_retransmit_cb(n->utcp, channel_retransmit);
+		update_destination_transport(mesh, n);
 	}
 
 	if(mesh->node_status_cb) {
@@ -4736,11 +4743,16 @@ void update_node_status(meshlink_handle_t *mesh, node_t *n) {
 }
 
 void update_node_pmtu(meshlink_handle_t *mesh, node_t *n) {
-	utcp_set_mtu(n->utcp, (n->minmtu > MINMTU ? n->minmtu : MINMTU) - sizeof(meshlink_packethdr_t));
+	if(n->status.udp_confirmed) {
+		utcp_set_mtu(n->utcp, (n->minmtu > MINMTU ? n->minmtu : MINMTU) - sizeof(meshlink_packethdr_t));
+	}
 
 	if(mesh->node_pmtu_cb && !n->status.blacklisted) {
 		mesh->node_pmtu_cb(mesh, (meshlink_node_t *)n, n->minmtu);
 	}
+
+	recompute_relay_dependents(mesh, n);
+	relay_notify_minmtu_change(mesh, n);
 }
 
 void handle_duplicate_node(meshlink_handle_t *mesh, node_t *n) {
