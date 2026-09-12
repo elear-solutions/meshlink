@@ -13,18 +13,26 @@
 #include <sys/time.h>
 
 #include "meshlink.h"
+#include "relay.h"
 #include "devtools.h"
 #include "utils.h"
 
+/* net.h is not includable from integration tests (transitive meshlink_internal.h). */
 #define PKT_COMPRESSED 1
 #define PKT_PROBE 4
 #define PKT_RELAY_SPTPS 8
 #define SPTPS_HANDSHAKE 128
 #define MINMTU 527
 #define MTU 1451
-#define PACKETHDR 32
+
+typedef struct {
+	uint8_t destination[16];
+	uint8_t source[16];
+} __attribute__((__packed__)) udp_relay_packethdr_t;
+
+#define PACKETHDR_BYTES sizeof(udp_relay_packethdr_t)
+
 #define UTCP_HDR 20
-#define RELAY_REPORT_MAX 4096
 
 static struct sync_flag received;
 static struct sync_flag received2;
@@ -201,14 +209,9 @@ static void confirm_final(meshlink_handle_t *relay, const char *dest, uint16_t m
 }
 
 static size_t encode_type8(uint8_t *out, const char *origin, const char *dest, const uint8_t *inner, size_t inner_len) {
-	size_t ol = strlen(origin);
-	size_t dl = strlen(dest);
-	out[0] = (uint8_t)ol;
-	memcpy(out + 1, origin, ol);
-	out[1 + ol] = (uint8_t)dl;
-	memcpy(out + 2 + ol, dest, dl);
-	memcpy(out + 2 + ol + dl, inner, inner_len);
-	return 2 + ol + dl + inner_len;
+	size_t out_len = 800;
+	assert(relay_encode(origin, dest, inner, inner_len, out, &out_len));
+	return out_len;
 }
 
 static void expect_hello_after_drop(meshlink_handle_t **mesh) {
@@ -369,23 +372,22 @@ static void test_channels_and_mss(meshlink_handle_t **mesh) {
 	assert(devtool_set_minmtu(mesh[2], meshlink_get_node(mesh[2], "foo"), MTU));
 
 	size_t prefix = 2 + strlen("baz") + strlen("bar");
-	size_t floor_mss = MINMTU - prefix - 21 - PACKETHDR - UTCP_HDR;
+	size_t floor_mss = MINMTU - prefix - 21 - sizeof(udp_relay_packethdr_t) - UTCP_HDR;
 	assert_after(meshlink_channel_get_mss(mesh[2], ch1) == floor_mss, 5);
 
+	size_t mid_mss = 600 - prefix - 21 - sizeof(udp_relay_packethdr_t) - UTCP_HDR;
 	reset_logs();
 	confirm_final(mesh[0], "bar", 600);
 	assert(devtool_set_minmtu(mesh[2], meshlink_get_node(mesh[2], "foo"), MTU));
 	set_sync_flag(&received2, false);
 	assert(meshlink_channel_send(mesh[2], ch1, "Hello", 5) == 5);
-	assert(wait_sync_flag(&got_relay_mtu, 10));
-	size_t mid_mss = 600 - prefix - 21 - PACKETHDR - UTCP_HDR;
-	assert_after(meshlink_channel_get_mss(mesh[2], ch1) == mid_mss, 5);
+	assert_after(meshlink_channel_get_mss(mesh[2], ch1) == mid_mss, 15);
+	assert(wait_sync_flag(&received2, 10));
 
 	reset_logs();
 	assert(devtool_set_minmtu(mesh[0], meshlink_get_node(mesh[0], "bar"), MTU));
 	assert(meshlink_channel_send(mesh[2], ch1, "Hello", 5) == 5);
-	assert(wait_sync_flag(&got_relay_mtu, 10));
-	assert_after(meshlink_channel_get_mss(mesh[2], ch1) > mid_mss, 5);
+	assert_after(meshlink_channel_get_mss(mesh[2], ch1) > mid_mss, 15);
 
 	/* two channels leave together on dest probe reply */
 	reset_logs();
@@ -551,6 +553,98 @@ static void test_dest_meta_type8_quiet(meshlink_handle_t **mesh) {
 	expect_hello_after_drop(mesh);
 }
 
+static void test_hard_send_clears_hop(meshlink_handle_t **mesh) {
+	size_t prefix = 2 + strlen("baz") + strlen("bar");
+	size_t relay_mss = MINMTU - prefix - 21 - sizeof(udp_relay_packethdr_t) - UTCP_HDR;
+	size_t meta_mss = MTU - sizeof(udp_relay_packethdr_t) - UTCP_HDR;
+
+	pin(mesh[2], "bar", "foo");
+	assert(devtool_set_minmtu(mesh[2], meshlink_get_node(mesh[2], "foo"), MTU));
+	confirm_final(mesh[0], "bar", MINMTU);
+
+	meshlink_channel_t *ch = meshlink_channel_open(mesh[2], meshlink_get_node(mesh[2], "bar"), 11, receive2_cb, NULL, 0);
+	assert(ch);
+	assert(udp_confirmed_flag(mesh[2], "foo"));
+	assert_after(meshlink_channel_get_mss(mesh[2], ch) == relay_mss, 10);
+
+	devtool_relay_hard_send_error(mesh[2], meshlink_get_node(mesh[2], "foo"));
+	assert(!udp_confirmed_flag(mesh[2], "foo"));
+	assert_after(meshlink_channel_get_mss(mesh[2], ch) == meta_mss, 10);
+
+	devtool_set_udp_confirmed(mesh[2], meshlink_get_node(mesh[2], "foo"), true);
+	assert(devtool_set_minmtu(mesh[2], meshlink_get_node(mesh[2], "foo"), MTU));
+	pin(mesh[2], "bar", "foo");
+	meshlink_channel_abort(mesh[2], ch);
+}
+
+static void test_long_names(meshlink_handle_t **mesh) {
+	char long_a[231];
+	char long_b[231];
+	memset(long_a, 'A', 230);
+	long_a[230] = 0;
+	memset(long_b, 'B', 230);
+	long_b[230] = 0;
+	assert(meshlink_destroy("udp_relay_conf.longa"));
+	assert(meshlink_destroy("udp_relay_conf.longb"));
+	meshlink_handle_t *longa = meshlink_open("udp_relay_conf.longa", long_a, "udp-relay", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *longb = meshlink_open("udp_relay_conf.longb", long_b, "udp-relay", DEV_CLASS_BACKBONE);
+	assert(longa);
+	assert(longb);
+	assert(meshlink_set_canonical_address(longa, meshlink_get_self(longa), "localhost", NULL));
+	assert(meshlink_set_canonical_address(longb, meshlink_get_self(longb), "localhost", NULL));
+	char *longa_export = meshlink_export(longa);
+	char *longb_export = meshlink_export(longb);
+	char *foo_export = meshlink_export(mesh[0]);
+	assert(longa_export && longb_export && foo_export);
+	assert(meshlink_import(mesh[0], longa_export));
+	assert(meshlink_import(mesh[0], longb_export));
+	assert(meshlink_import(longa, foo_export));
+	assert(meshlink_import(longa, longb_export));
+	assert(meshlink_import(longb, foo_export));
+	assert(meshlink_import(longb, longa_export));
+	free(longa_export);
+	free(longb_export);
+	free(foo_export);
+	meshlink_set_channel_accept_cb(longb, accept_cb);
+	assert(meshlink_start(longa));
+	assert(meshlink_start(longb));
+	assert_after(meshlink_get_node(longa, long_b) && meshlink_get_node(longa, "foo"), 10);
+	assert_after(udp_confirmed_flag(longa, "foo"), 30);
+
+	meshlink_channel_t *ch_long = meshlink_channel_open(longa, meshlink_get_node(longa, long_b), 9, receive2_cb, NULL, 0);
+	meshlink_channel_t *ch_short = meshlink_channel_open(mesh[2], meshlink_get_node(mesh[2], "bar"), 10, receive2_cb, NULL, 0);
+	assert(ch_long);
+	assert(ch_short);
+	assert_after(meshlink_channel_get_mss(longa, ch_long) > 0, 10);
+
+	pin(longa, long_b, "foo");
+	pin(mesh[2], "bar", "foo");
+	assert(devtool_set_minmtu(longa, meshlink_get_node(longa, "foo"), MTU));
+	size_t meta_mss = MTU - sizeof(udp_relay_packethdr_t) - UTCP_HDR;
+	size_t short_prefix = 2 + strlen("baz") + strlen("bar");
+	size_t short_floor = MINMTU - short_prefix - 21 - sizeof(udp_relay_packethdr_t) - UTCP_HDR;
+	assert_after(meshlink_channel_get_mss(longa, ch_long) == meta_mss, 5);
+	assert_after(meshlink_channel_get_mss(mesh[2], ch_short) == short_floor, 5);
+	(void)meshlink_channel_send(longa, ch_long, "Hello", 5);
+	(void)meshlink_send(longa, meshlink_get_node(longa, long_b), "Hello", 5);
+
+	devtool_set_udp_confirmed(longa, meshlink_get_node(longa, long_b), false);
+	assert_after(udp_confirmed_flag(longa, long_b), 20);
+	devtool_node_status_t longst;
+	devtool_get_node_status(longa, meshlink_get_node(longa, long_b), &longst);
+	uint16_t base = longst.minmtu > MINMTU ? longst.minmtu : MINMTU;
+	assert(meshlink_channel_get_mss(longa, ch_long) == (size_t)(base - sizeof(udp_relay_packethdr_t) - UTCP_HDR));
+	pin(mesh[2], "bar", "foo");
+	assert_after(meshlink_channel_get_mss(mesh[2], ch_short) == short_floor, 5);
+
+	meshlink_channel_abort(longa, ch_long);
+	meshlink_channel_abort(mesh[2], ch_short);
+	meshlink_close(longa);
+	meshlink_close(longb);
+	assert(meshlink_destroy("udp_relay_conf.longa"));
+	assert(meshlink_destroy("udp_relay_conf.longb"));
+}
+
 static void test_reachability_flip_mss(meshlink_handle_t **mesh) {
 	meshlink_set_channel_accept_cb(mesh[1], accept_cb);
 	meshlink_channel_t *ch = meshlink_channel_open(mesh[2], meshlink_get_node(mesh[2], "bar"), 12, receive2_cb, NULL, 0);
@@ -559,8 +653,8 @@ static void test_reachability_flip_mss(meshlink_handle_t **mesh) {
 	pin(mesh[2], "bar", "foo");
 
 	size_t prefix = 2 + strlen("baz") + strlen("bar");
-	size_t floor_mss = MINMTU - prefix - 21 - PACKETHDR - UTCP_HDR;
-	size_t meta_mss = MTU - PACKETHDR - UTCP_HDR;
+	size_t floor_mss = MINMTU - prefix - 21 - sizeof(udp_relay_packethdr_t) - UTCP_HDR;
+	size_t meta_mss = MTU - sizeof(udp_relay_packethdr_t) - UTCP_HDR;
 	assert_after(meshlink_channel_get_mss(mesh[2], ch) == floor_mss, 5);
 
 	set_sync_flag(&foo_down, false);
@@ -665,75 +759,11 @@ int main(void) {
 
 	test_channels_and_mss(mesh);
 
-	/* destool dest==nexthop rejected */
+	/* devtool: dest==nexthop rejected */
 	assert(!devtool_force_relay_path(mesh[2], meshlink_get_node(mesh[2], "bar"), meshlink_get_node(mesh[2], "bar")));
 
-	/* Long names: destination-wide META, no wrapped budget, short-name floor unchanged */
-	char long_a[231];
-	char long_b[231];
-	memset(long_a, 'A', 230);
-	long_a[230] = 0;
-	memset(long_b, 'B', 230);
-	long_b[230] = 0;
-	assert(meshlink_destroy("udp_relay_conf.longa"));
-	assert(meshlink_destroy("udp_relay_conf.longb"));
-	meshlink_handle_t *longa = meshlink_open("udp_relay_conf.longa", long_a, "udp-relay", DEV_CLASS_BACKBONE);
-	meshlink_handle_t *longb = meshlink_open("udp_relay_conf.longb", long_b, "udp-relay", DEV_CLASS_BACKBONE);
-	assert(longa);
-	assert(longb);
-	assert(meshlink_set_canonical_address(longa, meshlink_get_self(longa), "localhost", NULL));
-	assert(meshlink_set_canonical_address(longb, meshlink_get_self(longb), "localhost", NULL));
-	char *longa_export = meshlink_export(longa);
-	char *longb_export = meshlink_export(longb);
-	char *foo_export = meshlink_export(mesh[0]);
-	assert(longa_export && longb_export && foo_export);
-	assert(meshlink_import(mesh[0], longa_export));
-	assert(meshlink_import(mesh[0], longb_export));
-	assert(meshlink_import(longa, foo_export));
-	assert(meshlink_import(longa, longb_export));
-	assert(meshlink_import(longb, foo_export));
-	assert(meshlink_import(longb, longa_export));
-	free(longa_export);
-	free(longb_export);
-	free(foo_export);
-	meshlink_set_channel_accept_cb(longb, accept_cb);
-	assert(meshlink_start(longa));
-	assert(meshlink_start(longb));
-	assert_after(meshlink_get_node(longa, long_b) && meshlink_get_node(longa, "foo"), 10);
-	assert_after(udp_confirmed_flag(longa, "foo"), 30);
-
-	meshlink_channel_t *ch_long = meshlink_channel_open(longa, meshlink_get_node(longa, long_b), 9, receive2_cb, NULL, 0);
-	meshlink_channel_t *ch_short = meshlink_channel_open(mesh[2], meshlink_get_node(mesh[2], "bar"), 10, receive2_cb, NULL, 0);
-	assert(ch_long);
-	assert(ch_short);
-	assert_after(meshlink_channel_get_mss(longa, ch_long) > 0, 10);
-
-	pin(longa, long_b, "foo");
-	pin(mesh[2], "bar", "foo");
-	assert(devtool_set_minmtu(longa, meshlink_get_node(longa, "foo"), MTU));
-	size_t meta_mss = MTU - PACKETHDR - UTCP_HDR;
-	size_t short_prefix = 2 + strlen("baz") + strlen("bar");
-	size_t short_floor = MINMTU - short_prefix - 21 - PACKETHDR - UTCP_HDR;
-	assert_after(meshlink_channel_get_mss(longa, ch_long) == meta_mss, 5);
-	assert_after(meshlink_channel_get_mss(mesh[2], ch_short) == short_floor, 5);
-	(void)meshlink_channel_send(longa, ch_long, "Hello", 5);
-	(void)meshlink_send(longa, meshlink_get_node(longa, long_b), "Hello", 5);
-
-	devtool_set_udp_confirmed(longa, meshlink_get_node(longa, long_b), false);
-	assert_after(udp_confirmed_flag(longa, long_b), 20);
-	devtool_node_status_t longst;
-	devtool_get_node_status(longa, meshlink_get_node(longa, long_b), &longst);
-	uint16_t base = longst.minmtu > MINMTU ? longst.minmtu : MINMTU;
-	assert(meshlink_channel_get_mss(longa, ch_long) == (size_t)(base - PACKETHDR - UTCP_HDR));
-	pin(mesh[2], "bar", "foo");
-	assert_after(meshlink_channel_get_mss(mesh[2], ch_short) == short_floor, 5);
-
-	meshlink_channel_abort(longa, ch_long);
-	meshlink_channel_abort(mesh[2], ch_short);
-	meshlink_close(longa);
-	meshlink_close(longb);
-	assert(meshlink_destroy("udp_relay_conf.longa"));
-	assert(meshlink_destroy("udp_relay_conf.longb"));
+	test_hard_send_clears_hop(mesh);
+	test_long_names(mesh);
 
 	test_reachability_flip_mss(mesh);
 

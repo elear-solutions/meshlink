@@ -26,6 +26,7 @@
 #include "net.h"
 #include "node.h"
 #include "relay.h"
+#include "relay_devtool.h"
 #include "sptps.h"
 #include "submesh.h"
 #include "splay_tree.h"
@@ -35,21 +36,6 @@
 #include "devtools.h"
 
 _Static_assert(DEVTOOL_MAX_RECENT == MAX_RECENT, "devtool_node_status_t.recent[] must mirror node_t.recent[]");
-
-/* Test hooks live in relay.c; not part of relay.h. */
-bool relay_inject_inner(meshlink_handle_t *mesh, node_t *dest, uint8_t type);
-void relay_devtool_clear_reports(meshlink_handle_t *mesh);
-bool relay_devtool_seed_report(meshlink_handle_t *mesh, const char *origin, const char *destination, unsigned age_sec, bool have_reported);
-bool relay_devtool_has_report(meshlink_handle_t *mesh, const char *origin, const char *destination);
-bool relay_devtool_have_reported(meshlink_handle_t *mesh, const char *origin, const char *destination);
-size_t relay_devtool_report_count(meshlink_handle_t *mesh);
-bool relay_devtool_fill_reports(meshlink_handle_t *mesh, size_t count, unsigned age_sec, bool have_reported);
-void relay_devtool_fail_reports(meshlink_handle_t *mesh, bool fail);
-bool relay_devtool_handle_aliased(meshlink_handle_t *mesh, node_t *from, const void *data, uint16_t len);
-bool relay_devtool_send_meta_sptps(meshlink_handle_t *mesh, node_t *dest, uint8_t type, const void *data, size_t len);
-void relay_devtool_fail_realloc(meshlink_handle_t *mesh, bool fail);
-bool relay_devtool_handle_req_relay_mtu(meshlink_handle_t *mesh, node_t *from, const char *request);
-bool relay_devtool_cover_unit(meshlink_handle_t *mesh, node_t *from, node_t *dest, node_t *hop);
 
 static void nop_probe(void) {
 	return;
@@ -614,7 +600,7 @@ bool devtool_force_relay_path(meshlink_handle_t *mesh, meshlink_node_t *dest, me
 	d->mtuprobes = 0;
 	d->relay_budget = 0;
 	relay_update_destination_transport(mesh, d);
-	recompute_relay_dependents(mesh, h);
+	relay_recompute_dependents(mesh, h);
 	pthread_mutex_unlock(&mesh->mutex);
 	return true;
 }
@@ -634,7 +620,7 @@ void devtool_set_udp_confirmed(meshlink_handle_t *mesh, meshlink_node_t *node, b
 	n->status.udp_confirmed = confirmed;
 
 	if(was != confirmed) {
-		recompute_relay_dependents(mesh, n);
+		relay_recompute_dependents(mesh, n);
 		relay_update_destination_transport(mesh, n);
 	}
 
@@ -785,7 +771,7 @@ void devtool_fail_relay_reports(meshlink_handle_t *mesh, bool fail) {
 		abort();
 	}
 
-	relay_devtool_fail_reports(mesh, fail);
+	relay_devtool_force_report_null_connection(mesh, fail);
 	pthread_mutex_unlock(&mesh->mutex);
 }
 
@@ -861,4 +847,18 @@ bool devtool_relay_cover_unit(meshlink_handle_t *mesh, meshlink_node_t *from, me
 	bool ok = relay_devtool_cover_unit(mesh, (node_t *)from, (node_t *)dest, (node_t *)hop);
 	pthread_mutex_unlock(&mesh->mutex);
 	return ok;
+}
+
+void devtool_relay_hard_send_error(meshlink_handle_t *mesh, meshlink_node_t *hop) {
+	if(!mesh || !hop) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	relay_on_hard_send_error(mesh, (node_t *)hop);
+	pthread_mutex_unlock(&mesh->mutex);
 }

@@ -9,6 +9,15 @@
     it under the terms of the GNU General Public License as published by
     the Free Software Foundation; either version 2 of the License, or
     (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License along
+    with this program; if not, write to the Free Software Foundation, Inc.,
+    51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */
 
 #include <stdbool.h>
@@ -42,7 +51,7 @@ bool relay_names_unusable(const char *origin, const char *destination);
 void relay_update_destination_transport(struct meshlink_handle *mesh, struct node_t *dest);
 
 /* Recompute MSS for every dest whose nexthop is hop (skip udp_confirmed dests). */
-void recompute_relay_dependents(struct meshlink_handle *mesh, struct node_t *hop);
+void relay_recompute_dependents(struct meshlink_handle *mesh, struct node_t *hop);
 
 void relay_on_hard_send_error(struct meshlink_handle *mesh, struct node_t *hop);
 
@@ -59,6 +68,9 @@ bool relay_payload_destination(const void *data, size_t len, char *destination, 
 
 /* Incoming type-8 record from `from`. Malformed / unknown names are quiet drops. */
 bool relay_handle_record(struct meshlink_handle *mesh, struct node_t *from, const void *data, uint16_t len);
+
+/* Base64 REQ_SPTPS on an existing META connection. */
+bool relay_meta_req_sptps(struct meshlink_handle *mesh, struct connection_t *c, const char *origin, const char *dest_name, const void *data, size_t len);
 
 /* META REQ_SPTPS fallback when the next hop is not UDP-ready. */
 bool relay_send_meta_req_sptps(struct meshlink_handle *mesh, const char *origin, struct node_t *dest, const void *inner, size_t inner_len);

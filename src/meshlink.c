@@ -3839,7 +3839,7 @@ static bool blacklist(meshlink_handle_t *mesh, node_t *n) {
 	n->mtuprobes = 0;
 	n->status.udp_confirmed = false;
 	n->relay_budget = 0;
-	recompute_relay_dependents(mesh, n);
+	relay_recompute_dependents(mesh, n);
 
 	if(n->status.reachable) {
 		n->last_unreachable = time(NULL);
@@ -4966,7 +4966,7 @@ void update_node_pmtu(meshlink_handle_t *mesh, node_t *n) {
 		mesh->node_pmtu_cb(mesh, (meshlink_node_t *)n, n->minmtu);
 	}
 
-	recompute_relay_dependents(mesh, n);
+	relay_recompute_dependents(mesh, n);
 	relay_notify_minmtu_change(mesh, n);
 }
 

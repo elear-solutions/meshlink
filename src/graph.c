@@ -173,8 +173,8 @@ static void check_reachability(meshlink_handle_t *mesh) {
 			n->mtuprobes = 0;
 
 			timeout_del(&mesh->loop, &n->mtutimeout);
-			/* AC20: keep relay_budget; AC17: dependents wait for a later probe. */
-			recompute_relay_dependents(mesh, n);
+			/* Keep relay_budget; dependents wait for a later probe. */
+			relay_recompute_dependents(mesh, n);
 			relay_update_destination_transport(mesh, n);
 		}
 
@@ -208,7 +208,7 @@ static void check_reachability(meshlink_handle_t *mesh) {
 			n->mtuprobes = 0;
 
 			timeout_del(&mesh->loop, &n->mtutimeout);
-			recompute_relay_dependents(mesh, n);
+			relay_recompute_dependents(mesh, n);
 			relay_update_destination_transport(mesh, n);
 
 			if(!n->status.blacklisted) {

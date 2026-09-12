@@ -18,6 +18,7 @@ devtool_has_relay_report
 devtool_keyrotate_probe
 devtool_open_in_netns
 devtool_relay_cover_unit
+devtool_relay_hard_send_error
 devtool_relay_report_count
 devtool_relay_report_have_reported
 devtool_repeat_next_ack
@@ -140,3 +141,4 @@ meshlink_submesh_open
 meshlink_verify
 meshlink_whitelist
 meshlink_whitelist_by_name
+relay_encode

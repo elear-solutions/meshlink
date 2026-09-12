@@ -85,7 +85,7 @@ static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 		n->maxmtu = MTU;
 
 		update_node_pmtu(mesh, n);
-		recompute_relay_dependents(mesh, n);
+		relay_recompute_dependents(mesh, n);
 		relay_update_destination_transport(mesh, n);
 	}
 
@@ -222,7 +222,7 @@ static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet
 
 			try_upgrade_probe(mesh, n);
 			relay_update_destination_transport(mesh, n);
-			recompute_relay_dependents(mesh, n);
+			relay_recompute_dependents(mesh, n);
 		}
 
 		/* If we haven't established the PMTU yet, restart the discovery process. */
@@ -665,9 +665,6 @@ static connection_t *meta_connection_for(node_t *to) {
 }
 
 static bool send_sptps_via_meta(meshlink_handle_t *mesh, node_t *to, const void *data, size_t len) {
-	char buf[len * 4 / 3 + 5];
-	b64encode(data, buf, len);
-
 	connection_t *c = meta_connection_for(to);
 
 	if(!c) {
@@ -676,10 +673,12 @@ static bool send_sptps_via_meta(meshlink_handle_t *mesh, node_t *to, const void 
 	}
 
 	if(!to->status.validkey) {
+		char buf[len * 4 / 3 + 5];
+		b64encode(data, buf, len);
 		return send_request(mesh, c, NULL, "%d %s %s %s -1 -1 -1 %d", ANS_KEY, mesh->self->name, to->name, buf, 0);
 	}
 
-	return send_request(mesh, c, NULL, "%d %s %s %d %s", REQ_KEY, mesh->self->name, to->name, REQ_SPTPS, buf);
+	return relay_meta_req_sptps(mesh, c, mesh->self->name, to->name, data, len);
 }
 
 static bool send_sptps_via_udp(meshlink_handle_t *mesh, node_t *to, const void *data, size_t len) {
@@ -728,7 +727,7 @@ static bool send_relay_outer(meshlink_handle_t *mesh, node_t *hop, const void *d
 	size_t payload = len - RELAY_INNER_MIN;
 	uint16_t limit = hop->minmtu > MINMTU ? hop->minmtu : MINMTU;
 
-	/* AC13: ready oversize is a handled drop (no META fallback). */
+	/* Ready oversize is a handled drop (no META fallback). */
 	if(payload > limit) {
 		return true;
 	}
@@ -749,7 +748,7 @@ static bool send_relay_outer(meshlink_handle_t *mesh, node_t *hop, const void *d
 }
 
 static bool send_application_record(meshlink_handle_t *mesh, node_t *to, const void *data, size_t len) {
-	/* AC7: confirmed UDP does not compare (len-21) against minmtu. */
+	/* Confirmed UDP does not compare (len-21) against minmtu. */
 	if(to->status.udp_confirmed) {
 		if(!send_sptps_via_udp(mesh, to, data, len)) {
 			return false;

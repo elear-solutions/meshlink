@@ -85,7 +85,7 @@ void node_set_validkey(meshlink_handle_t *mesh, node_t *n, bool valid) {
 	}
 
 	n->status.validkey = valid;
-	recompute_relay_dependents(mesh, n);
+	relay_recompute_dependents(mesh, n);
 	relay_update_destination_transport(mesh, n);
 }
 
