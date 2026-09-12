@@ -653,20 +653,33 @@ static void send_udppacket(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *ori
 	send_sptps_packet(mesh, n, origpkt);
 }
 
+/* Hop META first. Direct dest META if the hop has no TCP — #113 may have
+   dropped the hop session after a direct edge came up, and a forced pin
+   must not black-hole when that happens. */
+static connection_t *meta_connection_for(node_t *to) {
+	if(to->nexthop && to->nexthop->connection) {
+		return to->nexthop->connection;
+	}
+
+	return to->connection;
+}
+
 static bool send_sptps_via_meta(meshlink_handle_t *mesh, node_t *to, const void *data, size_t len) {
 	char buf[len * 4 / 3 + 5];
 	b64encode(data, buf, len);
 
-	if(!to->nexthop || !to->nexthop->connection) {
+	connection_t *c = meta_connection_for(to);
+
+	if(!c) {
 		logger(mesh, MESHLINK_WARNING, "Unable to forward SPTPS packet to %s via %s", to->name, to->nexthop ? to->nexthop->name : to->name);
 		return false;
 	}
 
 	if(!to->status.validkey) {
-		return send_request(mesh, to->nexthop->connection, NULL, "%d %s %s %s -1 -1 -1 %d", ANS_KEY, mesh->self->name, to->name, buf, 0);
+		return send_request(mesh, c, NULL, "%d %s %s %s -1 -1 -1 %d", ANS_KEY, mesh->self->name, to->name, buf, 0);
 	}
 
-	return send_request(mesh, to->nexthop->connection, NULL, "%d %s %s %d %s", REQ_KEY, mesh->self->name, to->name, REQ_SPTPS, buf);
+	return send_request(mesh, c, NULL, "%d %s %s %d %s", REQ_KEY, mesh->self->name, to->name, REQ_SPTPS, buf);
 }
 
 static bool send_sptps_via_udp(meshlink_handle_t *mesh, node_t *to, const void *data, size_t len) {

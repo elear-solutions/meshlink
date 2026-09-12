@@ -169,9 +169,13 @@ int main(void) {
 	assert(!devtool_force_relay_path(mesh[2], meshlink_get_node(mesh[2], name[1]), meshlink_get_node(mesh[2], name[1])));
 
 	// Negative: nexthop UDP unconfirmed → META only, no type-8 log, Hello still arrives.
+	// Drop any late first-loop Hello so this phase cannot pass on a stale flag.
 	set_sync_flag(&received, false);
 	set_sync_flag(&saw_type8_relay, false);
 	set_sync_flag(&leftover_ascii_type8, false);
+	usleep(200000);
+	set_sync_flag(&received, false);
+	set_sync_flag(&saw_type8_relay, false);
 
 	for(int i = 0; i < 15; i++) {
 		assert(devtool_force_relay_path(mesh[2], meshlink_get_node(mesh[2], name[1]), meshlink_get_node(mesh[2], name[0])));
