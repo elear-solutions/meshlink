@@ -323,6 +323,7 @@ static void relay_cover_null_devtools(meshlink_handle_t *mesh, node_t *from, nod
 	(void)relay_devtool_send_meta_sptps(NULL, dest, 0, ctx->inner, sizeof(ctx->inner));
 	(void)relay_inject_inner(mesh, NULL, 0);
 	(void)relay_devtool_handle_req_relay_mtu(mesh, NULL, "x");
+	(void)relay_meta_req_sptps(NULL, NULL, NULL, NULL, NULL, 0);
 
 }
 
@@ -629,6 +630,17 @@ static void relay_cover_meta_inject(meshlink_handle_t *mesh, node_t *from, node_
 	dest->status.udp_confirmed = false;
 	snprintf(ctx->req, sizeof(ctx->req), "0 %s %s %d %s 100", dest->name, dest->name, REQ_RELAY_MTU, dest->name);
 	(void)relay_handle_req_relay_mtu(mesh, dest->connection, ctx->req, dest);
+
+	{
+		char *saved_self = mesh->self->name;
+
+		mesh->self->name = huge_self;
+		dest->nexthop = dest;
+		dest->status.udp_confirmed = false;
+		snprintf(ctx->req, sizeof(ctx->req), "0 %s %s %d %s 100", dest->name, dest->name, REQ_RELAY_MTU, dest->name);
+		(void)relay_handle_req_relay_mtu(mesh, dest->connection, ctx->req, dest);
+		mesh->self->name = saved_self;
+	}
 
 	dest->sptps.outstate = true;
 	dest->sptps.state = 0;
