@@ -378,4 +378,43 @@ bool devtool_send_raw_record(struct meshlink_handle *mesh, struct meshlink_node 
  */
 bool devtool_set_minmtu(struct meshlink_handle *mesh, struct meshlink_node *node, uint16_t mtu);
 
+/// Drop every origin-and-destination report-table entry.
+/** @param mesh  Mesh handle.
+ */
+void devtool_clear_relay_reports(struct meshlink_handle *mesh);
+
+/// Create or update a report-table entry.
+/** `age_sec` is subtracted from the instance's current loop time so the entry
+ *  stays inside the thirty-second idle window. Unknown names are allowed so
+ *  tests can fill the 4,096-entry cap without opening extra instances.
+ *
+ *  @param mesh           Mesh handle.
+ *  @param origin         Origin name stored on the entry.
+ *  @param destination    Destination name stored on the entry.
+ *  @param age_sec        Seconds to subtract from the current loop time.
+ *  @param have_reported  Whether the entry has already queued a report.
+ *  @return               true on success.
+ */
+bool devtool_seed_relay_report(struct meshlink_handle *mesh, const char *origin, const char *destination, unsigned age_sec, bool have_reported);
+
+/// True when the report table has an entry for this pair.
+bool devtool_has_relay_report(struct meshlink_handle *mesh, const char *origin, const char *destination);
+
+/// True when that pair has stamped a successful report.
+bool devtool_relay_report_have_reported(struct meshlink_handle *mesh, const char *origin, const char *destination);
+
+/// Number of live report-table entries.
+size_t devtool_relay_report_count(struct meshlink_handle *mesh);
+
+/// Insert `count` dummy pairs named f0000/x, f0001/x, ...
+bool devtool_fill_relay_reports(struct meshlink_handle *mesh, size_t count, unsigned age_sec, bool have_reported);
+
+/// Force every `REQ_RELAY_MTU` `send_request` to fail until cleared.
+/** Failed queues do not stamp the one-second oversize clock.
+ *
+ *  @param mesh  Mesh handle.
+ *  @param fail  true to fail, false to resume normal sends.
+ */
+void devtool_fail_relay_reports(struct meshlink_handle *mesh, bool fail);
+
 #endif

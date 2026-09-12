@@ -319,7 +319,21 @@ static relay_report_entry_t *relay_report_find(meshlink_handle_t *mesh, const ch
 	return NULL;
 }
 
-static relay_report_entry_t *relay_report_get(meshlink_handle_t *mesh, const char *origin, const char *destination, bool create) {
+static void relay_evict_lru(meshlink_handle_t *mesh) {
+	relay_report_entry_t *victim = NULL;
+
+	for list_each(relay_report_entry_t, c, mesh->relay_reports) {
+		if(!victim || relay_entry_cmp(c, victim) < 0) {
+			victim = c;
+		}
+	}
+
+	if(victim) {
+		list_delete(mesh->relay_reports, victim);
+	}
+}
+
+static relay_report_entry_t *relay_report_get(meshlink_handle_t *mesh, const char *origin, const char *destination, bool create, bool require_nodes) {
 	relay_expire_idle(mesh);
 
 	relay_report_entry_t *e = relay_report_find(mesh, origin, destination);
@@ -328,22 +342,12 @@ static relay_report_entry_t *relay_report_get(meshlink_handle_t *mesh, const cha
 		return e;
 	}
 
-	if(!lookup_node(mesh, origin) || !lookup_node(mesh, destination)) {
+	if(require_nodes && (!lookup_node(mesh, origin) || !lookup_node(mesh, destination))) {
 		return NULL;
 	}
 
 	if(mesh->relay_reports->count >= RELAY_REPORT_MAX) {
-		relay_report_entry_t *victim = NULL;
-
-		for list_each(relay_report_entry_t, c, mesh->relay_reports) {
-			if(!victim || relay_entry_cmp(c, victim) < 0) {
-				victim = c;
-			}
-		}
-
-		if(victim) {
-			list_delete(mesh->relay_reports, victim);
-		}
+		relay_evict_lru(mesh);
 	}
 
 	e = xzalloc(sizeof(*e));
@@ -354,7 +358,7 @@ static relay_report_entry_t *relay_report_get(meshlink_handle_t *mesh, const cha
 }
 
 void relay_touch_traffic(meshlink_handle_t *mesh, const char *origin, const char *destination) {
-	relay_report_entry_t *e = relay_report_get(mesh, origin, destination, true);
+	relay_report_entry_t *e = relay_report_get(mesh, origin, destination, true, true);
 
 	if(e) {
 		e->last_traffic_time = mesh->loop.now.tv_sec;
@@ -362,6 +366,10 @@ void relay_touch_traffic(meshlink_handle_t *mesh, const char *origin, const char
 }
 
 static bool relay_send_report(meshlink_handle_t *mesh, const char *origin_name, struct node_t *dest, uint16_t budget) {
+	if(mesh->relay_fail_reports) {
+		return send_request(mesh, NULL, NULL, "%d %s %s %d %s %u", REQ_KEY, mesh->self->name, origin_name, REQ_RELAY_MTU, dest->name, (unsigned)budget);
+	}
+
 	node_t *origin = lookup_node(mesh, origin_name);
 
 	if(!origin || !origin->nexthop || !origin->nexthop->connection) {
@@ -389,7 +397,7 @@ void relay_maybe_report(meshlink_handle_t *mesh, const char *origin, struct node
 		return;
 	}
 
-	relay_report_entry_t *e = relay_report_get(mesh, origin, dest->name, true);
+	relay_report_entry_t *e = relay_report_get(mesh, origin, dest->name, true, true);
 
 	if(!e) {
 		return;
@@ -610,4 +618,78 @@ bool relay_inject_inner(meshlink_handle_t *mesh, node_t *dest, uint8_t type) {
 	}
 
 	return send_meta_req_sptps(mesh, mesh->self->name, dest, mesh->relay_capture_buf, mesh->relay_capture_len);
+}
+
+void relay_devtool_clear_reports(meshlink_handle_t *mesh) {
+	if(!mesh || !mesh->relay_reports) {
+		return;
+	}
+
+	list_delete_list(mesh->relay_reports);
+	mesh->relay_reports = list_alloc(relay_report_free);
+}
+
+bool relay_devtool_seed_report(meshlink_handle_t *mesh, const char *origin, const char *destination, unsigned age_sec, bool have_reported) {
+	if(!mesh || !mesh->relay_reports || !origin || !destination) {
+		return false;
+	}
+
+	relay_report_entry_t *e = relay_report_get(mesh, origin, destination, true, false);
+
+	if(!e) {
+		return false;
+	}
+
+	e->last_traffic_time = mesh->loop.now.tv_sec - (time_t)age_sec;
+	e->have_reported = have_reported;
+	e->last_report_time = have_reported ? e->last_traffic_time : 0;
+	return true;
+}
+
+bool relay_devtool_has_report(meshlink_handle_t *mesh, const char *origin, const char *destination) {
+	if(!mesh || !origin || !destination) {
+		return false;
+	}
+
+	return relay_report_find(mesh, origin, destination) != NULL;
+}
+
+bool relay_devtool_have_reported(meshlink_handle_t *mesh, const char *origin, const char *destination) {
+	if(!mesh || !origin || !destination) {
+		return false;
+	}
+
+	relay_report_entry_t *e = relay_report_find(mesh, origin, destination);
+	return e && e->have_reported;
+}
+
+size_t relay_devtool_report_count(meshlink_handle_t *mesh) {
+	if(!mesh || !mesh->relay_reports) {
+		return 0;
+	}
+
+	return mesh->relay_reports->count;
+}
+
+bool relay_devtool_fill_reports(meshlink_handle_t *mesh, size_t count, unsigned age_sec, bool have_reported) {
+	if(!mesh) {
+		return false;
+	}
+
+	for(size_t i = 0; i < count; i++) {
+		char origin[8];
+		snprintf(origin, sizeof(origin), "f%04u", (unsigned)i);
+
+		if(!relay_devtool_seed_report(mesh, origin, "x", age_sec, have_reported)) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+void relay_devtool_fail_reports(meshlink_handle_t *mesh, bool fail) {
+	if(mesh) {
+		mesh->relay_fail_reports = fail;
+	}
 }
