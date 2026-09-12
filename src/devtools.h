@@ -425,4 +425,13 @@ bool devtool_handle_relay_aliased(struct meshlink_handle *mesh, struct meshlink_
 /// Encrypt type/data with dest's session and deliver it as dest META REQ_SPTPS.
 bool devtool_send_meta_sptps(struct meshlink_handle *mesh, struct meshlink_node *dest, uint8_t type, const void *data, size_t len);
 
+/// Force the dest-unwrap realloc path to fail until cleared.
+void devtool_fail_relay_realloc(struct meshlink_handle *mesh, bool fail);
+
+/// Inject a `REQ_RELAY_MTU` request string through `from`'s current META connection.
+bool devtool_handle_req_relay_mtu(struct meshlink_handle *mesh, struct meshlink_node *from, const char *request);
+
+/// Drive remaining relay.c branches on a live trio (from / dest / hop).
+bool devtool_relay_cover_unit(struct meshlink_handle *mesh, struct meshlink_node *from, struct meshlink_node *dest, struct meshlink_node *hop);
+
 #endif

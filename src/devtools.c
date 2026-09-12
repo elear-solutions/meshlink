@@ -47,6 +47,9 @@ bool relay_devtool_fill_reports(meshlink_handle_t *mesh, size_t count, unsigned 
 void relay_devtool_fail_reports(meshlink_handle_t *mesh, bool fail);
 bool relay_devtool_handle_aliased(meshlink_handle_t *mesh, node_t *from, const void *data, uint16_t len);
 bool relay_devtool_send_meta_sptps(meshlink_handle_t *mesh, node_t *dest, uint8_t type, const void *data, size_t len);
+void relay_devtool_fail_realloc(meshlink_handle_t *mesh, bool fail);
+bool relay_devtool_handle_req_relay_mtu(meshlink_handle_t *mesh, node_t *from, const char *request);
+bool relay_devtool_cover_unit(meshlink_handle_t *mesh, node_t *from, node_t *dest, node_t *hop);
 
 static void nop_probe(void) {
 	return;
@@ -656,11 +659,7 @@ bool devtool_send_raw_record(meshlink_handle_t *mesh, meshlink_node_t *to, uint8
 	bool ok = false;
 
 	if(data && len) {
-		if(type >= SPTPS_HANDSHAKE) {
-			ok = sptps_send_record_raw(&n->sptps, type, data, (uint16_t)len);
-		} else {
-			ok = sptps_send_record(&n->sptps, type, data, (uint16_t)len);
-		}
+		ok = sptps_send_record(&n->sptps, type, data, (uint16_t)len);
 	} else {
 		ok = relay_inject_inner(mesh, n, type);
 	}
@@ -816,6 +815,50 @@ bool devtool_send_meta_sptps(meshlink_handle_t *mesh, meshlink_node_t *dest, uin
 	}
 
 	bool ok = relay_devtool_send_meta_sptps(mesh, (node_t *)dest, type, data, len);
+	pthread_mutex_unlock(&mesh->mutex);
+	return ok;
+}
+
+void devtool_fail_relay_realloc(meshlink_handle_t *mesh, bool fail) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	relay_devtool_fail_realloc(mesh, fail);
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+bool devtool_handle_req_relay_mtu(meshlink_handle_t *mesh, meshlink_node_t *from, const char *request) {
+	if(!mesh || !from || !request) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	bool ok = relay_devtool_handle_req_relay_mtu(mesh, (node_t *)from, request);
+	pthread_mutex_unlock(&mesh->mutex);
+	return ok;
+}
+
+bool devtool_relay_cover_unit(meshlink_handle_t *mesh, meshlink_node_t *from, meshlink_node_t *dest, meshlink_node_t *hop) {
+	if(!mesh || !from || !dest || !hop) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	bool ok = relay_devtool_cover_unit(mesh, (node_t *)from, (node_t *)dest, (node_t *)hop);
 	pthread_mutex_unlock(&mesh->mutex);
 	return ok;
 }

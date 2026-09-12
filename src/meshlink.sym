@@ -3,6 +3,7 @@ devtool_choose_udp_address
 devtool_choose_udp_address_advance
 devtool_clear_relay_reports
 devtool_export_json_all_edges_state
+devtool_fail_relay_realloc
 devtool_fail_relay_reports
 devtool_fill_relay_reports
 devtool_force_relay_path
@@ -12,9 +13,11 @@ devtool_get_all_submeshes
 devtool_get_node_status
 devtool_graph_may_seed_udp
 devtool_handle_relay_aliased
+devtool_handle_req_relay_mtu
 devtool_has_relay_report
 devtool_keyrotate_probe
 devtool_open_in_netns
+devtool_relay_cover_unit
 devtool_relay_report_count
 devtool_relay_report_have_reported
 devtool_repeat_next_ack

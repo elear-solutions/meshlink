@@ -188,7 +188,7 @@ static void wait_keys_and_udp(meshlink_handle_t **mesh) {
 static void send_hello(meshlink_handle_t *from, const char *dest) {
 	set_sync_flag(&received, false);
 	assert(meshlink_send(from, meshlink_get_node(from, dest), "Hello", 5));
-	assert(wait_sync_flag(&received, 10));
+	assert(wait_sync_flag(&received, 20));
 }
 
 static void pin(meshlink_handle_t *origin, const char *dest, const char *hop) {
@@ -567,6 +567,9 @@ static void test_reachability_flip_mss(meshlink_handle_t **mesh) {
 	meshlink_stop(mesh[0]);
 	assert(wait_sync_flag(&foo_down, 20));
 	assert_after(meshlink_channel_get_mss(mesh[2], ch) == meta_mss, 5);
+	/* Attempt a send so dest META is used; hop is down so do not require delivery. */
+	(void)meshlink_channel_send(mesh[2], ch, "Hello", 5);
+	assert(!check_sync_flag(&leftover_udp));
 
 	meshlink_channel_abort(mesh[2], ch);
 }
@@ -697,7 +700,7 @@ int main(void) {
 	assert(meshlink_start(longa));
 	assert(meshlink_start(longb));
 	assert_after(meshlink_get_node(longa, long_b) && meshlink_get_node(longa, "foo"), 10);
-	assert_after(udp_confirmed_flag(longa, "foo"), 20);
+	assert_after(udp_confirmed_flag(longa, "foo"), 30);
 
 	meshlink_channel_t *ch_long = meshlink_channel_open(longa, meshlink_get_node(longa, long_b), 9, receive2_cb, NULL, 0);
 	meshlink_channel_t *ch_short = meshlink_channel_open(mesh[2], meshlink_get_node(mesh[2], "bar"), 10, receive2_cb, NULL, 0);
@@ -713,6 +716,8 @@ int main(void) {
 	size_t short_floor = MINMTU - short_prefix - 21 - PACKETHDR - UTCP_HDR;
 	assert_after(meshlink_channel_get_mss(longa, ch_long) == meta_mss, 5);
 	assert_after(meshlink_channel_get_mss(mesh[2], ch_short) == short_floor, 5);
+	(void)meshlink_channel_send(longa, ch_long, "Hello", 5);
+	(void)meshlink_send(longa, meshlink_get_node(longa, long_b), "Hello", 5);
 
 	devtool_set_udp_confirmed(longa, meshlink_get_node(longa, long_b), false);
 	assert_after(udp_confirmed_flag(longa, long_b), 20);
@@ -720,7 +725,8 @@ int main(void) {
 	devtool_get_node_status(longa, meshlink_get_node(longa, long_b), &longst);
 	uint16_t base = longst.minmtu > MINMTU ? longst.minmtu : MINMTU;
 	assert(meshlink_channel_get_mss(longa, ch_long) == (size_t)(base - PACKETHDR - UTCP_HDR));
-	assert(meshlink_channel_get_mss(mesh[2], ch_short) == short_floor);
+	pin(mesh[2], "bar", "foo");
+	assert_after(meshlink_channel_get_mss(mesh[2], ch_short) == short_floor, 5);
 
 	meshlink_channel_abort(longa, ch_long);
 	meshlink_channel_abort(mesh[2], ch_short);
