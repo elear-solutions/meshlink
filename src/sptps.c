@@ -157,6 +157,16 @@ bool sptps_send_record(sptps_t *s, uint8_t type, const void *data, uint16_t len)
 	return send_record_priv(s, type, data, len);
 }
 
+bool sptps_send_record_raw(sptps_t *s, uint8_t type, const void *data, uint16_t len) {
+	assert(!len || data);
+
+	if(!s->outstate) {
+		return error(s, EINVAL, "Handshake phase not finished yet");
+	}
+
+	return send_record_priv(s, type, data, len);
+}
+
 // Send a Key EXchange record, containing a random nonce and an ECDHE public key.
 static bool send_kex(sptps_t *s) {
 	size_t keylen = ECDH_SIZE;
@@ -571,6 +581,90 @@ static bool sptps_receive_data_datagram(sptps_t *s, const void *vdata, size_t le
 		}
 	} else {
 		return error(s, EIO, "Invalid record type %d", type);
+	}
+
+	return true;
+}
+
+bool sptps_receive_relay_inner(sptps_t *s, const void *vdata, size_t len) {
+	const char *data = vdata;
+
+	if(!s->state) {
+		return error(s, EIO, "Invalid session state zero");
+	}
+
+	if(!s->datagram) {
+		return error(s, EIO, "Relay inner requires a datagram session");
+	}
+
+	if(len < SPTPS_DATAGRAM_OVERHEAD) {
+		return error(s, EIO, "Received short packet in sptps_receive_relay_inner");
+	}
+
+	if(!s->instate) {
+		return error(s, EIO, "Application record received before handshake finished");
+	}
+
+	uint32_t seqno;
+	memcpy(&seqno, data, 4);
+	seqno = ntohl(seqno);
+
+	if(len > s->decrypted_buffer_len) {
+		s->decrypted_buffer_len *= 2;
+		char *new_buffer = realloc(s->decrypted_buffer, s->decrypted_buffer_len);
+
+		if(!new_buffer) {
+			return error(s, errno, strerror(errno));
+		}
+
+		s->decrypted_buffer = new_buffer;
+	}
+
+	size_t outlen;
+
+	if(!chacha_poly1305_decrypt(s->incipher, seqno, data + 4, len - 4, s->decrypted_buffer, &outlen)) {
+		return error(s, EIO, "Failed to decrypt and verify packet");
+	}
+
+	if(s->replaywin) {
+		if(seqno != s->inseqno) {
+			if(seqno >= s->inseqno + s->replaywin * 8) {
+				warning(s, "Lost %d packets\n", seqno - s->inseqno);
+				memset(s->late, 255, s->replaywin);
+			} else if(seqno < s->inseqno) {
+				if((s->inseqno >= s->replaywin * 8 && seqno < s->inseqno - s->replaywin * 8) || !(s->late[(seqno / 8) % s->replaywin] & (1 << seqno % 8))) {
+					return error(s, EIO, "Received late or replayed packet, seqno %d, last received %d\n", seqno, s->inseqno);
+				}
+			} else {
+				for(uint32_t i = s->inseqno; i < seqno; i++) {
+					s->late[(i / 8) % s->replaywin] |= 1 << i % 8;
+				}
+			}
+		}
+
+		s->late[(seqno / 8) % s->replaywin] &= ~(1 << seqno % 8);
+	}
+
+	if(seqno >= s->inseqno) {
+		s->inseqno = seqno + 1;
+	}
+
+	if(!s->inseqno) {
+		s->received = 0;
+	} else {
+		s->received++;
+	}
+
+	s->decrypted_buffer[len - 20] = 0;
+
+	uint8_t type = s->decrypted_buffer[0];
+
+	if(type != 0) {
+		return true;
+	}
+
+	if(!s->receive_record(s->handle, type, s->decrypted_buffer + 1, len - SPTPS_DATAGRAM_OVERHEAD)) {
+		return true;
 	}
 
 	return true;

@@ -1,6 +1,11 @@
 #ifndef MESHLINK_DEVTOOLS_H
 #define MESHLINK_DEVTOOLS_H
 
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+
 /*
     devtools.h -- header for devtools.h
     Copyright (C) 2014, 2017 Guus Sliepen <guus@meshlink.io>
@@ -322,7 +327,9 @@ bool devtool_choose_udp_address(struct meshlink_handle *mesh, struct meshlink_no
 bool devtool_choose_udp_address_advance(struct meshlink_handle *mesh, struct meshlink_node *node, struct sockaddr_storage *addr, int *sock);
 
 /// Pin or clear node_t.status.udp_confirmed for dest-pick tests.
-/** @param mesh       Mesh handle.
+/** Relay-aware: a change recomputes dependents. Clearing confirmation restarts dest probes.
+ *
+ *  @param mesh       Mesh handle.
  *  @param node       Node to update.
  *  @param confirmed  New udp_confirmed flag.
  */
@@ -337,10 +344,10 @@ void devtool_set_udp_confirmed(struct meshlink_handle *mesh, struct meshlink_nod
 bool devtool_graph_may_seed_udp(struct meshlink_handle *mesh, struct meshlink_node *node, const struct sockaddr *addr);
 
 /// Pretend dest is only reachable via nexthop UDP (for relay tests).
-/** Pins dest's nexthop, clears dest's P2P UDP (udp_confirmed / minmtu = 0 so
- *  the TCP-fallback branch is taken), and marks nexthop UDP-confirmed. The next
- *  graph recompute or probe reply overwrites these fields. nexthop must already
- *  have a live SPTPS session (validkey).
+/** Pins dest's nexthop, clears dest's direct UDP confirmation, marks nexthop
+ *  UDP-confirmed, stops dest probes, resets dest probe count, and clears dest's
+ *  stored relay budget. Does not write minmtu. nexthop must already have a
+ *  valid key.
  *
  *  @param mesh     Mesh handle.
  *  @param dest     Node that should be reached only via nexthop.
@@ -348,5 +355,27 @@ bool devtool_graph_may_seed_udp(struct meshlink_handle *mesh, struct meshlink_no
  *  @return         true on success.
  */
 bool devtool_force_relay_path(struct meshlink_handle *mesh, struct meshlink_node *dest, struct meshlink_node *nexthop);
+
+/// Inject a raw SPTPS record, or a constructed inner record when data is NULL.
+/** When data is non-NULL, encrypts and sends `type` with that payload to `to`.
+ *  When data is NULL, encrypts a dummy record of `type` using `to`'s session
+ *  and wraps it as type 8 or sends META REQ_SPTPS.
+ *
+ *  @param mesh  Mesh handle.
+ *  @param to    Neighbor or destination node.
+ *  @param type  SPTPS record type.
+ *  @param data  Payload, or NULL to construct an inner record.
+ *  @param len   Payload length.
+ *  @return      true on success.
+ */
+bool devtool_send_raw_record(struct meshlink_handle *mesh, struct meshlink_node *to, uint8_t type, const void *data, size_t len);
+
+/// Set a node's measured minimum packet size.
+/** @param mesh  Mesh handle.
+ *  @param node  Node to update.
+ *  @param mtu   New minmtu value.
+ *  @return      true on success.
+ */
+bool devtool_set_minmtu(struct meshlink_handle *mesh, struct meshlink_node *node, uint16_t mtu);
 
 #endif

@@ -49,8 +49,7 @@ typedef struct vpn_packet_t {
 
 #define PKT_COMPRESSED 1
 #define PKT_PROBE 4
-/* Coordinated upgrade: pre-this-version peers abort() on unknown SPTPS record types. */
-#define PKT_REQ_SPTPS 8
+#define PKT_RELAY_SPTPS 8
 
 typedef enum packet_type_t {
 	PACKET_NORMAL,
