@@ -27,10 +27,16 @@ typedef struct relay_report_entry {
 	char *origin;
 	char *destination;
 	uint16_t last_budget;
-	time_t last_report_time;
+	struct timespec last_report;
 	time_t last_traffic_time;
 	bool have_reported;
 } relay_report_entry_t;
+
+struct relay_devtool_state {
+	bool fail_reports;
+	uint8_t capture_buf[RELAY_CAPTURE_MAX];
+	size_t capture_len;
+};
 
 static void relay_report_free(const void *data) {
 	relay_report_entry_t *e = (relay_report_entry_t *)data;
@@ -44,26 +50,57 @@ static void relay_report_free(const void *data) {
 	free(e);
 }
 
+static void relay_expire_idle(meshlink_handle_t *mesh) {
+	if(!mesh->relay_reports) {
+		return;
+	}
+
+	time_t now = mesh->loop.now.tv_sec;
+
+	for list_each(relay_report_entry_t, e, mesh->relay_reports) {
+		if(now >= e->last_traffic_time + RELAY_REPORT_IDLE_SEC) {
+			list_delete_node(mesh->relay_reports, list_node);
+		}
+	}
+}
+
+static void relay_report_timeout_handler(event_loop_t *loop, void *data) {
+	meshlink_handle_t *mesh = data;
+
+	relay_expire_idle(mesh);
+	timeout_set(loop, &mesh->relay_report_timeout, &(struct timespec) {
+		RELAY_REPORT_IDLE_SEC, 0
+	});
+}
+
 void relay_init(meshlink_handle_t *mesh) {
 	mesh->relay_reports = list_alloc(relay_report_free);
+	timeout_add(&mesh->loop, &mesh->relay_report_timeout, relay_report_timeout_handler, mesh, &(struct timespec) {
+		RELAY_REPORT_IDLE_SEC, 0
+	});
 }
 
 void relay_exit(meshlink_handle_t *mesh) {
+	timeout_del(&mesh->loop, &mesh->relay_report_timeout);
+
 	if(mesh->relay_reports) {
 		list_delete_list(mesh->relay_reports);
 		mesh->relay_reports = NULL;
 	}
+
+	free(mesh->relay_devtool);
+	mesh->relay_devtool = NULL;
 }
 
-bool hop_udp_ready(const node_t *hop) {
+bool relay_hop_udp_ready(const node_t *hop) {
 	return hop && hop->status.udp_confirmed && hop->status.validkey && !hop->status.temp_udp_confirmed;
 }
 
-size_t relay_prefix_len(const char *origin, const char *destination) {
+static size_t relay_prefix_len(const char *origin, const char *destination) {
 	return 2 + strlen(origin) + strlen(destination);
 }
 
-bool relay_sub_u32(uint32_t a, uint32_t b, uint32_t *out) {
+static bool relay_sub_u32(uint32_t a, uint32_t b, uint32_t *out) {
 	if(a < b) {
 		return false;
 	}
@@ -72,13 +109,35 @@ bool relay_sub_u32(uint32_t a, uint32_t b, uint32_t *out) {
 	return true;
 }
 
+static bool relay_add_u32(uint32_t a, uint32_t b, uint32_t *out) {
+	if(a > UINT32_MAX - b) {
+		return false;
+	}
+
+	*out = a + b;
+	return true;
+}
+
+static bool relay_prefix21(const char *origin, const char *destination, uint32_t *out) {
+	return relay_add_u32((uint32_t)relay_prefix_len(origin, destination), RELAY_INNER_MIN, out);
+}
+
 bool relay_names_unusable(const char *origin, const char *destination) {
-	size_t prefix = relay_prefix_len(origin, destination);
-	size_t need = prefix + RELAY_INNER_MIN + sizeof(meshlink_packethdr_t) + 20 + 1;
+	uint32_t prefix21;
+	uint32_t need;
+
+	if(!relay_prefix21(origin, destination, &prefix21)) {
+		return true;
+	}
+
+	if(!relay_add_u32(prefix21, (uint32_t)sizeof(meshlink_packethdr_t) + RELAY_UTCP_HDR + RELAY_MIN_PAYLOAD, &need)) {
+		return true;
+	}
+
 	return MINMTU < need;
 }
 
-void update_destination_transport(meshlink_handle_t *mesh, node_t *dest) {
+void relay_update_destination_transport(meshlink_handle_t *mesh, node_t *dest) {
 	if(!dest || !dest->utcp || dest == mesh->self) {
 		return;
 	}
@@ -93,20 +152,17 @@ void update_destination_transport(meshlink_handle_t *mesh, node_t *dest) {
 		return;
 	}
 
-	if(relay_names_unusable(mesh->self->name, dest->name) || !hop_udp_ready(dest->nexthop)) {
+	if(relay_names_unusable(mesh->self->name, dest->name) || !relay_hop_udp_ready(dest->nexthop)) {
 		utcp_set_mtu(dest->utcp, MTU - sizeof(meshlink_packethdr_t));
 		return;
 	}
 
-	size_t prefix = relay_prefix_len(mesh->self->name, dest->name);
 	uint32_t prefix21;
 
-	if(!relay_sub_u32((uint32_t)prefix, 0, &prefix21)) {
+	if(!relay_prefix21(mesh->self->name, dest->name, &prefix21)) {
 		utcp_set_mtu(dest->utcp, MTU - sizeof(meshlink_packethdr_t));
 		return;
 	}
-
-	prefix21 = (uint32_t)prefix + RELAY_INNER_MIN;
 
 	uint32_t floor;
 
@@ -157,23 +213,8 @@ void recompute_relay_dependents(meshlink_handle_t *mesh, node_t *hop) {
 			continue;
 		}
 
-		update_destination_transport(mesh, dest);
+		relay_update_destination_transport(mesh, dest);
 	}
-}
-
-void node_set_validkey(meshlink_handle_t *mesh, node_t *n, bool valid) {
-	if(!n) {
-		return;
-	}
-
-	if(n->status.validkey == valid) {
-		n->status.validkey = valid;
-		return;
-	}
-
-	n->status.validkey = valid;
-	recompute_relay_dependents(mesh, n);
-	update_destination_transport(mesh, n);
 }
 
 void relay_on_hard_send_error(meshlink_handle_t *mesh, node_t *hop) {
@@ -183,7 +224,7 @@ void relay_on_hard_send_error(meshlink_handle_t *mesh, node_t *hop) {
 
 	hop->status.udp_confirmed = false;
 	recompute_relay_dependents(mesh, hop);
-	update_destination_transport(mesh, hop);
+	relay_update_destination_transport(mesh, hop);
 }
 
 void relay_wake_probes(meshlink_handle_t *mesh, node_t *hop) {
@@ -194,6 +235,7 @@ void relay_wake_probes(meshlink_handle_t *mesh, node_t *hop) {
 	timeout_set(&mesh->loop, &hop->mtutimeout, &(struct timespec) {
 		0, 0
 	});
+	signal_trigger(&mesh->loop, &mesh->datafromapp);
 }
 
 void relay_clear_budget_if_nexthop_changed(meshlink_handle_t *mesh, node_t *dest) {
@@ -204,7 +246,7 @@ void relay_clear_budget_if_nexthop_changed(meshlink_handle_t *mesh, node_t *dest
 	if(dest->nexthop != dest->prev_nexthop) {
 		dest->relay_budget = 0;
 		dest->prev_nexthop = dest->nexthop;
-		update_destination_transport(mesh, dest);
+		relay_update_destination_transport(mesh, dest);
 	} else {
 		dest->prev_nexthop = dest->nexthop;
 	}
@@ -242,7 +284,7 @@ bool relay_encode(const char *origin, const char *destination, const void *inner
 	return true;
 }
 
-bool relay_decode(const void *data, size_t len, char *origin, size_t origin_size, char *destination, size_t destination_size, const uint8_t **inner, size_t *inner_len) {
+static bool relay_decode(const void *data, size_t len, char *origin, size_t origin_size, char *destination, size_t destination_size, const uint8_t **inner, size_t *inner_len) {
 	if(!data || !origin || !destination || !inner || !inner_len) {
 		return false;
 	}
@@ -277,6 +319,14 @@ bool relay_decode(const void *data, size_t len, char *origin, size_t origin_size
 	return true;
 }
 
+bool relay_payload_destination(const void *data, size_t len, char *destination, size_t destination_size) {
+	char origin[RELAY_NAME_MAX + 1];
+	const uint8_t *inner = NULL;
+	size_t inner_len = 0;
+
+	return relay_decode(data, len, origin, sizeof(origin), destination, destination_size, &inner, &inner_len);
+}
+
 static int relay_entry_cmp(const relay_report_entry_t *a, const relay_report_entry_t *b) {
 	if(a->last_traffic_time != b->last_traffic_time) {
 		return a->last_traffic_time < b->last_traffic_time ? -1 : 1;
@@ -289,20 +339,6 @@ static int relay_entry_cmp(const relay_report_entry_t *a, const relay_report_ent
 	}
 
 	return strcmp(a->destination, b->destination);
-}
-
-static void relay_expire_idle(meshlink_handle_t *mesh) {
-	if(!mesh->relay_reports) {
-		return;
-	}
-
-	time_t now = mesh->loop.now.tv_sec;
-
-	for list_each(relay_report_entry_t, e, mesh->relay_reports) {
-		if(now >= e->last_traffic_time + RELAY_REPORT_IDLE_SEC) {
-			list_delete_node(mesh->relay_reports, list_node);
-		}
-	}
 }
 
 static relay_report_entry_t *relay_report_find(meshlink_handle_t *mesh, const char *origin, const char *destination) {
@@ -365,8 +401,16 @@ void relay_touch_traffic(meshlink_handle_t *mesh, const char *origin, const char
 	}
 }
 
+static struct relay_devtool_state *relay_devtool_get(meshlink_handle_t *mesh) {
+	if(!mesh->relay_devtool) {
+		mesh->relay_devtool = xzalloc(sizeof(*mesh->relay_devtool));
+	}
+
+	return mesh->relay_devtool;
+}
+
 static bool relay_send_report(meshlink_handle_t *mesh, const char *origin_name, struct node_t *dest, uint16_t budget) {
-	if(mesh->relay_fail_reports) {
+	if(mesh->relay_devtool && mesh->relay_devtool->fail_reports) {
 		return send_request(mesh, NULL, NULL, "%d %s %s %d %s %u", REQ_KEY, mesh->self->name, origin_name, REQ_RELAY_MTU, dest->name, (unsigned)budget);
 	}
 
@@ -379,17 +423,38 @@ static bool relay_send_report(meshlink_handle_t *mesh, const char *origin_name, 
 	return send_request(mesh, origin->nexthop->connection, NULL, "%d %s %s %d %s %u", REQ_KEY, mesh->self->name, origin->name, REQ_RELAY_MTU, dest->name, (unsigned)budget);
 }
 
+static bool relay_within_oversize_cooldown(const struct timespec *now, const struct timespec *last) {
+	if(now->tv_sec < last->tv_sec) {
+		return true;
+	}
+
+	if(now->tv_sec == last->tv_sec) {
+		return true;
+	}
+
+	if(now->tv_sec > last->tv_sec + RELAY_OVERSIZE_COOLDOWN_SEC) {
+		return false;
+	}
+
+	/* now.tv_sec == last.tv_sec + cooldown: still inside the second until nsec catches up */
+	return now->tv_nsec < last->tv_nsec;
+}
+
 void relay_maybe_report(meshlink_handle_t *mesh, const char *origin, struct node_t *dest, bool oversize) {
 	if(!dest || dest->nexthop != dest) {
 		return;
 	}
 
-	if(!hop_udp_ready(dest)) {
+	if(!relay_hop_udp_ready(dest)) {
 		return;
 	}
 
-	size_t prefix = relay_prefix_len(origin, dest->name);
-	uint32_t prefix21 = (uint32_t)prefix + RELAY_INNER_MIN;
+	uint32_t prefix21;
+
+	if(!relay_prefix21(origin, dest->name, &prefix21)) {
+		return;
+	}
+
 	uint32_t base = dest->minmtu > MINMTU ? dest->minmtu : MINMTU;
 	uint32_t budget;
 
@@ -407,7 +472,7 @@ void relay_maybe_report(meshlink_handle_t *mesh, const char *origin, struct node
 
 	bool changed = !e->have_reported || e->last_budget != (uint16_t)budget;
 
-	if(oversize && !changed && e->have_reported && mesh->loop.now.tv_sec < e->last_report_time + 1) {
+	if(oversize && !changed && e->have_reported && relay_within_oversize_cooldown(&mesh->loop.now, &e->last_report)) {
 		return;
 	}
 
@@ -417,7 +482,7 @@ void relay_maybe_report(meshlink_handle_t *mesh, const char *origin, struct node
 
 	if(relay_send_report(mesh, origin, dest, (uint16_t)budget)) {
 		e->last_budget = (uint16_t)budget;
-		e->last_report_time = mesh->loop.now.tv_sec;
+		e->last_report = mesh->loop.now;
 		e->have_reported = true;
 	}
 }
@@ -436,7 +501,7 @@ void relay_notify_minmtu_change(meshlink_handle_t *mesh, node_t *dest) {
 	}
 }
 
-bool send_meta_req_sptps(meshlink_handle_t *mesh, const char *origin, node_t *dest, const void *inner, size_t inner_len) {
+bool relay_send_meta_req_sptps(meshlink_handle_t *mesh, const char *origin, node_t *dest, const void *inner, size_t inner_len) {
 	if(!dest || !dest->nexthop || !dest->nexthop->connection || !inner || !inner_len) {
 		return false;
 	}
@@ -446,7 +511,7 @@ bool send_meta_req_sptps(meshlink_handle_t *mesh, const char *origin, node_t *de
 	return send_request(mesh, dest->nexthop->connection, NULL, "%d %s %s %d %s", REQ_KEY, origin, dest->name, REQ_SPTPS, buf);
 }
 
-bool handle_relay_record(meshlink_handle_t *mesh, node_t *from, const void *data, uint16_t len) {
+bool relay_handle_record(meshlink_handle_t *mesh, node_t *from, const void *data, uint16_t len) {
 	char origin_name[RELAY_NAME_MAX + 1];
 	char dest_name[RELAY_NAME_MAX + 1];
 	const uint8_t *inner = NULL;
@@ -476,7 +541,14 @@ bool handle_relay_record(meshlink_handle_t *mesh, node_t *from, const void *data
 			return true;
 		}
 
-		(void)sptps_receive_relay_inner(&origin->sptps, inner, inner_len);
+		if(origin == from) {
+			uint8_t copy[inner_len];
+			memcpy(copy, inner, inner_len);
+			(void)sptps_receive_relay_inner(&origin->sptps, copy, inner_len);
+		} else {
+			(void)sptps_receive_relay_inner(&origin->sptps, inner, inner_len);
+		}
+
 		return true;
 	}
 
@@ -486,12 +558,12 @@ bool handle_relay_record(meshlink_handle_t *mesh, node_t *from, const void *data
 
 	node_t *out = dest->nexthop;
 
-	if(!hop_udp_ready(out)) {
+	if(!relay_hop_udp_ready(out)) {
 		if(!out->connection) {
 			return true;
 		}
 
-		send_meta_req_sptps(mesh, origin_name, dest, inner, inner_len);
+		relay_send_meta_req_sptps(mesh, origin_name, dest, inner, inner_len);
 		return true;
 	}
 
@@ -513,9 +585,7 @@ bool handle_relay_record(meshlink_handle_t *mesh, node_t *from, const void *data
 		relay_touch_traffic(mesh, origin_name, dest_name);
 	}
 
-	snprintf(mesh->relay_send_dest, sizeof(mesh->relay_send_dest), "%s", dest_name);
 	sptps_send_record(&out->sptps, PKT_RELAY_SPTPS, data, len);
-	mesh->relay_send_dest[0] = 0;
 	return true;
 }
 
@@ -541,11 +611,12 @@ bool relay_handle_req_relay_mtu(meshlink_handle_t *mesh, connection_t *c, const 
 		return true;
 	}
 
-	size_t prefix = relay_prefix_len(mesh->self->name, dest->name);
-	uint32_t prefix21 = (uint32_t)prefix + RELAY_INNER_MIN;
+	uint32_t prefix21;
 	uint32_t lo, hi;
 
-	if(!relay_sub_u32(MINMTU, prefix21, &lo) || !relay_sub_u32(MTU, prefix21, &hi)) {
+	if(!relay_prefix21(mesh->self->name, dest->name, &prefix21)
+	                || !relay_sub_u32(MINMTU, prefix21, &lo)
+	                || !relay_sub_u32(MTU, prefix21, &hi)) {
 		return true;
 	}
 
@@ -555,7 +626,7 @@ bool relay_handle_req_relay_mtu(meshlink_handle_t *mesh, connection_t *c, const 
 
 	dest->relay_budget = (uint16_t)budget;
 	logger(mesh, MESHLINK_DEBUG, "Got REQ_RELAY_MTU from %s for %s: %u", from->name, dest->name, (unsigned)dest->relay_budget);
-	update_destination_transport(mesh, dest);
+	relay_update_destination_transport(mesh, dest);
 	return true;
 }
 
@@ -563,13 +634,14 @@ static bool relay_capture_send(void *handle, uint8_t type, const void *data, siz
 	(void)type;
 	node_t *n = handle;
 	meshlink_handle_t *mesh = n->mesh;
+	struct relay_devtool_state *dt = relay_devtool_get(mesh);
 
-	if(len > sizeof(mesh->relay_capture_buf)) {
+	if(len > sizeof(dt->capture_buf)) {
 		return false;
 	}
 
-	memcpy(mesh->relay_capture_buf, data, len);
-	mesh->relay_capture_len = len;
+	memcpy(dt->capture_buf, data, len);
+	dt->capture_len = len;
 	return true;
 }
 
@@ -581,8 +653,9 @@ bool relay_inject_inner(meshlink_handle_t *mesh, node_t *dest, uint8_t type) {
 	uint8_t dummy[32];
 	memset(dummy, 0, sizeof(dummy));
 
+	struct relay_devtool_state *dt = relay_devtool_get(mesh);
 	send_data_t saved = dest->sptps.send_data;
-	mesh->relay_capture_len = 0;
+	dt->capture_len = 0;
 	dest->sptps.send_data = relay_capture_send;
 
 	bool ok;
@@ -595,7 +668,7 @@ bool relay_inject_inner(meshlink_handle_t *mesh, node_t *dest, uint8_t type) {
 
 	dest->sptps.send_data = saved;
 
-	if(!ok || !mesh->relay_capture_len) {
+	if(!ok || !dt->capture_len) {
 		return false;
 	}
 
@@ -603,21 +676,18 @@ bool relay_inject_inner(meshlink_handle_t *mesh, node_t *dest, uint8_t type) {
 		return false;
 	}
 
-	if(dest->nexthop && hop_udp_ready(dest->nexthop)) {
+	if(dest->nexthop && relay_hop_udp_ready(dest->nexthop)) {
 		uint8_t wrapped[MAXSIZE];
 		size_t wlen = sizeof(wrapped);
 
-		if(!relay_encode(mesh->self->name, dest->name, mesh->relay_capture_buf, mesh->relay_capture_len, wrapped, &wlen)) {
+		if(!relay_encode(mesh->self->name, dest->name, dt->capture_buf, dt->capture_len, wrapped, &wlen)) {
 			return false;
 		}
 
-		snprintf(mesh->relay_send_dest, sizeof(mesh->relay_send_dest), "%s", dest->name);
-		bool sent = sptps_send_record(&dest->nexthop->sptps, PKT_RELAY_SPTPS, wrapped, (uint16_t)wlen);
-		mesh->relay_send_dest[0] = 0;
-		return sent;
+		return sptps_send_record(&dest->nexthop->sptps, PKT_RELAY_SPTPS, wrapped, (uint16_t)wlen);
 	}
 
-	return send_meta_req_sptps(mesh, mesh->self->name, dest, mesh->relay_capture_buf, mesh->relay_capture_len);
+	return relay_send_meta_req_sptps(mesh, mesh->self->name, dest, dt->capture_buf, dt->capture_len);
 }
 
 void relay_devtool_clear_reports(meshlink_handle_t *mesh) {
@@ -642,7 +712,8 @@ bool relay_devtool_seed_report(meshlink_handle_t *mesh, const char *origin, cons
 
 	e->last_traffic_time = mesh->loop.now.tv_sec - (time_t)age_sec;
 	e->have_reported = have_reported;
-	e->last_report_time = have_reported ? e->last_traffic_time : 0;
+	e->last_report.tv_sec = have_reported ? e->last_traffic_time : 0;
+	e->last_report.tv_nsec = 0;
 	return true;
 }
 
@@ -690,6 +761,53 @@ bool relay_devtool_fill_reports(meshlink_handle_t *mesh, size_t count, unsigned 
 
 void relay_devtool_fail_reports(meshlink_handle_t *mesh, bool fail) {
 	if(mesh) {
-		mesh->relay_fail_reports = fail;
+		relay_devtool_get(mesh)->fail_reports = fail;
 	}
+}
+
+bool relay_devtool_handle_aliased(meshlink_handle_t *mesh, node_t *from, const void *data, uint16_t len) {
+	if(!mesh || !from || !data || !from->sptps.decrypted_buffer) {
+		return false;
+	}
+
+	if(len > from->sptps.decrypted_buffer_len) {
+		char *nbuf = realloc(from->sptps.decrypted_buffer, len);
+
+		if(!nbuf) {
+			return false;
+		}
+
+		from->sptps.decrypted_buffer = nbuf;
+		from->sptps.decrypted_buffer_len = len;
+	}
+
+	memcpy(from->sptps.decrypted_buffer, data, len);
+	return relay_handle_record(mesh, from, from->sptps.decrypted_buffer, len);
+}
+
+bool relay_devtool_send_meta_sptps(meshlink_handle_t *mesh, node_t *dest, uint8_t type, const void *data, size_t len) {
+	if(!mesh || !dest || !dest->sptps.outstate) {
+		return false;
+	}
+
+	struct relay_devtool_state *dt = relay_devtool_get(mesh);
+	send_data_t saved = dest->sptps.send_data;
+	dt->capture_len = 0;
+	dest->sptps.send_data = relay_capture_send;
+
+	bool ok;
+
+	if(type >= SPTPS_HANDSHAKE) {
+		ok = sptps_send_record_raw(&dest->sptps, type, data, (uint16_t)len);
+	} else {
+		ok = sptps_send_record(&dest->sptps, type, data, (uint16_t)len);
+	}
+
+	dest->sptps.send_data = saved;
+
+	if(!ok || !dt->capture_len) {
+		return false;
+	}
+
+	return relay_send_meta_req_sptps(mesh, mesh->self->name, dest, dt->capture_buf, dt->capture_len);
 }

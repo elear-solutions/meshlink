@@ -4251,7 +4251,7 @@ void meshlink_set_channel_accept_cb(meshlink_handle_t *mesh, meshlink_channel_ac
 			n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, n);
 			utcp_set_mtu(n->utcp, MTU - sizeof(meshlink_packethdr_t));
 			utcp_set_retransmit_cb(n->utcp, channel_retransmit);
-			update_destination_transport(mesh, n);
+			relay_update_destination_transport(mesh, n);
 		}
 	}
 
@@ -4340,7 +4340,7 @@ meshlink_channel_t *meshlink_channel_open_ex(meshlink_handle_t *mesh, meshlink_n
 		n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, n);
 		utcp_set_mtu(n->utcp, MTU - sizeof(meshlink_packethdr_t));
 		utcp_set_retransmit_cb(n->utcp, channel_retransmit);
-		update_destination_transport(mesh, n);
+		relay_update_destination_transport(mesh, n);
 
 		if(!n->utcp) {
 			meshlink_errno = errno == ENOMEM ? MESHLINK_ENOMEM : MESHLINK_EINTERNAL;
@@ -4717,7 +4717,7 @@ void meshlink_set_node_channel_timeout(meshlink_handle_t *mesh, meshlink_node_t 
 		n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, n);
 		utcp_set_mtu(n->utcp, MTU - sizeof(meshlink_packethdr_t));
 		utcp_set_retransmit_cb(n->utcp, channel_retransmit);
-		update_destination_transport(mesh, n);
+		relay_update_destination_transport(mesh, n);
 	}
 
 	utcp_set_user_timeout(n->utcp, timeout);
@@ -4730,7 +4730,7 @@ void update_node_status(meshlink_handle_t *mesh, node_t *n) {
 		n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, n);
 		utcp_set_mtu(n->utcp, MTU - sizeof(meshlink_packethdr_t));
 		utcp_set_retransmit_cb(n->utcp, channel_retransmit);
-		update_destination_transport(mesh, n);
+		relay_update_destination_transport(mesh, n);
 	}
 
 	if(mesh->node_status_cb) {

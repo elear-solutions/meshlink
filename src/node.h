@@ -41,7 +41,7 @@ typedef struct node_status_t {
 	uint16_t tiny: 1;                   /* 1 if this is a tiny node */
 	uint16_t in_req_sptps: 1;           /* 1 while processing dest META REQ_SPTPS */
 	uint16_t temp_udp_confirmed: 1;     /* 1 while sending a probe reply */
-	uint16_t forced_relay: 1;           /* 1 if destool pinned nexthop */
+	uint16_t forced_relay: 1;           /* 1 if devtool pinned nexthop */
 } node_status_t;
 
 #define MAX_RECENT 5
@@ -114,6 +114,7 @@ node_t *new_node(void) __attribute__((__malloc__));
 void free_node(node_t *n);
 void node_add(struct meshlink_handle *mesh, node_t *n);
 void node_del(struct meshlink_handle *mesh, node_t *n);
+void node_set_validkey(struct meshlink_handle *mesh, node_t *n, bool valid);
 node_t *lookup_node(struct meshlink_handle *mesh, const char *name) __attribute__((__warn_unused_result__));
 node_t *lookup_node_udp(struct meshlink_handle *mesh, const sockaddr_t *sa) __attribute__((__warn_unused_result__));
 void update_node_udp(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *sa);
