@@ -700,9 +700,17 @@ static void relay_cover_restore(meshlink_handle_t *mesh, node_t *from, node_t *d
 	relay_update_destination_transport(mesh, hop);
 }
 
+static void relay_cover_exit_uninitialized(void) {
+	meshlink_handle_t dummy;
+
+	memset(&dummy, 0, sizeof dummy);
+	relay_exit(&dummy);
+}
+
 bool relay_devtool_cover_unit(meshlink_handle_t *mesh, node_t *from, node_t *dest, node_t *hop) {
 	relay_cover_ctx_t ctx;
 
+	relay_cover_exit_uninitialized();
 	memset(&ctx, 0, sizeof(ctx));
 	memset(ctx.inner, 0x11, sizeof(ctx.inner));
 	memset(ctx.big, 0x22, sizeof(ctx.big));
