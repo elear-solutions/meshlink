@@ -607,6 +607,7 @@ bool relay_handle_req_relay_mtu(meshlink_handle_t *mesh, connection_t *c, const 
 		return true;
 	}
 
+	/* AC20: accept only from dest's current META nexthop. Phase 1 is one hop (AC24). */
 	if(from != dest->nexthop || from->connection != c || dest->status.udp_confirmed) {
 		return true;
 	}
