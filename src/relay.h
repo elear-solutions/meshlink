@@ -50,4 +50,12 @@ void relay_touch_traffic(struct meshlink_handle *mesh, const char *origin, const
 bool relay_inject_inner(struct meshlink_handle *mesh, struct node_t *dest, uint8_t type);
 bool relay_handle_req_relay_mtu(struct meshlink_handle *mesh, struct connection_t *c, const char *request, struct node_t *from);
 
+void relay_devtool_clear_reports(struct meshlink_handle *mesh);
+bool relay_devtool_seed_report(struct meshlink_handle *mesh, const char *origin, const char *destination, unsigned age_sec, bool have_reported);
+bool relay_devtool_has_report(struct meshlink_handle *mesh, const char *origin, const char *destination);
+bool relay_devtool_have_reported(struct meshlink_handle *mesh, const char *origin, const char *destination);
+size_t relay_devtool_report_count(struct meshlink_handle *mesh);
+bool relay_devtool_fill_reports(struct meshlink_handle *mesh, size_t count, unsigned age_sec, bool have_reported);
+void relay_devtool_fail_reports(struct meshlink_handle *mesh, bool fail);
+
 #endif

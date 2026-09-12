@@ -514,3 +514,106 @@ bool devtool_set_minmtu(meshlink_handle_t *mesh, meshlink_node_t *node, uint16_t
 	pthread_mutex_unlock(&mesh->mutex);
 	return true;
 }
+
+void devtool_clear_relay_reports(meshlink_handle_t *mesh) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	relay_devtool_clear_reports(mesh);
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+bool devtool_seed_relay_report(meshlink_handle_t *mesh, const char *origin, const char *destination, unsigned age_sec, bool have_reported) {
+	if(!mesh || !origin || !destination) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	bool ok = relay_devtool_seed_report(mesh, origin, destination, age_sec, have_reported);
+	pthread_mutex_unlock(&mesh->mutex);
+	return ok;
+}
+
+bool devtool_has_relay_report(meshlink_handle_t *mesh, const char *origin, const char *destination) {
+	if(!mesh || !origin || !destination) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	bool found = relay_devtool_has_report(mesh, origin, destination);
+	pthread_mutex_unlock(&mesh->mutex);
+	return found;
+}
+
+bool devtool_relay_report_have_reported(meshlink_handle_t *mesh, const char *origin, const char *destination) {
+	if(!mesh || !origin || !destination) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	bool stamped = relay_devtool_have_reported(mesh, origin, destination);
+	pthread_mutex_unlock(&mesh->mutex);
+	return stamped;
+}
+
+size_t devtool_relay_report_count(meshlink_handle_t *mesh) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return 0;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	size_t n = relay_devtool_report_count(mesh);
+	pthread_mutex_unlock(&mesh->mutex);
+	return n;
+}
+
+bool devtool_fill_relay_reports(meshlink_handle_t *mesh, size_t count, unsigned age_sec, bool have_reported) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	bool ok = relay_devtool_fill_reports(mesh, count, age_sec, have_reported);
+	pthread_mutex_unlock(&mesh->mutex);
+	return ok;
+}
+
+void devtool_fail_relay_reports(meshlink_handle_t *mesh, bool fail) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	relay_devtool_fail_reports(mesh, fail);
+	pthread_mutex_unlock(&mesh->mutex);
+}
