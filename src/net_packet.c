@@ -508,6 +508,7 @@ static bool send_relay_outer(meshlink_handle_t *mesh, node_t *hop, const void *d
 	size_t payload = len - RELAY_INNER_MIN;
 	uint16_t limit = hop->minmtu > MINMTU ? hop->minmtu : MINMTU;
 
+	/* AC13: ready oversize is a handled drop (no META fallback). */
 	if(payload > limit) {
 		return true;
 	}
@@ -528,6 +529,7 @@ static bool send_relay_outer(meshlink_handle_t *mesh, node_t *hop, const void *d
 }
 
 static bool send_application_record(meshlink_handle_t *mesh, node_t *to, const void *data, size_t len) {
+	/* AC7: confirmed UDP does not compare (len-21) against minmtu. */
 	if(to->status.udp_confirmed) {
 		if(!send_sptps_via_udp(mesh, to, data, len)) {
 			return false;
