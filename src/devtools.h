@@ -1,11 +1,6 @@
 #ifndef MESHLINK_DEVTOOLS_H
 #define MESHLINK_DEVTOOLS_H
 
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <stdio.h>
-
 /*
     devtools.h -- header for devtools.h
     Copyright (C) 2014, 2017 Guus Sliepen <guus@meshlink.io>
@@ -24,6 +19,12 @@
     with this program; if not, write to the Free Software Foundation, Inc.,
     51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+
 
 /// \file devtools.h
 /** This header files declares functions that are only intended for debugging and quality control.
@@ -416,5 +417,12 @@ bool devtool_fill_relay_reports(struct meshlink_handle *mesh, size_t count, unsi
  *  @param fail  true to fail, false to resume normal sends.
  */
 void devtool_fail_relay_reports(struct meshlink_handle *mesh, bool fail);
+
+
+/// Deliver a type-8 payload using `from`'s SPTPS decrypt buffer as the source (alias test).
+bool devtool_handle_relay_aliased(struct meshlink_handle *mesh, struct meshlink_node *from, const void *data, size_t len);
+
+/// Encrypt type/data with dest's session and deliver it as dest META REQ_SPTPS.
+bool devtool_send_meta_sptps(struct meshlink_handle *mesh, struct meshlink_node *dest, uint8_t type, const void *data, size_t len);
 
 #endif

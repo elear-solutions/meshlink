@@ -86,7 +86,7 @@ static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 
 		update_node_pmtu(mesh, n);
 		recompute_relay_dependents(mesh, n);
-		update_destination_transport(mesh, n);
+		relay_update_destination_transport(mesh, n);
 	}
 
 	if(n->mtuprobes >= 10 && n->mtuprobes < 32 && !n->minmtu) {
@@ -221,7 +221,7 @@ static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet
 			}
 
 			try_upgrade_probe(mesh, n);
-			update_destination_transport(mesh, n);
+			relay_update_destination_transport(mesh, n);
 			recompute_relay_dependents(mesh, n);
 		}
 
@@ -723,7 +723,13 @@ static bool send_relay_outer(meshlink_handle_t *mesh, node_t *hop, const void *d
 		return false;
 	}
 
-	logger(mesh, MESHLINK_DEBUG, "Relaying type-8 via UDP to %s for %s", hop->name, mesh->relay_send_dest[0] ? mesh->relay_send_dest : hop->name);
+	char dest_name[RELAY_NAME_MAX + 1];
+
+	if(!relay_payload_destination(data, len, dest_name, sizeof(dest_name))) {
+		dest_name[0] = 0;
+	}
+
+	logger(mesh, MESHLINK_DEBUG, "Relaying type-8 via UDP to %s for %s", hop->name, dest_name[0] ? dest_name : hop->name);
 	relay_wake_probes(mesh, hop);
 	return true;
 }
@@ -742,15 +748,12 @@ static bool send_application_record(meshlink_handle_t *mesh, node_t *to, const v
 		return send_sptps_via_meta(mesh, to, data, len);
 	}
 
-	if(to->nexthop && hop_udp_ready(to->nexthop)) {
+	if(to->nexthop && relay_hop_udp_ready(to->nexthop)) {
 		uint8_t wrapped[MAXSIZE];
 		size_t wlen = sizeof(wrapped);
 
 		if(relay_encode(mesh->self->name, to->name, data, len, wrapped, &wlen)) {
-			snprintf(mesh->relay_send_dest, sizeof(mesh->relay_send_dest), "%s", to->name);
-			bool sent = sptps_send_record(&to->nexthop->sptps, PKT_RELAY_SPTPS, wrapped, (uint16_t)wlen);
-			mesh->relay_send_dest[0] = 0;
-			return sent;
+			return sptps_send_record(&to->nexthop->sptps, PKT_RELAY_SPTPS, wrapped, (uint16_t)wlen);
 		}
 	}
 
@@ -811,12 +814,12 @@ bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t
 		return false;
 	}
 
-	if(type == PKT_RELAY_SPTPS) {
-		return handle_relay_record(mesh, from, data, len);
-	}
-
 	if(from->status.in_req_sptps && type != 0) {
 		return true;
+	}
+
+	if(type == PKT_RELAY_SPTPS) {
+		return relay_handle_record(mesh, from, data, len);
 	}
 
 	vpn_packet_t inpkt;

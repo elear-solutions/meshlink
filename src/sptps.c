@@ -477,49 +477,52 @@ bool sptps_verify_datagram(sptps_t *s, const void *data, size_t len) {
 }
 
 // Receive incoming data, datagram version.
-static bool sptps_receive_data_datagram(sptps_t *s, const void *vdata, size_t len) {
-	const char *data = vdata;
+enum {
+	SPTPS_DATAGRAM_NATIVE = 0,
+	SPTPS_DATAGRAM_RELAY_INNER = 1,
+};
 
-	if(len < (s->instate ? SPTPS_DATAGRAM_OVERHEAD : 5)) {
-		return error(s, EIO, "Received short packet in sptps_receive_data_datagram");
+static bool sptps_grow_decrypted_buffer(sptps_t *s, size_t need) {
+	if(need <= s->decrypted_buffer_len) {
+		return true;
+	}
+
+	size_t doubled;
+
+	if(!s->decrypted_buffer_len || s->decrypted_buffer_len > SIZE_MAX / 2) {
+		doubled = need;
+	} else {
+		doubled = s->decrypted_buffer_len * 2;
+	}
+
+	size_t new_len = doubled > need ? doubled : need;
+	char *new_buffer = realloc(s->decrypted_buffer, new_len);
+
+	if(!new_buffer) {
+		return false;
+	}
+
+	s->decrypted_buffer = new_buffer;
+	s->decrypted_buffer_len = new_len;
+	return true;
+}
+
+static bool sptps_receive_datagram_plain(sptps_t *s, const void *vdata, size_t len, int policy) {
+	/* Copy ciphertext first: vdata may alias decrypted_buffer (origin == from). */
+	char cipher[len];
+	memcpy(cipher, vdata, len);
+
+	if(!sptps_grow_decrypted_buffer(s, len)) {
+		return error(s, errno, strerror(errno));
 	}
 
 	uint32_t seqno;
-	memcpy(&seqno, data, 4);
+	memcpy(&seqno, cipher, 4);
 	seqno = ntohl(seqno);
-
-	if(!s->instate) {
-		if(seqno != s->inseqno) {
-			return error(s, EIO, "Invalid packet seqno: %d != %d", seqno, s->inseqno);
-		}
-
-		s->inseqno = seqno + 1;
-
-		uint8_t type = data[4];
-
-		if(type != SPTPS_HANDSHAKE) {
-			return error(s, EIO, "Application record received before handshake finished");
-		}
-
-		return receive_handshake(s, data + 5, len - 5);
-	}
-
-	// Decrypt
-
-	if(len > s->decrypted_buffer_len) {
-		s->decrypted_buffer_len *= 2;
-		char *new_buffer = realloc(s->decrypted_buffer, s->decrypted_buffer_len);
-
-		if(!new_buffer) {
-			return error(s, errno, strerror(errno));
-		}
-
-		s->decrypted_buffer = new_buffer;
-	}
 
 	size_t outlen;
 
-	if(!chacha_poly1305_decrypt(s->incipher, seqno, data + 4, len - 4, s->decrypted_buffer, &outlen)) {
+	if(!chacha_poly1305_decrypt(s->incipher, seqno, cipher + 4, len - 4, s->decrypted_buffer, &outlen)) {
 		return error(s, EIO, "Failed to decrypt and verify packet");
 	}
 
@@ -562,10 +565,26 @@ static bool sptps_receive_data_datagram(sptps_t *s, const void *vdata, size_t le
 		s->received++;
 	}
 
-	// Append a NULL byte for safety.
-	s->decrypted_buffer[len - 20] = 0;
+	// Append a NULL byte for safety. outlen is the plaintext length (len - seq - MAC).
+	if(outlen >= s->decrypted_buffer_len) {
+		return error(s, EIO, "Decrypted record longer than buffer");
+	}
+
+	s->decrypted_buffer[outlen] = 0;
 
 	uint8_t type = s->decrypted_buffer[0];
+
+	if(policy == SPTPS_DATAGRAM_RELAY_INNER) {
+		if(type != 0) {
+			return true;
+		}
+
+		if(!s->receive_record(s->handle, type, s->decrypted_buffer + 1, len - SPTPS_DATAGRAM_OVERHEAD)) {
+			return true;
+		}
+
+		return true;
+	}
 
 	if(type < SPTPS_HANDSHAKE) {
 		if(!s->instate) {
@@ -586,9 +605,37 @@ static bool sptps_receive_data_datagram(sptps_t *s, const void *vdata, size_t le
 	return true;
 }
 
-bool sptps_receive_relay_inner(sptps_t *s, const void *vdata, size_t len) {
+static bool sptps_receive_data_datagram(sptps_t *s, const void *vdata, size_t len) {
 	const char *data = vdata;
 
+	if(len < (s->instate ? SPTPS_DATAGRAM_OVERHEAD : 5)) {
+		return error(s, EIO, "Received short packet in sptps_receive_data_datagram");
+	}
+
+	if(!s->instate) {
+		uint32_t seqno;
+		memcpy(&seqno, data, 4);
+		seqno = ntohl(seqno);
+
+		if(seqno != s->inseqno) {
+			return error(s, EIO, "Invalid packet seqno: %d != %d", seqno, s->inseqno);
+		}
+
+		s->inseqno = seqno + 1;
+
+		uint8_t type = data[4];
+
+		if(type != SPTPS_HANDSHAKE) {
+			return error(s, EIO, "Application record received before handshake finished");
+		}
+
+		return receive_handshake(s, data + 5, len - 5);
+	}
+
+	return sptps_receive_datagram_plain(s, vdata, len, SPTPS_DATAGRAM_NATIVE);
+}
+
+bool sptps_receive_relay_inner(sptps_t *s, const void *vdata, size_t len) {
 	if(!s->state) {
 		return error(s, EIO, "Invalid session state zero");
 	}
@@ -605,69 +652,7 @@ bool sptps_receive_relay_inner(sptps_t *s, const void *vdata, size_t len) {
 		return error(s, EIO, "Application record received before handshake finished");
 	}
 
-	uint32_t seqno;
-	memcpy(&seqno, data, 4);
-	seqno = ntohl(seqno);
-
-	if(len > s->decrypted_buffer_len) {
-		s->decrypted_buffer_len *= 2;
-		char *new_buffer = realloc(s->decrypted_buffer, s->decrypted_buffer_len);
-
-		if(!new_buffer) {
-			return error(s, errno, strerror(errno));
-		}
-
-		s->decrypted_buffer = new_buffer;
-	}
-
-	size_t outlen;
-
-	if(!chacha_poly1305_decrypt(s->incipher, seqno, data + 4, len - 4, s->decrypted_buffer, &outlen)) {
-		return error(s, EIO, "Failed to decrypt and verify packet");
-	}
-
-	if(s->replaywin) {
-		if(seqno != s->inseqno) {
-			if(seqno >= s->inseqno + s->replaywin * 8) {
-				warning(s, "Lost %d packets\n", seqno - s->inseqno);
-				memset(s->late, 255, s->replaywin);
-			} else if(seqno < s->inseqno) {
-				if((s->inseqno >= s->replaywin * 8 && seqno < s->inseqno - s->replaywin * 8) || !(s->late[(seqno / 8) % s->replaywin] & (1 << seqno % 8))) {
-					return error(s, EIO, "Received late or replayed packet, seqno %d, last received %d\n", seqno, s->inseqno);
-				}
-			} else {
-				for(uint32_t i = s->inseqno; i < seqno; i++) {
-					s->late[(i / 8) % s->replaywin] |= 1 << i % 8;
-				}
-			}
-		}
-
-		s->late[(seqno / 8) % s->replaywin] &= ~(1 << seqno % 8);
-	}
-
-	if(seqno >= s->inseqno) {
-		s->inseqno = seqno + 1;
-	}
-
-	if(!s->inseqno) {
-		s->received = 0;
-	} else {
-		s->received++;
-	}
-
-	s->decrypted_buffer[len - 20] = 0;
-
-	uint8_t type = s->decrypted_buffer[0];
-
-	if(type != 0) {
-		return true;
-	}
-
-	if(!s->receive_record(s->handle, type, s->decrypted_buffer + 1, len - SPTPS_DATAGRAM_OVERHEAD)) {
-		return true;
-	}
-
-	return true;
+	return sptps_receive_datagram_plain(s, vdata, len, SPTPS_DATAGRAM_RELAY_INNER);
 }
 
 // Receive incoming data. Check if it contains a complete record, if so, handle it.

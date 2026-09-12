@@ -36,6 +36,8 @@ static struct sync_flag got_relay_mtu;
 static struct sync_flag leftover_udp;
 static struct sync_flag dest_got_data;
 static struct sync_flag bar_got_relay_mtu;
+static struct sync_flag bar_relay_log;
+static struct sync_flag foo_down;
 static unsigned relay_mtu_count;
 static unsigned bar_relay_mtu_count;
 
@@ -46,6 +48,7 @@ static void reset_logs(void) {
 	set_sync_flag(&leftover_udp, false);
 	set_sync_flag(&dest_got_data, false);
 	set_sync_flag(&bar_got_relay_mtu, false);
+	set_sync_flag(&bar_relay_log, false);
 	relay_mtu_count = 0;
 	bar_relay_mtu_count = 0;
 }
@@ -86,6 +89,10 @@ static void baz_log(meshlink_handle_t *mesh, meshlink_log_level_t level, const c
 }
 
 static void bar_log(meshlink_handle_t *mesh, meshlink_log_level_t level, const char *text) {
+	if(text && strstr(text, "Relaying type-8 via UDP")) {
+		set_sync_flag(&bar_relay_log, true);
+	}
+
 	if(text && strstr(text, "Got REQ_RELAY_MTU")) {
 		set_sync_flag(&bar_got_relay_mtu, true);
 		bar_relay_mtu_count++;
@@ -129,7 +136,10 @@ static void bar_status_cb(meshlink_handle_t *mesh, meshlink_node_t *node, bool r
 
 static void baz_status_cb(meshlink_handle_t *mesh, meshlink_node_t *node, bool reachable) {
 	(void)mesh;
-	(void)reachable;
+
+	if(!strcmp(node->name, "foo") && !reachable) {
+		set_sync_flag(&foo_down, true);
+	}
 
 	if(!strcmp(node->name, "bar") || !strcmp(node->name, "foo")) {
 		set_sync_flag(&baz_learned, true);
@@ -503,12 +513,62 @@ static void test_oversize_and_reports(meshlink_handle_t **mesh) {
 	confirm_final(mesh[0], "bar", MINMTU);
 	assert(devtool_send_raw_record(mesh[2], meshlink_get_node(mesh[2], "foo"), PKT_RELAY_SPTPS, payload, n));
 	assert(wait_sync_flag(&got_relay_mtu, 5));
-	unsigned first = relay_mtu_count;
 	reset_logs();
 	assert(devtool_send_raw_record(mesh[2], meshlink_get_node(mesh[2], "foo"), PKT_RELAY_SPTPS, payload, n));
 	usleep(200000);
-	assert(relay_mtu_count == 0 || relay_mtu_count + first <= first + 1);
+	assert(relay_mtu_count == 0);
 	expect_hello_after_drop(mesh);
+}
+
+static void test_origin_eq_from_unwrap(meshlink_handle_t **mesh) {
+	uint8_t inner[32];
+	memset(inner, 0xa5, sizeof(inner));
+	uint8_t payload[128];
+	size_t n = encode_type8(payload, "baz", "foo", inner, sizeof(inner));
+
+	reset_logs();
+	set_sync_flag(&dest_got_data, false);
+	assert(devtool_handle_relay_aliased(mesh[0], meshlink_get_node(mesh[0], "baz"), payload, n));
+	usleep(200000);
+	expect_hello_after_drop(mesh);
+}
+
+static void test_dest_meta_type8_quiet(meshlink_handle_t **mesh) {
+	uint8_t inner[32];
+	memset(inner, 0x5a, sizeof(inner));
+	uint8_t payload[128];
+	size_t n = encode_type8(payload, "baz", "foo", inner, sizeof(inner));
+
+	reset_logs();
+	set_sync_flag(&dest_got_data, false);
+	pin(mesh[2], "bar", "foo");
+	devtool_set_udp_confirmed(mesh[2], meshlink_get_node(mesh[2], "foo"), false);
+	assert(devtool_send_meta_sptps(mesh[2], meshlink_get_node(mesh[2], "bar"), PKT_RELAY_SPTPS, payload, n));
+	usleep(300000);
+	assert(!check_sync_flag(&bar_relay_log));
+	assert(!check_sync_flag(&dest_got_data));
+	pin(mesh[2], "bar", "foo");
+	expect_hello_after_drop(mesh);
+}
+
+static void test_reachability_flip_mss(meshlink_handle_t **mesh) {
+	meshlink_set_channel_accept_cb(mesh[1], accept_cb);
+	meshlink_channel_t *ch = meshlink_channel_open(mesh[2], meshlink_get_node(mesh[2], "bar"), 12, receive2_cb, NULL, 0);
+	assert(ch);
+
+	pin(mesh[2], "bar", "foo");
+
+	size_t prefix = 2 + strlen("baz") + strlen("bar");
+	size_t floor_mss = MINMTU - prefix - 21 - PACKETHDR - UTCP_HDR;
+	size_t meta_mss = MTU - PACKETHDR - UTCP_HDR;
+	assert_after(meshlink_channel_get_mss(mesh[2], ch) == floor_mss, 5);
+
+	set_sync_flag(&foo_down, false);
+	meshlink_stop(mesh[0]);
+	assert(wait_sync_flag(&foo_down, 20));
+	assert_after(meshlink_channel_get_mss(mesh[2], ch) == meta_mss, 5);
+
+	meshlink_channel_abort(mesh[2], ch);
 }
 
 int main(void) {
@@ -522,6 +582,8 @@ int main(void) {
 	init_sync_flag(&leftover_udp);
 	init_sync_flag(&dest_got_data);
 	init_sync_flag(&bar_got_relay_mtu);
+	init_sync_flag(&bar_relay_log);
+	init_sync_flag(&foo_down);
 
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
 
@@ -577,7 +639,9 @@ int main(void) {
 
 	test_force_relay_minmtu(mesh);
 	test_malformed(mesh);
+	test_origin_eq_from_unwrap(mesh);
 	test_inner_types(mesh);
+	test_dest_meta_type8_quiet(mesh);
 	test_route_matrix(mesh);
 	test_ready_unready_ready(mesh);
 	test_oversize_and_reports(mesh);
@@ -664,6 +728,8 @@ int main(void) {
 	meshlink_close(longb);
 	assert(meshlink_destroy("udp_relay_conf.longa"));
 	assert(meshlink_destroy("udp_relay_conf.longb"));
+
+	test_reachability_flip_mss(mesh);
 
 	for(int i = 0; i < 3; i++) {
 		meshlink_close(mesh[i]);

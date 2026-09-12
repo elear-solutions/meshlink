@@ -11,6 +11,7 @@ devtool_get_all_edges
 devtool_get_all_submeshes
 devtool_get_node_status
 devtool_graph_may_seed_udp
+devtool_handle_relay_aliased
 devtool_has_relay_report
 devtool_keyrotate_probe
 devtool_open_in_netns
@@ -19,6 +20,7 @@ devtool_relay_report_have_reported
 devtool_repeat_next_ack
 devtool_reset_node_counters
 devtool_seed_relay_report
+devtool_send_meta_sptps
 devtool_set_external_ip_address
 devtool_set_inviter_commits_first
 devtool_set_meta_status_cb

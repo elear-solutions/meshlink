@@ -174,7 +174,7 @@ static void check_reachability(meshlink_handle_t *mesh) {
 
 			timeout_del(&mesh->loop, &n->mtutimeout);
 			recompute_relay_dependents(mesh, n);
-			update_destination_transport(mesh, n);
+			relay_update_destination_transport(mesh, n);
 		}
 
 		if(n->status.visited != n->status.reachable) {
@@ -207,6 +207,8 @@ static void check_reachability(meshlink_handle_t *mesh) {
 			n->mtuprobes = 0;
 
 			timeout_del(&mesh->loop, &n->mtutimeout);
+			recompute_relay_dependents(mesh, n);
+			relay_update_destination_transport(mesh, n);
 
 			if(!n->status.blacklisted) {
 				update_node_status(mesh, n);

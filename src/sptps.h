@@ -99,6 +99,7 @@ bool sptps_stop(sptps_t *s);
 bool sptps_send_record(sptps_t *s, uint8_t type, const void *data, uint16_t len);
 bool sptps_send_record_raw(sptps_t *s, uint8_t type, const void *data, uint16_t len);
 bool sptps_receive_data(sptps_t *s, const void *data, size_t len) __attribute__((__warn_unused_result__));
+/* Dest-unwrap one datagram: type 0 only, never abort(), never receive_handshake. */
 bool sptps_receive_relay_inner(sptps_t *s, const void *data, size_t len) __attribute__((__warn_unused_result__));
 bool sptps_force_kex(sptps_t *s) __attribute__((__warn_unused_result__));
 bool sptps_verify_datagram(sptps_t *s, const void *data, size_t len) __attribute__((__warn_unused_result__));
