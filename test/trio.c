@@ -67,7 +67,8 @@ int main(void) {
 	init_sync_flag(&received);
 	init_sync_flag(&bar_learned_baz);
 	init_sync_flag(&baz_learned_bar);
-	init_sync_flag(&saw_udp_req_sptps);
+	init_sync_flag(&saw_type8_relay);
+	init_sync_flag(&leftover_ascii_type8);
 
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, trio_log_cb);
 
