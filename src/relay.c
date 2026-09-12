@@ -64,7 +64,11 @@ void relay_init(meshlink_handle_t *mesh) {
 
 void relay_exit(meshlink_handle_t *mesh) {
 	timeout_del(&mesh->loop, &mesh->relay_report_timeout);
-	list_delete_list(mesh->relay_reports);
+
+	if(mesh->relay_reports) {
+		list_delete_list(mesh->relay_reports);
+	}
+
 	mesh->relay_reports = NULL;
 	free(mesh->relay_devtool);
 	mesh->relay_devtool = NULL;
