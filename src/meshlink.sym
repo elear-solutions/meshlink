@@ -27,6 +27,7 @@ devtool_open_in_netns
 devtool_path_policy_cover_unit
 devtool_relay_cover_unit
 devtool_select_destination_tier
+devtool_select_dest_with_udp
 devtool_select_hop_tier
 devtool_relay_hard_send_error
 devtool_relay_hard_send_error_at

@@ -455,6 +455,12 @@ bool devtool_path_policy_cover_unit(struct meshlink_handle *mesh, struct meshlin
 int devtool_select_destination_tier(struct meshlink_handle *mesh, struct meshlink_node *node, bool meta_in);
 int devtool_select_hop_tier(struct meshlink_handle *mesh, struct meshlink_node *node, bool meta_in);
 
+/// Pin dest via hop, set both UDP flags, and return dest tier under one lock.
+/** Stops dest/hop MTU timers when that side is unconfirmed so inbound probes
+ *  cannot change the snapshot before the caller reads it.
+ */
+int devtool_select_dest_with_udp(struct meshlink_handle *mesh, struct meshlink_node *dest, bool dest_udp, struct meshlink_node *hop, bool hop_udp, bool meta_in);
+
 /// Simulate a hard UDP send failure on `hop`'s confirmed address.
 void devtool_relay_hard_send_error(struct meshlink_handle *mesh, struct meshlink_node *hop);
 

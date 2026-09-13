@@ -216,17 +216,18 @@ static void test_live_transitions(meshlink_handle_t **mesh) {
 	assert(dest_tier(mesh[2], "bar", false) == TIER_WAN);
 	printf("D3 forced WAN after local\n");
 
-	/* D1 / D5: lose dest UDP. Hop still up + pin => RELAY, not leftover WAN */
-	pin(mesh[2], "bar", "foo");
-	devtool_set_udp_confirmed(mesh[2], meshlink_get_node(mesh[2], "foo"), true);
-	devtool_set_udp_confirmed(mesh[2], meshlink_get_node(mesh[2], "bar"), false);
-	assert(dest_tier(mesh[2], "bar", false) == TIER_RELAY);
+	/* D1 / D5: dest UDP down, hop UDP up, one lock so inbound probes cannot
+	   re-confirm dest before we read the tier. Must be RELAY, not leftover WAN. */
+	meshlink_node_t *bar = meshlink_get_node(mesh[2], "bar");
+	meshlink_node_t *foo = meshlink_get_node(mesh[2], "foo");
+	assert(devtool_select_dest_with_udp(mesh[2], bar, false, foo, true, false) == TIER_RELAY);
 	printf("D1/D5 dest RELAY after dest UDP fail (WAN not invented)\n");
 
-	/* D2 / U0: lose hop UDP => META (dest probes still stopped by the pin) */
-	devtool_set_udp_confirmed(mesh[2], meshlink_get_node(mesh[2], "foo"), false);
-	assert(meta_tier(dest_tier(mesh[2], "bar", false)));
-	printf("D2/U0 dest META after hop UDP fail\n");
+	/* D2 / U0: dest+hop UDP down in the same snapshot => META */
+	int after_hop_down = devtool_select_dest_with_udp(mesh[2], bar, false, foo, false, false);
+	assert(meta_tier(after_hop_down));
+	assert(meta_tier(devtool_select_dest_with_udp(mesh[2], bar, false, foo, false, true)));
+	printf("D2/U0 dest META=%d after hop UDP fail\n", after_hop_down);
 
 	/* Re-confirm WAN only after a new validation */
 	confirm_v4(mesh[2], "bar", "203.0.113.11", 11, TIER_WAN);

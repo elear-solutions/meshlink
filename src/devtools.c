@@ -957,6 +957,44 @@ int devtool_select_hop_tier(meshlink_handle_t *mesh, meshlink_node_t *node, bool
 	return (int)selected;
 }
 
+int devtool_select_dest_with_udp(meshlink_handle_t *mesh, meshlink_node_t *dest, bool dest_udp, meshlink_node_t *hop, bool hop_udp, bool meta_in) {
+	if(!mesh || !dest) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return (int)PATH_TIER_NONE;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	node_t *d = (node_t *)dest;
+	node_t *h = (node_t *)hop;
+
+	d->status.udp_confirmed = dest_udp;
+
+	if(!dest_udp) {
+		timeout_del(&mesh->loop, &d->mtutimeout);
+	}
+
+	if(h && h != d) {
+		d->nexthop = h;
+		d->status.forced_relay = true;
+		h->status.udp_confirmed = hop_udp;
+
+		if(!hop_udp) {
+			timeout_del(&mesh->loop, &h->mtutimeout);
+		}
+
+		if(hop_udp && h->status.validkey) {
+			h->status.temp_udp_confirmed = false;
+		}
+	}
+
+	path_tier_t selected = path_select_destination_tier(d, meta_in);
+	pthread_mutex_unlock(&mesh->mutex);
+	return (int)selected;
+}
+
 bool devtool_relay_cover_unit(meshlink_handle_t *mesh, meshlink_node_t *from, meshlink_node_t *dest, meshlink_node_t *hop) {
 	if(!mesh || !from || !dest || !hop) {
 		meshlink_errno = MESHLINK_EINVAL;
