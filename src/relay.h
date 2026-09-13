@@ -55,18 +55,9 @@ void relay_update_destination_transport(struct meshlink_handle *mesh, struct nod
 /* Recompute MSS for every dest whose nexthop is hop (skip udp_confirmed dests). */
 void relay_recompute_dependents(struct meshlink_handle *mesh, struct node_t *hop);
 
-/* True when sa is the hop's confirmed UDP destination (address and port). */
-bool relay_is_confirmed_send_dest(const struct node_t *hop, const sockaddr_t *sa);
-
-/* Test fixtures: dests that must not clear a confirmed hop. */
-void relay_fill_port_mismatch(const sockaddr_t *src, sockaddr_t *dst);
-void relay_fill_host_mismatch(const sockaddr_t *src, sockaddr_t *dst);
-void relay_fill_mcast_ff02_1(sockaddr_t *dst);
-void relay_fill_bcast_ipv4(sockaddr_t *dst);
-
 /* Clear hop UDP readiness only when the failed dest is the confirmed address.
-   `sock` is the attempted listen index from the send site; it is not part of
-   the gate because hop->sock is last-RX and select_listen_socket may rematch. */
+   `sock` is the attempted listen index from the send site and is unused:
+   hop->sock is last-RX and select_listen_socket may rematch. */
 void relay_on_hard_send_error(struct meshlink_handle *mesh, struct node_t *hop, const sockaddr_t *sa, int sock);
 
 /* Arm hop probes at 0-timeout and kick pselect so the mesh thread runs now. */

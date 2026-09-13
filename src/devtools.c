@@ -878,43 +878,6 @@ void devtool_relay_hard_send_error_at(meshlink_handle_t *mesh, meshlink_node_t *
 	pthread_mutex_unlock(&mesh->mutex);
 }
 
-void devtool_inject_next_udp_hard_send_error(meshlink_handle_t *mesh) {
-	if(!mesh) {
-		meshlink_errno = MESHLINK_EINVAL;
-		return;
-	}
-
-	if(pthread_mutex_lock(&mesh->mutex) != 0) {
-		abort();
-	}
-
-	relay_devtool_get(mesh)->inject_hard_send_error = true;
-	pthread_mutex_unlock(&mesh->mutex);
-}
-
-bool devtool_set_udp_broadcast(meshlink_handle_t *mesh, meshlink_node_t *node, bool broadcast) {
-	if(!mesh || !node) {
-		meshlink_errno = MESHLINK_EINVAL;
-		return false;
-	}
-
-	if(pthread_mutex_lock(&mesh->mutex) != 0) {
-		abort();
-	}
-
-	node_t *n = (node_t *)node;
-
-	if(broadcast && !n->prevedge) {
-		pthread_mutex_unlock(&mesh->mutex);
-		meshlink_errno = MESHLINK_EINVAL;
-		return false;
-	}
-
-	n->status.broadcast = broadcast;
-	pthread_mutex_unlock(&mesh->mutex);
-	return true;
-}
-
 bool devtool_inject_broadcast_hard_send(meshlink_handle_t *mesh, meshlink_node_t *hop) {
 	if(!mesh || !hop) {
 		meshlink_errno = MESHLINK_EINVAL;
@@ -938,13 +901,59 @@ bool devtool_inject_broadcast_hard_send(meshlink_handle_t *mesh, meshlink_node_t
 	memset(probe, 0, sizeof probe);
 	n->status.broadcast = true;
 	relay_devtool_get(mesh)->inject_hard_send_error = true;
-	bool ok = sptps_send_record(&n->sptps, PKT_PROBE, probe, sizeof probe);
+	(void)sptps_send_record(&n->sptps, PKT_PROBE, probe, sizeof probe);
 	n->status.broadcast = saved;
 
-	if(!ok) {
-		relay_devtool_get(mesh)->inject_hard_send_error = false;
+	bool injected = !relay_devtool_get(mesh)->inject_hard_send_error;
+	relay_devtool_get(mesh)->inject_hard_send_error = false;
+	pthread_mutex_unlock(&mesh->mutex);
+	return injected;
+}
+
+void devtool_fill_port_mismatch(const struct sockaddr_storage *src, struct sockaddr_storage *dst) {
+	sockaddr_t in = {0};
+	sockaddr_t out = {0};
+
+	if(!src || !dst) {
+		return;
 	}
 
-	pthread_mutex_unlock(&mesh->mutex);
-	return ok;
+	in.storage = *src;
+	relay_fill_port_mismatch(&in, &out);
+	*dst = out.storage;
+}
+
+void devtool_fill_host_mismatch(const struct sockaddr_storage *src, struct sockaddr_storage *dst) {
+	sockaddr_t in = {0};
+	sockaddr_t out = {0};
+
+	if(!src || !dst) {
+		return;
+	}
+
+	in.storage = *src;
+	relay_fill_host_mismatch(&in, &out);
+	*dst = out.storage;
+}
+
+void devtool_fill_mcast_ff02_1(struct sockaddr_storage *dst) {
+	sockaddr_t out = {0};
+
+	if(!dst) {
+		return;
+	}
+
+	relay_fill_mcast_ff02_1(&out);
+	*dst = out.storage;
+}
+
+void devtool_fill_bcast_ipv4(struct sockaddr_storage *dst) {
+	sockaddr_t out = {0};
+
+	if(!dst) {
+		return;
+	}
+
+	relay_fill_bcast_ipv4(&out);
+	*dst = out.storage;
 }

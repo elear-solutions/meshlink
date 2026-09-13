@@ -174,7 +174,7 @@ void relay_recompute_dependents(meshlink_handle_t *mesh, node_t *hop) {
 	}
 }
 
-bool relay_is_confirmed_send_dest(const node_t *hop, const sockaddr_t *sa) {
+static bool relay_is_confirmed_send_dest(const node_t *hop, const sockaddr_t *sa) {
 	return hop && sa && !sockaddrcmp(sa, &hop->address);
 }
 

@@ -5,6 +5,10 @@ devtool_clear_relay_reports
 devtool_export_json_all_edges_state
 devtool_fail_relay_realloc
 devtool_fail_relay_reports
+devtool_fill_bcast_ipv4
+devtool_fill_host_mismatch
+devtool_fill_mcast_ff02_1
+devtool_fill_port_mismatch
 devtool_fill_relay_reports
 devtool_force_relay_path
 devtool_free_node_status
@@ -16,7 +20,6 @@ devtool_handle_relay_aliased
 devtool_handle_req_relay_mtu
 devtool_has_relay_report
 devtool_inject_broadcast_hard_send
-devtool_inject_next_udp_hard_send_error
 devtool_keyrotate_probe
 devtool_open_in_netns
 devtool_relay_cover_unit
@@ -33,7 +36,6 @@ devtool_set_inviter_commits_first
 devtool_set_meta_status_cb
 devtool_send_raw_record
 devtool_set_minmtu
-devtool_set_udp_broadcast
 devtool_set_udp_confirmed
 devtool_trybind_probe
 devtool_update_node_udp
@@ -146,8 +148,3 @@ meshlink_verify
 meshlink_whitelist
 meshlink_whitelist_by_name
 relay_encode
-relay_fill_bcast_ipv4
-relay_fill_host_mismatch
-relay_fill_mcast_ff02_1
-relay_fill_port_mismatch
-relay_is_confirmed_send_dest

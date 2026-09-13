@@ -59,4 +59,9 @@ void relay_devtool_fail_realloc(struct meshlink_handle *mesh, bool fail);
 bool relay_devtool_handle_req_relay_mtu(struct meshlink_handle *mesh, struct node_t *from, const char *request);
 bool relay_devtool_cover_unit(struct meshlink_handle *mesh, struct node_t *from, struct node_t *dest, struct node_t *hop);
 
+void relay_fill_port_mismatch(const sockaddr_t *src, sockaddr_t *dst);
+void relay_fill_host_mismatch(const sockaddr_t *src, sockaddr_t *dst);
+void relay_fill_mcast_ff02_1(sockaddr_t *dst);
+void relay_fill_bcast_ipv4(sockaddr_t *dst);
+
 #endif

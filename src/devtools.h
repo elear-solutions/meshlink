@@ -439,41 +439,36 @@ void devtool_relay_hard_send_error(struct meshlink_handle *mesh, struct meshlink
 
 /// Simulate a hard UDP send failure to an explicit destination on `hop`.
 /** Clears readiness only when `addr` is the hop's confirmed destination.
- *  `sock` is recorded as the attempted listen index and does not gate the clear.
+ *  `sock` is unused (last-RX `hop->sock` is not the send-site index).
  *
  *  @param mesh  Mesh handle.
  *  @param hop   Node whose UDP send failed.
  *  @param addr  Attempted destination, including family and port.
- *  @param sock  Attempted listen-socket index.
+ *  @param sock  Attempted listen-socket index (ignored).
  */
 void devtool_relay_hard_send_error_at(struct meshlink_handle *mesh, struct meshlink_node *hop, const struct sockaddr *addr, int sock);
 
-/// One-shot: the next `send_sptps_via_udp` skips `sendto` and takes the hard-error path.
-/** Uses the real chosen dest and listen index. Cleared after that send.
- *
- *  @param mesh  Mesh handle.
- */
-void devtool_inject_next_udp_hard_send_error(struct meshlink_handle *mesh);
-
-/// Set `node_t.status.broadcast` so the next UDP send uses `choose_broadcast_address`.
-/** Requires `prevedge` when enabling. Used to drive a non-confirmed dest through
- *  the production hard-error call site.
- *
- *  @param mesh       Mesh handle.
- *  @param node       Peer to mark.
- *  @param broadcast  New broadcast flag.
- *  @return           true on success.
- */
-bool devtool_set_udp_broadcast(struct meshlink_handle *mesh, struct meshlink_node *node, bool broadcast);
-
 /// Under the mesh lock: mark `hop` broadcast, inject a hard send, send a probe.
-/** Hits `send_sptps_via_udp` with the broadcast dest. Returns false if `hop`
- *  has no `prevedge` or no session key.
+/** Hits `send_sptps_via_udp` with the broadcast dest. Returns true when the
+ *  injected hard-error path ran. False if `hop` has no `prevedge` or no key,
+ *  or if the send never reached `send_sptps_via_udp`.
  *
  *  @param mesh  Mesh handle.
  *  @param hop   Confirmed hop to send through.
- *  @return      true if the probe record was submitted.
+ *  @return      true if the hard-error path ran.
  */
 bool devtool_inject_broadcast_hard_send(struct meshlink_handle *mesh, struct meshlink_node *hop);
+
+/// Build a dest that differs only in port from `src`.
+void devtool_fill_port_mismatch(const struct sockaddr_storage *src, struct sockaddr_storage *dst);
+
+/// Build a dest that differs only in host from `src`.
+void devtool_fill_host_mismatch(const struct sockaddr_storage *src, struct sockaddr_storage *dst);
+
+/// Build `ff02::1`.
+void devtool_fill_mcast_ff02_1(struct sockaddr_storage *dst);
+
+/// Build IPv4 `255.255.255.255`.
+void devtool_fill_bcast_ipv4(struct sockaddr_storage *dst);
 
 #endif
