@@ -2976,6 +2976,7 @@ bool meshlink_set_canonical_address(meshlink_handle_t *mesh, meshlink_node_t *no
 	path_sanitize_recent(mesh, n);
 	path_request_canonical_resolve(mesh, n);
 	path_reclassify_active_meta(mesh, n);
+	outgoing_on_canonical_reset(mesh, n);
 
 	if(!node_write_config(mesh, n, false)) {
 		pthread_mutex_unlock(&mesh->mutex);
@@ -3012,6 +3013,7 @@ bool meshlink_clear_canonical_address(meshlink_handle_t *mesh, meshlink_node_t *
 	n->canonical_address = NULL;
 	path_clear_canonical_endpoints(n);
 	path_reset_canonical_resolve(n);
+	outgoing_on_canonical_reset(mesh, n);
 
 	if(!node_write_config(mesh, n, false)) {
 		pthread_mutex_unlock(&mesh->mutex);

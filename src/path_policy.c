@@ -545,6 +545,11 @@ static void canonical_resolve_cb(meshlink_handle_t *mesh, char *host, char *serv
 
 		free(host);
 		free(serv);
+
+		if(n && !n->canonical_resolve_pending) {
+			outgoing_on_canonical_reset(mesh, n);
+		}
+
 		free(req);
 		return;
 	}

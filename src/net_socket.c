@@ -296,7 +296,7 @@ void outgoing_on_canonical_resolved(meshlink_handle_t *mesh, node_t *n, struct a
 			ai = NULL;
 		}
 
-		if(!path_canonical_host_matches(n, host, serv) && n->canonical_address) {
+		if(!path_canonical_host_matches(n, host, serv) && path_canonical_is_hostname(n)) {
 			path_request_canonical_resolve(mesh, n);
 			free(host);
 			free(serv);
@@ -322,6 +322,18 @@ void outgoing_on_canonical_resolved(meshlink_handle_t *mesh, node_t *n, struct a
 
 	free(host);
 	free(serv);
+}
+
+void outgoing_on_canonical_reset(meshlink_handle_t *mesh, node_t *n) {
+	if(!mesh || !n || !mesh->outgoings) {
+		return;
+	}
+
+	for list_each(outgoing_t, outgoing, mesh->outgoings) {
+		if(outgoing->node == n && outgoing->state == OUTGOING_CANONICAL_RESOLVE) {
+			do_outgoing_connection(mesh, outgoing);
+		}
+	}
 }
 
 // Free whatever address list the outgoing currently holds, honouring its origin.

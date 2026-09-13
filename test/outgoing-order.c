@@ -27,7 +27,8 @@
        as canonical: not remembered in recent[], edge marked indirect, upgraded later.
        The responder (b) learns via_canonical from the initiator's ID flag, so its
        reverse edge is also indirect and the relay stays out of b's recent[] for a.
-   T8: a hostname canonical that fails DNS must leave CANONICAL_RESOLVE and retry. */
+   T8: a hostname canonical that fails DNS must leave CANONICAL_RESOLVE and retry.
+   T10: set/clear during an in-flight hostname lookup must resume the outgoing walk. */
 
 static struct sync_flag peer_reachable;
 static devtool_node_status_t status_at_reachable;
@@ -816,6 +817,83 @@ static void test_hostname_canonical_skips_hint_nlb(void) {
 	stop_tcp_relay(relay);
 }
 
+static pthread_mutex_t adns_hold_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t adns_hold_cond = PTHREAD_COND_INITIALIZER;
+static bool adns_hold_release;
+
+static void adns_hold_probe(void) {
+	pthread_mutex_lock(&adns_hold_mutex);
+
+	while(!adns_hold_release) {
+		pthread_cond_wait(&adns_hold_cond, &adns_hold_mutex);
+	}
+
+	pthread_mutex_unlock(&adns_hold_mutex);
+}
+
+static void adns_hold_go(void) {
+	pthread_mutex_lock(&adns_hold_mutex);
+	adns_hold_release = true;
+	pthread_cond_broadcast(&adns_hold_cond);
+	pthread_mutex_unlock(&adns_hold_mutex);
+}
+
+static void adns_hold_nop(void) {
+}
+
+/* T10: while getaddrinfo is blocked, switching the hostname canonical to a
+   numeric listen address must resume OUTGOING_CANONICAL_RESOLVE (N1). */
+static void test_reset_while_canonical_resolve_pending(void) {
+	printf("\n=== T10: set numeric canonical while hostname ADNS is in flight ===\n");
+
+	meshlink_handle_t *a, *b;
+	open_pair(&a, &b, "outgoing_order_t10");
+
+	int b_port = meshlink_get_port(b);
+	assert(b_port > 0);
+	char b_port_str[16];
+	snprintf(b_port_str, sizeof b_port_str, "%d", b_port);
+
+	assert(meshlink_set_canonical_address(b, meshlink_get_self(b), "localhost", "9"));
+	exchange_meshlink_pair(a, b);
+
+	meshlink_node_t *node_b = meshlink_get_node(a, "b");
+	assert(node_b);
+	forget_addresses(a, node_b);
+
+	adns_hold_release = false;
+	devtool_adns_resolve_probe = adns_hold_probe;
+
+	watched_peer = "b";
+	init_sync_flag(&peer_reachable);
+	memset(&status_at_reachable, 0, sizeof status_at_reachable);
+	meshlink_set_node_status_cb(a, status_cb);
+
+	assert(meshlink_start(b));
+	assert(meshlink_start(a));
+	usleep(200000);
+
+	assert(meshlink_set_canonical_address(a, node_b, "127.0.0.1", b_port_str));
+	assert(wait_sync_flag(&peer_reachable, 20));
+	meshlink_set_node_status_cb(a, NULL);
+
+	assert(status_at_reachable.meta_connected);
+	assert(port_of(&status_at_reachable.meta_address) == b_port);
+	devtool_free_node_status(&status_at_reachable);
+
+	adns_hold_go();
+	devtool_adns_resolve_probe = adns_hold_nop;
+
+	printf("T10 ok: numeric set during in-flight ADNS connected on port %d\n", b_port);
+
+	meshlink_stop(a);
+	meshlink_stop(b);
+	meshlink_close(a);
+	meshlink_close(b);
+	assert(meshlink_destroy("outgoing_order_t10_conf.1"));
+	assert(meshlink_destroy("outgoing_order_t10_conf.2"));
+}
+
 int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, capture_log_cb);
 
@@ -827,6 +905,7 @@ int main(void) {
 	test_hostname_canonical_skips_unknown_nlb();
 	test_failed_canonical_resolve_falls_through();
 	test_hostname_canonical_skips_hint_nlb();
+	test_reset_while_canonical_resolve_pending();
 
 	free_captured_log();
 	return 0;

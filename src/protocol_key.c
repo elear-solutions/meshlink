@@ -319,6 +319,7 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 
 		path_request_canonical_resolve(mesh, from);
 		path_reclassify_active_meta(mesh, from);
+		outgoing_on_canonical_reset(mesh, from);
 
 		if(!path_canonical_is_hostname(from)) {
 			try_upgrade_probe(mesh, from);
