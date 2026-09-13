@@ -915,6 +915,7 @@ void devtool_fill_port_mismatch(const struct sockaddr_storage *src, struct socka
 	sockaddr_t out = {0};
 
 	if(!src || !dst) {
+		meshlink_errno = MESHLINK_EINVAL;
 		return;
 	}
 
@@ -928,6 +929,7 @@ void devtool_fill_host_mismatch(const struct sockaddr_storage *src, struct socka
 	sockaddr_t out = {0};
 
 	if(!src || !dst) {
+		meshlink_errno = MESHLINK_EINVAL;
 		return;
 	}
 
@@ -940,6 +942,7 @@ void devtool_fill_mcast_ff02_1(struct sockaddr_storage *dst) {
 	sockaddr_t out = {0};
 
 	if(!dst) {
+		meshlink_errno = MESHLINK_EINVAL;
 		return;
 	}
 
@@ -951,6 +954,7 @@ void devtool_fill_bcast_ipv4(struct sockaddr_storage *dst) {
 	sockaddr_t out = {0};
 
 	if(!dst) {
+		meshlink_errno = MESHLINK_EINVAL;
 		return;
 	}
 
