@@ -283,6 +283,19 @@ bool relay_payload_destination(const void *data, size_t len, char *destination, 
 	return relay_decode(data, len, origin, sizeof(origin), destination, destination_size, &inner, &inner_len);
 }
 
+bool relay_send_outer_record(meshlink_handle_t *mesh, node_t *hop, const char *origin, const char *destination, const void *data, size_t len) {
+	if(!mesh || !hop || !data || !len || len > UINT16_MAX) {
+		return false;
+	}
+
+	hop->relay_send_origin = origin;
+	hop->relay_send_dest = destination;
+	bool ok = sptps_send_record(&hop->sptps, PKT_RELAY_SPTPS, data, (uint16_t)len);
+	hop->relay_send_origin = NULL;
+	hop->relay_send_dest = NULL;
+	return ok;
+}
+
 static int relay_entry_cmp(const relay_report_entry_t *a, const relay_report_entry_t *b) {
 	if(a->last_traffic_time != b->last_traffic_time) {
 		return a->last_traffic_time < b->last_traffic_time ? -1 : 1;
@@ -534,7 +547,7 @@ bool relay_handle_record(meshlink_handle_t *mesh, node_t *from, const void *data
 		relay_maybe_report(mesh, origin_name, dest, false);
 	}
 
-	sptps_send_record(&out->sptps, PKT_RELAY_SPTPS, data, len);
+	relay_send_outer_record(mesh, out, origin_name, dest_name, data, len);
 	return true;
 }
 

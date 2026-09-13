@@ -736,13 +736,15 @@ static bool send_relay_outer(meshlink_handle_t *mesh, node_t *hop, const void *d
 		return false;
 	}
 
-	char dest_name[RELAY_NAME_MAX + 1];
+	/* Hop scratch is set around sptps_send_record by relay_send_outer_record, then cleared. */
+	const char *dest_name = hop->relay_send_dest;
+	const char *origin_name = hop->relay_send_origin;
 
-	if(!relay_payload_destination(data, len, dest_name, sizeof(dest_name))) {
-		dest_name[0] = 0;
-	}
-
-	logger(mesh, MESHLINK_DEBUG, "Relaying type-8 via UDP to %s for %s", hop->name, dest_name[0] ? dest_name : hop->name);
+	/* Dest falls back to hop (first hop / dest==hop). Origin is unknown if not stashed. */
+	logger(mesh, MESHLINK_DEBUG, "Relaying type-8 via UDP to %s for %s from %s",
+	       hop->name,
+	       dest_name && dest_name[0] ? dest_name : hop->name,
+	       origin_name && origin_name[0] ? origin_name : "?");
 	relay_wake_probes(mesh, hop);
 	return true;
 }
@@ -767,7 +769,7 @@ static bool send_application_record(meshlink_handle_t *mesh, node_t *to, const v
 		size_t wlen = sizeof(wrapped);
 
 		if(relay_encode(mesh->self->name, to->name, data, len, wrapped, &wlen)) {
-			return sptps_send_record(&to->nexthop->sptps, PKT_RELAY_SPTPS, wrapped, (uint16_t)wlen);
+			return relay_send_outer_record(mesh, to->nexthop, mesh->self->name, to->name, wrapped, wlen);
 		}
 	}
 
