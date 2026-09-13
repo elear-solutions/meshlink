@@ -16,6 +16,7 @@
 #include "logger.h"
 #include "meshlink_internal.h"
 #include "net.h"
+#include "netutl.h"
 #include "node.h"
 #include "protocol.h"
 #include "relay.h"
@@ -173,8 +174,12 @@ void relay_recompute_dependents(meshlink_handle_t *mesh, node_t *hop) {
 	}
 }
 
-void relay_on_hard_send_error(meshlink_handle_t *mesh, node_t *hop) {
-	if(!hop) {
+void relay_on_hard_send_error(meshlink_handle_t *mesh, node_t *hop, const sockaddr_t *sa, int sock) {
+	if(!hop || !sa || !hop->status.udp_confirmed) {
+		return;
+	}
+
+	if(sock != hop->sock || sockaddrcmp(sa, &hop->address)) {
 		return;
 	}
 

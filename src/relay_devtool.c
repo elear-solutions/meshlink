@@ -301,7 +301,7 @@ static void relay_cover_sanity(meshlink_handle_t *mesh, node_t *from, node_t *de
 	relay_recompute_dependents(NULL, hop);
 	relay_recompute_dependents(mesh, NULL);
 	relay_recompute_dependents(mesh, hop);
-	relay_on_hard_send_error(mesh, NULL);
+	relay_on_hard_send_error(mesh, NULL, NULL, 0);
 	relay_wake_probes(mesh, NULL);
 	relay_wake_probes(mesh, hop);
 	relay_clear_budget_if_nexthop_changed(mesh, NULL);
@@ -534,7 +534,53 @@ static void relay_cover_req_mtu(meshlink_handle_t *mesh, node_t *from, node_t *d
 static void relay_cover_hard_send_block(meshlink_handle_t *mesh, node_t *from, node_t *dest, node_t *hop, relay_cover_ctx_t *ctx) {
 	(void)ctx;
 	bool saved_hop_uc = hop->status.udp_confirmed;
-	relay_on_hard_send_error(mesh, hop);
+	sockaddr_t other;
+	sockaddr_t mcast;
+
+	relay_on_hard_send_error(mesh, hop, NULL, hop->sock);
+
+	hop->status.udp_confirmed = false;
+	relay_on_hard_send_error(mesh, hop, &hop->address, hop->sock);
+
+	hop->status.udp_confirmed = true;
+	relay_on_hard_send_error(mesh, hop, &hop->address, hop->sock + 1);
+
+	memset(&other, 0, sizeof other);
+	other = hop->address;
+
+	if(other.sa.sa_family == AF_INET) {
+		other.in.sin_port ^= htons(0x8000);
+	} else if(other.sa.sa_family == AF_INET6) {
+		other.in6.sin6_port ^= htons(0x8000);
+	} else {
+		other.sa.sa_family = AF_INET;
+		other.in.sin_port = htons(1);
+	}
+
+	relay_on_hard_send_error(mesh, hop, &other, hop->sock);
+
+	memset(&other, 0, sizeof other);
+	other = hop->address;
+
+	if(other.sa.sa_family == AF_INET) {
+		other.in.sin_addr.s_addr ^= htonl(1);
+	} else if(other.sa.sa_family == AF_INET6) {
+		other.in6.sin6_addr.s6_addr[15] ^= 1;
+	} else {
+		other.sa.sa_family = AF_INET;
+		other.in.sin_addr.s_addr = htonl(0x7f000002);
+	}
+
+	relay_on_hard_send_error(mesh, hop, &other, hop->sock);
+
+	memset(&mcast, 0, sizeof mcast);
+	mcast.in6.sin6_family = AF_INET6;
+	mcast.in6.sin6_addr.s6_addr[0] = 0xff;
+	mcast.in6.sin6_addr.s6_addr[1] = 0x02;
+	mcast.in6.sin6_addr.s6_addr[15] = 0x01;
+	relay_on_hard_send_error(mesh, hop, &mcast, hop->sock);
+
+	relay_on_hard_send_error(mesh, hop, &hop->address, hop->sock);
 	hop->status.udp_confirmed = saved_hop_uc;
 
 	{

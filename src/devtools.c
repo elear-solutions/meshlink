@@ -859,6 +859,21 @@ void devtool_relay_hard_send_error(meshlink_handle_t *mesh, meshlink_node_t *hop
 		abort();
 	}
 
-	relay_on_hard_send_error(mesh, (node_t *)hop);
+	node_t *n = (node_t *)hop;
+	relay_on_hard_send_error(mesh, n, &n->address, n->sock);
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+void devtool_relay_hard_send_error_at(meshlink_handle_t *mesh, meshlink_node_t *hop, const struct sockaddr *addr, int sock) {
+	if(!mesh || !hop || !addr) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	relay_on_hard_send_error(mesh, (node_t *)hop, (const sockaddr_t *)addr, sock);
 	pthread_mutex_unlock(&mesh->mutex);
 }

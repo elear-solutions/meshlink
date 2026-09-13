@@ -27,6 +27,7 @@
 struct meshlink_handle;
 struct node_t;
 struct connection_t;
+union sockaddr_t;
 
 #define RELAY_REPORT_MAX 4096
 #define RELAY_REPORT_IDLE_SEC 30
@@ -53,7 +54,8 @@ void relay_update_destination_transport(struct meshlink_handle *mesh, struct nod
 /* Recompute MSS for every dest whose nexthop is hop (skip udp_confirmed dests). */
 void relay_recompute_dependents(struct meshlink_handle *mesh, struct node_t *hop);
 
-void relay_on_hard_send_error(struct meshlink_handle *mesh, struct node_t *hop);
+/* Clear hop UDP readiness only when the failed send is the confirmed tuple. */
+void relay_on_hard_send_error(struct meshlink_handle *mesh, struct node_t *hop, const union sockaddr_t *sa, int sock);
 
 /* Arm hop probes at 0-timeout and kick pselect so the mesh thread runs now. */
 void relay_wake_probes(struct meshlink_handle *mesh, struct node_t *hop);

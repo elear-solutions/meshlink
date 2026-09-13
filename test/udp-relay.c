@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <assert.h>
 #include <sys/time.h>
+#include <arpa/inet.h>
 
 #include "meshlink.h"
 #include "relay.h"
@@ -567,12 +568,55 @@ static void test_hard_send_clears_hop(meshlink_handle_t **mesh) {
 	assert(udp_confirmed_flag(mesh[2], "foo"));
 	assert_after(meshlink_channel_get_mss(mesh[2], ch) == relay_mss, 10);
 
-	devtool_relay_hard_send_error(mesh[2], meshlink_get_node(mesh[2], "foo"));
+	meshlink_node_t *hop = meshlink_get_node(mesh[2], "foo");
+	devtool_node_status_t st;
+	devtool_get_node_status(mesh[2], hop, &st);
+	assert(st.address.ss_family == AF_INET || st.address.ss_family == AF_INET6);
+
+	struct sockaddr_in6 mcast;
+	memset(&mcast, 0, sizeof mcast);
+	mcast.sin6_family = AF_INET6;
+	mcast.sin6_port = htons(1);
+	assert(inet_pton(AF_INET6, "ff02::1", &mcast.sin6_addr) == 1);
+	devtool_relay_hard_send_error_at(mesh[2], hop, (struct sockaddr *)&mcast, 0);
+	assert(udp_confirmed_flag(mesh[2], "foo"));
+	assert(meshlink_channel_get_mss(mesh[2], ch) == relay_mss);
+
+	struct sockaddr_storage alt = st.address;
+
+	if(alt.ss_family == AF_INET) {
+		((struct sockaddr_in *)&alt)->sin_addr.s_addr ^= htonl(1);
+	} else {
+		((struct sockaddr_in6 *)&alt)->sin6_addr.s6_addr[15] ^= 1;
+	}
+
+	devtool_relay_hard_send_error_at(mesh[2], hop, (struct sockaddr *)&alt, 0);
+	assert(udp_confirmed_flag(mesh[2], "foo"));
+	assert(meshlink_channel_get_mss(mesh[2], ch) == relay_mss);
+
+	struct sockaddr_storage port = st.address;
+
+	if(port.ss_family == AF_INET) {
+		((struct sockaddr_in *)&port)->sin_port ^= htons(0x8000);
+	} else {
+		((struct sockaddr_in6 *)&port)->sin6_port ^= htons(0x8000);
+	}
+
+	devtool_relay_hard_send_error_at(mesh[2], hop, (struct sockaddr *)&port, 0);
+	assert(udp_confirmed_flag(mesh[2], "foo"));
+	assert(meshlink_channel_get_mss(mesh[2], ch) == relay_mss);
+
+	devtool_relay_hard_send_error_at(mesh[2], hop, (struct sockaddr *)&st.address, -1);
+	assert(udp_confirmed_flag(mesh[2], "foo"));
+	assert(meshlink_channel_get_mss(mesh[2], ch) == relay_mss);
+	devtool_free_node_status(&st);
+
+	devtool_relay_hard_send_error(mesh[2], hop);
 	assert(!udp_confirmed_flag(mesh[2], "foo"));
 	assert_after(meshlink_channel_get_mss(mesh[2], ch) == meta_mss, 10);
 
-	devtool_set_udp_confirmed(mesh[2], meshlink_get_node(mesh[2], "foo"), true);
-	assert(devtool_set_minmtu(mesh[2], meshlink_get_node(mesh[2], "foo"), MTU));
+	devtool_set_udp_confirmed(mesh[2], hop, true);
+	assert(devtool_set_minmtu(mesh[2], hop, MTU));
 	pin(mesh[2], "bar", "foo");
 	meshlink_channel_abort(mesh[2], ch);
 }

@@ -715,7 +715,7 @@ static bool send_sptps_via_udp(meshlink_handle_t *mesh, node_t *to, const void *
 			}
 		} else {
 			logger(mesh, MESHLINK_WARNING, "Error sending UDP SPTPS packet to %s: %s", to->name, sockstrerror(sockerrno));
-			relay_on_hard_send_error(mesh, to);
+			relay_on_hard_send_error(mesh, to, sa, sock);
 			return false;
 		}
 	}

@@ -434,7 +434,17 @@ bool devtool_handle_req_relay_mtu(struct meshlink_handle *mesh, struct meshlink_
 /// Drive remaining relay.c branches on a live trio (from / dest / hop).
 bool devtool_relay_cover_unit(struct meshlink_handle *mesh, struct meshlink_node *from, struct meshlink_node *dest, struct meshlink_node *hop);
 
-/// Simulate a hard UDP send failure on `hop`: clears udp_confirmed and recomputes dependents.
+/// Simulate a hard UDP send failure on `hop`'s confirmed address and socket.
 void devtool_relay_hard_send_error(struct meshlink_handle *mesh, struct meshlink_node *hop);
+
+/// Simulate a hard UDP send failure to an explicit destination on `hop`.
+/** Clears readiness only when `addr` and `sock` match the hop's confirmed tuple.
+ *
+ *  @param mesh  Mesh handle.
+ *  @param hop   Node whose UDP send failed.
+ *  @param addr  Attempted destination, including family and port.
+ *  @param sock  Attempted listen-socket index.
+ */
+void devtool_relay_hard_send_error_at(struct meshlink_handle *mesh, struct meshlink_node *hop, const struct sockaddr *addr, int sock);
 
 #endif
