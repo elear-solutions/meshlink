@@ -25,6 +25,7 @@ typedef struct relay_report_entry {
 struct relay_devtool_state {
 	bool force_report_null_connection;
 	bool fail_realloc;
+	bool inject_hard_send_error;
 	uint8_t capture_buf[RELAY_CAPTURE_MAX];
 	size_t capture_len;
 };
@@ -57,5 +58,10 @@ bool relay_devtool_send_meta_sptps(struct meshlink_handle *mesh, struct node_t *
 void relay_devtool_fail_realloc(struct meshlink_handle *mesh, bool fail);
 bool relay_devtool_handle_req_relay_mtu(struct meshlink_handle *mesh, struct node_t *from, const char *request);
 bool relay_devtool_cover_unit(struct meshlink_handle *mesh, struct node_t *from, struct node_t *dest, struct node_t *hop);
+
+void relay_fill_port_mismatch(const sockaddr_t *src, sockaddr_t *dst);
+void relay_fill_host_mismatch(const sockaddr_t *src, sockaddr_t *dst);
+void relay_fill_mcast_ff02_1(sockaddr_t *dst);
+void relay_fill_bcast_ipv4(sockaddr_t *dst);
 
 #endif

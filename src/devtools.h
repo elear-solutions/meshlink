@@ -434,7 +434,41 @@ bool devtool_handle_req_relay_mtu(struct meshlink_handle *mesh, struct meshlink_
 /// Drive remaining relay.c branches on a live trio (from / dest / hop).
 bool devtool_relay_cover_unit(struct meshlink_handle *mesh, struct meshlink_node *from, struct meshlink_node *dest, struct meshlink_node *hop);
 
-/// Simulate a hard UDP send failure on `hop`: clears udp_confirmed and recomputes dependents.
+/// Simulate a hard UDP send failure on `hop`'s confirmed address.
 void devtool_relay_hard_send_error(struct meshlink_handle *mesh, struct meshlink_node *hop);
+
+/// Simulate a hard UDP send failure to an explicit destination on `hop`.
+/** Clears readiness only when `addr` is the hop's confirmed destination.
+ *  `sock` is unused (last-RX `hop->sock` is not the send-site index).
+ *
+ *  @param mesh  Mesh handle.
+ *  @param hop   Node whose UDP send failed.
+ *  @param addr  Attempted destination, including family and port.
+ *  @param sock  Attempted listen-socket index (ignored).
+ */
+void devtool_relay_hard_send_error_at(struct meshlink_handle *mesh, struct meshlink_node *hop, const struct sockaddr *addr, int sock);
+
+/// Under the mesh lock: mark `hop` broadcast, inject a hard send, send a probe.
+/** Hits `send_sptps_via_udp` with the broadcast dest. Returns true when the
+ *  injected hard-error path ran. False if `hop` has no `prevedge` or no key,
+ *  or if the send never reached `send_sptps_via_udp`.
+ *
+ *  @param mesh  Mesh handle.
+ *  @param hop   Confirmed hop to send through.
+ *  @return      true if the hard-error path ran.
+ */
+bool devtool_inject_broadcast_hard_send(struct meshlink_handle *mesh, struct meshlink_node *hop);
+
+/// Build a dest that differs only in port from `src`.
+void devtool_fill_port_mismatch(const struct sockaddr_storage *src, struct sockaddr_storage *dst);
+
+/// Build a dest that differs only in host from `src`.
+void devtool_fill_host_mismatch(const struct sockaddr_storage *src, struct sockaddr_storage *dst);
+
+/// Build `ff02::1`.
+void devtool_fill_mcast_ff02_1(struct sockaddr_storage *dst);
+
+/// Build IPv4 `255.255.255.255`.
+void devtool_fill_bcast_ipv4(struct sockaddr_storage *dst);
 
 #endif
