@@ -306,12 +306,15 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 			logger(mesh, MESHLINK_DEBUG, "Updating canonical address of %s to %s", from->name, canonical_address);
 		}
 
-		free(from->canonical_address);
-		from->canonical_address = canonical_address;
-		from->status.dirty = true;
+		if(!path_assign_canonical_address(from, canonical_address)) {
+			if(!path_canonical_is_hostname(from)) {
+				try_upgrade_probe(mesh, from);
+			}
 
-		path_reset_canonical_resolve(from);
-		path_refresh_canonical_endpoint(from);
+			return true;
+		}
+
+		from->status.dirty = true;
 
 		if(path_sanitize_recent(mesh, from)) {
 			path_persist_node(mesh, from);

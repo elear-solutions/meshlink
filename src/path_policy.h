@@ -88,6 +88,8 @@ path_tier_t path_udp_tier_for(const sockaddr_t *sa, address_source_t src);
 
 /* Numeric "host port" -> cached canonical_sa. Hostname stays in canonical_address until resolve. */
 void path_refresh_canonical_endpoint(struct node_t *n);
+/* Takes ownership of canonical_address. Same string is a no-op (cache and ADNS cookie stay). */
+bool path_assign_canonical_address(struct node_t *n, char *canonical_address);
 void path_clear_canonical_endpoints(struct node_t *n);
 void path_set_canonical_sockaddr(struct node_t *n, const sockaddr_t *sa);
 bool path_add_canonical_endpoint(struct node_t *n, const sockaddr_t *sa);

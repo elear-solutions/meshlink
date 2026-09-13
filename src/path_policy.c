@@ -380,6 +380,24 @@ void path_refresh_canonical_endpoint(node_t *n) {
 	}
 }
 
+bool path_assign_canonical_address(node_t *n, char *canonical_address) {
+	if(!n) {
+		free(canonical_address);
+		return false;
+	}
+
+	if(n->canonical_address && canonical_address && !strcmp(n->canonical_address, canonical_address)) {
+		free(canonical_address);
+		return false;
+	}
+
+	free(n->canonical_address);
+	n->canonical_address = canonical_address;
+	path_reset_canonical_resolve(n);
+	path_refresh_canonical_endpoint(n);
+	return true;
+}
+
 void path_set_canonical_sockaddr(node_t *n, const sockaddr_t *sa) {
 	if(!n || !sa) {
 		return;

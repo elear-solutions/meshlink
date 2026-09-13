@@ -226,6 +226,25 @@ static bool cover_canonical(meshlink_handle_t *mesh) {
 	CHECK(n.canonical_resolve_next == 0);
 	path_reset_canonical_resolve(&n);
 	CHECK(n.canonical_resolve_gen == 0);
+
+	CHECK(!path_assign_canonical_address(NULL, xstrdup("nlb.example 443")));
+
+	node_t assign;
+	memset(&assign, 0, sizeof assign);
+	assign.name = "cover-assign";
+	assign.canonical_address = xstrdup("nlb.example 443");
+	set_v4(&sa, "198.51.100.9", 443);
+	path_set_canonical_sockaddr(&assign, &sa);
+	CHECK(assign.canonical_sa_count == 1);
+	assign.canonical_resolve_gen = 7;
+	CHECK(!path_assign_canonical_address(&assign, xstrdup("nlb.example 443")));
+	CHECK(assign.canonical_resolve_gen == 7);
+	CHECK(assign.canonical_sa_count == 1);
+	CHECK(path_assign_canonical_address(&assign, xstrdup("nlb.example 444")));
+	CHECK(assign.canonical_resolve_gen == 0);
+	CHECK(assign.canonical_sa_count == 0);
+	CHECK(assign.canonical_address && !strcmp(assign.canonical_address, "nlb.example 444"));
+	free(assign.canonical_address);
 	return true;
 }
 

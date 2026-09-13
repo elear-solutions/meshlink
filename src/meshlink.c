@@ -2969,10 +2969,12 @@ bool meshlink_set_canonical_address(meshlink_handle_t *mesh, meshlink_node_t *no
 	}
 
 	node_t *n = (node_t *)node;
-	free(n->canonical_address);
-	n->canonical_address = canonical_address;
-	path_reset_canonical_resolve(n);
-	path_refresh_canonical_endpoint(n);
+
+	if(!path_assign_canonical_address(n, canonical_address)) {
+		pthread_mutex_unlock(&mesh->mutex);
+		return true;
+	}
+
 	path_sanitize_recent(mesh, n);
 	path_request_canonical_resolve(mesh, n);
 	path_reclassify_active_meta(mesh, n);

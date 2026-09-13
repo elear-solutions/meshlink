@@ -28,7 +28,8 @@
        The responder (b) learns via_canonical from the initiator's ID flag, so its
        reverse edge is also indirect and the relay stays out of b's recent[] for a.
    T8: a hostname canonical that fails DNS must leave CANONICAL_RESOLVE and retry.
-   T10: set/clear during an in-flight hostname lookup must resume the outgoing walk. */
+   T10: set/clear during an in-flight hostname lookup must resume the outgoing walk.
+   T11: a hop whose own META is canonical still graph-seeds the child's edge. */
 
 static struct sync_flag peer_reachable;
 static devtool_node_status_t status_at_reachable;
@@ -894,6 +895,114 @@ static void test_reset_while_canonical_resolve_pending(void) {
 	assert(meshlink_destroy("outgoing_order_t10_conf.2"));
 }
 
+static void test_graph_seeds_through_canonical_hop(void) {
+	printf("\n=== T11: graph still seeds a child's edge when the hop META is canonical ===\n");
+
+	assert(meshlink_destroy("outgoing_order_t11_conf.1"));
+	assert(meshlink_destroy("outgoing_order_t11_conf.2"));
+	assert(meshlink_destroy("outgoing_order_t11_conf.3"));
+
+	meshlink_handle_t *a = meshlink_open("outgoing_order_t11_conf.1", "a", "outgoing_order_t11", DEV_CLASS_PORTABLE);
+	meshlink_handle_t *b = meshlink_open("outgoing_order_t11_conf.2", "b", "outgoing_order_t11", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *c = meshlink_open("outgoing_order_t11_conf.3", "c", "outgoing_order_t11", DEV_CLASS_STATIONARY);
+	assert(a && b && c);
+
+	meshlink_enable_discovery(a, false);
+	meshlink_enable_discovery(b, false);
+	meshlink_enable_discovery(c, false);
+
+	int b_port = meshlink_get_port(b);
+	int c_port = meshlink_get_port(c);
+	assert(b_port > 0 && c_port > 0);
+
+	char b_port_str[16];
+	snprintf(b_port_str, sizeof b_port_str, "%d", b_port);
+	assert(meshlink_set_canonical_address(b, meshlink_get_self(b), "127.0.0.1", b_port_str));
+
+	exchange_meshlink_pair(a, b);
+	exchange_meshlink_pair(a, c);
+	exchange_meshlink_pair(b, c);
+
+	char *local = meshlink_get_local_address_for_family(c, AF_INET);
+	const char *b_ip = local && is_rfc1918(local) ? local : "127.0.0.1";
+
+	meshlink_node_t *a_b = meshlink_get_node(a, "b");
+	meshlink_node_t *a_c = meshlink_get_node(a, "c");
+	meshlink_node_t *c_b = meshlink_get_node(c, "b");
+	assert(a_b && a_c && c_b);
+
+	forget_addresses(a, a_b);
+	hint_address(a, a_b, "127.0.0.1", b_port);
+	forget_addresses(a, a_c);
+	forget_addresses(c, c_b);
+	hint_address(c, c_b, b_ip, b_port);
+
+	watched_peer = "c";
+	init_sync_flag(&peer_reachable);
+	memset(&status_at_reachable, 0, sizeof status_at_reachable);
+	meshlink_set_node_status_cb(b, status_cb);
+
+	assert(meshlink_start(b));
+	assert(meshlink_start(c));
+	assert(wait_sync_flag(&peer_reachable, 15));
+	meshlink_set_node_status_cb(b, NULL);
+	devtool_free_node_status(&status_at_reachable);
+
+	assert(meshlink_start(a));
+
+	devtool_node_status_t a_view_b;
+	memset(&a_view_b, 0, sizeof a_view_b);
+
+	for(int i = 0; i < 30; i++) {
+		devtool_get_node_status(a, a_b, &a_view_b);
+
+		if(a_view_b.meta_connected && a_view_b.meta_via_canonical) {
+			break;
+		}
+
+		devtool_free_node_status(&a_view_b);
+		sleep(1);
+	}
+
+	assert(a_view_b.meta_connected);
+	assert(a_view_b.meta_via_canonical);
+	devtool_free_node_status(&a_view_b);
+
+	devtool_node_status_t st;
+	bool seeded = false;
+
+	for(int i = 0; i < 30; i++) {
+		devtool_get_node_status(a, a_c, &st);
+		seeded = false;
+
+		for(size_t j = 0; j < st.recent_count; j++) {
+			seeded |= addr_is(&st.recent[j], b_ip, c_port);
+		}
+
+		if(seeded) {
+			break;
+		}
+
+		devtool_free_node_status(&st);
+		sleep(1);
+	}
+
+	assert(seeded);
+	devtool_free_node_status(&st);
+	printf("T11 ok: hop META is canonical, still seeded c at %s port %d\n", b_ip, c_port);
+
+	free(local);
+	meshlink_stop(a);
+	meshlink_stop(b);
+	meshlink_stop(c);
+	meshlink_close(a);
+	meshlink_close(b);
+	meshlink_close(c);
+	assert(meshlink_destroy("outgoing_order_t11_conf.1"));
+	assert(meshlink_destroy("outgoing_order_t11_conf.2"));
+	assert(meshlink_destroy("outgoing_order_t11_conf.3"));
+}
+
 int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, capture_log_cb);
 
@@ -906,6 +1015,7 @@ int main(void) {
 	test_failed_canonical_resolve_falls_through();
 	test_hostname_canonical_skips_hint_nlb();
 	test_reset_while_canonical_resolve_pending();
+	test_graph_seeds_through_canonical_hop();
 
 	free_captured_log();
 	return 0;
