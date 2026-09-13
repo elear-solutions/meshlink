@@ -110,8 +110,14 @@ typedef struct node_t {
 	int udp_choice;                         /* Per-node dest rotation when UDP is unconfirmed */
 	sockaddr_t recent[MAX_RECENT];          /* Recently seen addresses */
 	address_source_t recent_source[MAX_RECENT]; /* Provenance aligned with recent[] */
+	path_cap_t recent_cap[MAX_RECENT];      /* Transport eligibility aligned with recent[] */
 	sockaddr_t catta_address;               /* Latest address seen by Catta */
-	sockaddr_t canonical_sa;                /* Resolved numeric canonical endpoint, AF_UNSPEC if unknown */
+	sockaddr_t canonical_sa;                /* First resolved canonical endpoint, AF_UNSPEC if unknown */
+	sockaddr_t canonical_extra[MAX_CANONICAL_SA - 1]; /* Additional resolved canonical endpoints */
+	uint8_t canonical_sa_count;             /* Number of cached canonical endpoints */
+	bool canonical_resolve_pending;         /* DNS request in flight */
+	int canonical_resolve_backoff;          /* Seconds until the next resolve retry */
+	time_t canonical_resolve_next;          /* Earliest time to retry hostname resolve */
 	sockaddr_t last_udp_from;               /* Source of the last inbound UDP packet */
 	sockaddr_t udp_cache_extra;             /* Extra node_udp_cache key (local probe / alternate from) */
 	path_tier_t udp_tier;                   /* Validated UDP dest tier */
@@ -143,7 +149,9 @@ void update_node_udp(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *
 void update_node_udp_from(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *sa, address_source_t src);
 void node_udp_cache_alias(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *sa);
 bool node_add_recent_address(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *addr, address_source_t src);
+bool node_add_recent_address_cap(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *addr, address_source_t src, path_cap_t cap);
 bool node_append_recent_address(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *addr, address_source_t src);
+bool node_append_recent_address_cap(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *addr, address_source_t src, path_cap_t cap);
 bool graph_may_seed_udp(const node_t *n, const sockaddr_t *edge_addr);
 
 #endif

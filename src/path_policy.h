@@ -19,18 +19,27 @@
 struct meshlink_handle;
 struct node_t;
 struct connection_t;
+struct addrinfo;
 
 /* How an address was learned. Persisted next to recent[]. */
 typedef enum address_source_t {
 	ADDR_SRC_UNKNOWN = 0,       /* legacy load or unclassified */
-	ADDR_SRC_AUTH_DIRECT,       /* authenticated TCP/UDP from the peer itself */
+	ADDR_SRC_AUTH_DIRECT,       /* authenticated TCP from the peer itself */
 	ADDR_SRC_DISCOVERY,         /* local mDNS / Catta */
 	ADDR_SRC_HINT,              /* application or invitation hint */
 	ADDR_SRC_EXTERNAL,          /* peer-vouched REQ_EXTERNAL */
 	ADDR_SRC_EDGE_DIRECT,       /* graph edge that is not OPTION_INDIRECT */
 	ADDR_SRC_CANONICAL,         /* canonical / NLB endpoint (never stored in recent[]) */
-	ADDR_SRC_INDIRECT           /* forwarded or OPTION_INDIRECT */
+	ADDR_SRC_INDIRECT,          /* forwarded or OPTION_INDIRECT */
+	ADDR_SRC_UDP_REFLEXIVE      /* ANS_KEY / inbound remap / NAT-mapped UDP confirm */
 } address_source_t;
+
+/* Which transports may consume a recent[] slot. Independent of provenance. */
+typedef uint8_t path_cap_t;
+#define PATH_CAP_NONE 0x00
+#define PATH_CAP_META 0x01
+#define PATH_CAP_UDP  0x02
+#define PATH_CAP_BOTH (PATH_CAP_META | PATH_CAP_UDP)
 
 /* Ranked validated-path tiers. Lower is better. */
 typedef enum path_tier_t {
@@ -49,6 +58,9 @@ typedef enum meta_dial_tier_t {
 } meta_dial_tier_t;
 
 #define UDP_LOCAL_PROBE_SEC 15
+#define MAX_CANONICAL_SA 8
+#define CANONICAL_RESOLVE_BACKOFF_MIN 5
+#define CANONICAL_RESOLVE_BACKOFF_MAX 600
 
 /* source_trust ranks: AUTH_DIRECT is highest, UNKNOWN is legacy-weak, others 0. */
 #define SOURCE_TRUST_AUTH_DIRECT 7
@@ -62,30 +74,51 @@ typedef enum meta_dial_tier_t {
 const char *address_source_name(address_source_t src);
 const char *path_tier_name(path_tier_t tier);
 const char *meta_dial_tier_name(meta_dial_tier_t tier);
+const char *path_cap_name(path_cap_t cap);
+path_cap_t path_default_cap(address_source_t src);
 
 /* Bounded copy: AF_INET/AF_INET6 only. Never full-union-assigns a short sockaddr. */
 void path_copy_sockaddr(sockaddr_t *dst, const sockaddr_t *src);
 
-/* True for AUTH/DISCOVERY/HINT/EXTERNAL/EDGE and UNKNOWN (legacy load). Not CANONICAL/INDIRECT. */
+/* True for AUTH/DISCOVERY/HINT/EXTERNAL/EDGE and UNKNOWN (legacy load). Not CANONICAL/INDIRECT/UDP_REFLEXIVE. */
 bool path_source_is_direct(address_source_t src);
-/* Direct candidate for dial/UDP: source_is_direct, not canonical-equivalent, and not UNKNOWN while hostname canonical is unresolved. */
+/* Direct META candidate: source_is_direct, not canonical-equivalent, HINT/UNKNOWN blocked while a hostname canonical has not been resolved or failed, EDGE_DIRECT hybrid-IP rejected. */
 bool path_is_direct_candidate(const struct node_t *n, const sockaddr_t *sa, address_source_t src);
+bool path_is_meta_candidate(const struct node_t *n, const sockaddr_t *sa, address_source_t src, path_cap_t cap);
+bool path_is_udp_candidate(const struct node_t *n, const sockaddr_t *sa, address_source_t src, path_cap_t cap);
 bool path_canonical_unresolved(const struct node_t *n);
+bool path_canonical_is_hostname(const struct node_t *n);
 bool path_tier_better(path_tier_t a, path_tier_t b);
 bool path_address_is_local(const sockaddr_t *sa);
 path_tier_t path_udp_tier_for(const sockaddr_t *sa, address_source_t src);
 
-/* Numeric "host port" -> cached canonical_sa. Hostname stays AF_UNSPEC until resolve. */
+/* Numeric "host port" -> cached canonical_sas[0]. Hostname stays empty until resolve. */
 void path_refresh_canonical_endpoint(struct node_t *n);
+void path_clear_canonical_endpoints(struct node_t *n);
 void path_set_canonical_sockaddr(struct node_t *n, const sockaddr_t *sa);
+bool path_add_canonical_endpoint(struct node_t *n, const sockaddr_t *sa);
 bool path_address_matches_canonical(const struct node_t *n, const sockaddr_t *sa);
+/* Same IP as any cached canonical endpoint, port ignored. */
+bool path_address_shares_canonical_ip(const struct node_t *n, const sockaddr_t *sa);
+bool path_canonical_host_matches(const struct node_t *n, const char *host, const char *serv);
+void path_apply_canonical_resolution(struct node_t *n, const struct addrinfo *ai);
+/* Built like get_recent_addresses: caller frees each node with free(). */
+struct addrinfo *path_canonical_addrinfo(const struct node_t *n);
+void path_request_canonical_resolve(struct meshlink_handle *mesh, struct node_t *n);
+void path_note_canonical_resolve_failed(struct meshlink_handle *mesh, struct node_t *n);
+void path_on_canonical_resolved(struct meshlink_handle *mesh, struct node_t *n);
+void path_reclassify_active_meta(struct meshlink_handle *mesh, struct node_t *n);
+void path_migrate_legacy_caps(struct node_t *n);
+void path_persist_node(struct meshlink_handle *mesh, struct node_t *n);
 
-/* Remember sa with provenance. Canonical-equivalent addresses are dropped. INDIRECT is never stored at the front. */
+/* Remember sa with provenance and transport cap. Canonical-equivalent addresses are dropped. INDIRECT is never stored at the front. */
 bool path_learn_address(struct meshlink_handle *mesh, struct node_t *n, const sockaddr_t *sa, address_source_t src);
+bool path_learn_address_cap(struct meshlink_handle *mesh, struct node_t *n, const sockaddr_t *sa, address_source_t src, path_cap_t cap);
 /* Append behind proven slots. Empty or full recent[] drops the address (does not evict). INDIRECT is allowed. */
 bool path_learn_address_fallback(struct meshlink_handle *mesh, struct node_t *n, const sockaddr_t *sa, address_source_t src);
+bool path_learn_address_fallback_cap(struct meshlink_handle *mesh, struct node_t *n, const sockaddr_t *sa, address_source_t src, path_cap_t cap);
 void path_clear_recent(struct node_t *n);
-/* Force ADDR_SRC_UNKNOWN at the front (test/devtools plant of a leftover NLB). */
+/* Force ADDR_SRC_UNKNOWN / UDP-only at the front (test/devtools plant of a leftover NLB). */
 void path_plant_recent(struct node_t *n, const sockaddr_t *sa);
 
 /* Drop canonical-equivalent and ADDR_SRC_CANONICAL slots. Returns true if recent[] changed. */
@@ -97,6 +130,7 @@ bool path_has_direct_meta_candidate(const struct node_t *n, const sockaddr_t *sk
 bool path_meta_is_canonical(const struct node_t *n, const struct connection_t *c);
 /* Sole writer for via_canonical + meta_dial_tier. */
 void path_mark_meta_dial(struct connection_t *c, bool canonical);
+const char *path_upgrade_ineligible_reason(struct meshlink_handle *mesh, const struct node_t *n);
 
 /* Hop/dest select: validated UDP first, then META. META-in pins META-out. */
 path_tier_t path_select_hop_tier(const struct node_t *hop, bool meta_in);
@@ -109,6 +143,9 @@ void path_schedule_local_udp_probe(struct meshlink_handle *mesh, struct node_t *
 void path_note_udp_confirmed(struct meshlink_handle *mesh, struct node_t *n);
 bool path_promote_udp_if_better(struct meshlink_handle *mesh, struct node_t *n, const sockaddr_t *from);
 
+void path_log_candidate(struct meshlink_handle *mesh, const struct node_t *n, const sockaddr_t *sa, address_source_t src, path_cap_t cap, const char *action);
+void path_log_validation(struct meshlink_handle *mesh, const struct node_t *n, const sockaddr_t *sa, const char *action, const char *detail);
+void path_log_meta(struct meshlink_handle *mesh, const struct node_t *n, const sockaddr_t *sa, const char *action);
 void path_log_transition(struct meshlink_handle *mesh, const struct node_t *n, path_tier_t from, path_tier_t to, const char *reason);
 
 #endif

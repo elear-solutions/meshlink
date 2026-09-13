@@ -252,15 +252,11 @@ static void test_known_path(void) {
 	exchange_meshlink_pair(b, c);
 
 	/* The edge b->c carries the address b saw c connect from, plus c's port. The graph
-	   seeds that address into a's recent[] for c unless it is private (RFC1918): so
-	   when c reaches b over a private interface, a's only way to c is the KNOWN list
-	   built from the edge. On a loopback-only host the seed lands in recent[] first
-	   and the same edge address is tried as RECENT: the KNOWN source itself cannot be
-	   exercised there, but which source was used, and why, is asserted either way. */
+	   seeds that as a META candidate even on RFC1918 (UDP still will not). a therefore
+	   dials c from RECENT, not KNOWN. */
 	char *local = meshlink_get_local_address_for_family(c, AF_INET);
 	const char *b_ip = local && is_rfc1918(local) ? local : "127.0.0.1";
-	bool edge_is_private = strcmp(b_ip, "127.0.0.1") != 0;
-	printf("c connects to b at %s (%s)\n", b_ip, edge_is_private ? "private, KNOWN path provable" : "loopback, edge address is seeded as RECENT");
+	printf("c connects to b at %s\n", b_ip);
 
 	meshlink_node_t *a_b = meshlink_get_node(a, "b");
 	meshlink_node_t *a_c = meshlink_get_node(a, "c");
@@ -318,28 +314,19 @@ static void test_known_path(void) {
 	snprintf(known_needle, sizeof known_needle, "a: Trying to connect to c at %s port %d (known)", b_ip, c_port);
 	snprintf(recent_needle, sizeof recent_needle, "a: Trying to connect to c at %s port %d (recent)", b_ip, c_port);
 
-	if(edge_is_private) {
-		/* Nothing was seeded, so the edge address can only have come from KNOWN. */
-		assert(log_find(mark, known_needle) >= 0);
-		assert(log_find(mark, recent_needle) < 0);
-		printf("T3 ok: a connected to c via KNOWN edge address %s port %d\n", b_ip, c_port);
-	} else {
-		/* The graph seeded the edge address, so it was tried as RECENT and never
-		   reached KNOWN; a's recent[] for c must indeed hold it now. */
-		assert(log_find(mark, recent_needle) >= 0);
-		assert(log_find(mark, known_needle) < 0);
+	assert(log_find(mark, recent_needle) >= 0);
+	assert(log_find(mark, known_needle) < 0);
 
-		devtool_get_node_status(a, a_c, &st);
-		bool seeded = false;
+	devtool_get_node_status(a, a_c, &st);
+	bool seeded = false;
 
-		for(size_t i = 0; i < st.recent_count; i++) {
-			seeded |= addr_is(&st.recent[i], b_ip, c_port);
-		}
-
-		assert(seeded);
-		devtool_free_node_status(&st);
-		printf("T3 ok: a connected to c at port %d from the graph-seeded RECENT entry (KNOWN not reachable on loopback)\n", c_port);
+	for(size_t i = 0; i < st.recent_count; i++) {
+		seeded |= addr_is(&st.recent[i], b_ip, c_port);
 	}
+
+	assert(seeded);
+	devtool_free_node_status(&st);
+	printf("T3 ok: a connected to c at %s port %d from the graph-seeded RECENT entry\n", b_ip, c_port);
 
 	free(local);
 
@@ -359,9 +346,9 @@ static void test_known_path(void) {
    (canonical-migrate T15 pins the wire format). d learns b only from that edge: no
    recent[] (indirect edges are never seeded), no canonical address, so its walk ends in
    the KNOWN stage, where the relay's address is all there is. Connecting there must
-   count as canonical: the address stays out of d's recent[], d's own edge to b is
-   indirect, and the upgrade probe replaces the connection with a direct one as soon as
-   UDP has taught d b's real address.
+	count as canonical: the address stays out of d's recent[], d's own edge to b is
+	   indirect, and the upgrade probe replaces the connection with a direct one as soon as
+	   REQ_EXTERNAL advertises b's listen address as META-capable.
 
    Left alone a would migrate to b's direct address within a second and replace the
    indirect edge before d gets to use it. Like canonical-migrate T6, a is handed a
@@ -400,6 +387,7 @@ static void test_known_indirect_counts_as_canonical(void) {
 	char relay_port_str[16];
 	snprintf(relay_port_str, sizeof relay_port_str, "%d", relay_port);
 	assert(meshlink_set_canonical_address(b, meshlink_get_self(b), relay_ip, relay_port_str));
+	devtool_set_external_ip_address(b, meshlink_get_self(b), "127.0.0.1");
 
 	int hole_port = 0;
 	int hole_fd = start_black_hole("127.0.0.1", &hole_port);
@@ -507,8 +495,8 @@ static void test_known_indirect_counts_as_canonical(void) {
 	snprintf(needle, sizeof needle, " d %d . b %s %d %d . %x ", DEV_CLASS_PORTABLE, relay_ip, b_port, DEV_CLASS_STATIONARY, EDGE_OPTION_INDIRECT | EDGE_OPTION_PMTU_DISCOVERY);
 	assert_after(log_find(mark, needle) >= 0, 5);
 
-	/* Counting as canonical, the connection is eligible for the upgrade probe: once UDP
-	   has taught d b's real address, d migrates onto it. */
+	/* Counting as canonical, the connection is eligible for the upgrade probe: once
+	   REQ_EXTERNAL has taught d b's META-capable listen address, d migrates onto it. */
 	devtool_node_status_t d_view_b;
 	memset(&d_view_b, 0, sizeof d_view_b);
 
@@ -740,17 +728,19 @@ static void test_failed_canonical_resolve_falls_through(void) {
 	assert(meshlink_start(a));
 
 	int found = -1;
+	int meta = -1;
 
-	for(int i = 0; i < 50 && found < 0; i++) {
+	for(int i = 0; i < 50 && (found < 0 || meta < 0); i++) {
 		found = log_find(mark, "Canonical resolve for b failed");
+		meta = log_find(mark, "Could not set up a meta connection to b");
 
-		if(found < 0) {
+		if(found < 0 || meta < 0) {
 			usleep(100000);
 		}
 	}
 
 	assert(found >= 0);
-	assert(log_find(mark, "Could not set up a meta connection to b") >= 0);
+	assert(meta >= 0);
 
 	hint_address(a, node_b, "127.0.0.1", b_port);
 	assert(wait_sync_flag(&peer_reachable, 20));
@@ -769,6 +759,63 @@ static void test_failed_canonical_resolve_falls_through(void) {
 	assert(meshlink_destroy("outgoing_order_t8_conf.2"));
 }
 
+/* T9: a HINT of the NLB IP:port while the hostname canonical is unresolved must
+   not be walked as recent. First dial is canonical. */
+static void test_hostname_canonical_skips_hint_nlb(void) {
+	printf("\n=== T9: hostname canonical does not dial HINT NLB as recent ===\n");
+
+	meshlink_handle_t *a, *b;
+	open_pair(&a, &b, "outgoing_order_t9");
+
+	int b_port = meshlink_get_port(b);
+	assert(b_port > 0);
+
+	int relay_port = 0;
+	tcp_relay_t *relay = start_tcp_relay("127.0.0.1", &relay_port, "127.0.0.1", b_port);
+	char relay_port_str[16];
+	snprintf(relay_port_str, sizeof relay_port_str, "%d", relay_port);
+
+	assert(meshlink_set_canonical_address(b, meshlink_get_self(b), "localhost", relay_port_str));
+	exchange_meshlink_pair(a, b);
+
+	meshlink_node_t *node_b = meshlink_get_node(a, "b");
+	assert(node_b);
+	forget_addresses(a, node_b);
+	hint_address(a, node_b, "127.0.0.1", relay_port);
+
+	watched_peer = "b";
+	init_sync_flag(&peer_reachable);
+	memset(&status_at_reachable, 0, sizeof status_at_reachable);
+	meshlink_set_node_status_cb(a, status_cb);
+
+	size_t mark = log_mark();
+	assert(meshlink_start(b));
+	assert(meshlink_start(a));
+	assert(wait_sync_flag(&peer_reachable, 15));
+	meshlink_set_node_status_cb(a, NULL);
+
+	assert(status_at_reachable.meta_connected);
+	assert(status_at_reachable.meta_via_canonical);
+	assert(port_of(&status_at_reachable.meta_address) == relay_port);
+	devtool_free_node_status(&status_at_reachable);
+
+	char recent_needle[128], canonical_needle[128];
+	snprintf(recent_needle, sizeof recent_needle, "a: Trying to connect to b at 127.0.0.1 port %d (recent)", relay_port);
+	snprintf(canonical_needle, sizeof canonical_needle, "a: Trying to connect to b at 127.0.0.1 port %d (canonical)", relay_port);
+	assert(log_find(mark, recent_needle) < 0);
+	assert(log_find(mark, canonical_needle) >= 0);
+
+	printf("T9 ok: HINT NLB skipped while hostname canonical unresolved; first dial canonical port %d\n", relay_port);
+
+	meshlink_stop(a);
+	meshlink_stop(b);
+	meshlink_close(a);
+	meshlink_close(b);
+	assert(meshlink_destroy("outgoing_order_t9_conf.1"));
+	assert(meshlink_destroy("outgoing_order_t9_conf.2"));
+	stop_tcp_relay(relay);
+}
+
 int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, capture_log_cb);
 
@@ -779,6 +826,7 @@ int main(void) {
 	test_persisted_nlb_sanitized();
 	test_hostname_canonical_skips_unknown_nlb();
 	test_failed_canonical_resolve_falls_through();
+	test_hostname_canonical_skips_hint_nlb();
 
 	free_captured_log();
 	return 0;

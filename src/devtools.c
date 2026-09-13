@@ -325,11 +325,34 @@ static void devtool_get_reset_node_status(meshlink_handle_t *mesh, meshlink_node
 		status->meta_dial_tier = c ? (int)c->status.meta_dial_tier : (int)META_DIAL_DIRECT;
 		status->would_probe_local_udp = path_udp_should_probe_local(mesh, internal, NULL);
 		memset(status->recent_source, 0, sizeof status->recent_source);
+		memset(status->recent_cap, 0, sizeof status->recent_cap);
+		memset(status->canonical_resolved, 0, sizeof status->canonical_resolved);
+		status->canonical_resolved_count = 0;
+		memset(&status->upgrade_target, 0, sizeof status->upgrade_target);
 
 		for(int i = 0; i < MAX_RECENT && internal->recent[i].sa.sa_family; i++) {
 			memcpy(&status->recent[i], &internal->recent[i], sizeof status->recent[i]);
 			status->recent_source[i] = (uint8_t)internal->recent_source[i];
+			status->recent_cap[i] = internal->recent_cap[i];
 			status->recent_count++;
+		}
+
+		if(internal->canonical_sa_count > 0 && internal->canonical_sa.sa.sa_family) {
+			memcpy(&status->canonical_resolved[status->canonical_resolved_count++], &internal->canonical_sa, sizeof status->canonical_resolved[0]);
+		}
+
+		for(int i = 1; i < internal->canonical_sa_count && status->canonical_resolved_count < DEVTOOL_MAX_RECENT; i++) {
+			memcpy(&status->canonical_resolved[status->canonical_resolved_count++], &internal->canonical_extra[i - 1], sizeof status->canonical_resolved[0]);
+		}
+
+		status->active_meta_tier = (int)path_select_hop_tier(internal, true);
+		status->upgrade_ineligible_reason = path_upgrade_ineligible_reason(mesh, internal);
+
+		sockaddr_t target;
+		memset(&target, 0, sizeof target);
+
+		if(path_best_direct_meta(internal, c ? &c->address : NULL, &target, NULL)) {
+			memcpy(&status->upgrade_target, &target, sizeof status->upgrade_target);
 		}
 
 		// Derive UDP connection status

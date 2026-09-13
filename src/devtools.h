@@ -137,10 +137,16 @@ struct devtool_node_status {
 	size_t recent_count;                  /// Number of valid entries in recent
 	struct sockaddr_storage recent[DEVTOOL_MAX_RECENT]; /// Copies of node_t.recent[]
 	uint8_t recent_source[DEVTOOL_MAX_RECENT]; /// address_source_t aligned with recent[]
+	uint8_t recent_cap[DEVTOOL_MAX_RECENT]; /// path_cap_t aligned with recent[]
+	struct sockaddr_storage canonical_resolved[DEVTOOL_MAX_RECENT]; /// cached canonical endpoints
+	size_t canonical_resolved_count;      /// number of resolved canonical endpoints
 	int udp_tier;                         /// path_tier_t of the confirmed UDP dest
 	int dest_path_tier;                   /// path_select_destination_tier()
 	int meta_dial_tier;                   /// meta_dial_tier_t of the active META connection
 	bool would_probe_local_udp;           /// WAN UDP is active and a local candidate is waiting
+	int active_meta_tier;                 /// path_select_hop_tier of the node itself
+	struct sockaddr_storage upgrade_target; /// next META-capable direct candidate
+	const char *upgrade_ineligible_reason; /// NULL if an upgrade probe may start
 };
 
 /// Get the status of a node.

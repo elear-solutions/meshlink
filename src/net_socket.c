@@ -117,9 +117,9 @@ void finish_connecting(meshlink_handle_t *mesh, connection_t *c) {
 	send_id(mesh, c);
 }
 
-static void handle_meta_write(meshlink_handle_t *mesh, connection_t *c) {
+static bool handle_meta_write(meshlink_handle_t *mesh, connection_t *c) {
 	if(c->outbuf.len <= c->outbuf.offset) {
-		return;
+		return true;
 	}
 
 	ssize_t outlen = send(c->socket, c->outbuf.data + c->outbuf.offset, c->outbuf.len - c->outbuf.offset, MSG_NOSIGNAL);
@@ -129,13 +129,13 @@ static void handle_meta_write(meshlink_handle_t *mesh, connection_t *c) {
 			logger(mesh, MESHLINK_INFO, "Connection closed by %s", c->name);
 		} else if(sockwouldblock(sockerrno)) {
 			logger(mesh, MESHLINK_DEBUG, "Sending %lu bytes to %s would block", (unsigned long)(c->outbuf.len - c->outbuf.offset), c->name);
-			return;
+			return true;
 		} else {
 			logger(mesh, MESHLINK_ERROR, "Could not send %lu bytes of data to %s: %s", (unsigned long)(c->outbuf.len - c->outbuf.offset), c->name, strerror(errno));
 		}
 
 		terminate_connection(mesh, c, c->status.active);
-		return;
+		return false;
 	}
 
 	if(c->node) {
@@ -147,10 +147,12 @@ static void handle_meta_write(meshlink_handle_t *mesh, connection_t *c) {
 	if(!c->outbuf.len) {
 		io_set(&mesh->loop, &c->io, IO_READ);
 	}
+
+	return true;
 }
 
 void flush_meta(meshlink_handle_t *mesh, connection_t *c) {
-	handle_meta_write(mesh, c);
+	(void)handle_meta_write(mesh, c);
 }
 
 static void handle_meta_io(event_loop_t *loop, void *data, int flags) {
@@ -173,9 +175,11 @@ static void handle_meta_io(event_loop_t *loop, void *data, int flags) {
 		}
 	}
 
-	if(flags & IO_WRITE) {
-		handle_meta_write(mesh, c);
-	} else {
+	if((flags & IO_WRITE) && !handle_meta_write(mesh, c)) {
+		return;
+	}
+
+	if(flags & IO_READ) {
 		handle_meta_connection_data(mesh, c);
 	}
 }
@@ -235,7 +239,7 @@ static struct addrinfo *get_recent_addresses(node_t *n) {
 			break;
 		}
 
-		if(!path_is_direct_candidate(n, &n->recent[i], n->recent_source[i])) {
+		if(!path_is_meta_candidate(n, &n->recent[i], n->recent_source[i], n->recent_cap[i])) {
 			continue;
 		}
 
@@ -269,46 +273,20 @@ static void free_known_addresses(struct addrinfo *ai) {
 	}
 }
 
-static bool canonical_host_matches(const node_t *n, const char *host, const char *serv) {
-	char *copy;
-	char *port;
-	bool ok = false;
-
-	if(!n || !n->canonical_address || !host || !serv) {
-		return false;
-	}
-
-	copy = xstrdup(n->canonical_address);
-	port = strchr(copy, ' ');
-
-	if(port && port[1]) {
-		*port++ = 0;
-		ok = !strcmp(copy, host) && !strcmp(port, serv);
-	}
-
-	free(copy);
-	return ok;
-}
-
-static void canonical_resolve_cb(meshlink_handle_t *mesh, char *host, char *serv, void *data, struct addrinfo *ai, int err) {
-	node_t *n = data;
-	bool match = canonical_host_matches(n, host, serv);
-	bool usable = match && ai && ai->ai_addr;
-
-	if(usable) {
-		path_set_canonical_sockaddr(n, (const sockaddr_t *)ai->ai_addr);
-		path_sanitize_recent(mesh, n);
-	}
-
+void outgoing_on_canonical_resolved(meshlink_handle_t *mesh, node_t *n, struct addrinfo *ai, int err, bool usable, char *host, char *serv) {
 	for list_each(outgoing_t, outgoing, mesh->outgoings) {
 		if(outgoing->node != n || outgoing->state != OUTGOING_CANONICAL_RESOLVE) {
 			continue;
 		}
 
 		if(usable) {
-			outgoing->ai = ai;
+			if(ai) {
+				freeaddrinfo(ai);
+			}
+
+			outgoing->ai = path_canonical_addrinfo(n);
 			outgoing->aip = NULL;
-			outgoing->ai_is_getaddrinfo = true;
+			outgoing->ai_is_getaddrinfo = false;
 			outgoing->state = OUTGOING_CANONICAL;
 			do_outgoing_connection(mesh, outgoing);
 			free(host);
@@ -321,20 +299,11 @@ static void canonical_resolve_cb(meshlink_handle_t *mesh, char *host, char *serv
 			ai = NULL;
 		}
 
-		if(!match && n->canonical_address) {
-			char *address = xstrdup(n->canonical_address);
-			char *port = strchr(address, ' ');
-
-			if(port) {
-				*port++ = 0;
-				port = xstrdup(port);
-				adns_queue(mesh, address, port, canonical_resolve_cb, n, 2);
-				free(host);
-				free(serv);
-				return;
-			}
-
-			free(address);
+		if(!path_canonical_host_matches(n, host, serv) && n->canonical_address) {
+			path_request_canonical_resolve(mesh, n);
+			free(host);
+			free(serv);
+			return;
 		}
 
 		if(err) {
@@ -440,21 +409,39 @@ static bool get_next_outgoing_address(meshlink_handle_t *mesh, outgoing_t *outgo
 	if(outgoing->state == OUTGOING_CANONICAL_RESOLVE) {
 		node_t *n = outgoing->node;
 
-		if(n->canonical_address) {
-			char *address = xstrdup(n->canonical_address);
-			char *port = strchr(address, ' ');
-
-			if(port) {
-				*port++ = 0;
-				port = xstrdup(port);
-				adns_queue(mesh, address, port, canonical_resolve_cb, outgoing->node, 2);
+		if(n->canonical_sa_count > 0) {
+			outgoing->ai = path_canonical_addrinfo(n);
+			outgoing->aip = NULL;
+			outgoing->ai_is_getaddrinfo = false;
+			outgoing->state = OUTGOING_CANONICAL;
+		} else if(path_canonical_is_hostname(n)) {
+			if(n->canonical_resolve_pending) {
 				return false;
-			} else {
-				logger(mesh, MESHLINK_ERROR, "Canonical address for %s is missing port number", n->name);
-				free(address);
-				outgoing->state = OUTGOING_KNOWN_INDIRECT;
 			}
 
+			if(n->canonical_resolve_next && mesh->loop.now.tv_sec < n->canonical_resolve_next) {
+				outgoing->state = OUTGOING_KNOWN_INDIRECT;
+			} else {
+				path_request_canonical_resolve(mesh, n);
+
+				if(n->canonical_resolve_pending) {
+					return false;
+				}
+
+				outgoing->state = OUTGOING_KNOWN_INDIRECT;
+			}
+		} else if(n->canonical_address) {
+			path_refresh_canonical_endpoint(n);
+
+			if(n->canonical_sa_count > 0) {
+				outgoing->ai = path_canonical_addrinfo(n);
+				outgoing->aip = NULL;
+				outgoing->ai_is_getaddrinfo = false;
+				outgoing->state = OUTGOING_CANONICAL;
+			} else {
+				logger(mesh, MESHLINK_ERROR, "Canonical address for %s is missing port number", n->name);
+				outgoing->state = OUTGOING_KNOWN_INDIRECT;
+			}
 		} else {
 			outgoing->state = OUTGOING_KNOWN_INDIRECT;
 		}
@@ -521,6 +508,7 @@ begin:
 	c->name = xstrdup(outgoing->node->name);
 	memcpy(&c->address, outgoing->aip->ai_addr, outgoing->aip->ai_addrlen);
 	path_mark_meta_dial(c, outgoing->state == OUTGOING_CANONICAL || outgoing->state == OUTGOING_KNOWN_INDIRECT || path_address_matches_canonical(outgoing->node, &c->address));
+	path_log_meta(mesh, outgoing->node, &c->address, c->status.via_canonical ? "dial canonical" : "dial direct");
 
 	if(mesh->log_level <= MESHLINK_INFO) {
 		char *hostname = sockaddr2hostname(&c->address);

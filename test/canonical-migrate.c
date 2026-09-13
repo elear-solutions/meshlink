@@ -498,7 +498,7 @@ static void test_migrate_from_req_external(void) {
 	assert(tcp_relay_accept_count(p.relay) == 1);
 	assert(count_probe_events(DEVTOOL_UPGRADE_PROBE_FAILED) == 0);
 	assert(log_contains("a: Got REQ_EXTERNAL from b"));
-	assert(log_contains("a: Migrated meta connection to b from canonical to direct "));
+	assert(log_contains("a: Path META: b migrated canonical -> direct"));
 
 	/* b's side swapped too: one active connection with a, not via anything. */
 	devtool_node_status_t st;
@@ -538,12 +538,10 @@ static void test_black_hole_backoff(void) {
 	int hole_port = 0;
 	int hole_fd = start_black_hole("127.0.0.1", &hole_port);
 
-	/* The black hole is hinted from the reachable callback, so it is the only direct
-	   address a knows when the canonical connection comes up and is probed right away.
-	   UDP then learns b's real addresses (loopback, and the container interface via
-	   broadcast probes) in front of it. The rotation continues after the failed slot,
-	   so depending on how many were learned the black hole is hit once or twice more
-	   before a real address wins; every failure must back off (5s, then 10s). */
+	/* The black hole is hinted from the reachable callback, so it is the only
+	   META-capable address a knows when the canonical connection comes up.
+	   UDP-reflexive ports are UDP-only and are not probed. After the first
+	   failure, hint b's real listen port so rotation can succeed. */
 	hint_port_on_reachable = hole_port;
 	time_t hinted_at = time(NULL);
 
@@ -551,6 +549,9 @@ static void test_black_hole_backoff(void) {
 	assert(meshlink_start(p.a));
 	assert(wait_sync_flag(&peer_reachable, 15));
 	assert_via_canonical_at_reachable(&p);
+	hint_port_on_reachable = 0;
+	assert_after(check_sync_flag(&probe_failed), 15);
+	hint_address(p.a, p.a_b, "127.0.0.1", p.b_port);
 
 	/* The first probe hangs for its 5 s timeout, so the stream provably runs through
 	   the relay before the swap and, with the extra batch, after it. */
@@ -1039,6 +1040,65 @@ static void test_nlb_in_recent_still_upgrades(void) {
 	close_relayed_pair(&p);
 }
 
+/* T18: first META is a hinted NLB, then a late hostname REQ_CANONICAL reclassifies
+   it and a direct REQ_EXTERNAL still migrates hitlessly. */
+static void test_late_canonical_reclassifies(void) {
+	printf("\n=== T18: late REQ_CANONICAL reclassifies NLB META, then hitless upgrade ===\n");
+
+	struct pair p;
+	memset(&p, 0, sizeof p);
+	snprintf(p.conf_a, sizeof p.conf_a, "canonical_migrate_t18_conf.1");
+	snprintf(p.conf_b, sizeof p.conf_b, "canonical_migrate_t18_conf.2");
+	assert(meshlink_destroy(p.conf_a));
+	assert(meshlink_destroy(p.conf_b));
+
+	p.a = meshlink_open(p.conf_a, "a", "canonical_migrate_t18", DEV_CLASS_PORTABLE);
+	p.b = meshlink_open(p.conf_b, "b", "canonical_migrate_t18", DEV_CLASS_STATIONARY);
+	assert(p.a && p.b);
+	meshlink_enable_discovery(p.a, false);
+	meshlink_enable_discovery(p.b, false);
+
+	p.b_port = meshlink_get_port(p.b);
+	assert(p.b_port > 0);
+	p.relay = start_tcp_relay("127.0.0.1", &p.relay_port, "127.0.0.1", p.b_port);
+	devtool_set_external_ip_address(p.b, meshlink_get_self(p.b), "127.0.0.1");
+	exchange_meshlink_pair(p.a, p.b);
+	p.a_b = meshlink_get_node(p.a, "b");
+	p.b_a = meshlink_get_node(p.b, "a");
+	assert(p.a_b && p.b_a);
+	forget_addresses(p.a, p.a_b);
+	hint_address(p.a, p.a_b, "127.0.0.1", p.relay_port);
+	meshlink_set_channel_accept_cb(p.b, accept_cb);
+
+	reset_probe_events();
+	watch_peer(p.a, "b");
+	assert(meshlink_start(p.b));
+	assert(meshlink_start(p.a));
+	assert(wait_sync_flag(&peer_reachable, 15));
+	assert(status_at_reachable.meta_connected);
+	assert(port_of(&status_at_reachable.meta_address) == p.relay_port);
+	devtool_free_node_status(&status_at_reachable);
+
+	char relay_port_str[16];
+	snprintf(relay_port_str, sizeof relay_port_str, "%d", p.relay_port);
+	assert(meshlink_set_canonical_address(p.b, meshlink_get_self(p.b), "localhost", relay_port_str));
+
+	meshlink_channel_t *channel = open_stream(p.a, p.a_b);
+	size_t sent = stream_across_migration(p.a, channel, 200, 20);
+
+	assert_after(check_sync_flag(&probe_succeeded) || connected_direct(p.a, p.a_b, p.b_port), 20);
+	assert(get_unreachable_count() == 0);
+	assert(stream_ok());
+	assert(sent > 200);
+	assert_direct(p.a, p.a_b, p.b_port);
+
+	printf("T18 ok: late canonical reclassified NLB, migrated to port %d, %zu messages streamed\n", p.b_port, sent);
+
+	meshlink_channel_close(p.a, channel);
+	meshlink_set_node_status_cb(p.a, NULL);
+	close_relayed_pair(&p);
+}
+
 int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, capture_log_cb);
 	devtool_upgrade_probe = upgrade_probe_hook;
@@ -1051,6 +1111,7 @@ int main(void) {
 	test_third_node_does_not_seed_relay();
 	test_repeated_ack_on_spare_is_rejected();
 	test_nlb_in_recent_still_upgrades();
+	test_late_canonical_reclassifies();
 
 	free_captured_log();
 	return 0;

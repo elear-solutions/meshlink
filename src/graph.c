@@ -51,6 +51,7 @@
 #include "meshlink_internal.h"
 #include "netutl.h"
 #include "node.h"
+#include "path_policy.h"
 #include "protocol.h"
 #include "relay.h"
 #include "utils.h"
@@ -128,8 +129,16 @@ static void sssp_bfs(meshlink_handle_t *mesh) {
 			   the node's: never seed it as a UDP or recent[] address. The owner marks
 			   it OPTION_INDIRECT in ADD_EDGE, so this holds for third parties too. */
 
-			if(!(e->options & OPTION_INDIRECT) && graph_may_seed_udp(e->to, &e->address)) {
-				update_node_udp_from(mesh, e->to, &e->address, ADDR_SRC_EDGE_DIRECT);
+			if(!(e->options & OPTION_INDIRECT)
+			                && !(n->connection && path_meta_is_canonical(n, n->connection))
+			                && !path_address_matches_canonical(e->to, &e->address)
+			                && !path_address_shares_canonical_ip(e->to, &e->address)) {
+				/* META may use a private edge address; UDP still refuses RFC1918/ULA. */
+				path_learn_address_cap(mesh, e->to, &e->address, ADDR_SRC_EDGE_DIRECT, PATH_CAP_BOTH);
+
+				if(graph_may_seed_udp(e->to, &e->address)) {
+					update_node_udp(mesh, e->to, &e->address);
+				}
 			}
 
 			list_insert_tail(todo_list, e->to);

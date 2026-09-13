@@ -63,10 +63,10 @@ edge_t *new_connection_edge(meshlink_handle_t *mesh, connection_t *c, node_t *n,
 	e->weight = mesh->dev_class_traits[devclass].edge_weight;
 	e->connection = c;
 
-	/* Over a canonical connection the address is the relay's, not the node's.
-	   Say so in the edge, so that nodes learning it via ADD_EDGE do not seed it
-	   as a UDP or recent[] address either (see sssp_bfs). */
-	if(c->status.via_canonical) {
+	/* The initiator who dialled a relay must advertise that hop as indirect.
+	   The responder's edge carries the initiator's advertised listen port on
+	   the TCP source IP; that is a real candidate, not the NLB. */
+	if(c->status.via_canonical && c->outgoing) {
 		e->options |= OPTION_INDIRECT;
 	}
 

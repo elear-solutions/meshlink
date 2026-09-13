@@ -22,6 +22,7 @@ TESTS = \
 	get-all-nodes \
 	import-export \
 	invite-join \
+	join-canonical-nlb \
 	metering \
 	metering-relayed \
 	metering-slowping \
@@ -44,6 +45,7 @@ TESTS = \
 	udp-relay \
 	relay-coverage \
 	path-policy-coverage \
+	transport-recent \
 	utcp-benchmark \
 	utcp-benchmark-stream
 
@@ -85,6 +87,7 @@ check_PROGRAMS = \
 	get-all-nodes \
 	import-export \
 	invite-join \
+	join-canonical-nlb \
 	metering \
 	metering-relayed \
 	metering-slowping \
@@ -107,7 +110,8 @@ check_PROGRAMS = \
 	trio2 \
 	udp-relay \
 	relay-coverage \
-	path-policy-coverage
+	path-policy-coverage \
+	transport-recent
 
 if INSTALL_TESTS
 bin_PROGRAMS = $(check_PROGRAMS)
@@ -188,6 +192,9 @@ import_export_LDADD = $(top_builddir)/src/libmeshlink.la
 invite_join_SOURCES = invite-join.c utils.c utils.h
 invite_join_LDADD = $(top_builddir)/src/libmeshlink.la
 
+join_canonical_nlb_SOURCES = join-canonical-nlb.c utils.c utils.h
+join_canonical_nlb_LDADD = $(top_builddir)/src/libmeshlink.la
+
 metering_SOURCES = metering.c netns_utils.c netns_utils.h utils.c utils.h
 metering_LDADD = $(top_builddir)/src/libmeshlink.la
 
@@ -253,3 +260,6 @@ relay_coverage_LDADD = $(top_builddir)/src/libmeshlink.la
 
 path_policy_coverage_SOURCES = path-policy-coverage.c utils.c utils.h
 path_policy_coverage_LDADD = $(top_builddir)/src/libmeshlink.la
+
+transport_recent_SOURCES = transport-recent.c utils.c utils.h
+transport_recent_LDADD = $(top_builddir)/src/libmeshlink.la
