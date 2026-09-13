@@ -20,6 +20,12 @@
     51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */
 
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+
+
 /// \file devtools.h
 /** This header files declares functions that are only intended for debugging and quality control.
  *  They are not necessary for the normal operation of MeshLink.
@@ -322,7 +328,9 @@ bool devtool_choose_udp_address(struct meshlink_handle *mesh, struct meshlink_no
 bool devtool_choose_udp_address_advance(struct meshlink_handle *mesh, struct meshlink_node *node, struct sockaddr_storage *addr, int *sock);
 
 /// Pin or clear node_t.status.udp_confirmed for dest-pick tests.
-/** @param mesh       Mesh handle.
+/** Relay-aware: a change recomputes dependents. Clearing confirmation restarts dest probes.
+ *
+ *  @param mesh       Mesh handle.
  *  @param node       Node to update.
  *  @param confirmed  New udp_confirmed flag.
  */
@@ -337,10 +345,10 @@ void devtool_set_udp_confirmed(struct meshlink_handle *mesh, struct meshlink_nod
 bool devtool_graph_may_seed_udp(struct meshlink_handle *mesh, struct meshlink_node *node, const struct sockaddr *addr);
 
 /// Pretend dest is only reachable via nexthop UDP (for relay tests).
-/** Pins dest's nexthop, clears dest's P2P UDP (udp_confirmed / minmtu = 0 so
- *  the TCP-fallback branch is taken), and marks nexthop UDP-confirmed. The next
- *  graph recompute or probe reply overwrites these fields. nexthop must already
- *  have a live SPTPS session (validkey).
+/** Pins dest's nexthop, clears dest's direct UDP confirmation, marks nexthop
+ *  UDP-confirmed, stops dest probes, resets dest probe count, and clears dest's
+ *  stored relay budget. Does not write minmtu. nexthop must already have a
+ *  valid key.
  *
  *  @param mesh     Mesh handle.
  *  @param dest     Node that should be reached only via nexthop.
@@ -348,5 +356,85 @@ bool devtool_graph_may_seed_udp(struct meshlink_handle *mesh, struct meshlink_no
  *  @return         true on success.
  */
 bool devtool_force_relay_path(struct meshlink_handle *mesh, struct meshlink_node *dest, struct meshlink_node *nexthop);
+
+/// Inject a raw SPTPS record, or a constructed inner record when data is NULL.
+/** When data is non-NULL, encrypts and sends `type` with that payload to `to`.
+ *  When data is NULL, encrypts a dummy record of `type` using `to`'s session
+ *  and wraps it as type 8 or sends META REQ_SPTPS.
+ *
+ *  @param mesh  Mesh handle.
+ *  @param to    Neighbor or destination node.
+ *  @param type  SPTPS record type.
+ *  @param data  Payload, or NULL to construct an inner record.
+ *  @param len   Payload length.
+ *  @return      true on success.
+ */
+bool devtool_send_raw_record(struct meshlink_handle *mesh, struct meshlink_node *to, uint8_t type, const void *data, size_t len);
+
+/// Set a node's measured minimum packet size.
+/** @param mesh  Mesh handle.
+ *  @param node  Node to update.
+ *  @param mtu   New minmtu value.
+ *  @return      true on success.
+ */
+bool devtool_set_minmtu(struct meshlink_handle *mesh, struct meshlink_node *node, uint16_t mtu);
+
+/// Drop every origin-and-destination report-table entry.
+/** @param mesh  Mesh handle.
+ */
+void devtool_clear_relay_reports(struct meshlink_handle *mesh);
+
+/// Create or update a report-table entry.
+/** `age_sec` is subtracted from the instance's current loop time so the entry
+ *  stays inside the thirty-second idle window. Unknown names are allowed so
+ *  tests can fill the 4,096-entry cap without opening extra instances.
+ *
+ *  @param mesh           Mesh handle.
+ *  @param origin         Origin name stored on the entry.
+ *  @param destination    Destination name stored on the entry.
+ *  @param age_sec        Seconds to subtract from the current loop time.
+ *  @param have_reported  Whether the entry has already queued a report.
+ *  @return               true on success.
+ */
+bool devtool_seed_relay_report(struct meshlink_handle *mesh, const char *origin, const char *destination, unsigned age_sec, bool have_reported);
+
+/// True when the report table has an entry for this pair.
+bool devtool_has_relay_report(struct meshlink_handle *mesh, const char *origin, const char *destination);
+
+/// True when that pair has stamped a successful report.
+bool devtool_relay_report_have_reported(struct meshlink_handle *mesh, const char *origin, const char *destination);
+
+/// Number of live report-table entries.
+size_t devtool_relay_report_count(struct meshlink_handle *mesh);
+
+/// Insert `count` dummy pairs named f0000/x, f0001/x, ...
+bool devtool_fill_relay_reports(struct meshlink_handle *mesh, size_t count, unsigned age_sec, bool have_reported);
+
+/// Force every `REQ_RELAY_MTU` `send_request` to fail until cleared.
+/** Failed queues do not stamp the one-second oversize clock.
+ *
+ *  @param mesh  Mesh handle.
+ *  @param fail  true to fail, false to resume normal sends.
+ */
+void devtool_fail_relay_reports(struct meshlink_handle *mesh, bool fail);
+
+
+/// Deliver a type-8 payload using `from`'s SPTPS decrypt buffer as the source (alias test).
+bool devtool_handle_relay_aliased(struct meshlink_handle *mesh, struct meshlink_node *from, const void *data, size_t len);
+
+/// Encrypt type/data with dest's session and deliver it as dest META REQ_SPTPS.
+bool devtool_send_meta_sptps(struct meshlink_handle *mesh, struct meshlink_node *dest, uint8_t type, const void *data, size_t len);
+
+/// Force the dest-unwrap realloc path to fail until cleared.
+void devtool_fail_relay_realloc(struct meshlink_handle *mesh, bool fail);
+
+/// Inject a `REQ_RELAY_MTU` request string through `from`'s current META connection.
+bool devtool_handle_req_relay_mtu(struct meshlink_handle *mesh, struct meshlink_node *from, const char *request);
+
+/// Drive remaining relay.c branches on a live trio (from / dest / hop).
+bool devtool_relay_cover_unit(struct meshlink_handle *mesh, struct meshlink_node *from, struct meshlink_node *dest, struct meshlink_node *hop);
+
+/// Simulate a hard UDP send failure on `hop`: clears udp_confirmed and recomputes dependents.
+void devtool_relay_hard_send_error(struct meshlink_handle *mesh, struct meshlink_node *hop);
 
 #endif

@@ -25,6 +25,9 @@
 #include "meshlink_internal.h"
 #include "net.h"
 #include "node.h"
+#include "relay.h"
+#include "relay_devtool.h"
+#include "sptps.h"
 #include "submesh.h"
 #include "splay_tree.h"
 #include "netutl.h"
@@ -554,20 +557,6 @@ bool devtool_choose_udp_address_advance(meshlink_handle_t *mesh, meshlink_node_t
 	return devtool_pick_udp_address(mesh, node, addr, sock, true);
 }
 
-void devtool_set_udp_confirmed(meshlink_handle_t *mesh, meshlink_node_t *node, bool confirmed) {
-	if(!mesh || !node) {
-		meshlink_errno = MESHLINK_EINVAL;
-		return;
-	}
-
-	if(pthread_mutex_lock(&mesh->mutex) != 0) {
-		abort();
-	}
-
-	((node_t *)node)->status.udp_confirmed = confirmed;
-	pthread_mutex_unlock(&mesh->mutex);
-}
-
 bool devtool_graph_may_seed_udp(meshlink_handle_t *mesh, meshlink_node_t *node, const struct sockaddr *addr) {
 	if(!mesh || !node || !addr) {
 		meshlink_errno = MESHLINK_EINVAL;
@@ -603,15 +592,273 @@ bool devtool_force_relay_path(meshlink_handle_t *mesh, meshlink_node_t *dest, me
 	}
 
 	d->nexthop = h;
+	d->prev_nexthop = h;
+	d->status.forced_relay = true;
 	d->status.udp_confirmed = false;
-	/* minmtu = 0 forces the (len - 21) > to->minmtu TCP branch so the relay predicate is reached. */
-	d->minmtu = 0;
 	h->status.udp_confirmed = true;
+	timeout_del(&mesh->loop, &d->mtutimeout);
+	d->mtuprobes = 0;
+	d->relay_budget = 0;
+	relay_update_destination_transport(mesh, d);
+	relay_recompute_dependents(mesh, h);
+	pthread_mutex_unlock(&mesh->mutex);
+	return true;
+}
 
-	if(!h->minmtu) {
-		h->minmtu = MTU;
+void devtool_set_udp_confirmed(meshlink_handle_t *mesh, meshlink_node_t *node, bool confirmed) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	node_t *n = (node_t *)node;
+	bool was = n->status.udp_confirmed;
+	n->status.udp_confirmed = confirmed;
+
+	if(was != confirmed) {
+		relay_recompute_dependents(mesh, n);
+		relay_update_destination_transport(mesh, n);
+	}
+
+	if(!confirmed && n->status.validkey && n->status.reachable && !n->mtutimeout.cb) {
+		send_mtu_probe(mesh, n);
 	}
 
 	pthread_mutex_unlock(&mesh->mutex);
+}
+
+bool devtool_send_raw_record(meshlink_handle_t *mesh, meshlink_node_t *to, uint8_t type, const void *data, size_t len) {
+	if(!mesh || !to) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	node_t *n = (node_t *)to;
+	bool ok = false;
+
+	if(data && len) {
+		ok = sptps_send_record(&n->sptps, type, data, (uint16_t)len);
+	} else {
+		ok = relay_inject_inner(mesh, n, type);
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return ok;
+}
+
+bool devtool_set_minmtu(meshlink_handle_t *mesh, meshlink_node_t *node, uint16_t mtu) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	node_t *n = (node_t *)node;
+	n->minmtu = mtu;
+	update_node_pmtu(mesh, n);
+	relay_update_destination_transport(mesh, n);
+	pthread_mutex_unlock(&mesh->mutex);
 	return true;
+}
+
+void devtool_clear_relay_reports(meshlink_handle_t *mesh) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	relay_devtool_clear_reports(mesh);
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+bool devtool_seed_relay_report(meshlink_handle_t *mesh, const char *origin, const char *destination, unsigned age_sec, bool have_reported) {
+	if(!mesh || !origin || !destination) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	bool ok = relay_devtool_seed_report(mesh, origin, destination, age_sec, have_reported);
+	pthread_mutex_unlock(&mesh->mutex);
+	return ok;
+}
+
+bool devtool_has_relay_report(meshlink_handle_t *mesh, const char *origin, const char *destination) {
+	if(!mesh || !origin || !destination) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	bool found = relay_devtool_has_report(mesh, origin, destination);
+	pthread_mutex_unlock(&mesh->mutex);
+	return found;
+}
+
+bool devtool_relay_report_have_reported(meshlink_handle_t *mesh, const char *origin, const char *destination) {
+	if(!mesh || !origin || !destination) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	bool stamped = relay_devtool_have_reported(mesh, origin, destination);
+	pthread_mutex_unlock(&mesh->mutex);
+	return stamped;
+}
+
+size_t devtool_relay_report_count(meshlink_handle_t *mesh) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return 0;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	size_t n = relay_devtool_report_count(mesh);
+	pthread_mutex_unlock(&mesh->mutex);
+	return n;
+}
+
+bool devtool_fill_relay_reports(meshlink_handle_t *mesh, size_t count, unsigned age_sec, bool have_reported) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	bool ok = relay_devtool_fill_reports(mesh, count, age_sec, have_reported);
+	pthread_mutex_unlock(&mesh->mutex);
+	return ok;
+}
+
+void devtool_fail_relay_reports(meshlink_handle_t *mesh, bool fail) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	relay_devtool_force_report_null_connection(mesh, fail);
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+bool devtool_handle_relay_aliased(meshlink_handle_t *mesh, meshlink_node_t *from, const void *data, size_t len) {
+	if(!mesh || !from || !data || !len || len > UINT16_MAX) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	bool ok = relay_devtool_handle_aliased(mesh, (node_t *)from, data, (uint16_t)len);
+	pthread_mutex_unlock(&mesh->mutex);
+	return ok;
+}
+
+bool devtool_send_meta_sptps(meshlink_handle_t *mesh, meshlink_node_t *dest, uint8_t type, const void *data, size_t len) {
+	if(!mesh || !dest) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	bool ok = relay_devtool_send_meta_sptps(mesh, (node_t *)dest, type, data, len);
+	pthread_mutex_unlock(&mesh->mutex);
+	return ok;
+}
+
+void devtool_fail_relay_realloc(meshlink_handle_t *mesh, bool fail) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	relay_devtool_fail_realloc(mesh, fail);
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+bool devtool_handle_req_relay_mtu(meshlink_handle_t *mesh, meshlink_node_t *from, const char *request) {
+	if(!mesh || !from || !request) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	bool ok = relay_devtool_handle_req_relay_mtu(mesh, (node_t *)from, request);
+	pthread_mutex_unlock(&mesh->mutex);
+	return ok;
+}
+
+bool devtool_relay_cover_unit(meshlink_handle_t *mesh, meshlink_node_t *from, meshlink_node_t *dest, meshlink_node_t *hop) {
+	if(!mesh || !from || !dest || !hop) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	bool ok = relay_devtool_cover_unit(mesh, (node_t *)from, (node_t *)dest, (node_t *)hop);
+	pthread_mutex_unlock(&mesh->mutex);
+	return ok;
+}
+
+void devtool_relay_hard_send_error(meshlink_handle_t *mesh, meshlink_node_t *hop) {
+	if(!mesh || !hop) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	relay_on_hard_send_error(mesh, (node_t *)hop);
+	pthread_mutex_unlock(&mesh->mutex);
 }

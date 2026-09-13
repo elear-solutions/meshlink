@@ -52,6 +52,7 @@
 #include "netutl.h"
 #include "node.h"
 #include "protocol.h"
+#include "relay.h"
 #include "utils.h"
 #include "xalloc.h"
 #include "graph.h"
@@ -115,7 +116,11 @@ static void sssp_bfs(meshlink_handle_t *mesh) {
 			}
 
 			e->to->status.visited = true;
-			e->to->nexthop = (n->nexthop == mesh->self) ? e->to : n->nexthop;
+
+			if(!e->to->status.forced_relay) {
+				e->to->nexthop = (n->nexthop == mesh->self) ? e->to : n->nexthop;
+			}
+
 			e->to->prevedge = e;
 			e->to->distance = n->distance + 1;
 
@@ -157,7 +162,7 @@ static void check_reachability(meshlink_handle_t *mesh) {
 				utcp_reset_all_connections(n->utcp);
 			}
 
-			n->status.validkey = false;
+			node_set_validkey(mesh, n, false);
 			sptps_stop(&n->sptps);
 			n->status.waitingforkey = false;
 			n->last_req_key = -3600;
@@ -168,6 +173,9 @@ static void check_reachability(meshlink_handle_t *mesh) {
 			n->mtuprobes = 0;
 
 			timeout_del(&mesh->loop, &n->mtutimeout);
+			/* Keep relay_budget; dependents wait for a later probe. */
+			relay_recompute_dependents(mesh, n);
+			relay_update_destination_transport(mesh, n);
 		}
 
 		if(n->status.visited != n->status.reachable) {
@@ -189,6 +197,8 @@ static void check_reachability(meshlink_handle_t *mesh) {
 				} else {
 					logger(mesh, MESHLINK_DEBUG, "Node %s became unreachable", n->name);
 					n->last_unreachable = time(NULL);
+					n->relay_budget = 0;
+					n->status.forced_relay = false;
 				}
 			}
 
@@ -198,6 +208,8 @@ static void check_reachability(meshlink_handle_t *mesh) {
 			n->mtuprobes = 0;
 
 			timeout_del(&mesh->loop, &n->mtutimeout);
+			relay_recompute_dependents(mesh, n);
+			relay_update_destination_transport(mesh, n);
 
 			if(!n->status.blacklisted) {
 				update_node_status(mesh, n);
@@ -231,5 +243,10 @@ static void check_reachability(meshlink_handle_t *mesh) {
 
 void graph(meshlink_handle_t *mesh) {
 	sssp_bfs(mesh);
+
+	for splay_each(node_t, n, mesh->nodes) {
+		relay_clear_budget_if_nexthop_changed(mesh, n);
+	}
+
 	check_reachability(mesh);
 }

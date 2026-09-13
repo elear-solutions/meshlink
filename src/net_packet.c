@@ -29,6 +29,7 @@
 #include "net_upgrade.h"
 #include "netutl.h"
 #include "protocol.h"
+#include "relay.h"
 #include "route.h"
 #include "sptps.h"
 #include "utils.h"
@@ -84,6 +85,8 @@ static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 		n->maxmtu = MTU;
 
 		update_node_pmtu(mesh, n);
+		relay_recompute_dependents(mesh, n);
+		relay_update_destination_transport(mesh, n);
 	}
 
 	if(n->mtuprobes >= 10 && n->mtuprobes < 32 && !n->minmtu) {
@@ -91,7 +94,7 @@ static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 		n->mtuprobes = 31;
 	}
 
-	if(n->mtuprobes == 30 || (n->mtuprobes < 30 && n->minmtu >= n->maxmtu)) {
+	if(n->status.udp_confirmed && (n->mtuprobes == 30 || (n->mtuprobes < 30 && n->minmtu >= n->maxmtu))) {
 		if(n->minmtu > n->maxmtu) {
 			n->minmtu = n->maxmtu;
 			update_node_pmtu(mesh, n);
@@ -180,11 +183,17 @@ static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet
 		   back exactly the way it came in. */
 
 		bool udp_confirmed = n->status.udp_confirmed;
+		n->status.temp_udp_confirmed = true;
 		n->status.udp_confirmed = true;
 		logger(mesh, MESHLINK_DEBUG, "Sending MTU probe reply %d to %s", packet->len, n->name);
 		n->out_meta += packet->len + PROBE_OVERHEAD;
 		send_udppacket(mesh, n, packet);
-		n->status.udp_confirmed = udp_confirmed;
+
+		if(n->status.udp_confirmed) {
+			n->status.udp_confirmed = udp_confirmed;
+		}
+
+		n->status.temp_udp_confirmed = false;
 	} else {
 		/* It's a valid reply: now we know bidirectional communication
 		   is possible using the address and socket that the reply
@@ -212,6 +221,8 @@ static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet
 			}
 
 			try_upgrade_probe(mesh, n);
+			relay_update_destination_transport(mesh, n);
+			relay_recompute_dependents(mesh, n);
 		}
 
 		/* If we haven't established the PMTU yet, restart the discovery process. */
@@ -642,77 +653,35 @@ static void send_udppacket(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *ori
 	send_sptps_packet(mesh, n, origpkt);
 }
 
-/* Dest has no P2P UDP but the nexthop does: carry REQ_SPTPS on that UDP session.
+/* Hop META first. Direct dest META if the hop has no TCP — #113 may have
+   dropped the hop session after a direct edge came up, and a forced pin
+   must not black-hole when that happens. */
+static connection_t *meta_connection_for(node_t *to) {
+	if(to->nexthop && to->nexthop->connection) {
+		return to->nexthop->connection;
+	}
 
-   Disabled for now. The relay only fits records whose base64 REQ_SPTPS is under
-   the nexthop MTU (~1030 bytes raw), so a media stream ends up split per packet:
-   full-size chunks on META via TCP, tail fragments on UDP via the relay. Two
-   paths with different latency and loss reorder the utcp stream and stall it on
-   every lost fragment, which shows up as dropped frames at the receiver. Until
-   the relay can carry every packet (binary framing, no base64), keep a
-   destination on a single transport. The receive side stays enabled. */
-static bool can_relay_req_sptps_udp(const node_t *to, uint8_t type) {
-	(void)to;
-	(void)type;
-	return false;
+	return to->connection;
 }
 
-bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
-	assert(handle);
-	assert(data);
-	assert(len);
+static bool send_sptps_via_meta(meshlink_handle_t *mesh, node_t *to, const void *data, size_t len) {
+	connection_t *c = meta_connection_for(to);
 
-	node_t *to = handle;
-	meshlink_handle_t *mesh = to->mesh;
-
-	if(!to->status.reachable) {
-		logger(mesh, MESHLINK_ERROR, "Trying to send SPTPS data to unreachable node %s", to->name);
+	if(!c) {
+		logger(mesh, MESHLINK_WARNING, "Unable to forward SPTPS packet to %s via %s", to->name, to->nexthop ? to->nexthop->name : to->name);
 		return false;
 	}
 
-	/* Send it via TCP if it is a handshake packet, TCPOnly is in use, or this packet is larger than the MTU. */
-
-	if(type >= SPTPS_HANDSHAKE || (type != PKT_PROBE && (len - 21) > to->minmtu)) {
+	if(!to->status.validkey) {
 		char buf[len * 4 / 3 + 5];
 		b64encode(data, buf, len);
-
-		if(!to->nexthop || !to->nexthop->connection) {
-			logger(mesh, MESHLINK_WARNING, "Unable to forward SPTPS packet to %s via %s", to->name, to->nexthop ? to->nexthop->name : to->name);
-			return false;
-		}
-
-		char req[MAXBUFSIZE];
-		int reqlen = snprintf(req, sizeof(req), "%d %s %s %d %s", REQ_KEY, mesh->self->name, to->name, REQ_SPTPS, buf);
-
-		if(reqlen < 0 || (size_t)reqlen >= sizeof(req)) {
-			logger(mesh, MESHLINK_ERROR, "Output buffer overflow while sending REQ_SPTPS to %s", to->name);
-			return false;
-		}
-
-		/* If dest has no P2P UDP but the nexthop does, carry REQ_SPTPS on that UDP session. */
-		if(can_relay_req_sptps_udp(to, type)
-		                && (size_t)reqlen + 1 + SPTPS_DATAGRAM_OVERHEAD <= to->nexthop->minmtu) {
-			logger(mesh, MESHLINK_DEBUG, "Sending REQ_SPTPS via UDP to %s for %s", to->nexthop->name, to->name);
-
-			/* Include the trailing NUL so req_key_h sees a C string. */
-			if(sptps_send_record(&to->nexthop->sptps, PKT_REQ_SPTPS, req, (uint16_t)(reqlen + 1))) {
-				return true;
-			}
-
-			/* UDP send failed (e.g. rekey); fall through to META. */
-		}
-
-		/* If no valid key is known yet, send the packets using ANS_KEY requests,
-		   to ensure we get to learn the reflexive UDP address. */
-		if(!to->status.validkey) {
-			return send_request(mesh, to->nexthop->connection, NULL, "%d %s %s %s -1 -1 -1 %d", ANS_KEY, mesh->self->name, to->name, buf, 0);
-		} else {
-			return send_request(mesh, to->nexthop->connection, NULL, "%s", req);
-		}
+		return send_request(mesh, c, NULL, "%d %s %s %s -1 -1 -1 %d", ANS_KEY, mesh->self->name, to->name, buf, 0);
 	}
 
-	/* Otherwise, send the packet via UDP */
+	return relay_meta_req_sptps(mesh, c, mesh->self->name, to->name, data, len);
+}
 
+static bool send_sptps_via_udp(meshlink_handle_t *mesh, node_t *to, const void *data, size_t len) {
 	sockaddr_t sa_buf;
 	const sockaddr_t *sa = NULL;
 	int sock = -1;
@@ -746,11 +715,91 @@ bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 			}
 		} else {
 			logger(mesh, MESHLINK_WARNING, "Error sending UDP SPTPS packet to %s: %s", to->name, sockstrerror(sockerrno));
+			relay_on_hard_send_error(mesh, to);
 			return false;
 		}
 	}
 
 	return true;
+}
+
+static bool send_relay_outer(meshlink_handle_t *mesh, node_t *hop, const void *data, size_t len) {
+	size_t payload = len - RELAY_INNER_MIN;
+	uint16_t limit = hop->minmtu > MINMTU ? hop->minmtu : MINMTU;
+
+	/* Ready oversize is a handled drop (no META fallback). */
+	if(payload > limit) {
+		return true;
+	}
+
+	if(!send_sptps_via_udp(mesh, hop, data, len)) {
+		return false;
+	}
+
+	char dest_name[RELAY_NAME_MAX + 1];
+
+	if(!relay_payload_destination(data, len, dest_name, sizeof(dest_name))) {
+		dest_name[0] = 0;
+	}
+
+	logger(mesh, MESHLINK_DEBUG, "Relaying type-8 via UDP to %s for %s", hop->name, dest_name[0] ? dest_name : hop->name);
+	relay_wake_probes(mesh, hop);
+	return true;
+}
+
+static bool send_application_record(meshlink_handle_t *mesh, node_t *to, const void *data, size_t len) {
+	/* Confirmed UDP does not compare (len-21) against minmtu. */
+	if(to->status.udp_confirmed) {
+		if(!send_sptps_via_udp(mesh, to, data, len)) {
+			return false;
+		}
+
+		relay_wake_probes(mesh, to);
+		return true;
+	}
+
+	if(relay_names_unusable(mesh->self->name, to->name)) {
+		return send_sptps_via_meta(mesh, to, data, len);
+	}
+
+	if(to->nexthop && relay_hop_udp_ready(to->nexthop)) {
+		uint8_t wrapped[MAXSIZE];
+		size_t wlen = sizeof(wrapped);
+
+		if(relay_encode(mesh->self->name, to->name, data, len, wrapped, &wlen)) {
+			return sptps_send_record(&to->nexthop->sptps, PKT_RELAY_SPTPS, wrapped, (uint16_t)wlen);
+		}
+	}
+
+	return send_sptps_via_meta(mesh, to, data, len);
+}
+
+bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
+	assert(handle);
+	assert(data);
+	assert(len);
+
+	node_t *to = handle;
+	meshlink_handle_t *mesh = to->mesh;
+
+	if(!to->status.reachable) {
+		logger(mesh, MESHLINK_ERROR, "Trying to send SPTPS data to unreachable node %s", to->name);
+		return false;
+	}
+
+	if(type >= SPTPS_HANDSHAKE) {
+		return send_sptps_via_meta(mesh, to, data, len);
+	}
+
+	if(type == PKT_PROBE) {
+		return send_sptps_via_udp(mesh, to, data, len);
+	}
+
+	if(type == PKT_RELAY_SPTPS) {
+		return send_relay_outer(mesh, to, data, len);
+	}
+
+	return send_application_record(mesh, to, data, len);
 }
 
 bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t len) {
@@ -763,7 +812,7 @@ bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t
 	if(type == SPTPS_HANDSHAKE) {
 		if(!from->status.validkey) {
 			logger(mesh, MESHLINK_INFO, "SPTPS key exchange with %s successful", from->name);
-			from->status.validkey = true;
+			node_set_validkey(mesh, from, true);
 			from->status.waitingforkey = false;
 
 			if(from->utcp) {
@@ -779,36 +828,12 @@ bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t
 		return false;
 	}
 
-	if(type == PKT_REQ_SPTPS) {
-		logger(mesh, MESHLINK_DEBUG, "Got REQ_SPTPS via UDP from %s", from->name);
-
-		if(!from->connection || !data || !len) {
-			return true;
-		}
-
-		/* Sender includes the trailing NUL in len (sptps also writes decrypted_buffer[len - 20] = 0).
-		   Reject empty / leading-NUL payloads: req_key_h assert(*request) would abort(). */
-		if(len < 2 || ((const char *)data)[0] == '\0' || ((const char *)data)[len - 1] != '\0') {
-			return true;
-		}
-
-		/* META receive_request bounds-checks the leading request number before any
-		   handler. req_key_h may forward via send_request("%s", request), which
-		   indexes request_name[atoi(request)] — so a first token outside REQ_KEY
-		   is an out-of-bounds read. Only the REQ_KEY wire format is valid here. */
-		if(atoi((const char *)data) != REQ_KEY) {
-			return true;
-		}
-
-		/* from->connection is the meta session with the UDP sender (the nexthop), used
-		   for logging and req_key_h's from->connection != c check. A false return from
-		   req_key_h means "drop this meta connection"; on the datagram path that would
-		   abort() in sptps_receive_data_datagram, so ignore the result. */
-		if(!req_key_h(mesh, from->connection, data)) {
-			logger(mesh, MESHLINK_DEBUG, "Ignoring failed REQ_SPTPS via UDP from %s", from->name);
-		}
-
+	if(from->status.in_req_sptps && type != 0) {
 		return true;
+	}
+
+	if(type == PKT_RELAY_SPTPS) {
+		return relay_handle_record(mesh, from, data, len);
 	}
 
 	vpn_packet_t inpkt;
@@ -825,10 +850,14 @@ bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t
 
 	if(type & ~(PKT_COMPRESSED)) {
 		logger(mesh, MESHLINK_ERROR, "Unexpected SPTPS record type %d len %d from %s", type, len, from->name);
-		return false;
+		return from->status.in_req_sptps;
 	}
 
 	if(type & PKT_COMPRESSED) {
+		if(from->status.in_req_sptps) {
+			return true;
+		}
+
 		logger(mesh, MESHLINK_ERROR, "Error while decompressing packet from %s", from->name);
 		return false;
 	}

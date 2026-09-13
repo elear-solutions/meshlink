@@ -25,6 +25,7 @@
 #include "net.h"
 #include "netutl.h"
 #include "node.h"
+#include "relay.h"
 #include "splay_tree.h"
 #include "utils.h"
 #include "xalloc.h"
@@ -62,6 +63,32 @@ node_t *new_node(void) {
 	return n;
 }
 
+static void node_clear_inbound_prev_nexthop(meshlink_handle_t *mesh, node_t *dying) {
+	if(!mesh || !mesh->nodes || !dying) {
+		return;
+	}
+
+	for splay_each(node_t, n, mesh->nodes) {
+		if(n->prev_nexthop == dying) {
+			n->prev_nexthop = NULL;
+		}
+	}
+}
+
+void node_set_validkey(meshlink_handle_t *mesh, node_t *n, bool valid) {
+	if(!n) {
+		return;
+	}
+
+	if(n->status.validkey == valid) {
+		return;
+	}
+
+	n->status.validkey = valid;
+	relay_recompute_dependents(mesh, n);
+	relay_update_destination_transport(mesh, n);
+}
+
 void free_node(node_t *n) {
 	n->status.destroyed = true;
 
@@ -93,6 +120,7 @@ void node_add(meshlink_handle_t *mesh, node_t *n) {
 }
 
 void node_del(meshlink_handle_t *mesh, node_t *n) {
+	node_clear_inbound_prev_nexthop(mesh, n);
 	timeout_del(&mesh->loop, &n->mtutimeout);
 
 	for splay_each(edge_t, e, n->edge_tree) {
