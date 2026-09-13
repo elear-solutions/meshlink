@@ -562,6 +562,92 @@ static void test_known_indirect_counts_as_canonical(void) {
 	stop_tcp_relay(relay);
 }
 
+/* T6: an old install persisted the NLB address in recent[] as an unclassified
+   entry. Load must strip it, and the next dial must not treat it as direct. */
+static void test_persisted_nlb_sanitized(void) {
+	printf("\n=== T6: persisted NLB-in-recent[] is sanitized and not dialled as direct ===\n");
+
+	meshlink_handle_t *a, *b;
+	open_pair(&a, &b, "outgoing_order_t6");
+
+	int b_port = meshlink_get_port(b);
+	assert(b_port > 0);
+
+	int relay_port = 0;
+	tcp_relay_t *relay = start_tcp_relay("127.0.0.1", &relay_port, "127.0.0.1", b_port);
+	char relay_port_str[16];
+	snprintf(relay_port_str, sizeof relay_port_str, "%d", relay_port);
+
+	assert(meshlink_set_canonical_address(b, meshlink_get_self(b), "127.0.0.1", relay_port_str));
+	exchange_meshlink_pair(a, b);
+
+	meshlink_node_t *node_b = meshlink_get_node(a, "b");
+	assert(node_b);
+	forget_addresses(a, node_b);
+
+	struct sockaddr_in nlb = {
+		.sin_family = AF_INET,
+		.sin_port = htons((uint16_t)relay_port),
+	};
+	assert(inet_pton(AF_INET, "127.0.0.1", &nlb.sin_addr) == 1);
+	assert(devtool_plant_recent_address(a, node_b, (struct sockaddr *)&nlb));
+
+	devtool_node_status_t st;
+	devtool_get_node_status(a, node_b, &st);
+	assert(st.recent_count >= 1);
+	assert(addr_is(&st.recent[0], "127.0.0.1", relay_port));
+	assert(st.recent_source[0] == 0);
+	devtool_free_node_status(&st);
+
+	meshlink_stop(a);
+	meshlink_close(a);
+	a = meshlink_open("outgoing_order_t6_conf.1", "a", "outgoing_order_t6", DEV_CLASS_PORTABLE);
+	assert(a);
+	meshlink_enable_discovery(a, false);
+	node_b = meshlink_get_node(a, "b");
+	assert(node_b);
+
+	devtool_get_node_status(a, node_b, &st);
+
+	for(size_t i = 0; i < st.recent_count; i++) {
+		assert(!addr_is(&st.recent[i], "127.0.0.1", relay_port));
+	}
+
+	devtool_free_node_status(&st);
+
+	watched_peer = "b";
+	init_sync_flag(&peer_reachable);
+	memset(&status_at_reachable, 0, sizeof status_at_reachable);
+	meshlink_set_node_status_cb(a, status_cb);
+
+	size_t mark = log_mark();
+	assert(meshlink_start(b));
+	assert(meshlink_start(a));
+	assert(wait_sync_flag(&peer_reachable, 15));
+	meshlink_set_node_status_cb(a, NULL);
+
+	assert(status_at_reachable.meta_connected);
+	assert(status_at_reachable.meta_via_canonical);
+	assert(port_of(&status_at_reachable.meta_address) == relay_port);
+	devtool_free_node_status(&status_at_reachable);
+
+	char recent_needle[128], canonical_needle[128];
+	snprintf(recent_needle, sizeof recent_needle, "a: Trying to connect to b at 127.0.0.1 port %d (recent)", relay_port);
+	snprintf(canonical_needle, sizeof canonical_needle, "a: Trying to connect to b at 127.0.0.1 port %d (canonical)", relay_port);
+	assert(log_find(mark, recent_needle) < 0);
+	assert(log_find(mark, canonical_needle) >= 0);
+
+	printf("T6 ok: NLB stripped from recent[], first dial was canonical port %d\n", relay_port);
+
+	meshlink_stop(a);
+	meshlink_stop(b);
+	meshlink_close(a);
+	meshlink_close(b);
+	assert(meshlink_destroy("outgoing_order_t6_conf.1"));
+	assert(meshlink_destroy("outgoing_order_t6_conf.2"));
+	stop_tcp_relay(relay);
+}
+
 int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, capture_log_cb);
 
@@ -569,6 +655,7 @@ int main(void) {
 	test_fallback_to_canonical_and_recent_stays_direct();
 	test_known_path();
 	test_known_indirect_counts_as_canonical();
+	test_persisted_nlb_sanitized();
 
 	free_captured_log();
 	return 0;

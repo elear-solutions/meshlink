@@ -995,6 +995,50 @@ static void test_repeated_ack_on_spare_is_rejected(void) {
 	close_relayed_pair(&p);
 }
 
+/* T17: a planted NLB address in recent[] must not be dialled as direct, and a
+   later real address still migrates hitlessly. */
+static void test_nlb_in_recent_still_upgrades(void) {
+	printf("\n=== T17: NLB planted in recent[] is not a direct META path, then hitless upgrade ===\n");
+
+	struct pair p;
+	open_relayed_pair(&p, "canonical_migrate_t17", true);
+	reset_probe_events();
+	watch_peer(p.a, "b");
+
+	struct sockaddr_in nlb = {
+		.sin_family = AF_INET,
+		.sin_port = htons((uint16_t)p.relay_port),
+	};
+	assert(inet_pton(AF_INET, "127.0.0.1", &nlb.sin_addr) == 1);
+	assert(devtool_plant_recent_address(p.a, p.a_b, (struct sockaddr *)&nlb));
+
+	size_t mark = log_mark();
+	assert(meshlink_start(p.b));
+	assert(meshlink_start(p.a));
+	assert(wait_sync_flag(&peer_reachable, 15));
+	assert_via_canonical_at_reachable(&p);
+	assert(tcp_relay_accept_count(p.relay) == 1);
+
+	char recent_needle[128];
+	snprintf(recent_needle, sizeof recent_needle, "a: Trying to connect to b at 127.0.0.1 port %d (recent)", p.relay_port);
+	assert(log_find(mark, recent_needle) < 0);
+
+	meshlink_channel_t *channel = open_stream(p.a, p.a_b);
+	size_t sent = stream_across_migration(p.a, channel, 200, 20);
+
+	assert(check_sync_flag(&probe_succeeded));
+	assert_direct(p.a, p.a_b, p.b_port);
+	assert(get_unreachable_count() == 0);
+	assert(stream_ok());
+	assert(sent > 200);
+
+	printf("T17 ok: NLB stayed off the recent walk, migrated to port %d, %zu messages streamed\n", p.b_port, sent);
+
+	meshlink_channel_close(p.a, channel);
+	meshlink_set_node_status_cb(p.a, NULL);
+	close_relayed_pair(&p);
+}
+
 int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, capture_log_cb);
 	devtool_upgrade_probe = upgrade_probe_hook;
@@ -1006,6 +1050,7 @@ int main(void) {
 	test_third_node_view();
 	test_third_node_does_not_seed_relay();
 	test_repeated_ack_on_spare_is_rejected();
+	test_nlb_in_recent_still_upgrades();
 
 	free_captured_log();
 	return 0;

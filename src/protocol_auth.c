@@ -100,7 +100,7 @@ static bool commit_invitation(meshlink_handle_t *mesh, connection_t *c, const vo
 	n->submesh = c->submesh;
 
 	// Remember its current address
-	node_add_recent_address(mesh, n, &c->address);
+	node_add_recent_address(mesh, n, &c->address, ADDR_SRC_AUTH_DIRECT);
 
 	if(!node_write_config(mesh, n, true) || !config_sync(mesh, "current")) {
 		logger(mesh, MESHLINK_ERROR, "Error writing configuration file for invited node %s!\n", c->name);
@@ -228,7 +228,7 @@ bool id_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	   edge is OPTION_INDIRECT and the relay source is kept out of recent[]. */
 
 	if(c->flags & PROTOCOL_VIA_CANONICAL) {
-		c->status.via_canonical = true;
+		path_mark_meta_dial(c, true);
 	}
 
 	/* Check if this is an invitation  */
@@ -535,8 +535,8 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	/* The canonical address, like one taken from another node's indirect edge, is a relay,
 	   not the node itself: never remember it as a direct address. */
 
-	if(!c->status.via_canonical) {
-		node_add_recent_address(mesh, n, &c->address);
+	if(!path_meta_is_canonical(n, c)) {
+		node_add_recent_address(mesh, n, &c->address, ADDR_SRC_AUTH_DIRECT);
 	}
 
 	/* Put it in the graph and notify everyone */

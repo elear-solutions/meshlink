@@ -17,6 +17,7 @@
 #include "meshlink_internal.h"
 #include "net.h"
 #include "node.h"
+#include "path_policy.h"
 #include "protocol.h"
 #include "relay.h"
 #include "relay_devtool.h"
@@ -527,6 +528,8 @@ bool relay_handle_record(meshlink_handle_t *mesh, node_t *from, const void *data
 			return true;
 		}
 
+		path_tier_t hop_tier = path_select_hop_tier(out, false);
+		logger(mesh, MESHLINK_DEBUG, "Path policy: mixed hop %s for %s (%s)", out->name, dest->name, path_tier_name(hop_tier));
 		relay_send_meta_req_sptps(mesh, origin_name, dest, inner, inner_len);
 		return true;
 	}

@@ -25,6 +25,7 @@
 #include "net.h"
 #include "netutl.h"
 #include "node.h"
+#include "path_policy.h"
 #include "relay.h"
 #include "splay_tree.h"
 #include "utils.h"
@@ -59,6 +60,8 @@ node_t *new_node(void) {
 	n->mtu = MTU;
 	n->maxmtu = MTU;
 	n->devclass = DEV_CLASS_UNKNOWN;
+	n->udp_tier = PATH_TIER_NONE;
+	n->last_path_tier = PATH_TIER_NONE;
 
 	return n;
 }
@@ -156,10 +159,18 @@ bool graph_may_seed_udp(const node_t *n, const sockaddr_t *edge_addr) {
 		return false;
 	}
 
+	if(path_address_matches_canonical(n, edge_addr)) {
+		return false;
+	}
+
 	return udp_address_usable(edge_addr);
 }
 
 void update_node_udp(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa) {
+	update_node_udp_from(mesh, n, sa, ADDR_SRC_UNKNOWN);
+}
+
+void update_node_udp_from(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa, address_source_t src) {
 	if(n == mesh->self) {
 		logger(mesh, MESHLINK_WARNING, "Trying to update UDP address of mesh->self!");
 		return;
@@ -180,7 +191,7 @@ void update_node_udp(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa) {
 
 		hash_insert(mesh->node_udp_cache, sa, n);
 
-		node_add_recent_address(mesh, n, sa);
+		node_add_recent_address(mesh, n, sa, src);
 
 		if(mesh->log_level <= MESHLINK_DEBUG) {
 			char *hostname = sockaddr2hostname(&n->address);
@@ -190,58 +201,10 @@ void update_node_udp(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa) {
 	}
 }
 
-bool node_add_recent_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa) {
-	(void)mesh;
-	bool found = false;
-	int i;
-
-	/* Check if we already know this address */
-	for(i = 0; i < MAX_RECENT && n->recent[i].sa.sa_family; i++) {
-		if(!sockaddrcmp(&n->recent[i], sa)) {
-			found = true;
-			break;
-		}
-	}
-
-	if(found && i == 0) {
-		/* It's already the most recent address, nothing to do. */
-		return false;
-	}
-
-	if(i >= MAX_RECENT) {
-		i = MAX_RECENT - 1;
-	}
-
-	memmove(n->recent + 1, n->recent, i * sizeof(*n->recent));
-	memcpy(n->recent, sa, SALEN(sa->sa));
-
-	n->status.dirty = true;
-	return !found;
+bool node_add_recent_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa, address_source_t src) {
+	return path_learn_address(mesh, n, sa, src);
 }
 
-/* Remember sa as a lower-priority candidate: it goes after the addresses we already
-   know, or is dropped if the list is empty (nothing proven to rank it behind — putting
-   it at recent[0] would make the next walk dial it first), we already have it, or the
-   list is full. Returns true if it was added. */
-bool node_append_recent_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa) {
-	(void)mesh;
-	int i;
-
-	for(i = 0; i < MAX_RECENT && n->recent[i].sa.sa_family; i++) {
-		if(!sockaddrcmp(&n->recent[i], sa)) {
-			return false;
-		}
-	}
-
-	/* Nothing to stand behind: putting sa at recent[0] would make the next
-	   outgoing walk try this untrusted address first. */
-
-	if(i == 0 || i >= MAX_RECENT) {
-		return false;
-	}
-
-	memcpy(&n->recent[i], sa, SALEN(sa->sa));
-
-	n->status.dirty = true;
-	return true;
+bool node_append_recent_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa, address_source_t src) {
+	return path_learn_address_fallback(mesh, n, sa, src);
 }

@@ -626,7 +626,7 @@ static char *get_my_hostname(meshlink_handle_t *mesh, uint32_t flags) {
 
 		// Remember the address(es)
 		for(struct addrinfo *aip = ai_in; aip; aip = aip->ai_next) {
-			node_add_recent_address(mesh, mesh->self, (sockaddr_t *)aip->ai_addr);
+			node_add_recent_address(mesh, mesh->self, (sockaddr_t *)aip->ai_addr, ADDR_SRC_HINT);
 		}
 
 		freeaddrinfo(ai_in);
@@ -903,7 +903,7 @@ static bool finalize_join(join_state_t *state, const void *buf, uint16_t len) {
 			socklen_t salen = sizeof(sa);
 
 			if(getpeername(state->sock, &sa.sa, &salen) == 0) {
-				node_add_recent_address(mesh, n, &sa);
+				node_add_recent_address(mesh, n, &sa, ADDR_SRC_AUTH_DIRECT);
 			}
 		}
 
@@ -1144,7 +1144,7 @@ static void add_local_addresses(meshlink_handle_t *mesh) {
 
 	if(getlocaladdr("93.184.216.34", &sa, &salen, mesh->netns)) {
 		sa.in.sin_port = ntohs(atoi(mesh->myport));
-		node_add_recent_address(mesh, mesh->self, &sa);
+		node_add_recent_address(mesh, mesh->self, &sa, ADDR_SRC_HINT);
 	}
 
 	// IPv6 example.org
@@ -1153,7 +1153,7 @@ static void add_local_addresses(meshlink_handle_t *mesh) {
 
 	if(getlocaladdr("2606:2800:220:1:248:1893:25c8:1946", &sa, &salen, mesh->netns)) {
 		sa.in6.sin6_port = ntohs(atoi(mesh->myport));
-		node_add_recent_address(mesh, mesh->self, &sa);
+		node_add_recent_address(mesh, mesh->self, &sa, ADDR_SRC_HINT);
 	}
 }
 
@@ -2940,6 +2940,8 @@ bool meshlink_set_canonical_address(meshlink_handle_t *mesh, meshlink_node_t *no
 	node_t *n = (node_t *)node;
 	free(n->canonical_address);
 	n->canonical_address = canonical_address;
+	path_refresh_canonical_endpoint(n);
+	path_sanitize_recent(mesh, n);
 
 	if(!node_write_config(mesh, n, false)) {
 		pthread_mutex_unlock(&mesh->mutex);
@@ -2966,6 +2968,7 @@ bool meshlink_clear_canonical_address(meshlink_handle_t *mesh, meshlink_node_t *
 	node_t *n = (node_t *)node;
 	free(n->canonical_address);
 	n->canonical_address = NULL;
+	memset(&n->canonical_sa, 0, sizeof n->canonical_sa);
 
 	if(!node_write_config(mesh, n, false)) {
 		pthread_mutex_unlock(&mesh->mutex);
@@ -4073,7 +4076,7 @@ void meshlink_hint_address(meshlink_handle_t *mesh, meshlink_node_t *node, const
 
 	node_t *n = (node_t *)node;
 
-	if(node_add_recent_address(mesh, n, (sockaddr_t *)addr)) {
+	if(node_add_recent_address(mesh, n, (sockaddr_t *)addr, ADDR_SRC_HINT)) {
 		n->upgrade_recent_idx = 0;
 
 		if(!node_write_config(mesh, n, false)) {

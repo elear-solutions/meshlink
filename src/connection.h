@@ -45,6 +45,7 @@ typedef struct connection_status_t {
 	uint16_t via_canonical: 1;          /* 1 if this connection went via a relay: we dialled the peer's canonical / an indirect-edge address, or the peer's ID carried PROTOCOL_VIA_CANONICAL */
 	uint16_t upgrade_probe: 1;          /* 1 if this is a probe trying to replace a canonical connection with a direct one */
 	uint16_t spare: 1;                  /* 1 if authenticated but held behind the node's current connection until that one closes */
+	uint16_t meta_dial_tier: 2;         /* meta_dial_tier_t: direct NMN vs canonical NLB */
 } connection_status_t;
 
 #include "ecdsa.h"

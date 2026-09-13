@@ -27,7 +27,9 @@
 #include "meshlink_internal.h"
 #include "net.h"
 #include "netutl.h"
+#include "node.h"
 #include "packmsg.h"
+#include "path_policy.h"
 #include "protocol.h"
 #include "relay.h"
 #include "route.h"
@@ -133,6 +135,22 @@ bool node_read_public_key(meshlink_handle_t *mesh, node_t *n) {
 		n->last_unreachable = last_unreachable;
 	}
 
+	/* Optional provenance array after the original host-config tail. */
+	if(!packmsg_done(&in) && packmsg_input_ok(&in)) {
+		uint32_t nsrc = packmsg_get_array(&in);
+
+		for(uint32_t i = 0; i < nsrc; i++) {
+			uint8_t src = packmsg_get_uint8(&in);
+
+			if(i < MAX_RECENT - known_count && i < count) {
+				n->recent_source[i + known_count] = (address_source_t)src;
+			}
+		}
+	}
+
+	path_refresh_canonical_endpoint(n);
+	path_sanitize_recent(mesh, n);
+
 	config_free(&config);
 	return true;
 }
@@ -216,6 +234,21 @@ bool node_read_from_config(meshlink_handle_t *mesh, node_t *n, const config_t *c
 	n->last_reachable = packmsg_get_int64(&in);
 	n->last_unreachable = packmsg_get_int64(&in);
 
+	if(!packmsg_done(&in) && packmsg_input_ok(&in)) {
+		uint32_t nsrc = packmsg_get_array(&in);
+
+		for(uint32_t i = 0; i < nsrc; i++) {
+			uint8_t src = packmsg_get_uint8(&in);
+
+			if(i < MAX_RECENT && i < count) {
+				n->recent_source[i] = (address_source_t)src;
+			}
+		}
+	}
+
+	path_refresh_canonical_endpoint(n);
+	path_sanitize_recent(mesh, n);
+
 	return packmsg_done(&in);
 }
 
@@ -275,6 +308,12 @@ bool node_write_config(meshlink_handle_t *mesh, node_t *n, bool new_key) {
 	packmsg_add_int64(&out, n->last_reachable);
 	packmsg_add_int64(&out, n->last_unreachable);
 
+	packmsg_add_array(&out, count);
+
+	for(uint32_t i = 0; i < count; i++) {
+		packmsg_add_uint8(&out, (uint8_t)n->recent_source[i]);
+	}
+
 	if(!packmsg_output_ok(&out)) {
 		meshlink_errno = MESHLINK_EINTERNAL;
 		return false;
@@ -332,6 +371,10 @@ static bool load_node(meshlink_handle_t *mesh, const char *name, void *priv) {
 	}
 
 	config_free(&config);
+
+	if(n->status.dirty && !node_write_config(mesh, n, false)) {
+		logger(mesh, MESHLINK_DEBUG, "Could not rewrite sanitized config for %s", n->name);
+	}
 
 	node_add(mesh, n);
 

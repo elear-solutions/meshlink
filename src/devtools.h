@@ -136,6 +136,11 @@ struct devtool_node_status {
 	// Recently seen direct addresses (node_t.recent[]), front first
 	size_t recent_count;                  /// Number of valid entries in recent
 	struct sockaddr_storage recent[DEVTOOL_MAX_RECENT]; /// Copies of node_t.recent[]
+	uint8_t recent_source[DEVTOOL_MAX_RECENT]; /// address_source_t aligned with recent[]
+	int udp_tier;                         /// path_tier_t of the confirmed UDP dest
+	int dest_path_tier;                   /// path_select_destination_tier()
+	int meta_dial_tier;                   /// meta_dial_tier_t of the active META connection
+	bool would_probe_local_udp;           /// WAN UDP is active and a local candidate is waiting
 };
 
 /// Get the status of a node.
@@ -335,6 +340,15 @@ bool devtool_choose_udp_address_advance(struct meshlink_handle *mesh, struct mes
  *  @param confirmed  New udp_confirmed flag.
  */
 void devtool_set_udp_confirmed(struct meshlink_handle *mesh, struct meshlink_node *node, bool confirmed);
+
+/// Plant an address in recent[] as ADDR_SRC_UNKNOWN, bypassing canonical rejection.
+/** Used to reconstruct a persisted NLB-in-recent[] entry from an old install.
+ *  Marks the node dirty and writes its host config.
+ */
+bool devtool_plant_recent_address(struct meshlink_handle *mesh, struct meshlink_node *node, const struct sockaddr *addr);
+
+/// Force a confirmed UDP dest and tier without waiting for a probe reply.
+bool devtool_confirm_udp_from(struct meshlink_handle *mesh, struct meshlink_node *node, const struct sockaddr *addr, int tier);
 
 /// True when sssp_bfs would seed n->address from this edge dest.
 /** @param mesh  Mesh handle.

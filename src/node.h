@@ -21,6 +21,7 @@
 */
 
 #include "event.h"
+#include "path_policy.h"
 #include "sockaddr.h"
 #include "sptps.h"
 #include "utcp.h"
@@ -108,7 +109,13 @@ typedef struct node_t {
 	char *external_ip_address;              /* The external IP address of this node, if known */
 	int udp_choice;                         /* Per-node dest rotation when UDP is unconfirmed */
 	sockaddr_t recent[MAX_RECENT];          /* Recently seen addresses */
+	address_source_t recent_source[MAX_RECENT]; /* Provenance aligned with recent[] */
 	sockaddr_t catta_address;               /* Latest address seen by Catta */
+	sockaddr_t canonical_sa;                /* Resolved numeric canonical endpoint, AF_UNSPEC if unknown */
+	sockaddr_t last_udp_from;               /* Source of the last inbound UDP packet */
+	path_tier_t udp_tier;                   /* Validated UDP dest tier */
+	path_tier_t last_path_tier;             /* Last logged destination-wide tier */
+	time_t udp_local_probe_next;            /* Earliest local-UDP validation while WAN is active */
 
 	// Graph-related member variables
 	time_t last_reachable;
@@ -132,8 +139,9 @@ void node_set_validkey(struct meshlink_handle *mesh, node_t *n, bool valid);
 node_t *lookup_node(struct meshlink_handle *mesh, const char *name) __attribute__((__warn_unused_result__));
 node_t *lookup_node_udp(struct meshlink_handle *mesh, const sockaddr_t *sa) __attribute__((__warn_unused_result__));
 void update_node_udp(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *sa);
-bool node_add_recent_address(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *addr);
-bool node_append_recent_address(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *addr);
+void update_node_udp_from(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *sa, address_source_t src);
+bool node_add_recent_address(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *addr, address_source_t src);
+bool node_append_recent_address(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *addr, address_source_t src);
 bool graph_may_seed_udp(const node_t *n, const sockaddr_t *edge_addr);
 
 #endif

@@ -11,6 +11,9 @@
 #include <errno.h>
 #include <assert.h>
 #include <sys/time.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include "meshlink.h"
 #include "relay.h"
@@ -668,6 +671,71 @@ static void test_reachability_flip_mss(meshlink_handle_t **mesh) {
 	meshlink_channel_abort(mesh[2], ch);
 }
 
+static int dest_tier(meshlink_handle_t *mesh, const char *name) {
+	devtool_node_status_t st;
+	devtool_get_node_status(mesh, meshlink_get_node(mesh, name), &st);
+	int tier = st.dest_path_tier;
+	devtool_free_node_status(&st);
+	return tier;
+}
+
+static void test_path_preference(meshlink_handle_t **mesh) {
+	printf("=== path preference: local/WAN UDP, relay, mixed META ===\n");
+
+	struct sockaddr_in local = {
+		.sin_family = AF_INET,
+		.sin_port = htons((uint16_t)meshlink_get_port(mesh[1])),
+	};
+	assert(inet_pton(AF_INET, "127.0.0.1", &local.sin_addr) == 1);
+
+	/* Earlier cases may have left dest unconfirmed. Re-establish a local UDP dest. */
+	assert(devtool_confirm_udp_from(mesh[2], meshlink_get_node(mesh[2], "bar"), (struct sockaddr *)&local, 0));
+	devtool_set_udp_confirmed(mesh[2], meshlink_get_node(mesh[2], "foo"), true);
+	assert(udp_confirmed_flag(mesh[2], "bar"));
+	assert(dest_tier(mesh[2], "bar") == 0); /* PATH_TIER_DIRECT_LOCAL_UDP */
+
+	/* Forced relay: dest unconfirmed, hop confirmed → RELAY_UDP. */
+	pin(mesh[2], "bar", "foo");
+	assert(dest_tier(mesh[2], "bar") == 2); /* PATH_TIER_RELAY_UDP */
+
+	/* Hop UDP down: mixed UDP-in is origin-side; dest falls to META. */
+	devtool_set_udp_confirmed(mesh[2], meshlink_get_node(mesh[2], "foo"), false);
+	int hop_meta = dest_tier(mesh[2], "bar");
+	assert(hop_meta == 3 || hop_meta == 4); /* META_DIRECT or META_CANONICAL */
+
+	/* Restore hop UDP, then confirm dest again so later tests see a live path. */
+	devtool_set_udp_confirmed(mesh[2], meshlink_get_node(mesh[2], "foo"), true);
+	devtool_set_udp_confirmed(mesh[2], meshlink_get_node(mesh[2], "bar"), true);
+
+	/* WAN stays active while an unvalidated local candidate exists. */
+	struct sockaddr_in wan = {
+		.sin_family = AF_INET,
+		.sin_port = htons(9),
+	};
+	assert(inet_pton(AF_INET, "203.0.113.10", &wan.sin_addr) == 1);
+	assert(devtool_confirm_udp_from(mesh[2], meshlink_get_node(mesh[2], "bar"), (struct sockaddr *)&wan, 1));
+
+	meshlink_hint_address(mesh[2], meshlink_get_node(mesh[2], "bar"), (struct sockaddr *)&local);
+
+	devtool_node_status_t st;
+	devtool_get_node_status(mesh[2], meshlink_get_node(mesh[2], "bar"), &st);
+	assert(st.udp_tier == 1);
+	assert(st.would_probe_local_udp);
+	devtool_free_node_status(&st);
+
+	struct sockaddr_storage chosen;
+	int sock = -1;
+	assert(devtool_choose_udp_address(mesh[2], meshlink_get_node(mesh[2], "bar"), &chosen, &sock));
+	assert(addr_is(&chosen, "203.0.113.10", 9));
+
+	assert(devtool_confirm_udp_from(mesh[2], meshlink_get_node(mesh[2], "bar"), (struct sockaddr *)&local, 0));
+	assert(devtool_choose_udp_address(mesh[2], meshlink_get_node(mesh[2], "bar"), &chosen, &sock));
+	assert(addr_is(&chosen, "127.0.0.1", meshlink_get_port(mesh[1])));
+	assert(dest_tier(mesh[2], "bar") == 0);
+
+	printf("path preference ok\n");
+}
+
 int main(void) {
 	init_sync_flag(&received);
 	init_sync_flag(&received2);
@@ -765,6 +833,7 @@ int main(void) {
 	test_hard_send_clears_hop(mesh);
 	test_long_names(mesh);
 
+	test_path_preference(mesh);
 	test_reachability_flip_mss(mesh);
 
 	for(int i = 0; i < 3; i++) {

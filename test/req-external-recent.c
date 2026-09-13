@@ -298,12 +298,42 @@ static void test_forwarded_empty_recent(void) {
 	assert(meshlink_destroy("req_ext_t9c_conf.3"));
 }
 
+/* T9d: a REQ_EXTERNAL that is the peer's canonical NLB endpoint must not become
+   a direct recent[] entry. */
+static void test_canonical_equivalent_external(void) {
+	printf("\n=== T9d: canonical-equivalent REQ_EXTERNAL is not a direct recent[] entry ===\n");
+
+	struct pair p;
+	open_direct_pair(&p, "req_external_recent_t9d", NULL);
+
+	char ext_port[16];
+	snprintf(ext_port, sizeof ext_port, "%d", p.b_port);
+	assert(meshlink_set_canonical_address(p.a, p.a_b, EXT_IP, ext_port));
+
+	assert(meshlink_start(p.b));
+	assert(meshlink_start(p.a));
+	assert(wait_sync_flag(&peer_reachable, 15));
+
+	assert_after(log_count("a: Got REQ_EXTERNAL from b") >= 1, 5);
+	assert_after(log_count("a: Path policy: not storing") >= 1, 5);
+
+	devtool_node_status_t st;
+	devtool_get_node_status(p.a, p.a_b, &st);
+	assert(recent_occurrences(&st, EXT_IP, p.b_port) == 0);
+	devtool_free_node_status(&st);
+
+	printf("T9d ok: %s:%d stayed out of recent[]\n", EXT_IP, p.b_port);
+
+	close_direct_pair(&p);
+}
+
 int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, capture_log_cb);
 
 	test_learn_and_dedupe();
 	test_own_external_not_added();
 	test_forwarded_empty_recent();
+	test_canonical_equivalent_external();
 
 	free_captured_log();
 	return 0;

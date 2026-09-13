@@ -318,8 +318,15 @@ static void devtool_get_reset_node_status(meshlink_handle_t *mesh, meshlink_node
 		status->recent_count = 0;
 		memset(status->recent, 0, sizeof status->recent);
 
+		status->udp_tier = (int)internal->udp_tier;
+		status->dest_path_tier = path_select_destination_tier(internal, false);
+		status->meta_dial_tier = c ? (int)c->status.meta_dial_tier : (int)META_DIAL_DIRECT;
+		status->would_probe_local_udp = path_udp_should_probe_local(mesh, internal);
+		memset(status->recent_source, 0, sizeof status->recent_source);
+
 		for(int i = 0; i < MAX_RECENT && internal->recent[i].sa.sa_family; i++) {
 			memcpy(&status->recent[i], &internal->recent[i], sizeof status->recent[i]);
+			status->recent_source[i] = (uint8_t)internal->recent_source[i];
 			status->recent_count++;
 		}
 
@@ -505,8 +512,9 @@ void devtool_update_node_udp(meshlink_handle_t *mesh, meshlink_node_t *node, con
 		update_node_udp(mesh, n, NULL);
 		sockaddrfree(&n->address);
 		memset(&n->address, 0, sizeof n->address);
-		memset(n->recent, 0, sizeof n->recent);
-		n->status.dirty = true;
+		path_clear_recent(n);
+		n->udp_tier = PATH_TIER_NONE;
+		n->last_path_tier = PATH_TIER_NONE;
 	} else {
 		update_node_udp(mesh, n, sa);
 	}
@@ -629,6 +637,74 @@ void devtool_set_udp_confirmed(meshlink_handle_t *mesh, meshlink_node_t *node, b
 	}
 
 	pthread_mutex_unlock(&mesh->mutex);
+}
+
+bool devtool_plant_recent_address(meshlink_handle_t *mesh, meshlink_node_t *node, const struct sockaddr *addr) {
+	if(!mesh || !node || !addr) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	node_t *n = (node_t *)node;
+	const sockaddr_t *sa = (const sockaddr_t *)addr;
+	int i;
+
+	for(i = 0; i < MAX_RECENT && n->recent[i].sa.sa_family; i++) {
+		if(!sockaddrcmp(&n->recent[i], sa)) {
+			if(i != 0) {
+				memmove(n->recent + 1, n->recent, (size_t)i * sizeof(*n->recent));
+				memmove(n->recent_source + 1, n->recent_source, (size_t)i * sizeof(*n->recent_source));
+				memcpy(n->recent, sa, SALEN(sa->sa));
+			}
+
+			n->recent_source[0] = ADDR_SRC_UNKNOWN;
+			n->status.dirty = true;
+			(void)node_write_config(mesh, n, false);
+			pthread_mutex_unlock(&mesh->mutex);
+			return true;
+		}
+	}
+
+	if(i >= MAX_RECENT) {
+		i = MAX_RECENT - 1;
+	}
+
+	if(i > 0) {
+		memmove(n->recent + 1, n->recent, (size_t)i * sizeof(*n->recent));
+		memmove(n->recent_source + 1, n->recent_source, (size_t)i * sizeof(*n->recent_source));
+	}
+
+	memcpy(n->recent, sa, SALEN(sa->sa));
+	n->recent_source[0] = ADDR_SRC_UNKNOWN;
+	n->status.dirty = true;
+	(void)node_write_config(mesh, n, false);
+	pthread_mutex_unlock(&mesh->mutex);
+	return true;
+}
+
+bool devtool_confirm_udp_from(meshlink_handle_t *mesh, meshlink_node_t *node, const struct sockaddr *addr, int tier) {
+	if(!mesh || !node || !addr) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	node_t *n = (node_t *)node;
+	update_node_udp_from(mesh, n, (const sockaddr_t *)addr, ADDR_SRC_AUTH_DIRECT);
+	n->status.udp_confirmed = true;
+	n->udp_tier = (path_tier_t)tier;
+	n->udp_local_probe_next = 0;
+	relay_recompute_dependents(mesh, n);
+	relay_update_destination_transport(mesh, n);
+	pthread_mutex_unlock(&mesh->mutex);
+	return true;
 }
 
 bool devtool_send_raw_record(meshlink_handle_t *mesh, meshlink_node_t *to, uint8_t type, const void *data, size_t len) {

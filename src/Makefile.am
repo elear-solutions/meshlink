@@ -66,6 +66,7 @@ libmeshlink_la_SOURCES = \
 	net_upgrade.c net_upgrade.h \
 	netutl.c netutl.h \
 	node.c node.h \
+	path_policy.c path_policy.h \
 	submesh.c submesh.h \
 	packmsg.h \
 	prf.c prf.h \
