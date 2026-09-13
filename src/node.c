@@ -135,7 +135,11 @@ static void node_udp_cache_forget(meshlink_handle_t *mesh, node_t *n) {
 	}
 
 	if(n->last_udp_from.sa.sa_family) {
-		hash_insert(mesh->node_udp_cache, &n->last_udp_from, NULL);
+		if(hash_search(mesh->node_udp_cache, &n->last_udp_from) == n) {
+			hash_insert(mesh->node_udp_cache, &n->last_udp_from, NULL);
+		}
+
+		memset(&n->last_udp_from, 0, sizeof n->last_udp_from);
 	}
 }
 

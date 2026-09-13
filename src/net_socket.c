@@ -293,20 +293,19 @@ static bool canonical_host_matches(const node_t *n, const char *host, const char
 static void canonical_resolve_cb(meshlink_handle_t *mesh, char *host, char *serv, void *data, struct addrinfo *ai, int err) {
 	node_t *n = data;
 	bool match = canonical_host_matches(n, host, serv);
+	bool usable = match && ai && ai->ai_addr;
 
-	(void)err;
-
-	if(match && ai && ai->ai_addr) {
+	if(usable) {
 		path_set_canonical_sockaddr(n, (const sockaddr_t *)ai->ai_addr);
 		path_sanitize_recent(mesh, n);
 	}
 
 	for list_each(outgoing_t, outgoing, mesh->outgoings) {
-		if(outgoing->node != n) {
+		if(outgoing->node != n || outgoing->state != OUTGOING_CANONICAL_RESOLVE) {
 			continue;
 		}
 
-		if(outgoing->state == OUTGOING_CANONICAL_RESOLVE && match && ai) {
+		if(usable) {
 			outgoing->ai = ai;
 			outgoing->aip = NULL;
 			outgoing->ai_is_getaddrinfo = true;
@@ -322,7 +321,7 @@ static void canonical_resolve_cb(meshlink_handle_t *mesh, char *host, char *serv
 			ai = NULL;
 		}
 
-		if(outgoing->state == OUTGOING_CANONICAL_RESOLVE && !match && n->canonical_address) {
+		if(!match && n->canonical_address) {
 			char *address = xstrdup(n->canonical_address);
 			char *port = strchr(address, ' ');
 
@@ -336,10 +335,16 @@ static void canonical_resolve_cb(meshlink_handle_t *mesh, char *host, char *serv
 			}
 
 			free(address);
-			outgoing->state = OUTGOING_KNOWN_INDIRECT;
-			do_outgoing_connection(mesh, outgoing);
 		}
 
+		if(err) {
+			logger(mesh, MESHLINK_WARNING, "Canonical resolve for %s failed: %s; trying indirect addresses", n->name, strerror(err));
+		} else {
+			logger(mesh, MESHLINK_WARNING, "Canonical resolve for %s failed; trying indirect addresses", n->name);
+		}
+
+		outgoing->state = OUTGOING_KNOWN_INDIRECT;
+		do_outgoing_connection(mesh, outgoing);
 		free(host);
 		free(serv);
 		return;

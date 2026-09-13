@@ -18,6 +18,7 @@
 #include "node.h"
 #include "path_policy.h"
 #include "path_policy_devtool.h"
+#include "xalloc.h"
 
 #include <arpa/inet.h>
 #include <stdio.h>
@@ -511,6 +512,7 @@ typedef struct live_snapshot_t {
 	sockaddr_t catta;
 	sockaddr_t csa;
 	sockaddr_t extra;
+	sockaddr_t last_from;
 	char *canon;
 	path_tier_t tier;
 	time_t probe;
@@ -523,6 +525,7 @@ static void snapshot_live(node_t *live, live_snapshot_t *s) {
 	s->catta = live->catta_address;
 	s->csa = live->canonical_sa;
 	s->extra = live->udp_cache_extra;
+	s->last_from = live->last_udp_from;
 	s->canon = live->canonical_address;
 	s->tier = live->udp_tier;
 	s->probe = live->udp_local_probe_next;
@@ -543,6 +546,7 @@ static void restore_live(meshlink_handle_t *mesh, node_t *live, const live_snaps
 	live->catta_address = s->catta;
 	live->canonical_sa = s->csa;
 	live->udp_cache_extra = s->extra;
+	live->last_udp_from = s->last_from;
 	live->canonical_address = s->canon;
 	live->udp_tier = s->tier;
 	live->udp_local_probe_next = s->probe;
@@ -617,6 +621,63 @@ done:
 #undef CHECK_LIVE
 }
 
+static bool cover_udp_cache(meshlink_handle_t *mesh, node_t *live) {
+	live_snapshot_t saved;
+	node_t *other = NULL;
+	sockaddr_t old_addr, new_addr, third;
+	bool ok = true;
+
+	snapshot_live(live, &saved);
+
+	set_v4(&old_addr, "203.0.113.80", 80);
+	set_v4(&new_addr, "203.0.113.81", 81);
+	set_v4(&third, "203.0.113.82", 82);
+
+#define CHECK_LIVE(cond) do { \
+	if(!(cond)) { \
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: %s", #cond); \
+		ok = false; \
+		goto done; \
+	} \
+} while(0)
+
+	update_node_udp_from(mesh, live, &old_addr, ADDR_SRC_AUTH_DIRECT);
+	path_copy_sockaddr(&live->last_udp_from, &old_addr);
+	CHECK_LIVE(lookup_node_udp(mesh, &old_addr) == live);
+
+	update_node_udp_from(mesh, live, &new_addr, ADDR_SRC_AUTH_DIRECT);
+	CHECK_LIVE(!live->last_udp_from.sa.sa_family);
+	CHECK_LIVE(lookup_node_udp(mesh, &new_addr) == live);
+	CHECK_LIVE(!lookup_node_udp(mesh, &old_addr));
+
+	other = new_node();
+	other->name = xstrdup("cover-udp-other");
+	node_add(mesh, other);
+	update_node_udp_from(mesh, other, &old_addr, ADDR_SRC_AUTH_DIRECT);
+	CHECK_LIVE(lookup_node_udp(mesh, &old_addr) == other);
+
+	/* Stale last_udp_from on live must not evict other's cache key. */
+	path_copy_sockaddr(&live->last_udp_from, &old_addr);
+	update_node_udp_from(mesh, live, &third, ADDR_SRC_AUTH_DIRECT);
+	CHECK_LIVE(lookup_node_udp(mesh, &old_addr) == other);
+	CHECK_LIVE(lookup_node_udp(mesh, &third) == live);
+	CHECK_LIVE(!live->last_udp_from.sa.sa_family);
+
+	node_del(mesh, other);
+	other = NULL;
+
+done:
+	other = lookup_node(mesh, "cover-udp-other");
+
+	if(other) {
+		node_del(mesh, other);
+	}
+
+	restore_live(mesh, live, &saved);
+	return ok;
+#undef CHECK_LIVE
+}
+
 bool path_policy_cover_unit(meshlink_handle_t *mesh, node_t *live) {
 	if(!mesh || !live) {
 		return false;
@@ -629,7 +690,8 @@ bool path_policy_cover_unit(meshlink_handle_t *mesh, node_t *live) {
 	                || !cover_sanitize(mesh)
 	                || !cover_select(mesh)
 	                || !cover_probe(mesh)
-	                || !cover_promote(mesh, live)) {
+	                || !cover_promote(mesh, live)
+	                || !cover_udp_cache(mesh, live)) {
 		return false;
 	}
 
