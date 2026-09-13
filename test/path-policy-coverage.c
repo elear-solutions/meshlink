@@ -32,9 +32,9 @@
  *   P3  MAX_RECENT=5 eviction of the oldest
  *   P4  Fallback refuses empty and full recent[], appends when there is a hole
  *   P5  Fallback upgrades source in place, refuses a weaker source
- *   P6  ADDR_SRC_CANONICAL / INDIRECT never stored
+ *   P6  ADDR_SRC_CANONICAL never stored; INDIRECT not stored at the front
  *   P7  Canonical-equivalent numeric address never stored
- *   P8  Sanitize drops planted NLB, CANONICAL, and INDIRECT slots
+ *   P8  Sanitize drops planted NLB and CANONICAL; INDIRECT fallback is kept
  *   P9  Hostname canonical does not strip unrelated numeric recent[]
  *   P10 HINT persists across close/reopen
  *   P11 Planted NLB is stripped on reload
@@ -158,6 +158,7 @@ static void test_einval(void) {
 	assert(devtool_select_hop_tier(NULL, NULL, false) == TIER_NONE);
 	assert(!devtool_plant_recent_address(NULL, NULL, NULL));
 	assert(!devtool_confirm_udp_from(NULL, NULL, NULL, 0));
+	assert(!devtool_promote_udp_if_better(NULL, NULL, NULL));
 }
 
 static void test_live_transitions(meshlink_handle_t **mesh) {
@@ -204,8 +205,8 @@ static void test_live_transitions(meshlink_handle_t **mesh) {
 	assert(addr_is(&chosen, "203.0.113.10", 9));
 	printf("U4 WAN stays while local is unvalidated\n");
 
-	/* U5 / U3: validated local replaces WAN */
-	assert(devtool_confirm_udp_from(mesh[2], meshlink_get_node(mesh[2], "bar"), (struct sockaddr *)&local, TIER_LOCAL));
+	/* U5 / U3: validated local replaces WAN via the production promote path */
+	assert(devtool_promote_udp_if_better(mesh[2], meshlink_get_node(mesh[2], "bar"), (struct sockaddr *)&local));
 	assert(dest_tier(mesh[2], "bar", false) == TIER_LOCAL);
 	assert(devtool_choose_udp_address(mesh[2], meshlink_get_node(mesh[2], "bar"), &chosen, &sock));
 	assert(addr_is(&chosen, "127.0.0.1", meshlink_get_port(mesh[1])));

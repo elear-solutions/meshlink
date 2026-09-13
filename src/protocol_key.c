@@ -26,6 +26,7 @@
 #include "net_upgrade.h"
 #include "netutl.h"
 #include "node.h"
+#include "path_policy.h"
 #include "prf.h"
 #include "protocol.h"
 #include "relay.h"
@@ -372,7 +373,7 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 		   authenticated (which ack_h() put in front) is proven and this one is not: keep
 		   it as a fallback instead of paying a connect timeout on it at every reconnect. */
 
-		if(c->status.via_canonical || path_meta_is_canonical(from, c)) {
+		if(path_meta_is_canonical(from, c)) {
 			if(node_add_recent_address(mesh, from, &sa, ADDR_SRC_EXTERNAL)) {
 				from->upgrade_recent_idx = 0;
 			}

@@ -28,6 +28,8 @@
 #include "meta.h"
 #include "net.h"
 #include "netutl.h"
+#include "node.h"
+#include "path_policy.h"
 #include "protocol.h"
 #include "utils.h"
 #include "xalloc.h"
@@ -228,12 +230,12 @@ static struct addrinfo *get_recent_addresses(node_t *n) {
 	struct addrinfo *ai = NULL;
 	struct addrinfo *aip;
 
-	for(int i = 0; i < 5; i++) {
+	for(int i = 0; i < MAX_RECENT; i++) {
 		if(!n->recent[i].sa.sa_family) {
 			break;
 		}
 
-		if(!path_source_is_direct(n->recent_source[i]) || path_address_matches_canonical(n, &n->recent[i])) {
+		if(!path_is_direct_candidate(n, &n->recent[i], n->recent_source[i])) {
 			continue;
 		}
 
@@ -267,32 +269,88 @@ static void free_known_addresses(struct addrinfo *ai) {
 	}
 }
 
+static bool canonical_host_matches(const node_t *n, const char *host, const char *serv) {
+	char *copy;
+	char *port;
+	bool ok = false;
+
+	if(!n || !n->canonical_address || !host || !serv) {
+		return false;
+	}
+
+	copy = xstrdup(n->canonical_address);
+	port = strchr(copy, ' ');
+
+	if(port && port[1]) {
+		*port++ = 0;
+		ok = !strcmp(copy, host) && !strcmp(port, serv);
+	}
+
+	free(copy);
+	return ok;
+}
+
 static void canonical_resolve_cb(meshlink_handle_t *mesh, char *host, char *serv, void *data, struct addrinfo *ai, int err) {
-	(void)serv;
-	(void)err;
 	node_t *n = data;
+	bool match = canonical_host_matches(n, host, serv);
 
-	free(host);
-	free(serv);
+	(void)err;
 
-	if(ai && ai->ai_addr) {
+	if(match && ai && ai->ai_addr) {
 		path_set_canonical_sockaddr(n, (const sockaddr_t *)ai->ai_addr);
 		path_sanitize_recent(mesh, n);
 	}
 
 	for list_each(outgoing_t, outgoing, mesh->outgoings) {
-		if(outgoing->node == n) {
-			if(outgoing->state == OUTGOING_CANONICAL_RESOLVE) {
-				outgoing->ai = ai;
-				outgoing->aip = NULL;
-				outgoing->ai_is_getaddrinfo = true;
-				outgoing->state = OUTGOING_CANONICAL;
-				do_outgoing_connection(mesh, outgoing);
-			}
+		if(outgoing->node != n) {
+			continue;
+		}
 
+		if(outgoing->state == OUTGOING_CANONICAL_RESOLVE && match && ai) {
+			outgoing->ai = ai;
+			outgoing->aip = NULL;
+			outgoing->ai_is_getaddrinfo = true;
+			outgoing->state = OUTGOING_CANONICAL;
+			do_outgoing_connection(mesh, outgoing);
+			free(host);
+			free(serv);
 			return;
 		}
+
+		if(ai) {
+			freeaddrinfo(ai);
+			ai = NULL;
+		}
+
+		if(outgoing->state == OUTGOING_CANONICAL_RESOLVE && !match && n->canonical_address) {
+			char *address = xstrdup(n->canonical_address);
+			char *port = strchr(address, ' ');
+
+			if(port) {
+				*port++ = 0;
+				port = xstrdup(port);
+				adns_queue(mesh, address, port, canonical_resolve_cb, n, 2);
+				free(host);
+				free(serv);
+				return;
+			}
+
+			free(address);
+			outgoing->state = OUTGOING_KNOWN_INDIRECT;
+			do_outgoing_connection(mesh, outgoing);
+		}
+
+		free(host);
+		free(serv);
+		return;
 	}
+
+	if(ai) {
+		freeaddrinfo(ai);
+	}
+
+	free(host);
+	free(serv);
 }
 
 // Free whatever address list the outgoing currently holds, honouring its origin.

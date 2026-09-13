@@ -49,7 +49,6 @@
 #include "list.h"
 #include "logger.h"
 #include "meshlink_internal.h"
-#include "net_upgrade.h"
 #include "netutl.h"
 #include "node.h"
 #include "protocol.h"
@@ -131,7 +130,6 @@ static void sssp_bfs(meshlink_handle_t *mesh) {
 
 			if(!(e->options & OPTION_INDIRECT) && graph_may_seed_udp(e->to, &e->address)) {
 				update_node_udp_from(mesh, e->to, &e->address, ADDR_SRC_EDGE_DIRECT);
-				try_upgrade_probe(mesh, e->to);
 			}
 
 			list_insert_tail(todo_list, e->to);

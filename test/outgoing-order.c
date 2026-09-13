@@ -648,6 +648,69 @@ static void test_persisted_nlb_sanitized(void) {
 	stop_tcp_relay(relay);
 }
 
+/* T7: hostname canonical cannot fill canonical_sa until resolve. A planted NLB
+   in recent[] as UNKNOWN must not be dialled as direct on the first walk. */
+static void test_hostname_canonical_skips_unknown_nlb(void) {
+	printf("\n=== T7: hostname canonical does not dial planted NLB as recent ===\n");
+
+	meshlink_handle_t *a, *b;
+	open_pair(&a, &b, "outgoing_order_t7");
+
+	int b_port = meshlink_get_port(b);
+	assert(b_port > 0);
+
+	int relay_port = 0;
+	tcp_relay_t *relay = start_tcp_relay("127.0.0.1", &relay_port, "127.0.0.1", b_port);
+	char relay_port_str[16];
+	snprintf(relay_port_str, sizeof relay_port_str, "%d", relay_port);
+
+	assert(meshlink_set_canonical_address(b, meshlink_get_self(b), "localhost", relay_port_str));
+	exchange_meshlink_pair(a, b);
+
+	meshlink_node_t *node_b = meshlink_get_node(a, "b");
+	assert(node_b);
+	forget_addresses(a, node_b);
+
+	struct sockaddr_in nlb = {
+		.sin_family = AF_INET,
+		.sin_port = htons((uint16_t)relay_port),
+	};
+	assert(inet_pton(AF_INET, "127.0.0.1", &nlb.sin_addr) == 1);
+	assert(devtool_plant_recent_address(a, node_b, (struct sockaddr *)&nlb));
+
+	watched_peer = "b";
+	init_sync_flag(&peer_reachable);
+	memset(&status_at_reachable, 0, sizeof status_at_reachable);
+	meshlink_set_node_status_cb(a, status_cb);
+
+	size_t mark = log_mark();
+	assert(meshlink_start(b));
+	assert(meshlink_start(a));
+	assert(wait_sync_flag(&peer_reachable, 15));
+	meshlink_set_node_status_cb(a, NULL);
+
+	assert(status_at_reachable.meta_connected);
+	assert(status_at_reachable.meta_via_canonical);
+	assert(port_of(&status_at_reachable.meta_address) == relay_port);
+	devtool_free_node_status(&status_at_reachable);
+
+	char recent_needle[128], canonical_needle[128];
+	snprintf(recent_needle, sizeof recent_needle, "a: Trying to connect to b at 127.0.0.1 port %d (recent)", relay_port);
+	snprintf(canonical_needle, sizeof canonical_needle, "a: Trying to connect to b at 127.0.0.1 port %d (canonical)", relay_port);
+	assert(log_find(mark, recent_needle) < 0);
+	assert(log_find(mark, canonical_needle) >= 0);
+
+	printf("T7 ok: planted NLB skipped while hostname canonical resolved; first dial canonical port %d\n", relay_port);
+
+	meshlink_stop(a);
+	meshlink_stop(b);
+	meshlink_close(a);
+	meshlink_close(b);
+	assert(meshlink_destroy("outgoing_order_t7_conf.1"));
+	assert(meshlink_destroy("outgoing_order_t7_conf.2"));
+	stop_tcp_relay(relay);
+}
+
 int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, capture_log_cb);
 
@@ -656,6 +719,7 @@ int main(void) {
 	test_known_path();
 	test_known_indirect_counts_as_canonical();
 	test_persisted_nlb_sanitized();
+	test_hostname_canonical_skips_unknown_nlb();
 
 	free_captured_log();
 	return 0;

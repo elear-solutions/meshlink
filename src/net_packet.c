@@ -28,6 +28,7 @@
 #include "net.h"
 #include "net_upgrade.h"
 #include "netutl.h"
+#include "node.h"
 #include "path_policy.h"
 #include "protocol.h"
 #include "relay.h"
@@ -503,6 +504,10 @@ static bool try_recent(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **sa
 	for(int i = 0; i < MAX_RECENT && n->recent[i].sa.sa_family; i++) {
 		const sockaddr_t *candidate = &n->recent[i];
 
+		if(!path_is_direct_candidate(n, candidate, n->recent_source[i])) {
+			continue;
+		}
+
 		if(!lan_candidate(candidate, self_ext, skip)) {
 			continue;
 		}
@@ -817,12 +822,12 @@ bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 	if(type == PKT_PROBE) {
 		sockaddr_t local;
 
-		if(path_udp_should_probe_local(mesh, to) && path_pick_local_udp_candidate(mesh, to, &local)) {
+		if(path_udp_should_probe_local(mesh, to, &local)) {
 			int sock = to->sock;
 
 			if(select_listen_socket(mesh, &local, &sock)) {
-				hash_insert(mesh->node_udp_cache, &local, to);
-				to->udp_local_probe_next = mesh->loop.now.tv_sec + UDP_LOCAL_PROBE_SEC;
+				node_udp_cache_alias(mesh, to, &local);
+				path_schedule_local_udp_probe(mesh, to);
 
 				if(mesh->log_level <= MESHLINK_INFO) {
 					char *hostname = sockaddr2hostname(&local);
@@ -1001,13 +1006,13 @@ void handle_incoming_vpn_data(event_loop_t *loop, void *data, int flags) {
 	if(!n) {
 		n = try_harder(mesh, &from, &pkt);
 
-	if(n) {
-		if(n->status.udp_confirmed && sockaddrcmp(&from, &n->address)) {
-			hash_insert(mesh->node_udp_cache, &from, n);
-		} else {
-			update_node_udp_from(mesh, n, &from, ADDR_SRC_AUTH_DIRECT);
-		}
-	} else if(mesh->log_level <= MESHLINK_WARNING) {
+		if(n) {
+			if(n->status.udp_confirmed && sockaddrcmp(&from, &n->address)) {
+				node_udp_cache_alias(mesh, n, &from);
+			} else {
+				update_node_udp_from(mesh, n, &from, ADDR_SRC_AUTH_DIRECT);
+			}
+		} else if(mesh->log_level <= MESHLINK_WARNING) {
 			hostname = sockaddr2hostname(&from);
 			logger(mesh, MESHLINK_WARNING, "Received UDP packet from unknown source %s", hostname);
 			free(hostname);
@@ -1023,7 +1028,7 @@ void handle_incoming_vpn_data(event_loop_t *loop, void *data, int flags) {
 	}
 
 	n->sock = ls - mesh->listen_socket;
-	n->last_udp_from = from;
+	path_copy_sockaddr(&n->last_udp_from, &from);
 
 	receive_udppacket(mesh, n, &pkt);
 }

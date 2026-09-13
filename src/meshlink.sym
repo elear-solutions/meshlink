@@ -2,6 +2,7 @@ __emutls_v.meshlink_errno
 devtool_choose_udp_address
 devtool_choose_udp_address_advance
 devtool_confirm_udp_from
+devtool_promote_udp_if_better
 devtool_plant_recent_address
 devtool_clear_relay_reports
 devtool_export_json_all_edges_state

@@ -28,6 +28,7 @@
 #include "net_upgrade.h"
 #include "netutl.h"
 #include "node.h"
+#include "path_policy.h"
 #include "protocol.h"
 #include "xalloc.h"
 
@@ -76,7 +77,7 @@ static bool pick_probe_address(node_t *n, sockaddr_t *out) {
 			continue;
 		}
 
-		if(!path_source_is_direct(n->recent_source[idx]) || path_address_matches_canonical(n, sa)) {
+		if(!path_is_direct_candidate(n, sa, n->recent_source[idx])) {
 			continue;
 		}
 
@@ -143,7 +144,7 @@ void upgrade_probe_failed(meshlink_handle_t *mesh, node_t *n, const char *reason
 
 	n->upgrade_probe = NULL;
 
-	if(c && c->status.active && !c->status.via_canonical) {
+	if(c && c->status.active && !path_meta_is_canonical(n, c)) {
 		/* A regular connection got there first: nothing left to upgrade, so no backoff. */
 		logger(mesh, MESHLINK_INFO, "Direct probe to %s abandoned: %s, already directly connected", n->name, reason);
 	} else {

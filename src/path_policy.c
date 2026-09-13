@@ -75,6 +75,30 @@ const char *meta_dial_tier_name(meta_dial_tier_t tier) {
 	return tier == META_DIAL_CANONICAL ? "canonical" : "direct";
 }
 
+void path_copy_sockaddr(sockaddr_t *dst, const sockaddr_t *src) {
+	size_t len = 0;
+
+	if(!dst) {
+		return;
+	}
+
+	memset(dst, 0, sizeof * dst);
+
+	if(!src) {
+		return;
+	}
+
+	if(src->sa.sa_family == AF_INET) {
+		len = sizeof(struct sockaddr_in);
+	} else if(src->sa.sa_family == AF_INET6) {
+		len = sizeof(struct sockaddr_in6);
+	} else {
+		return;
+	}
+
+	memcpy(dst, src, len);
+}
+
 bool path_source_is_direct(address_source_t src) {
 	switch(src) {
 	case ADDR_SRC_AUTH_DIRECT:
@@ -82,12 +106,38 @@ bool path_source_is_direct(address_source_t src) {
 	case ADDR_SRC_HINT:
 	case ADDR_SRC_EXTERNAL:
 	case ADDR_SRC_EDGE_DIRECT:
-	case ADDR_SRC_UNKNOWN:
+	case ADDR_SRC_UNKNOWN: /* legacy host config without provenance: still dialable once canonical is known */
 		return true;
 
 	default:
 		return false;
 	}
+}
+
+bool path_canonical_unresolved(const node_t *n) {
+	if(!n || !n->canonical_address || !n->canonical_address[0]) {
+		return false;
+	}
+
+	return n->canonical_sa.sa.sa_family == AF_UNSPEC || n->canonical_sa.sa.sa_family == AF_UNKNOWN;
+}
+
+bool path_is_direct_candidate(const node_t *n, const sockaddr_t *sa, address_source_t src) {
+	if(!n || !sa || !path_source_is_direct(src)) {
+		return false;
+	}
+
+	if(path_address_matches_canonical(n, sa)) {
+		return false;
+	}
+
+	/* UNKNOWN-as-direct is for legacy numeric configs. Skip it while a hostname
+	   canonical has not resolved — leftover NLB must not win the first META walk. */
+	if(src == ADDR_SRC_UNKNOWN && path_canonical_unresolved(n)) {
+		return false;
+	}
+
+	return true;
 }
 
 bool path_tier_better(path_tier_t a, path_tier_t b) {
@@ -180,7 +230,7 @@ void path_set_canonical_sockaddr(node_t *n, const sockaddr_t *sa) {
 		return;
 	}
 
-	n->canonical_sa = *sa;
+	path_copy_sockaddr(&n->canonical_sa, sa);
 }
 
 bool path_address_matches_canonical(const node_t *n, const sockaddr_t *sa) {
@@ -204,25 +254,25 @@ bool path_address_matches_canonical(const node_t *n, const sockaddr_t *sa) {
 static int source_trust(address_source_t src) {
 	switch(src) {
 	case ADDR_SRC_AUTH_DIRECT:
-		return 7;
+		return SOURCE_TRUST_AUTH_DIRECT;
 
 	case ADDR_SRC_DISCOVERY:
-		return 6;
+		return SOURCE_TRUST_DISCOVERY;
 
 	case ADDR_SRC_EXTERNAL:
-		return 5;
+		return SOURCE_TRUST_EXTERNAL;
 
 	case ADDR_SRC_HINT:
-		return 4;
+		return SOURCE_TRUST_HINT;
 
 	case ADDR_SRC_EDGE_DIRECT:
-		return 3;
+		return SOURCE_TRUST_EDGE;
 
 	case ADDR_SRC_UNKNOWN:
-		return 1;
+		return SOURCE_TRUST_UNKNOWN;
 
 	default:
-		return 0;
+		return SOURCE_TRUST_NONE;
 	}
 }
 
@@ -236,7 +286,7 @@ static int recent_count(const node_t *n) {
 }
 
 static bool reject_canonical(meshlink_handle_t *mesh, const node_t *n, const sockaddr_t *sa, address_source_t src) {
-	if(!path_address_matches_canonical(n, sa) && src != ADDR_SRC_CANONICAL && src != ADDR_SRC_INDIRECT) {
+	if(!path_address_matches_canonical(n, sa) && src != ADDR_SRC_CANONICAL) {
 		return false;
 	}
 
@@ -249,6 +299,7 @@ static bool reject_canonical(meshlink_handle_t *mesh, const node_t *n, const soc
 	return true;
 }
 
+/* Rotate sa to recent[0]. If this slot already had a higher-trust source, keep that source. */
 static void recent_store_front(node_t *n, int i, const sockaddr_t *sa, address_source_t src) {
 	address_source_t keep = src;
 
@@ -279,7 +330,7 @@ bool path_learn_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa
 		return false;
 	}
 
-	if(reject_canonical(mesh, n, sa, src)) {
+	if(src == ADDR_SRC_INDIRECT || reject_canonical(mesh, n, sa, src)) {
 		return false;
 	}
 
@@ -357,6 +408,25 @@ void path_clear_recent(node_t *n) {
 	n->status.dirty = true;
 }
 
+void path_plant_recent(node_t *n, const sockaddr_t *sa) {
+	int i;
+
+	if(!n || !sa || sa->sa.sa_family == AF_UNSPEC || sa->sa.sa_family == AF_UNKNOWN) {
+		return;
+	}
+
+	for(i = 0; i < MAX_RECENT && n->recent[i].sa.sa_family; i++) {
+		if(!sockaddrcmp(&n->recent[i], sa)) {
+			recent_store_front(n, i, sa, ADDR_SRC_UNKNOWN);
+			n->recent_source[0] = ADDR_SRC_UNKNOWN;
+			return;
+		}
+	}
+
+	recent_store_front(n, -1, sa, ADDR_SRC_UNKNOWN);
+	n->recent_source[0] = ADDR_SRC_UNKNOWN;
+}
+
 bool path_sanitize_recent(meshlink_handle_t *mesh, node_t *n) {
 	if(!n) {
 		return false;
@@ -373,8 +443,8 @@ bool path_sanitize_recent(meshlink_handle_t *mesh, node_t *n) {
 	memset(kept_src, 0, sizeof kept_src);
 
 	for(int i = 0; i < MAX_RECENT && n->recent[i].sa.sa_family; i++) {
-		if(path_address_matches_canonical(n, &n->recent[i]) || n->recent_source[i] == ADDR_SRC_CANONICAL || n->recent_source[i] == ADDR_SRC_INDIRECT) {
-			if(mesh) {
+		if(path_address_matches_canonical(n, &n->recent[i]) || n->recent_source[i] == ADDR_SRC_CANONICAL) {
+			if(mesh && mesh->log_level <= MESHLINK_INFO) {
 				char *hostname = sockaddr2hostname(&n->recent[i]);
 				logger(mesh, MESHLINK_INFO, "Path policy: sanitized %s from recent[] of %s (source %s)", hostname, n->name, address_source_name(n->recent_source[i]));
 				free(hostname);
@@ -404,11 +474,7 @@ bool path_best_direct_meta(const node_t *n, const sockaddr_t *skip, sockaddr_t *
 	}
 
 	for(int i = 0; i < MAX_RECENT && n->recent[i].sa.sa_family; i++) {
-		if(!path_source_is_direct(n->recent_source[i])) {
-			continue;
-		}
-
-		if(path_address_matches_canonical(n, &n->recent[i])) {
+		if(!path_is_direct_candidate(n, &n->recent[i], n->recent_source[i])) {
 			continue;
 		}
 
@@ -416,7 +482,7 @@ bool path_best_direct_meta(const node_t *n, const sockaddr_t *skip, sockaddr_t *
 			continue;
 		}
 
-		*out = n->recent[i];
+		path_copy_sockaddr(out, &n->recent[i]);
 
 		if(src_out) {
 			*src_out = n->recent_source[i];
@@ -438,7 +504,7 @@ bool path_meta_is_canonical(const node_t *n, const connection_t *c) {
 		return false;
 	}
 
-	if(c->status.via_canonical || c->status.meta_dial_tier == META_DIAL_CANONICAL) {
+	if(c->status.via_canonical) {
 		return true;
 	}
 
@@ -494,8 +560,9 @@ path_tier_t path_select_destination_tier(const node_t *dest, bool meta_in) {
 	return path_select_hop_tier(dest, meta_in);
 }
 
-bool path_udp_should_probe_local(meshlink_handle_t *mesh, const node_t *n) {
+bool path_udp_should_probe_local(meshlink_handle_t *mesh, const node_t *n, sockaddr_t *out) {
 	sockaddr_t sa;
+	sockaddr_t *dest = out ? out : &sa;
 
 	if(!mesh || !n || !n->status.udp_confirmed || n->udp_tier != PATH_TIER_DIRECT_WAN_UDP) {
 		return false;
@@ -505,7 +572,15 @@ bool path_udp_should_probe_local(meshlink_handle_t *mesh, const node_t *n) {
 		return false;
 	}
 
-	return path_pick_local_udp_candidate(mesh, n, &sa);
+	return path_pick_local_udp_candidate(mesh, n, dest);
+}
+
+void path_schedule_local_udp_probe(meshlink_handle_t *mesh, node_t *n) {
+	if(!mesh || !n) {
+		return;
+	}
+
+	n->udp_local_probe_next = mesh->loop.now.tv_sec + UDP_LOCAL_PROBE_SEC;
 }
 
 bool path_pick_local_udp_candidate(meshlink_handle_t *mesh, const node_t *n, sockaddr_t *out) {
@@ -516,11 +591,7 @@ bool path_pick_local_udp_candidate(meshlink_handle_t *mesh, const node_t *n, soc
 	}
 
 	for(int i = 0; i < MAX_RECENT && n->recent[i].sa.sa_family; i++) {
-		if(!path_source_is_direct(n->recent_source[i])) {
-			continue;
-		}
-
-		if(path_address_matches_canonical(n, &n->recent[i])) {
+		if(!path_is_direct_candidate(n, &n->recent[i], n->recent_source[i])) {
 			continue;
 		}
 

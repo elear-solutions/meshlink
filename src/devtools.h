@@ -350,6 +350,9 @@ bool devtool_plant_recent_address(struct meshlink_handle *mesh, struct meshlink_
 /// Force a confirmed UDP dest and tier without waiting for a probe reply.
 bool devtool_confirm_udp_from(struct meshlink_handle *mesh, struct meshlink_node *node, const struct sockaddr *addr, int tier);
 
+/// Drive path_promote_udp_if_better (production WAN→local promotion).
+bool devtool_promote_udp_if_better(struct meshlink_handle *mesh, struct meshlink_node *node, const struct sockaddr *addr);
+
 /// True when sssp_bfs would seed n->address from this edge dest.
 /** @param mesh  Mesh handle.
  *  @param node  Node the edge points to.

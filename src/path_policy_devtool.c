@@ -254,6 +254,21 @@ static bool cover_learn_sanitize(meshlink_handle_t *mesh) {
 	path_clear_recent(&n);
 	CHECK(!n.recent[0].sa.sa_family);
 	CHECK(n.status.dirty);
+	return true;
+}
+
+static bool cover_sanitize(meshlink_handle_t *mesh) {
+	node_t n;
+	sockaddr_t local, wan, wan2, nlb, unspec;
+
+	memset(&n, 0, sizeof n);
+	n.name = "cover";
+	n.canonical_address = "198.51.100.1 9";
+	path_refresh_canonical_endpoint(&n);
+	set_v4(&local, "192.168.1.10", 1000);
+	set_v4(&wan, "203.0.113.10", 2000);
+	set_v4(&wan2, "203.0.113.11", 2001);
+	set_v4(&nlb, "198.51.100.1", 9);
 
 	CHECK(!path_learn_address_fallback(mesh, NULL, &local, ADDR_SRC_HINT));
 	CHECK(!path_learn_address_fallback(mesh, &n, NULL, ADDR_SRC_HINT));
@@ -292,8 +307,10 @@ static bool cover_learn_sanitize(meshlink_handle_t *mesh) {
 
 	CHECK(path_learn_address(mesh, &n, &wan, ADDR_SRC_HINT));
 	n.recent_source[0] = ADDR_SRC_INDIRECT;
-	CHECK(path_sanitize_recent(NULL, &n));
-	CHECK(!n.recent[0].sa.sa_family);
+	CHECK(!path_sanitize_recent(NULL, &n));
+	CHECK(n.recent_source[0] == ADDR_SRC_INDIRECT);
+	CHECK(path_learn_address_fallback(mesh, &n, &wan2, ADDR_SRC_INDIRECT));
+	CHECK(n.recent_source[1] == ADDR_SRC_INDIRECT);
 
 	CHECK(path_learn_address(mesh, &n, &nlb, ADDR_SRC_UNKNOWN) == false);
 	n.recent[0] = nlb;
@@ -310,6 +327,15 @@ static bool cover_learn_sanitize(meshlink_handle_t *mesh) {
 	n.canonical_address = "nlb.example 443";
 	path_refresh_canonical_endpoint(&n);
 	CHECK(!path_sanitize_recent(mesh, &n));
+
+	path_clear_recent(&n);
+	n.recent[0] = nlb;
+	n.recent_source[0] = ADDR_SRC_UNKNOWN;
+	CHECK(!path_is_direct_candidate(&n, &nlb, ADDR_SRC_UNKNOWN));
+	CHECK(!path_best_direct_meta(&n, NULL, &wan2, NULL));
+	CHECK(path_learn_address(mesh, &n, &wan, ADDR_SRC_HINT));
+	CHECK(path_best_direct_meta(&n, NULL, &wan2, NULL));
+	CHECK(!sockaddrcmp(&wan2, &wan));
 	return true;
 }
 
@@ -411,33 +437,20 @@ static bool cover_select(meshlink_handle_t *mesh) {
 	return true;
 }
 
-static bool cover_probe_promote(meshlink_handle_t *mesh, node_t *live) {
-	sockaddr_t saved_addr = live->address;
-	sockaddr_t saved_recent[MAX_RECENT];
-	address_source_t saved_src[MAX_RECENT];
-	sockaddr_t saved_catta = live->catta_address;
-	sockaddr_t saved_csa = live->canonical_sa;
-	char *saved_canon = live->canonical_address;
-	path_tier_t saved_tier = live->udp_tier;
-	time_t saved_probe = live->udp_local_probe_next;
-	bool saved_uc = live->status.udp_confirmed;
-	int saved_sock = live->sock;
-	memcpy(saved_recent, live->recent, sizeof saved_recent);
-	memcpy(saved_src, live->recent_source, sizeof saved_src);
-
-	path_note_udp_confirmed(mesh, NULL);
-	path_log_transition(NULL, live, PATH_TIER_NONE, PATH_TIER_META_DIRECT, "x");
-	path_log_transition(mesh, NULL, PATH_TIER_NONE, PATH_TIER_META_DIRECT, "x");
-	path_log_transition(mesh, live, PATH_TIER_NONE, PATH_TIER_META_DIRECT, NULL);
-
+static bool cover_probe(meshlink_handle_t *mesh) {
 	node_t dummy;
+	sockaddr_t out, local, wan, nlb, unixish, relayed;
+
 	memset(&dummy, 0, sizeof dummy);
 	dummy.name = "probe";
-	CHECK(!path_udp_should_probe_local(NULL, &dummy));
-	CHECK(!path_udp_should_probe_local(mesh, NULL));
+	path_note_udp_confirmed(mesh, NULL);
+	path_log_transition(NULL, &dummy, PATH_TIER_NONE, PATH_TIER_META_DIRECT, "x");
+	path_log_transition(mesh, NULL, PATH_TIER_NONE, PATH_TIER_META_DIRECT, "x");
+	path_log_transition(mesh, &dummy, PATH_TIER_NONE, PATH_TIER_META_DIRECT, NULL);
+	CHECK(!path_udp_should_probe_local(NULL, &dummy, NULL));
+	CHECK(!path_udp_should_probe_local(mesh, NULL, NULL));
 	CHECK(!path_pick_local_udp_candidate(mesh, NULL, NULL));
 
-	sockaddr_t out, local, wan, nlb, unixish, relayed;
 	set_v4(&local, "10.1.2.3", 1234);
 	set_v4(&wan, "203.0.113.50", 9);
 	set_v4(&nlb, "198.51.100.1", 9);
@@ -457,7 +470,7 @@ static bool cover_probe_promote(meshlink_handle_t *mesh, node_t *live) {
 	dummy.recent_source[2] = ADDR_SRC_DISCOVERY;
 	dummy.address = wan;
 	CHECK(!path_pick_local_udp_candidate(mesh, &dummy, &out));
-	CHECK(!path_udp_should_probe_local(mesh, &dummy));
+	CHECK(!path_udp_should_probe_local(mesh, &dummy, NULL));
 
 	dummy.address = local;
 	dummy.recent[3] = local;
@@ -469,14 +482,14 @@ static bool cover_probe_promote(meshlink_handle_t *mesh, node_t *live) {
 	CHECK(path_pick_local_udp_candidate(mesh, &dummy, &out));
 	CHECK(!sockaddrcmp(&out, &local));
 	dummy.udp_local_probe_next = mesh->loop.now.tv_sec + 60;
-	CHECK(!path_udp_should_probe_local(mesh, &dummy));
+	CHECK(!path_udp_should_probe_local(mesh, &dummy, NULL));
 	dummy.udp_local_probe_next = 0;
-	CHECK(path_udp_should_probe_local(mesh, &dummy));
+	CHECK(path_udp_should_probe_local(mesh, &dummy, NULL));
 	dummy.udp_tier = PATH_TIER_DIRECT_LOCAL_UDP;
-	CHECK(!path_udp_should_probe_local(mesh, &dummy));
+	CHECK(!path_udp_should_probe_local(mesh, &dummy, NULL));
 	dummy.udp_tier = PATH_TIER_DIRECT_WAN_UDP;
 	dummy.status.udp_confirmed = false;
-	CHECK(!path_udp_should_probe_local(mesh, &dummy));
+	CHECK(!path_udp_should_probe_local(mesh, &dummy, NULL));
 
 	path_clear_recent(&dummy);
 	dummy.address = wan;
@@ -488,6 +501,73 @@ static bool cover_probe_promote(meshlink_handle_t *mesh, node_t *live) {
 	memset(&dummy.catta_address, 0, sizeof dummy.catta_address);
 	set_v4(&dummy.catta_address, "203.0.113.60", 9);
 	CHECK(!path_pick_local_udp_candidate(mesh, &dummy, &out));
+	return true;
+}
+
+typedef struct live_snapshot_t {
+	sockaddr_t addr;
+	sockaddr_t recent[MAX_RECENT];
+	address_source_t src[MAX_RECENT];
+	sockaddr_t catta;
+	sockaddr_t csa;
+	sockaddr_t extra;
+	char *canon;
+	path_tier_t tier;
+	time_t probe;
+	bool uc;
+	int sock;
+} live_snapshot_t;
+
+static void snapshot_live(node_t *live, live_snapshot_t *s) {
+	s->addr = live->address;
+	s->catta = live->catta_address;
+	s->csa = live->canonical_sa;
+	s->extra = live->udp_cache_extra;
+	s->canon = live->canonical_address;
+	s->tier = live->udp_tier;
+	s->probe = live->udp_local_probe_next;
+	s->uc = live->status.udp_confirmed;
+	s->sock = live->sock;
+	memcpy(s->recent, live->recent, sizeof s->recent);
+	memcpy(s->src, live->recent_source, sizeof s->src);
+}
+
+static void restore_live(meshlink_handle_t *mesh, node_t *live, const live_snapshot_t *s) {
+	if(s->addr.sa.sa_family) {
+		update_node_udp_from(mesh, live, &s->addr, ADDR_SRC_AUTH_DIRECT);
+	}
+
+	memcpy(live->recent, s->recent, sizeof s->recent);
+	memcpy(live->recent_source, s->src, sizeof s->src);
+	live->address = s->addr;
+	live->catta_address = s->catta;
+	live->canonical_sa = s->csa;
+	live->udp_cache_extra = s->extra;
+	live->canonical_address = s->canon;
+	live->udp_tier = s->tier;
+	live->udp_local_probe_next = s->probe;
+	live->status.udp_confirmed = s->uc;
+	live->sock = s->sock;
+}
+
+static bool cover_promote(meshlink_handle_t *mesh, node_t *live) {
+	live_snapshot_t saved;
+	bool ok = true;
+	sockaddr_t local, wan, nlb;
+
+	snapshot_live(live, &saved);
+
+	set_v4(&local, "10.1.2.3", 1234);
+	set_v4(&wan, "203.0.113.50", 9);
+	set_v4(&nlb, "198.51.100.1", 9);
+
+#define CHECK_LIVE(cond) do { \
+	if(!(cond)) { \
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: %s", #cond); \
+		ok = false; \
+		goto done; \
+	} \
+} while(0)
 
 	live->address = wan;
 	live->status.udp_confirmed = true;
@@ -495,57 +575,46 @@ static bool cover_probe_promote(meshlink_handle_t *mesh, node_t *live) {
 	path_learn_address(mesh, live, &wan, ADDR_SRC_AUTH_DIRECT);
 	live->udp_tier = PATH_TIER_NONE;
 	path_note_udp_confirmed(mesh, live);
-	CHECK(live->udp_tier == PATH_TIER_DIRECT_WAN_UDP);
+	CHECK_LIVE(live->udp_tier == PATH_TIER_DIRECT_WAN_UDP);
 	path_note_udp_confirmed(mesh, live);
 
 	path_learn_address(mesh, live, &local, ADDR_SRC_DISCOVERY);
 	live->address = local;
 	live->udp_tier = PATH_TIER_DIRECT_WAN_UDP;
 	path_note_udp_confirmed(mesh, live);
-	CHECK(live->udp_tier == PATH_TIER_DIRECT_LOCAL_UDP);
+	CHECK_LIVE(live->udp_tier == PATH_TIER_DIRECT_LOCAL_UDP);
 
 	live->status.udp_confirmed = false;
-	CHECK(!path_promote_udp_if_better(mesh, live, &wan));
+	CHECK_LIVE(!path_promote_udp_if_better(mesh, live, &wan));
 	live->status.udp_confirmed = true;
-	CHECK(!path_promote_udp_if_better(mesh, NULL, &wan));
-	CHECK(!path_promote_udp_if_better(mesh, live, NULL));
-	CHECK(!path_promote_udp_if_better(mesh, live, &live->address));
+	CHECK_LIVE(!path_promote_udp_if_better(mesh, NULL, &wan));
+	CHECK_LIVE(!path_promote_udp_if_better(mesh, live, NULL));
+	CHECK_LIVE(!path_promote_udp_if_better(mesh, live, &live->address));
 
 	live->canonical_address = "198.51.100.1 9";
 	path_refresh_canonical_endpoint(live);
-	CHECK(!path_promote_udp_if_better(mesh, live, &nlb));
+	CHECK_LIVE(!path_promote_udp_if_better(mesh, live, &nlb));
 
 	live->udp_tier = PATH_TIER_DIRECT_LOCAL_UDP;
-	CHECK(!path_promote_udp_if_better(mesh, live, &wan));
+	CHECK_LIVE(!path_promote_udp_if_better(mesh, live, &wan));
 
 	live->udp_tier = PATH_TIER_DIRECT_WAN_UDP;
 	set_v4(&wan, "203.0.113.77", 77);
-	CHECK(!path_promote_udp_if_better(mesh, live, &wan));
+	CHECK_LIVE(!path_promote_udp_if_better(mesh, live, &wan));
 
 	live->udp_tier = PATH_TIER_NONE;
 	set_v4(&wan, "203.0.113.78", 78);
-	CHECK(path_promote_udp_if_better(mesh, live, &wan));
-	CHECK(live->udp_tier == PATH_TIER_DIRECT_WAN_UDP);
+	CHECK_LIVE(path_promote_udp_if_better(mesh, live, &wan));
+	CHECK_LIVE(live->udp_tier == PATH_TIER_DIRECT_WAN_UDP);
 
-	CHECK(path_promote_udp_if_better(mesh, live, &local));
-	CHECK(live->udp_tier == PATH_TIER_DIRECT_LOCAL_UDP);
-	CHECK(!path_promote_udp_if_better(mesh, live, &wan));
+	CHECK_LIVE(path_promote_udp_if_better(mesh, live, &local));
+	CHECK_LIVE(live->udp_tier == PATH_TIER_DIRECT_LOCAL_UDP);
+	CHECK_LIVE(!path_promote_udp_if_better(mesh, live, &wan));
 
-	if(saved_addr.sa.sa_family) {
-		update_node_udp_from(mesh, live, &saved_addr, ADDR_SRC_AUTH_DIRECT);
-	}
-
-	memcpy(live->recent, saved_recent, sizeof saved_recent);
-	memcpy(live->recent_source, saved_src, sizeof saved_src);
-	live->address = saved_addr;
-	live->catta_address = saved_catta;
-	live->canonical_sa = saved_csa;
-	live->canonical_address = saved_canon;
-	live->udp_tier = saved_tier;
-	live->udp_local_probe_next = saved_probe;
-	live->status.udp_confirmed = saved_uc;
-	live->sock = saved_sock;
-	return true;
+done:
+	restore_live(mesh, live, &saved);
+	return ok;
+#undef CHECK_LIVE
 }
 
 bool path_policy_cover_unit(meshlink_handle_t *mesh, node_t *live) {
@@ -557,8 +626,10 @@ bool path_policy_cover_unit(meshlink_handle_t *mesh, node_t *live) {
 	                || !cover_local_classify(mesh)
 	                || !cover_canonical(mesh)
 	                || !cover_learn_sanitize(mesh)
+	                || !cover_sanitize(mesh)
 	                || !cover_select(mesh)
-	                || !cover_probe_promote(mesh, live)) {
+	                || !cover_probe(mesh)
+	                || !cover_promote(mesh, live)) {
 		return false;
 	}
 

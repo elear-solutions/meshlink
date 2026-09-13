@@ -122,7 +122,41 @@ void node_add(meshlink_handle_t *mesh, node_t *n) {
 	splay_insert(mesh->nodes, n);
 }
 
+static void node_udp_cache_forget(meshlink_handle_t *mesh, node_t *n) {
+	if(!mesh || !n || !mesh->node_udp_cache) {
+		return;
+	}
+
+	hash_insert(mesh->node_udp_cache, &n->address, NULL);
+
+	if(n->udp_cache_extra.sa.sa_family) {
+		hash_insert(mesh->node_udp_cache, &n->udp_cache_extra, NULL);
+		memset(&n->udp_cache_extra, 0, sizeof n->udp_cache_extra);
+	}
+
+	if(n->last_udp_from.sa.sa_family) {
+		hash_insert(mesh->node_udp_cache, &n->last_udp_from, NULL);
+	}
+}
+
+void node_udp_cache_alias(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa) {
+	if(!mesh || !n || !sa || !mesh->node_udp_cache) {
+		return;
+	}
+
+	if(n->udp_cache_extra.sa.sa_family) {
+		hash_insert(mesh->node_udp_cache, &n->udp_cache_extra, NULL);
+	}
+
+	path_copy_sockaddr(&n->udp_cache_extra, sa);
+
+	if(n->udp_cache_extra.sa.sa_family) {
+		hash_insert(mesh->node_udp_cache, &n->udp_cache_extra, n);
+	}
+}
+
 void node_del(meshlink_handle_t *mesh, node_t *n) {
+	node_udp_cache_forget(mesh, n);
 	node_clear_inbound_prev_nexthop(mesh, n);
 	timeout_del(&mesh->loop, &n->mtutimeout);
 
@@ -176,10 +210,10 @@ void update_node_udp_from(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *
 		return;
 	}
 
-	hash_insert(mesh->node_udp_cache, &n->address, NULL);
+	node_udp_cache_forget(mesh, n);
 
 	if(sa) {
-		n->address = *sa;
+		path_copy_sockaddr(&n->address, sa);
 		n->sock = 0;
 
 		for(int i = 0; i < mesh->listen_sockets; i++) {
@@ -189,7 +223,7 @@ void update_node_udp_from(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *
 			}
 		}
 
-		hash_insert(mesh->node_udp_cache, sa, n);
+		hash_insert(mesh->node_udp_cache, &n->address, n);
 
 		node_add_recent_address(mesh, n, sa, src);
 

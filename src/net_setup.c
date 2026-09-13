@@ -37,6 +37,25 @@
 #include "xalloc.h"
 #include "submesh.h"
 
+static void unpack_recent_sources(packmsg_input_t *in, node_t *n, uint32_t count, uint32_t dest_base, uint32_t dest_max) {
+	uint32_t nsrc;
+	uint32_t i;
+
+	if(packmsg_done(in) || !packmsg_input_ok(in)) {
+		return;
+	}
+
+	nsrc = packmsg_get_array(in);
+
+	for(i = 0; i < nsrc; i++) {
+		uint8_t src = packmsg_get_uint8(in);
+
+		if(i < dest_max && i < count) {
+			n->recent_source[dest_base + i] = (address_source_t)src;
+		}
+	}
+}
+
 /// Helper function to start parsing a host config file
 static bool node_get_config(meshlink_handle_t *mesh, node_t *n, config_t *config, packmsg_input_t *in) {
 	if(!config_read(mesh, "current", n->name, config, mesh->config_key)) {
@@ -136,17 +155,7 @@ bool node_read_public_key(meshlink_handle_t *mesh, node_t *n) {
 	}
 
 	/* Optional provenance array after the original host-config tail. */
-	if(!packmsg_done(&in) && packmsg_input_ok(&in)) {
-		uint32_t nsrc = packmsg_get_array(&in);
-
-		for(uint32_t i = 0; i < nsrc; i++) {
-			uint8_t src = packmsg_get_uint8(&in);
-
-			if(i < MAX_RECENT - known_count && i < count) {
-				n->recent_source[i + known_count] = (address_source_t)src;
-			}
-		}
-	}
+	unpack_recent_sources(&in, n, count, known_count, MAX_RECENT - known_count);
 
 	path_refresh_canonical_endpoint(n);
 	path_sanitize_recent(mesh, n);
@@ -234,17 +243,7 @@ bool node_read_from_config(meshlink_handle_t *mesh, node_t *n, const config_t *c
 	n->last_reachable = packmsg_get_int64(&in);
 	n->last_unreachable = packmsg_get_int64(&in);
 
-	if(!packmsg_done(&in) && packmsg_input_ok(&in)) {
-		uint32_t nsrc = packmsg_get_array(&in);
-
-		for(uint32_t i = 0; i < nsrc; i++) {
-			uint8_t src = packmsg_get_uint8(&in);
-
-			if(i < MAX_RECENT && i < count) {
-				n->recent_source[i] = (address_source_t)src;
-			}
-		}
-	}
+	unpack_recent_sources(&in, n, count, 0, MAX_RECENT);
 
 	path_refresh_canonical_endpoint(n);
 	path_sanitize_recent(mesh, n);

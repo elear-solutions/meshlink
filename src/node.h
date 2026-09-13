@@ -113,6 +113,7 @@ typedef struct node_t {
 	sockaddr_t catta_address;               /* Latest address seen by Catta */
 	sockaddr_t canonical_sa;                /* Resolved numeric canonical endpoint, AF_UNSPEC if unknown */
 	sockaddr_t last_udp_from;               /* Source of the last inbound UDP packet */
+	sockaddr_t udp_cache_extra;             /* Extra node_udp_cache key (local probe / alternate from) */
 	path_tier_t udp_tier;                   /* Validated UDP dest tier */
 	path_tier_t last_path_tier;             /* Last logged destination-wide tier */
 	time_t udp_local_probe_next;            /* Earliest local-UDP validation while WAN is active */
@@ -140,6 +141,7 @@ node_t *lookup_node(struct meshlink_handle *mesh, const char *name) __attribute_
 node_t *lookup_node_udp(struct meshlink_handle *mesh, const sockaddr_t *sa) __attribute__((__warn_unused_result__));
 void update_node_udp(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *sa);
 void update_node_udp_from(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *sa, address_source_t src);
+void node_udp_cache_alias(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *sa);
 bool node_add_recent_address(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *addr, address_source_t src);
 bool node_append_recent_address(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *addr, address_source_t src);
 bool graph_may_seed_udp(const node_t *n, const sockaddr_t *edge_addr);
