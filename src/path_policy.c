@@ -172,11 +172,6 @@ void path_refresh_canonical_endpoint(node_t *n) {
 	}
 
 	memset(&n->canonical_sa, 0, sizeof n->canonical_sa);
-
-	if(!n->canonical_address) {
-		return;
-	}
-
 	canonical_to_sockaddr(n->canonical_address, &n->canonical_sa);
 }
 

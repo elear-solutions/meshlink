@@ -4,6 +4,9 @@ Makefile.in
 *.a
 *.lo
 *.la
+*.gcno
+*.gcda
+*.gcov
 *.orig
 *~
 .*
@@ -94,3 +97,9 @@ test/trio
 test/trio2
 test/utcp-benchmark
 test/utcp-benchmark-stream
+test/path-policy-coverage
+test/outgoing-order
+test/canonical-migrate
+test/req-external-recent
+test/udp-relay
+test/relay-coverage

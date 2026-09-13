@@ -25,6 +25,8 @@
 #include "meshlink_internal.h"
 #include "net.h"
 #include "node.h"
+#include "path_policy.h"
+#include "path_policy_devtool.h"
 #include "relay.h"
 #include "relay_devtool.h"
 #include "sptps.h"
@@ -908,6 +910,51 @@ bool devtool_handle_req_relay_mtu(meshlink_handle_t *mesh, meshlink_node_t *from
 	bool ok = relay_devtool_handle_req_relay_mtu(mesh, (node_t *)from, request);
 	pthread_mutex_unlock(&mesh->mutex);
 	return ok;
+}
+
+bool devtool_path_policy_cover_unit(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	bool ok = path_policy_cover_unit(mesh, (node_t *)node);
+	pthread_mutex_unlock(&mesh->mutex);
+	return ok;
+}
+
+int devtool_select_destination_tier(meshlink_handle_t *mesh, meshlink_node_t *node, bool meta_in) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return (int)PATH_TIER_NONE;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	path_tier_t selected = path_select_destination_tier((node_t *)node, meta_in);
+	pthread_mutex_unlock(&mesh->mutex);
+	return (int)selected;
+}
+
+int devtool_select_hop_tier(meshlink_handle_t *mesh, meshlink_node_t *node, bool meta_in) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return (int)PATH_TIER_NONE;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	path_tier_t selected = path_select_hop_tier((node_t *)node, meta_in);
+	pthread_mutex_unlock(&mesh->mutex);
+	return (int)selected;
 }
 
 bool devtool_relay_cover_unit(meshlink_handle_t *mesh, meshlink_node_t *from, meshlink_node_t *dest, meshlink_node_t *hop) {
