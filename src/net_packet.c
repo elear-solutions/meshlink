@@ -28,6 +28,8 @@
 #include "net.h"
 #include "net_upgrade.h"
 #include "netutl.h"
+#include "node.h"
+#include "path_policy.h"
 #include "protocol.h"
 #include "relay.h"
 #include "relay_devtool.h"
@@ -81,6 +83,7 @@ static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 
 		logger(mesh, MESHLINK_INFO, "%s did not respond to UDP ping, restarting PMTU discovery", n->name);
 		n->status.udp_confirmed = false;
+		n->udp_tier = PATH_TIER_NONE;
 		n->mtuprobes = 1;
 		n->minmtu = 0;
 		n->maxmtu = MTU;
@@ -217,11 +220,15 @@ static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet
 			/* The confirmed UDP address is a direct path to the node (UDP and TCP share
 			   a port): remember it and see if it can replace a canonical meta connection. */
 
-			if(n->address.sa.sa_family != AF_UNSPEC && node_add_recent_address(mesh, n, &n->address)) {
+			if(n->address.sa.sa_family != AF_UNSPEC && node_add_recent_address(mesh, n, &n->address, ADDR_SRC_AUTH_DIRECT)) {
 				n->upgrade_recent_idx = 0;
 			}
 
+			path_note_udp_confirmed(mesh, n);
 			try_upgrade_probe(mesh, n);
+			relay_update_destination_transport(mesh, n);
+			relay_recompute_dependents(mesh, n);
+		} else if(path_promote_udp_if_better(mesh, n, &n->last_udp_from)) {
 			relay_update_destination_transport(mesh, n);
 			relay_recompute_dependents(mesh, n);
 		}
@@ -497,6 +504,10 @@ static bool try_recent(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **sa
 	for(int i = 0; i < MAX_RECENT && n->recent[i].sa.sa_family; i++) {
 		const sockaddr_t *candidate = &n->recent[i];
 
+		if(!path_is_direct_candidate(n, candidate, n->recent_source[i])) {
+			continue;
+		}
+
 		if(!lan_candidate(candidate, self_ext, skip)) {
 			continue;
 		}
@@ -758,6 +769,13 @@ static bool send_relay_outer(meshlink_handle_t *mesh, node_t *hop, const void *d
 }
 
 static bool send_application_record(meshlink_handle_t *mesh, node_t *to, const void *data, size_t len) {
+	path_tier_t tier = path_select_destination_tier(to, false);
+
+	if(to->last_path_tier != tier) {
+		path_log_transition(mesh, to, to->last_path_tier, tier, "destination route");
+		to->last_path_tier = tier;
+	}
+
 	/* Confirmed UDP does not compare (len-21) against minmtu. */
 	if(to->status.udp_confirmed) {
 		if(!send_sptps_via_udp(mesh, to, data, len)) {
@@ -802,6 +820,29 @@ bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 	}
 
 	if(type == PKT_PROBE) {
+		sockaddr_t local;
+
+		if(path_udp_should_probe_local(mesh, to, &local)) {
+			int sock = to->sock;
+
+			if(select_listen_socket(mesh, &local, &sock)) {
+				node_udp_cache_alias(mesh, to, &local);
+				path_schedule_local_udp_probe(mesh, to);
+
+				if(mesh->log_level <= MESHLINK_INFO) {
+					char *hostname = sockaddr2hostname(&local);
+					logger(mesh, MESHLINK_INFO, "Path policy: validating local UDP candidate %s for %s", hostname, to->name);
+					free(hostname);
+				}
+
+				if(sendto(mesh->listen_socket[sock].udp.fd, data, len, 0, &local.sa, SALEN(local.sa)) < 0 && !sockwouldblock(sockerrno) && !sockmsgsize(sockerrno)) {
+					logger(mesh, MESHLINK_WARNING, "Error sending local UDP probe to %s: %s", to->name, sockstrerror(sockerrno));
+				}
+
+				return true;
+			}
+		}
+
 		return send_sptps_via_udp(mesh, to, data, len);
 	}
 
@@ -966,7 +1007,11 @@ void handle_incoming_vpn_data(event_loop_t *loop, void *data, int flags) {
 		n = try_harder(mesh, &from, &pkt);
 
 		if(n) {
-			update_node_udp(mesh, n, &from);
+			if(n->status.udp_confirmed && sockaddrcmp(&from, &n->address)) {
+				node_udp_cache_alias(mesh, n, &from);
+			} else {
+				update_node_udp_from(mesh, n, &from, ADDR_SRC_AUTH_DIRECT);
+			}
 		} else if(mesh->log_level <= MESHLINK_WARNING) {
 			hostname = sockaddr2hostname(&from);
 			logger(mesh, MESHLINK_WARNING, "Received UDP packet from unknown source %s", hostname);
@@ -983,6 +1028,7 @@ void handle_incoming_vpn_data(event_loop_t *loop, void *data, int flags) {
 	}
 
 	n->sock = ls - mesh->listen_socket;
+	path_copy_sockaddr(&n->last_udp_from, &from);
 
 	receive_udppacket(mesh, n, &pkt);
 }

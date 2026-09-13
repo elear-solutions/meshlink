@@ -43,6 +43,7 @@ TESTS = \
 	trio2 \
 	udp-relay \
 	relay-coverage \
+	path-policy-coverage \
 	utcp-benchmark \
 	utcp-benchmark-stream
 
@@ -105,7 +106,8 @@ check_PROGRAMS = \
 	trio \
 	trio2 \
 	udp-relay \
-	relay-coverage
+	relay-coverage \
+	path-policy-coverage
 
 if INSTALL_TESTS
 bin_PROGRAMS = $(check_PROGRAMS)
@@ -248,3 +250,6 @@ udp_relay_LDADD = $(top_builddir)/src/libmeshlink.la
 
 relay_coverage_SOURCES = relay-coverage.c utils.c utils.h
 relay_coverage_LDADD = $(top_builddir)/src/libmeshlink.la
+
+path_policy_coverage_SOURCES = path-policy-coverage.c utils.c utils.h
+path_policy_coverage_LDADD = $(top_builddir)/src/libmeshlink.la

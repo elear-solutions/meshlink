@@ -46,6 +46,7 @@
 #include "sockaddr.h"
 #include "logger.h"
 #include "netutl.h"
+#include "net_upgrade.h"
 #include "node.h"
 #include "connection.h"
 #include "utils.h"
@@ -330,11 +331,12 @@ static void mdns_io_handler(event_loop_t *loop, void *data, int flags) {
 			if(sa.sa.sa_family != AF_UNKNOWN) {
 				n->catta_address = sa;
 				n->last_connect_try = 0;
-				node_add_recent_address(mesh, n, &sa);
 
-				if(n->connection) {
-					n->connection->last_ping_time = -3600;
+				if(node_add_recent_address(mesh, n, &sa, ADDR_SRC_DISCOVERY)) {
+					n->upgrade_recent_idx = 0;
 				}
+
+				try_upgrade_probe(mesh, n);
 
 				for list_each(outgoing_t, outgoing, mesh->outgoings) {
 					if(outgoing->node != n) {

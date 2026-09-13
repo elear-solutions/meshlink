@@ -26,6 +26,7 @@
 #include "net_upgrade.h"
 #include "netutl.h"
 #include "node.h"
+#include "path_policy.h"
 #include "prf.h"
 #include "protocol.h"
 #include "relay.h"
@@ -307,6 +308,12 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 
 		free(from->canonical_address);
 		from->canonical_address = canonical_address;
+		from->status.dirty = true;
+
+		if(path_sanitize_recent(mesh, from) && !node_write_config(mesh, from, false)) {
+			logger(mesh, MESHLINK_DEBUG, "Could not rewrite sanitized config for %s", from->name);
+		}
+
 		return true;
 	}
 
@@ -352,7 +359,7 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 		   candidate behind the addresses we already know, and do not probe it. */
 
 		if(from->connection != c) {
-			if(node_append_recent_address(mesh, from, &sa)) {
+			if(node_append_recent_address(mesh, from, &sa, ADDR_SRC_INDIRECT)) {
 				logger(mesh, MESHLINK_DEBUG, "Remembering forwarded REQ_EXTERNAL address of %s as a fallback", from->name);
 			} else if(!from->recent[0].sa.sa_family) {
 				logger(mesh, MESHLINK_DEBUG, "Not remembering forwarded REQ_EXTERNAL address of %s: no proven address to rank it behind", from->name);
@@ -366,14 +373,14 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 		   authenticated (which ack_h() put in front) is proven and this one is not: keep
 		   it as a fallback instead of paying a connect timeout on it at every reconnect. */
 
-		if(c->status.via_canonical) {
-			if(node_add_recent_address(mesh, from, &sa)) {
+		if(path_meta_is_canonical(from, c)) {
+			if(node_add_recent_address(mesh, from, &sa, ADDR_SRC_EXTERNAL)) {
 				from->upgrade_recent_idx = 0;
 			}
 
 			try_upgrade_probe(mesh, from);
 		} else {
-			node_append_recent_address(mesh, from, &sa);
+			node_append_recent_address(mesh, from, &sa, ADDR_SRC_EXTERNAL);
 		}
 
 		return true;
@@ -440,6 +447,10 @@ bool req_key_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		size_t len = strlen(request);
 		from->in_forward += len + SPTPS_OVERHEAD;
 		to->out_forward += len + SPTPS_OVERHEAD;
+
+		if(reqno == REQ_SPTPS) {
+			logger(mesh, MESHLINK_DEBUG, "Path policy: META-in pins META-out for %s via %s", to->name, to->nexthop->name);
+		}
 
 		send_request(mesh, to->nexthop->connection, NULL, "%s", request);
 	}
@@ -585,7 +596,7 @@ bool ans_key_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		if(*address && *port) {
 			logger(mesh, MESHLINK_DEBUG, "Using reflexive UDP address from %s: %s port %s", from->name, address, port);
 			sockaddr_t sa = str2sockaddr(address, port);
-			update_node_udp(mesh, from, &sa);
+			update_node_udp_from(mesh, from, &sa, ADDR_SRC_EXTERNAL);
 		}
 
 		send_mtu_probe(mesh, from);

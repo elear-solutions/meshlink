@@ -42,9 +42,10 @@ typedef struct connection_status_t {
 	uint16_t invitation_used: 1;        /* 1 if the invitation has been consumed */
 	uint16_t initiator: 1;              /* 1 if we initiated this connection */
 	uint16_t raw_packet: 1;             /* 1 if we are expecting a raw packet next */
-	uint16_t via_canonical: 1;          /* 1 if this connection went via a relay: we dialled the peer's canonical / an indirect-edge address, or the peer's ID carried PROTOCOL_VIA_CANONICAL */
+	uint16_t via_canonical: 1;          /* protocol-facing META class; written only via path_mark_meta_dial */
 	uint16_t upgrade_probe: 1;          /* 1 if this is a probe trying to replace a canonical connection with a direct one */
 	uint16_t spare: 1;                  /* 1 if authenticated but held behind the node's current connection until that one closes */
+	uint16_t meta_dial_tier: 2;         /* mirror of via_canonical as meta_dial_tier_t (devtools/logs) */
 } connection_status_t;
 
 #include "ecdsa.h"

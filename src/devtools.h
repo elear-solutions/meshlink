@@ -136,6 +136,11 @@ struct devtool_node_status {
 	// Recently seen direct addresses (node_t.recent[]), front first
 	size_t recent_count;                  /// Number of valid entries in recent
 	struct sockaddr_storage recent[DEVTOOL_MAX_RECENT]; /// Copies of node_t.recent[]
+	uint8_t recent_source[DEVTOOL_MAX_RECENT]; /// address_source_t aligned with recent[]
+	int udp_tier;                         /// path_tier_t of the confirmed UDP dest
+	int dest_path_tier;                   /// path_select_destination_tier()
+	int meta_dial_tier;                   /// meta_dial_tier_t of the active META connection
+	bool would_probe_local_udp;           /// WAN UDP is active and a local candidate is waiting
 };
 
 /// Get the status of a node.
@@ -336,6 +341,18 @@ bool devtool_choose_udp_address_advance(struct meshlink_handle *mesh, struct mes
  */
 void devtool_set_udp_confirmed(struct meshlink_handle *mesh, struct meshlink_node *node, bool confirmed);
 
+/// Plant an address in recent[] as ADDR_SRC_UNKNOWN, bypassing canonical rejection.
+/** Used to reconstruct a persisted NLB-in-recent[] entry from an old install.
+ *  Marks the node dirty and writes its host config.
+ */
+bool devtool_plant_recent_address(struct meshlink_handle *mesh, struct meshlink_node *node, const struct sockaddr *addr);
+
+/// Force a confirmed UDP dest and tier without waiting for a probe reply.
+bool devtool_confirm_udp_from(struct meshlink_handle *mesh, struct meshlink_node *node, const struct sockaddr *addr, int tier);
+
+/// Drive path_promote_udp_if_better (production WAN→local promotion).
+bool devtool_promote_udp_if_better(struct meshlink_handle *mesh, struct meshlink_node *node, const struct sockaddr *addr);
+
 /// True when sssp_bfs would seed n->address from this edge dest.
 /** @param mesh  Mesh handle.
  *  @param node  Node the edge points to.
@@ -433,6 +450,19 @@ bool devtool_handle_req_relay_mtu(struct meshlink_handle *mesh, struct meshlink_
 
 /// Drive remaining relay.c branches on a live trio (from / dest / hop).
 bool devtool_relay_cover_unit(struct meshlink_handle *mesh, struct meshlink_node *from, struct meshlink_node *dest, struct meshlink_node *hop);
+
+/// Drive every path_policy.c branch. `node` is restored before return.
+bool devtool_path_policy_cover_unit(struct meshlink_handle *mesh, struct meshlink_node *node);
+
+/// path_select_destination_tier() / path_select_hop_tier() with an explicit META-in pin.
+int devtool_select_destination_tier(struct meshlink_handle *mesh, struct meshlink_node *node, bool meta_in);
+int devtool_select_hop_tier(struct meshlink_handle *mesh, struct meshlink_node *node, bool meta_in);
+
+/// Pin dest via hop, set both UDP flags, and return dest tier under one lock.
+/** Stops dest/hop MTU timers when that side is unconfirmed so inbound probes
+ *  cannot change the snapshot before the caller reads it.
+ */
+int devtool_select_dest_with_udp(struct meshlink_handle *mesh, struct meshlink_node *dest, bool dest_udp, struct meshlink_node *hop, bool hop_udp, bool meta_in);
 
 /// Simulate a hard UDP send failure on `hop`'s confirmed address.
 void devtool_relay_hard_send_error(struct meshlink_handle *mesh, struct meshlink_node *hop);

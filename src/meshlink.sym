@@ -1,6 +1,9 @@
 __emutls_v.meshlink_errno
 devtool_choose_udp_address
 devtool_choose_udp_address_advance
+devtool_confirm_udp_from
+devtool_promote_udp_if_better
+devtool_plant_recent_address
 devtool_clear_relay_reports
 devtool_export_json_all_edges_state
 devtool_fail_relay_realloc
@@ -22,7 +25,11 @@ devtool_has_relay_report
 devtool_inject_broadcast_hard_send
 devtool_keyrotate_probe
 devtool_open_in_netns
+devtool_path_policy_cover_unit
 devtool_relay_cover_unit
+devtool_select_destination_tier
+devtool_select_dest_with_udp
+devtool_select_hop_tier
 devtool_relay_hard_send_error
 devtool_relay_hard_send_error_at
 devtool_relay_report_count

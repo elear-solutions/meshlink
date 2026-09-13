@@ -129,7 +129,7 @@ static void sssp_bfs(meshlink_handle_t *mesh) {
 			   it OPTION_INDIRECT in ADD_EDGE, so this holds for third parties too. */
 
 			if(!(e->options & OPTION_INDIRECT) && graph_may_seed_udp(e->to, &e->address)) {
-				update_node_udp(mesh, e->to, &e->address);
+				update_node_udp_from(mesh, e->to, &e->address, ADDR_SRC_EDGE_DIRECT);
 			}
 
 			list_insert_tail(todo_list, e->to);

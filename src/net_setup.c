@@ -27,13 +27,34 @@
 #include "meshlink_internal.h"
 #include "net.h"
 #include "netutl.h"
+#include "node.h"
 #include "packmsg.h"
+#include "path_policy.h"
 #include "protocol.h"
 #include "relay.h"
 #include "route.h"
 #include "utils.h"
 #include "xalloc.h"
 #include "submesh.h"
+
+static void unpack_recent_sources(packmsg_input_t *in, node_t *n, uint32_t count, uint32_t dest_base, uint32_t dest_max) {
+	uint32_t nsrc;
+	uint32_t i;
+
+	if(packmsg_done(in) || !packmsg_input_ok(in)) {
+		return;
+	}
+
+	nsrc = packmsg_get_array(in);
+
+	for(i = 0; i < nsrc; i++) {
+		uint8_t src = packmsg_get_uint8(in);
+
+		if(i < dest_max && i < count) {
+			n->recent_source[dest_base + i] = (address_source_t)src;
+		}
+	}
+}
 
 /// Helper function to start parsing a host config file
 static bool node_get_config(meshlink_handle_t *mesh, node_t *n, config_t *config, packmsg_input_t *in) {
@@ -133,6 +154,12 @@ bool node_read_public_key(meshlink_handle_t *mesh, node_t *n) {
 		n->last_unreachable = last_unreachable;
 	}
 
+	/* Optional provenance array after the original host-config tail. */
+	unpack_recent_sources(&in, n, count, known_count, MAX_RECENT - known_count);
+
+	path_refresh_canonical_endpoint(n);
+	path_sanitize_recent(mesh, n);
+
 	config_free(&config);
 	return true;
 }
@@ -216,6 +243,11 @@ bool node_read_from_config(meshlink_handle_t *mesh, node_t *n, const config_t *c
 	n->last_reachable = packmsg_get_int64(&in);
 	n->last_unreachable = packmsg_get_int64(&in);
 
+	unpack_recent_sources(&in, n, count, 0, MAX_RECENT);
+
+	path_refresh_canonical_endpoint(n);
+	path_sanitize_recent(mesh, n);
+
 	return packmsg_done(&in);
 }
 
@@ -275,6 +307,12 @@ bool node_write_config(meshlink_handle_t *mesh, node_t *n, bool new_key) {
 	packmsg_add_int64(&out, n->last_reachable);
 	packmsg_add_int64(&out, n->last_unreachable);
 
+	packmsg_add_array(&out, count);
+
+	for(uint32_t i = 0; i < count; i++) {
+		packmsg_add_uint8(&out, (uint8_t)n->recent_source[i]);
+	}
+
 	if(!packmsg_output_ok(&out)) {
 		meshlink_errno = MESHLINK_EINTERNAL;
 		return false;
@@ -332,6 +370,10 @@ static bool load_node(meshlink_handle_t *mesh, const char *name, void *priv) {
 	}
 
 	config_free(&config);
+
+	if(n->status.dirty && !node_write_config(mesh, n, false)) {
+		logger(mesh, MESHLINK_DEBUG, "Could not rewrite sanitized config for %s", n->name);
+	}
 
 	node_add(mesh, n);
 
