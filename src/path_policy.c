@@ -24,6 +24,46 @@
 #include "protocol.h"
 #include "xalloc.h"
 
+/* source_trust ranks: AUTH_DIRECT is highest, UNKNOWN is legacy-weak, others 0. */
+#define SOURCE_TRUST_AUTH_DIRECT 7
+#define SOURCE_TRUST_DISCOVERY   6
+#define SOURCE_TRUST_EXTERNAL    5
+#define SOURCE_TRUST_HINT        4
+#define SOURCE_TRUST_EDGE        3
+#define SOURCE_TRUST_UNKNOWN     1
+#define SOURCE_TRUST_NONE        0
+
+typedef struct canonical_adns_req {
+	uint32_t gen;
+	char name[];
+} canonical_adns_req_t;
+
+static void path_note_canonical_resolve_failed(meshlink_handle_t *mesh, node_t *n);
+static void path_on_canonical_resolved(meshlink_handle_t *mesh, node_t *n);
+
+/* Split "host port" into host and port. copy is xstrdup'd; caller frees it. */
+static bool split_canonical_address(const char *canonical, char **copy, char **host, char **port) {
+	char *space;
+
+	if(!canonical || !copy || !host || !port) {
+		return false;
+	}
+
+	*copy = xstrdup(canonical);
+	space = strchr(*copy, ' ');
+
+	if(!space || !space[1]) {
+		free(*copy);
+		*copy = NULL;
+		return false;
+	}
+
+	*space++ = 0;
+	*host = *copy;
+	*port = space;
+	return true;
+}
+
 const char *address_source_name(address_source_t src) {
 	switch(src) {
 	case ADDR_SRC_AUTH_DIRECT:
@@ -154,20 +194,20 @@ bool path_source_is_direct(address_source_t src) {
 }
 
 static bool canonical_to_sockaddr(const char *canonical, sockaddr_t *out) {
+	char *copy = NULL;
+	char *host = NULL;
+	char *port = NULL;
+	bool ok;
+
 	if(!canonical || !out) {
 		return false;
 	}
 
-	char *copy = xstrdup(canonical);
-	char *port = strchr(copy, ' ');
-
-	if(!port || !port[1]) {
-		free(copy);
+	if(!split_canonical_address(canonical, &copy, &host, &port)) {
 		return false;
 	}
 
-	*port++ = 0;
-	bool ok = host_port_to_sockaddr(copy, port, out);
+	ok = host_port_to_sockaddr(host, port, out);
 	free(copy);
 	return ok;
 }
@@ -200,20 +240,6 @@ static const sockaddr_t *canonical_at(const node_t *n, int i) {
 	}
 
 	return &n->canonical_extra[i - 1];
-}
-
-static void sync_canonical_sa(node_t *n) {
-	if(!n) {
-		return;
-	}
-
-	if(n->canonical_sa_count == 0) {
-		memset(&n->canonical_sa, 0, sizeof n->canonical_sa);
-		memset(n->canonical_extra, 0, sizeof n->canonical_extra);
-		return;
-	}
-
-	/* canonical_sa is slot 0; extras follow. Nothing else to sync. */
 }
 
 bool path_is_direct_candidate(const node_t *n, const sockaddr_t *sa, address_source_t src) {
@@ -250,9 +276,13 @@ bool path_is_meta_candidate(const node_t *n, const sockaddr_t *sa, address_sourc
 		return false;
 	}
 
-	/* A UDP-reflexive merge keeps META eligibility; INDIRECT/CANONICAL do not. */
-	address_source_t effective = (src == ADDR_SRC_UDP_REFLEXIVE) ? ADDR_SRC_HINT : src;
-	return path_is_direct_candidate(n, sa, effective);
+	/* A reflexive slot that later gained META stays eligible; it must not
+	   inherit HINT's unresolved-hostname block. INDIRECT/CANONICAL never walk. */
+	if(src == ADDR_SRC_UDP_REFLEXIVE) {
+		return n && sa && !path_address_matches_canonical(n, sa);
+	}
+
+	return path_is_direct_candidate(n, sa, src);
 }
 
 bool path_is_udp_candidate(const node_t *n, const sockaddr_t *sa, address_source_t src, path_cap_t cap) {
@@ -376,6 +406,10 @@ bool path_add_canonical_endpoint(node_t *n, const sockaddr_t *sa) {
 
 	path_copy_sockaddr(&copy, sa);
 
+	if(copy.sa.sa_family != AF_INET && copy.sa.sa_family != AF_INET6) {
+		return false;
+	}
+
 	if(n->canonical_sa_count >= MAX_CANONICAL_SA) {
 		return false;
 	}
@@ -436,27 +470,25 @@ bool path_address_shares_canonical_ip(const node_t *n, const sockaddr_t *sa) {
 }
 
 bool path_canonical_host_matches(const node_t *n, const char *host, const char *serv) {
-	char *copy;
-	char *port;
+	char *copy = NULL;
+	char *canon_host = NULL;
+	char *canon_port = NULL;
 	bool ok = false;
 
 	if(!n || !n->canonical_address || !host || !serv) {
 		return false;
 	}
 
-	copy = xstrdup(n->canonical_address);
-	port = strchr(copy, ' ');
-
-	if(port && port[1]) {
-		*port++ = 0;
-		ok = !strcmp(copy, host) && !strcmp(port, serv);
+	if(!split_canonical_address(n->canonical_address, &copy, &canon_host, &canon_port)) {
+		return false;
 	}
 
+	ok = !strcmp(canon_host, host) && !strcmp(canon_port, serv);
 	free(copy);
 	return ok;
 }
 
-void path_apply_canonical_resolution(node_t *n, const struct addrinfo *ai) {
+static void path_apply_canonical_resolution(node_t *n, const struct addrinfo *ai) {
 	if(!n) {
 		return;
 	}
@@ -470,8 +502,6 @@ void path_apply_canonical_resolution(node_t *n, const struct addrinfo *ai) {
 
 		path_add_canonical_endpoint(n, (const sockaddr_t *)aip->ai_addr);
 	}
-
-	sync_canonical_sa(n);
 }
 
 struct addrinfo *path_canonical_addrinfo(const node_t *n) {
@@ -484,18 +514,11 @@ struct addrinfo *path_canonical_addrinfo(const node_t *n) {
 
 	for(int i = 0; i < n->canonical_sa_count; i++) {
 		const sockaddr_t *sa = canonical_at(n, i);
+		struct addrinfo *nai = sockaddr_to_stream_addrinfo(sa);
 
-		if(!sa || (sa->sa.sa_family != AF_INET && sa->sa.sa_family != AF_INET6)) {
+		if(!nai) {
 			continue;
 		}
-
-		struct addrinfo *nai = xzalloc(sizeof(*nai) + SALEN(sa->sa));
-		nai->ai_family = sa->sa.sa_family;
-		nai->ai_socktype = SOCK_STREAM;
-		nai->ai_protocol = IPPROTO_TCP;
-		nai->ai_addrlen = SALEN(sa->sa);
-		nai->ai_addr = (struct sockaddr *)(nai + 1);
-		memcpy(nai->ai_addr, sa, nai->ai_addrlen);
 
 		if(!ai) {
 			ai = nai;
@@ -510,9 +533,24 @@ struct addrinfo *path_canonical_addrinfo(const node_t *n) {
 }
 
 static void canonical_resolve_cb(meshlink_handle_t *mesh, char *host, char *serv, void *data, struct addrinfo *ai, int err) {
-	node_t *n = data;
-	bool match = path_canonical_host_matches(n, host, serv);
-	bool usable = match && ai && ai->ai_addr;
+	canonical_adns_req_t *req = data;
+	node_t *n = lookup_node(mesh, req->name);
+	bool match;
+	bool usable;
+
+	if(!n || n->canonical_resolve_gen != req->gen) {
+		if(ai) {
+			freeaddrinfo(ai);
+		}
+
+		free(host);
+		free(serv);
+		free(req);
+		return;
+	}
+
+	match = path_canonical_host_matches(n, host, serv);
+	usable = match && ai && ai->ai_addr;
 
 	n->canonical_resolve_pending = false;
 
@@ -526,10 +564,28 @@ static void canonical_resolve_cb(meshlink_handle_t *mesh, char *host, char *serv
 	}
 
 	outgoing_on_canonical_resolved(mesh, n, ai, err, usable, host, serv);
+	free(req);
+}
+
+void path_reset_canonical_resolve(node_t *n) {
+	if(!n) {
+		return;
+	}
+
+	n->canonical_resolve_gen = 0;
+	n->canonical_resolve_pending = false;
+	n->canonical_resolve_backoff = 0;
+	n->canonical_resolve_next = 0;
 }
 
 void path_request_canonical_resolve(meshlink_handle_t *mesh, node_t *n) {
-	if(!mesh || !n || !path_canonical_is_hostname(n)) {
+	canonical_adns_req_t *req;
+	char *copy = NULL;
+	char *host = NULL;
+	char *port = NULL;
+	size_t namelen;
+
+	if(!mesh || !n || !n->name || !path_canonical_is_hostname(n)) {
 		return;
 	}
 
@@ -545,21 +601,26 @@ void path_request_canonical_resolve(meshlink_handle_t *mesh, node_t *n) {
 		return;
 	}
 
-	char *address = xstrdup(n->canonical_address);
-	char *port = strchr(address, ' ');
-
-	if(!port || !port[1]) {
-		free(address);
+	if(!split_canonical_address(n->canonical_address, &copy, &host, &port)) {
 		return;
 	}
 
-	*port++ = 0;
-	port = xstrdup(port);
+	namelen = strlen(n->name) + 1;
+	req = xzalloc(sizeof(*req) + namelen);
+	memcpy(req->name, n->name, namelen);
+	req->gen = ++mesh->canonical_resolve_seq;
+
+	if(!req->gen) {
+		req->gen = ++mesh->canonical_resolve_seq;
+	}
+
+	n->canonical_resolve_gen = req->gen;
 	n->canonical_resolve_pending = true;
-	adns_queue(mesh, address, port, canonical_resolve_cb, n, 2);
+	adns_queue(mesh, xstrdup(host), xstrdup(port), canonical_resolve_cb, req, CANONICAL_RESOLVE_TIMEOUT);
+	free(copy);
 }
 
-void path_note_canonical_resolve_failed(meshlink_handle_t *mesh, node_t *n) {
+static void path_note_canonical_resolve_failed(meshlink_handle_t *mesh, node_t *n) {
 	if(!n) {
 		return;
 	}
@@ -617,7 +678,7 @@ void path_reclassify_active_meta(meshlink_handle_t *mesh, node_t *n) {
 	}
 }
 
-void path_on_canonical_resolved(meshlink_handle_t *mesh, node_t *n) {
+static void path_on_canonical_resolved(meshlink_handle_t *mesh, node_t *n) {
 	if(!mesh || !n) {
 		return;
 	}
@@ -705,7 +766,7 @@ static void recent_store_front(node_t *n, int i, const sockaddr_t *sa, address_s
 	path_cap_t keep_cap = cap;
 
 	if(i >= 0) {
-		if(source_trust(n->recent_source[i]) > source_trust(src)) {
+		if(source_trust(n->recent_source[i]) >= source_trust(src)) {
 			keep = n->recent_source[i];
 		}
 
@@ -746,16 +807,13 @@ bool path_learn_address_cap(meshlink_handle_t *mesh, node_t *n, const sockaddr_t
 	for(i = 0; i < MAX_RECENT && n->recent[i].sa.sa_family; i++) {
 		if(!sockaddrcmp(&n->recent[i], sa)) {
 			path_cap_t merged = (path_cap_t)(n->recent_cap[i] | cap);
-			address_source_t keep = source_trust(src) > source_trust(n->recent_source[i]) ? src : n->recent_source[i];
 
 			if(i == 0 && source_trust(src) <= source_trust(n->recent_source[0]) && merged == n->recent_cap[0]) {
 				return false;
 			}
 
 			recent_store_front(n, i, sa, src, cap);
-			n->recent_source[0] = keep;
-			n->recent_cap[0] = merged;
-			path_log_candidate(mesh, n, sa, keep, merged, "updated");
+			path_log_candidate(mesh, n, sa, n->recent_source[0], n->recent_cap[0], "updated");
 			return true;
 		}
 	}
@@ -1112,6 +1170,22 @@ void path_note_udp_confirmed(meshlink_handle_t *mesh, node_t *n) {
 	}
 }
 
+void path_note_udp_demoted(meshlink_handle_t *mesh, node_t *n) {
+	path_tier_t was;
+
+	if(!n || !n->status.udp_confirmed || n->status.temp_udp_confirmed) {
+		return;
+	}
+
+	was = n->udp_tier;
+	n->status.udp_confirmed = false;
+	n->udp_tier = PATH_TIER_NONE;
+	n->mtuprobes = 0;
+	n->minmtu = 0;
+	n->maxmtu = MTU;
+	path_log_transition(mesh, n, was, PATH_TIER_NONE, "reliable retransmit");
+}
+
 bool path_promote_udp_if_better(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *from) {
 	if(!n || !from || !n->status.udp_confirmed) {
 		return false;
@@ -1151,7 +1225,7 @@ void path_log_candidate(meshlink_handle_t *mesh, const node_t *n, const sockaddr
 }
 
 void path_log_validation(meshlink_handle_t *mesh, const node_t *n, const sockaddr_t *sa, const char *action, const char *detail) {
-	if(!mesh || !n) {
+	if(!mesh || !n || mesh->log_level > MESHLINK_INFO) {
 		return;
 	}
 
@@ -1161,7 +1235,7 @@ void path_log_validation(meshlink_handle_t *mesh, const node_t *n, const sockadd
 }
 
 void path_log_meta(meshlink_handle_t *mesh, const node_t *n, const sockaddr_t *sa, const char *action) {
-	if(!mesh || !n) {
+	if(!mesh || !n || mesh->log_level > MESHLINK_INFO) {
 		return;
 	}
 

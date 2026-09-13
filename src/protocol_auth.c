@@ -538,7 +538,6 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 
 	if(!c->status.via_canonical
 	                && !path_meta_is_canonical(n, c)
-	                && !path_canonical_unresolved(n)
 	                && !path_address_matches_canonical(n, &c->address)) {
 		node_add_recent_address_cap(mesh, n, &c->address, ADDR_SRC_AUTH_DIRECT, PATH_CAP_BOTH);
 	}

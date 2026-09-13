@@ -244,7 +244,11 @@ static struct addrinfo *get_recent_addresses(node_t *n) {
 		}
 
 		// Create a new struct addrinfo, and put it at the end of the list.
-		struct addrinfo *nai = xzalloc(sizeof(*nai) + SALEN(n->recent[i].sa));
+		struct addrinfo *nai = sockaddr_to_stream_addrinfo(&n->recent[i]);
+
+		if(!nai) {
+			continue;
+		}
 
 		if(!ai) {
 			ai = nai;
@@ -253,13 +257,6 @@ static struct addrinfo *get_recent_addresses(node_t *n) {
 		}
 
 		aip = nai;
-
-		nai->ai_family = n->recent[i].sa.sa_family;
-		nai->ai_socktype = SOCK_STREAM;
-		nai->ai_protocol = IPPROTO_TCP;
-		nai->ai_addrlen = SALEN(n->recent[i].sa);
-		nai->ai_addr = (struct sockaddr *)(nai + 1);
-		memcpy(nai->ai_addr, &n->recent[i], nai->ai_addrlen);
 	}
 
 	return ai;

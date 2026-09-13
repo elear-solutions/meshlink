@@ -38,6 +38,7 @@
 #include "devtools.h"
 
 _Static_assert(DEVTOOL_MAX_RECENT == MAX_RECENT, "devtool_node_status_t.recent[] must mirror node_t.recent[]");
+_Static_assert(DEVTOOL_MAX_CANONICAL == MAX_CANONICAL_SA, "devtool_node_status_t.canonical_resolved[] must mirror MAX_CANONICAL_SA");
 
 static void nop_probe(void) {
 	return;
@@ -341,7 +342,7 @@ static void devtool_get_reset_node_status(meshlink_handle_t *mesh, meshlink_node
 			memcpy(&status->canonical_resolved[status->canonical_resolved_count++], &internal->canonical_sa, sizeof status->canonical_resolved[0]);
 		}
 
-		for(int i = 1; i < internal->canonical_sa_count && status->canonical_resolved_count < DEVTOOL_MAX_RECENT; i++) {
+		for(int i = 1; i < internal->canonical_sa_count && status->canonical_resolved_count < DEVTOOL_MAX_CANONICAL; i++) {
 			memcpy(&status->canonical_resolved[status->canonical_resolved_count++], &internal->canonical_extra[i - 1], sizeof status->canonical_resolved[0]);
 		}
 
@@ -718,7 +719,7 @@ bool devtool_confirm_udp_from(meshlink_handle_t *mesh, meshlink_node_t *node, co
 		return false;
 	}
 
-	update_node_udp_from(mesh, n, &sa, ADDR_SRC_AUTH_DIRECT);
+	update_node_udp(mesh, n, &sa);
 	n->status.udp_confirmed = true;
 	n->udp_tier = (path_tier_t)tier;
 	n->udp_local_probe_next = 0;

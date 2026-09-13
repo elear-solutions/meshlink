@@ -310,6 +310,7 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 		from->canonical_address = canonical_address;
 		from->status.dirty = true;
 
+		path_reset_canonical_resolve(from);
 		path_refresh_canonical_endpoint(from);
 
 		if(path_sanitize_recent(mesh, from)) {
@@ -318,7 +319,11 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 
 		path_request_canonical_resolve(mesh, from);
 		path_reclassify_active_meta(mesh, from);
-		try_upgrade_probe(mesh, from);
+
+		if(!path_canonical_is_hostname(from)) {
+			try_upgrade_probe(mesh, from);
+		}
+
 		return true;
 	}
 

@@ -40,6 +40,7 @@
 #include "utils.h"
 #include "xalloc.h"
 #include "ed25519/sha512.h"
+#include "utcp.h"
 #include "discovery.h"
 #include "devtools.h"
 #include "graph.h"
@@ -801,6 +802,8 @@ typedef struct {
 	size_t blen;
 	char line[4096];
 	char buffer[4096];
+	char *join_host;
+	char *join_port;
 } join_state_t;
 
 static bool finalize_join(join_state_t *state, const void *buf, uint16_t len) {
@@ -907,7 +910,12 @@ static bool finalize_join(join_state_t *state, const void *buf, uint16_t len) {
 
 			if(getpeername(state->sock, &sa.sa, &salen) == 0) {
 				if(n->canonical_address) {
-					if(path_canonical_unresolved(n) || path_canonical_is_hostname(n)) {
+					/* Seed the hostname canonical cache only when this join
+					   actually used that hostname (ADR 0002). LOCAL-first
+					   invitation URLs must not plant the TCP peer as NLB. */
+					if(path_canonical_is_hostname(n)
+					                && state->join_host && state->join_port
+					                && path_canonical_host_matches(n, state->join_host, state->join_port)) {
 						path_add_canonical_endpoint(n, &sa);
 					}
 
@@ -1941,12 +1949,13 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 		return false;
 	}
 
-	// Reset node connection timers and canonical -> direct upgrade backoff
+	// Reset node connection timers, upgrade backoff, and in-flight DNS cookies
 	for splay_each(node_t, n, mesh->nodes) {
 		n->last_connect_try = 0;
 		n->upgrade_probe = NULL;
 		n->upgrade_next_try = 0;
 		n->upgrade_backoff = 0;
+		path_reset_canonical_resolve(n);
 	}
 
 	// TODO: open listening sockets first
@@ -2050,6 +2059,13 @@ void meshlink_stop(meshlink_handle_t *mesh) {
 	}
 
 	exit_adns(mesh);
+
+	if(mesh->nodes) {
+		for splay_each(node_t, n, mesh->nodes) {
+			path_reset_canonical_resolve(n);
+		}
+	}
+
 	exit_outgoings(mesh);
 
 	// Ensure we are considered unreachable
@@ -2955,9 +2971,7 @@ bool meshlink_set_canonical_address(meshlink_handle_t *mesh, meshlink_node_t *no
 	node_t *n = (node_t *)node;
 	free(n->canonical_address);
 	n->canonical_address = canonical_address;
-	n->canonical_resolve_pending = false;
-	n->canonical_resolve_backoff = 0;
-	n->canonical_resolve_next = 0;
+	path_reset_canonical_resolve(n);
 	path_refresh_canonical_endpoint(n);
 	path_sanitize_recent(mesh, n);
 	path_request_canonical_resolve(mesh, n);
@@ -2997,9 +3011,7 @@ bool meshlink_clear_canonical_address(meshlink_handle_t *mesh, meshlink_node_t *
 	free(n->canonical_address);
 	n->canonical_address = NULL;
 	path_clear_canonical_endpoints(n);
-	n->canonical_resolve_pending = false;
-	n->canonical_resolve_backoff = 0;
-	n->canonical_resolve_next = 0;
+	path_reset_canonical_resolve(n);
 
 	if(!node_write_config(mesh, n, false)) {
 		pthread_mutex_unlock(&mesh->mutex);
@@ -3547,6 +3559,11 @@ bool meshlink_join(meshlink_handle_t *mesh, const char *invitation) {
 		goto exit;
 	}
 
+	free(state.join_host);
+	free(state.join_port);
+	state.join_host = xstrdup(address);
+	state.join_port = xstrdup(port);
+
 	logger(mesh, MESHLINK_DEBUG, "Connected to %s port %s...\n", address, port);
 
 	// Tell him we have an invitation, and give him our throw-away key.
@@ -3635,6 +3652,8 @@ bool meshlink_join(meshlink_handle_t *mesh, const char *invitation) {
 	ecdsa_free(hiskey);
 	ecdsa_free(key);
 	closesocket(state.sock);
+	free(state.join_host);
+	free(state.join_port);
 
 	pthread_mutex_unlock(&mesh->mutex);
 	return true;
@@ -3650,6 +3669,9 @@ exit:
 	if(state.sock != -1) {
 		closesocket(state.sock);
 	}
+
+	free(state.join_host);
+	free(state.join_port);
 
 	pthread_mutex_unlock(&mesh->mutex);
 	return false;
@@ -4303,17 +4325,12 @@ static void channel_retransmit(struct utcp_connection *utcp_connection) {
 	node_t *n = utcp_connection->utcp->priv;
 	meshlink_handle_t *mesh = n->mesh;
 
-	/* A reliable channel retransmit means the selected direct UDP path did
-	   not deliver data or its ACK. Demote it before UTCP resends so the
-	   retransmission can immediately use the relay/META fallback. */
-	if(n->status.udp_confirmed && !n->status.temp_udp_confirmed) {
+	/* Established data retransmit means the selected direct UDP path did
+	   not deliver. SYN/handshake loss is not enough to demote a working path. */
+	if(utcp_connection_established(utcp_connection)
+	                && n->status.udp_confirmed && !n->status.temp_udp_confirmed) {
 		logger(mesh, MESHLINK_INFO, "Reliable channel retransmit to %s, invalidating direct UDP path", n->name);
-		n->status.udp_confirmed = false;
-		n->udp_tier = PATH_TIER_NONE;
-		n->mtuprobes = 0;
-		n->minmtu = 0;
-		n->maxmtu = MTU;
-
+		path_note_udp_demoted(mesh, n);
 		update_node_pmtu(mesh, n);
 		relay_recompute_dependents(mesh, n);
 		relay_update_destination_transport(mesh, n);

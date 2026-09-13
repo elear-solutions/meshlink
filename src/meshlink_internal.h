@@ -205,6 +205,7 @@ struct meshlink_handle {
 	meshlink_queue_t adns_queue;
 	meshlink_queue_t adns_done_queue;
 	signal_t adns_signal;
+	uint32_t canonical_resolve_seq;       /* Monotonic cookie; 0 is never assigned */
 };
 
 /// A handle for a MeshLink node.

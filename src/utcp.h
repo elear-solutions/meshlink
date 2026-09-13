@@ -95,6 +95,7 @@ void utcp_reset_timers(struct utcp *utcp);
 
 void utcp_offline(struct utcp *utcp, bool offline);
 void utcp_set_retransmit_cb(struct utcp *utcp, utcp_retransmit_t retransmit);
+bool utcp_connection_established(const struct utcp_connection *c);
 
 // Per-socket options
 

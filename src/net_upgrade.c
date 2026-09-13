@@ -37,25 +37,7 @@
 /* Only the side that owns the outgoing_t probes; the peer migrates when the
    probe shows up as a second inbound connection. */
 bool upgrade_probe_eligible(meshlink_handle_t *mesh, node_t *n) {
-	connection_t *c = n->connection;
-
-	if(!c || !c->status.active || !c->outgoing) {
-		return false;
-	}
-
-	if(!path_meta_is_canonical(n, c)) {
-		return false;
-	}
-
-	if(n->upgrade_probe || n->status.blacklisted) {
-		return false;
-	}
-
-	if(!path_has_direct_meta_candidate(n, &c->address)) {
-		return false;
-	}
-
-	return mesh->loop.now.tv_sec >= n->upgrade_next_try;
+	return !path_upgrade_ineligible_reason(mesh, n);
 }
 
 /* Pick the next recent[] slot that is not the address we are already connected

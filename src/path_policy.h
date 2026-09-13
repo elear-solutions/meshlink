@@ -59,17 +59,9 @@ typedef enum meta_dial_tier_t {
 
 #define UDP_LOCAL_PROBE_SEC 15
 #define MAX_CANONICAL_SA 8
+#define CANONICAL_RESOLVE_TIMEOUT 2
 #define CANONICAL_RESOLVE_BACKOFF_MIN 5
 #define CANONICAL_RESOLVE_BACKOFF_MAX 600
-
-/* source_trust ranks: AUTH_DIRECT is highest, UNKNOWN is legacy-weak, others 0. */
-#define SOURCE_TRUST_AUTH_DIRECT 7
-#define SOURCE_TRUST_DISCOVERY   6
-#define SOURCE_TRUST_EXTERNAL    5
-#define SOURCE_TRUST_HINT        4
-#define SOURCE_TRUST_EDGE        3
-#define SOURCE_TRUST_UNKNOWN     1
-#define SOURCE_TRUST_NONE        0
 
 const char *address_source_name(address_source_t src);
 const char *path_tier_name(path_tier_t tier);
@@ -84,7 +76,9 @@ void path_copy_sockaddr(sockaddr_t *dst, const sockaddr_t *src);
 bool path_source_is_direct(address_source_t src);
 /* Direct META candidate: source_is_direct, not canonical-equivalent, HINT/UNKNOWN blocked while a hostname canonical has not been resolved or failed, EDGE_DIRECT hybrid-IP rejected. */
 bool path_is_direct_candidate(const struct node_t *n, const sockaddr_t *sa, address_source_t src);
+/* META walk: PATH_CAP_META + direct candidate. UDP_REFLEXIVE that later gained META stays eligible. */
 bool path_is_meta_candidate(const struct node_t *n, const sockaddr_t *sa, address_source_t src, path_cap_t cap);
+/* UDP dest: PATH_CAP_UDP, not CANONICAL/INDIRECT, not canonical-equivalent. */
 bool path_is_udp_candidate(const struct node_t *n, const sockaddr_t *sa, address_source_t src, path_cap_t cap);
 bool path_canonical_unresolved(const struct node_t *n);
 bool path_canonical_is_hostname(const struct node_t *n);
@@ -92,7 +86,7 @@ bool path_tier_better(path_tier_t a, path_tier_t b);
 bool path_address_is_local(const sockaddr_t *sa);
 path_tier_t path_udp_tier_for(const sockaddr_t *sa, address_source_t src);
 
-/* Numeric "host port" -> cached canonical_sas[0]. Hostname stays empty until resolve. */
+/* Numeric "host port" -> cached canonical_sa. Hostname stays in canonical_address until resolve. */
 void path_refresh_canonical_endpoint(struct node_t *n);
 void path_clear_canonical_endpoints(struct node_t *n);
 void path_set_canonical_sockaddr(struct node_t *n, const sockaddr_t *sa);
@@ -101,12 +95,11 @@ bool path_address_matches_canonical(const struct node_t *n, const sockaddr_t *sa
 /* Same IP as any cached canonical endpoint, port ignored. */
 bool path_address_shares_canonical_ip(const struct node_t *n, const sockaddr_t *sa);
 bool path_canonical_host_matches(const struct node_t *n, const char *host, const char *serv);
-void path_apply_canonical_resolution(struct node_t *n, const struct addrinfo *ai);
 /* Built like get_recent_addresses: caller frees each node with free(). */
 struct addrinfo *path_canonical_addrinfo(const struct node_t *n);
+/* Drop pending/backoff and invalidate the ADNS cookie (gen = 0). */
+void path_reset_canonical_resolve(struct node_t *n);
 void path_request_canonical_resolve(struct meshlink_handle *mesh, struct node_t *n);
-void path_note_canonical_resolve_failed(struct meshlink_handle *mesh, struct node_t *n);
-void path_on_canonical_resolved(struct meshlink_handle *mesh, struct node_t *n);
 void path_reclassify_active_meta(struct meshlink_handle *mesh, struct node_t *n);
 void path_migrate_legacy_caps(struct node_t *n);
 void path_persist_node(struct meshlink_handle *mesh, struct node_t *n);
@@ -141,6 +134,7 @@ bool path_udp_should_probe_local(struct meshlink_handle *mesh, const struct node
 bool path_pick_local_udp_candidate(struct meshlink_handle *mesh, const struct node_t *n, sockaddr_t *out);
 void path_schedule_local_udp_probe(struct meshlink_handle *mesh, struct node_t *n);
 void path_note_udp_confirmed(struct meshlink_handle *mesh, struct node_t *n);
+void path_note_udp_demoted(struct meshlink_handle *mesh, struct node_t *n);
 bool path_promote_udp_if_better(struct meshlink_handle *mesh, struct node_t *n, const sockaddr_t *from);
 
 void path_log_candidate(struct meshlink_handle *mesh, const struct node_t *n, const sockaddr_t *sa, address_source_t src, path_cap_t cap, const char *action);

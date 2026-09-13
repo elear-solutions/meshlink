@@ -160,6 +160,7 @@ void node_udp_cache_alias(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *
 }
 
 void node_del(meshlink_handle_t *mesh, node_t *n) {
+	path_reset_canonical_resolve(n);
 	node_udp_cache_forget(mesh, n);
 	node_clear_inbound_prev_nexthop(mesh, n);
 	timeout_del(&mesh->loop, &n->mtutimeout);
@@ -205,12 +206,6 @@ bool graph_may_seed_udp(const node_t *n, const sockaddr_t *edge_addr) {
 }
 
 void update_node_udp(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa) {
-	update_node_udp_from(mesh, n, sa, ADDR_SRC_UNKNOWN);
-}
-
-void update_node_udp_from(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa, address_source_t src) {
-	(void)src;
-
 	if(n == mesh->self) {
 		logger(mesh, MESHLINK_WARNING, "Trying to update UDP address of mesh->self!");
 		return;

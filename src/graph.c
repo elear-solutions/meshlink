@@ -125,16 +125,16 @@ static void sssp_bfs(meshlink_handle_t *mesh) {
 			e->to->prevedge = e;
 			e->to->distance = n->distance + 1;
 
-			/* An edge over a canonical connection carries the relay's address, not
-			   the node's: never seed it as a UDP or recent[] address. The owner marks
-			   it OPTION_INDIRECT in ADD_EDGE, so this holds for third parties too. */
+			/* An edge over a canonical META carries the relay's address, not
+			   the node's. Skip NLB-equivalent endpoints; seed UDP via
+			   graph_may_seed_udp (parent n->connection is the live META). */
 
 			if(!(e->options & OPTION_INDIRECT)
 			                && !(n->connection && path_meta_is_canonical(n, n->connection))
 			                && !path_address_matches_canonical(e->to, &e->address)
 			                && !path_address_shares_canonical_ip(e->to, &e->address)) {
 				/* META may use a private edge address; UDP still refuses RFC1918/ULA. */
-				path_learn_address_cap(mesh, e->to, &e->address, ADDR_SRC_EDGE_DIRECT, PATH_CAP_BOTH);
+				node_add_recent_address_cap(mesh, e->to, &e->address, ADDR_SRC_EDGE_DIRECT, PATH_CAP_BOTH);
 
 				if(graph_may_seed_udp(e->to, &e->address)) {
 					update_node_udp(mesh, e->to, &e->address);

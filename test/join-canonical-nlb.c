@@ -97,6 +97,67 @@ int main(void) {
 	assert(meshlink_destroy("join_canonical_nlb_conf.1"));
 	assert(meshlink_destroy("join_canonical_nlb_conf.2"));
 	stop_tcp_relay(relay);
+
+	/* Default invite is LOCAL-then-PUBLIC. Join hits foo's listen port, which
+	   must not be planted as the hostname canonical cache. */
+	assert(meshlink_destroy("join_canonical_local_conf.1"));
+	assert(meshlink_destroy("join_canonical_local_conf.2"));
+
+	foo = meshlink_open("join_canonical_local_conf.1", "foo", "join-canonical-local", DEV_CLASS_STATIONARY);
+	bar = meshlink_open("join_canonical_local_conf.2", "bar", "join-canonical-local", DEV_CLASS_PORTABLE);
+	assert(foo && bar);
+	meshlink_enable_discovery(foo, false);
+	meshlink_enable_discovery(bar, false);
+
+	foo_port = meshlink_get_port(foo);
+	assert(foo_port > 0);
+
+	relay_port = 0;
+	relay = start_tcp_relay("127.0.0.1", &relay_port, "127.0.0.1", foo_port);
+	snprintf(relay_port_str, sizeof relay_port_str, "%d", relay_port);
+	assert(meshlink_set_canonical_address(foo, meshlink_get_self(foo), "localhost", relay_port_str));
+
+	assert(meshlink_start(foo));
+	url = meshlink_invite(foo, NULL, "bar");
+	assert(url);
+	assert(meshlink_join(bar, url));
+	free(url);
+
+	foo_on_bar = meshlink_get_node(bar, "foo");
+	assert(foo_on_bar);
+
+	devtool_node_status_t planted;
+	memset(&planted, 0, sizeof planted);
+	devtool_get_node_status(bar, foo_on_bar, &planted);
+
+	for(size_t i = 0; i < planted.canonical_resolved_count; i++) {
+		assert(port_of(&planted.canonical_resolved[i]) != foo_port);
+	}
+
+	devtool_free_node_status(&planted);
+
+	forget_addresses(bar, foo_on_bar);
+	init_sync_flag(&peer_reachable);
+	memset(&status_at_reachable, 0, sizeof status_at_reachable);
+	meshlink_set_node_status_cb(bar, status_cb);
+	assert(meshlink_start(bar));
+	assert(wait_sync_flag(&peer_reachable, 20));
+	meshlink_set_node_status_cb(bar, NULL);
+
+	assert(status_at_reachable.meta_connected);
+	assert(status_at_reachable.meta_via_canonical);
+
+	devtool_free_node_status(&status_at_reachable);
+
+	printf("join-canonical-nlb ok: LOCAL-first invite did not plant listen port %d as NLB\n", foo_port);
+
+	meshlink_stop(bar);
+	meshlink_stop(foo);
+	meshlink_close(bar);
+	meshlink_close(foo);
+	assert(meshlink_destroy("join_canonical_local_conf.1"));
+	assert(meshlink_destroy("join_canonical_local_conf.2"));
+	stop_tcp_relay(relay);
 	free_captured_log();
 	return 0;
 }

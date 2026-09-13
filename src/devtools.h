@@ -93,6 +93,9 @@ typedef struct devtool_node_status devtool_node_status_t;
 /// Number of recently seen addresses MeshLink remembers per node (node_t.recent[]).
 #define DEVTOOL_MAX_RECENT 5
 
+/// Number of cached canonical endpoints (node_t.canonical_sa + canonical_extra).
+#define DEVTOOL_MAX_CANONICAL 8
+
 /// The status of a node.
 struct devtool_node_status {
 	uint32_t status;
@@ -138,7 +141,7 @@ struct devtool_node_status {
 	struct sockaddr_storage recent[DEVTOOL_MAX_RECENT]; /// Copies of node_t.recent[]
 	uint8_t recent_source[DEVTOOL_MAX_RECENT]; /// address_source_t aligned with recent[]
 	uint8_t recent_cap[DEVTOOL_MAX_RECENT]; /// path_cap_t aligned with recent[]
-	struct sockaddr_storage canonical_resolved[DEVTOOL_MAX_RECENT]; /// cached canonical endpoints
+	struct sockaddr_storage canonical_resolved[DEVTOOL_MAX_CANONICAL]; /// cached canonical endpoints
 	size_t canonical_resolved_count;      /// number of resolved canonical endpoints
 	int udp_tier;                         /// path_tier_t of the confirmed UDP dest
 	int dest_path_tier;                   /// path_select_destination_tier()
