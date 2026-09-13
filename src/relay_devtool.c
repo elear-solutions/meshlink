@@ -78,7 +78,7 @@ bool relay_inject_inner(meshlink_handle_t *mesh, node_t *dest, uint8_t type) {
 		size_t wlen = sizeof(wrapped);
 
 		if(relay_encode(mesh->self->name, dest->name, dt->capture_buf, dt->capture_len, wrapped, &wlen)) {
-			return sptps_send_record(&dest->nexthop->sptps, PKT_RELAY_SPTPS, wrapped, (uint16_t)wlen);
+			return relay_send_outer_record(mesh, dest->nexthop, mesh->self->name, dest->name, wrapped, wlen);
 		}
 	}
 
@@ -234,6 +234,10 @@ static bool relay_cover_encode_decode(void) {
 	unexpected |= relay_payload_destination(NULL, n, destination, sizeof(destination));
 	unexpected |= relay_payload_destination(buf, 1, destination, sizeof(destination));
 	unexpected |= relay_payload_destination(buf, n, destination, 1);
+	unexpected |= relay_send_outer_record(NULL, NULL, "a", "b", buf, n);
+	unexpected |= relay_send_outer_record((meshlink_handle_t *)buf, NULL, "a", "b", buf, n);
+	unexpected |= relay_send_outer_record((meshlink_handle_t *)buf, (node_t *)buf, "a", "b", NULL, n);
+	unexpected |= relay_send_outer_record((meshlink_handle_t *)buf, (node_t *)buf, "a", "b", buf, 0);
 	unexpected |= relay_decode(NULL, n, origin, sizeof(origin), destination, sizeof(destination), &innerp, &inner_len);
 	unexpected |= relay_decode(buf, n, NULL, sizeof(origin), destination, sizeof(destination), &innerp, &inner_len);
 	unexpected |= relay_decode(buf, n, origin, sizeof(origin), NULL, sizeof(destination), &innerp, &inner_len);

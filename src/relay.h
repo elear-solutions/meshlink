@@ -66,6 +66,9 @@ bool relay_encode(const char *origin, const char *destination, const void *inner
 /* Copy dest name out of a type-8 payload. Mutex-scoped scratch is fine. */
 bool relay_payload_destination(const void *data, size_t len, char *destination, size_t destination_size);
 
+/* Encrypt+send type-8. Origin/dest are plaintext names for the DEBUG log after UDP send. */
+bool relay_send_outer_record(struct meshlink_handle *mesh, struct node_t *hop, const char *origin, const char *destination, const void *data, size_t len);
+
 /* Incoming type-8 record from `from`. Malformed / unknown names are quiet drops. */
 bool relay_handle_record(struct meshlink_handle *mesh, struct node_t *from, const void *data, uint16_t len);
 

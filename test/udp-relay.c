@@ -68,7 +68,7 @@ static bool leftover(const char *text) {
 }
 
 static void foo_log(meshlink_handle_t *mesh, meshlink_log_level_t level, const char *text) {
-	if(text && strstr(text, "Relaying type-8 via UDP")) {
+	if(text && strstr(text, "Relaying type-8 via UDP") && strstr(text, " for bar")) {
 		set_sync_flag(&foo_relay_log, true);
 	}
 
@@ -80,7 +80,7 @@ static void foo_log(meshlink_handle_t *mesh, meshlink_log_level_t level, const c
 }
 
 static void baz_log(meshlink_handle_t *mesh, meshlink_log_level_t level, const char *text) {
-	if(text && strstr(text, "Relaying type-8 via UDP")) {
+	if(text && strstr(text, "Relaying type-8 via UDP") && strstr(text, " for bar")) {
 		set_sync_flag(&baz_relay_log, true);
 	}
 
