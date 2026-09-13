@@ -238,6 +238,7 @@ static bool relay_cover_encode_decode(void) {
 	unexpected |= relay_send_outer_record((meshlink_handle_t *)buf, NULL, "a", "b", buf, n);
 	unexpected |= relay_send_outer_record((meshlink_handle_t *)buf, (node_t *)buf, "a", "b", NULL, n);
 	unexpected |= relay_send_outer_record((meshlink_handle_t *)buf, (node_t *)buf, "a", "b", buf, 0);
+	unexpected |= relay_send_outer_record((meshlink_handle_t *)buf, (node_t *)buf, "a", "b", buf, (size_t)UINT16_MAX + 1);
 	unexpected |= relay_decode(NULL, n, origin, sizeof(origin), destination, sizeof(destination), &innerp, &inner_len);
 	unexpected |= relay_decode(buf, n, NULL, sizeof(origin), destination, sizeof(destination), &innerp, &inner_len);
 	unexpected |= relay_decode(buf, n, origin, sizeof(origin), NULL, sizeof(destination), &innerp, &inner_len);

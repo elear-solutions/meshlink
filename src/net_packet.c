@@ -736,9 +736,11 @@ static bool send_relay_outer(meshlink_handle_t *mesh, node_t *hop, const void *d
 		return false;
 	}
 
+	/* Hop scratch is set around sptps_send_record by relay_send_outer_record, then cleared. */
 	const char *dest_name = hop->relay_send_dest;
 	const char *origin_name = hop->relay_send_origin;
 
+	/* Dest falls back to hop (first hop / dest==hop). Origin is unknown if not stashed. */
 	logger(mesh, MESHLINK_DEBUG, "Relaying type-8 via UDP to %s for %s from %s",
 	       hop->name,
 	       dest_name && dest_name[0] ? dest_name : hop->name,

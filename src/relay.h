@@ -63,10 +63,10 @@ void relay_clear_budget_if_nexthop_changed(struct meshlink_handle *mesh, struct 
 /* Wire encode: u8 origin_len + origin + u8 dest_len + dest + inner. */
 bool relay_encode(const char *origin, const char *destination, const void *inner, size_t inner_len, void *out, size_t *out_len);
 
-/* Copy dest name out of a type-8 payload. Mutex-scoped scratch is fine. */
+/* Query helper: copy dest name out of a type-8 payload. Tests/devtools only; send-path logging uses hop scratch. */
 bool relay_payload_destination(const void *data, size_t len, char *destination, size_t destination_size);
 
-/* Encrypt+send type-8. Origin/dest are plaintext names for the DEBUG log after UDP send. */
+/* Stash origin/dest on hop, then sptps_send_record type-8. Names are for the DEBUG log after UDP send. Rejects len > UINT16_MAX. */
 bool relay_send_outer_record(struct meshlink_handle *mesh, struct node_t *hop, const char *origin, const char *destination, const void *data, size_t len);
 
 /* Incoming type-8 record from `from`. Malformed / unknown names are quiet drops. */

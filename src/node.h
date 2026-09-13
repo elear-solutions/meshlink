@@ -81,8 +81,10 @@ typedef struct node_t {
 	uint16_t mtu;                           /* Maximum size of packets to send to this node */
 	uint16_t maxmtu;                        /* Probed maximum MTU */
 	uint16_t mtu_probe_request_len;         /* Outbound probe-request payload length; set only around sptps_send_record for dest-IP DEBUG log */
-	const char *relay_send_origin;          /* Origin name for type-8 DEBUG log; set only around sptps_send_record */
-	const char *relay_send_dest;            /* Dest name for type-8 DEBUG log; set only around sptps_send_record */
+
+	// Type-8 DEBUG log scratch (borrowed; set only around sptps_send_record)
+	const char *relay_send_origin;          /* Origin name for type-8 DEBUG log */
+	const char *relay_send_dest;            /* Dest name for type-8 DEBUG log */
 
 	// Used for meta-connection I/O, timeouts
 	struct meshlink_handle *mesh;           /* The mesh this node belongs to */

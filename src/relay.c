@@ -284,7 +284,7 @@ bool relay_payload_destination(const void *data, size_t len, char *destination, 
 }
 
 bool relay_send_outer_record(meshlink_handle_t *mesh, node_t *hop, const char *origin, const char *destination, const void *data, size_t len) {
-	if(!mesh || !hop || !data || !len) {
+	if(!mesh || !hop || !data || !len || len > UINT16_MAX) {
 		return false;
 	}
 
