@@ -16,6 +16,7 @@
 #include "logger.h"
 #include "meshlink_internal.h"
 #include "net.h"
+#include "netutl.h"
 #include "node.h"
 #include "path_policy.h"
 #include "protocol.h"
@@ -174,8 +175,76 @@ void relay_recompute_dependents(meshlink_handle_t *mesh, node_t *hop) {
 	}
 }
 
-void relay_on_hard_send_error(meshlink_handle_t *mesh, node_t *hop) {
-	if(!hop) {
+static bool relay_is_confirmed_send_dest(const node_t *hop, const sockaddr_t *sa) {
+	return hop && sa && !sockaddrcmp(sa, &hop->address);
+}
+
+void relay_fill_port_mismatch(const sockaddr_t *src, sockaddr_t *dst) {
+	if(!src || !dst) {
+		return;
+	}
+
+	*dst = *src;
+
+	if(dst->sa.sa_family == AF_INET) {
+		dst->in.sin_port ^= htons(0x8000);
+	} else if(dst->sa.sa_family == AF_INET6) {
+		dst->in6.sin6_port ^= htons(0x8000);
+	} else {
+		memset(dst, 0, sizeof *dst);
+		dst->sa.sa_family = AF_INET;
+		dst->in.sin_port = htons(1);
+	}
+}
+
+void relay_fill_host_mismatch(const sockaddr_t *src, sockaddr_t *dst) {
+	if(!src || !dst) {
+		return;
+	}
+
+	*dst = *src;
+
+	if(dst->sa.sa_family == AF_INET) {
+		dst->in.sin_addr.s_addr ^= htonl(1);
+	} else if(dst->sa.sa_family == AF_INET6) {
+		dst->in6.sin6_addr.s6_addr[15] ^= 1;
+	} else {
+		memset(dst, 0, sizeof *dst);
+		dst->sa.sa_family = AF_INET;
+		dst->in.sin_addr.s_addr = htonl(0x7f000002);
+	}
+}
+
+void relay_fill_mcast_ff02_1(sockaddr_t *dst) {
+	if(!dst) {
+		return;
+	}
+
+	memset(dst, 0, sizeof *dst);
+	dst->in6.sin6_family = AF_INET6;
+	dst->in6.sin6_addr.s6_addr[0] = 0xff;
+	dst->in6.sin6_addr.s6_addr[1] = 0x02;
+	dst->in6.sin6_addr.s6_addr[15] = 0x01;
+}
+
+void relay_fill_bcast_ipv4(sockaddr_t *dst) {
+	if(!dst) {
+		return;
+	}
+
+	memset(dst, 0, sizeof *dst);
+	dst->in.sin_family = AF_INET;
+	dst->in.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+}
+
+void relay_on_hard_send_error(meshlink_handle_t *mesh, node_t *hop, const sockaddr_t *sa, int sock) {
+	(void)sock;
+
+	if(!mesh || !hop || !sa || !hop->status.udp_confirmed) {
+		return;
+	}
+
+	if(!relay_is_confirmed_send_dest(hop, sa)) {
 		return;
 	}
 

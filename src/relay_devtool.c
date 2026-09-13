@@ -301,7 +301,7 @@ static void relay_cover_sanity(meshlink_handle_t *mesh, node_t *from, node_t *de
 	relay_recompute_dependents(NULL, hop);
 	relay_recompute_dependents(mesh, NULL);
 	relay_recompute_dependents(mesh, hop);
-	relay_on_hard_send_error(mesh, NULL);
+	relay_on_hard_send_error(mesh, NULL, NULL, 0);
 	relay_wake_probes(mesh, NULL);
 	relay_wake_probes(mesh, hop);
 	relay_clear_budget_if_nexthop_changed(mesh, NULL);
@@ -534,7 +534,40 @@ static void relay_cover_req_mtu(meshlink_handle_t *mesh, node_t *from, node_t *d
 static void relay_cover_hard_send_block(meshlink_handle_t *mesh, node_t *from, node_t *dest, node_t *hop, relay_cover_ctx_t *ctx) {
 	(void)ctx;
 	bool saved_hop_uc = hop->status.udp_confirmed;
-	relay_on_hard_send_error(mesh, hop);
+	sockaddr_t other = {0};
+	sockaddr_t mcast = {0};
+	sockaddr_t bcast = {0};
+
+	/* NULL dest */
+	relay_on_hard_send_error(mesh, hop, NULL, hop->sock);
+
+	/* unconfirmed hop */
+	hop->status.udp_confirmed = false;
+	relay_on_hard_send_error(mesh, hop, &hop->address, hop->sock);
+
+	/* rematch sock on confirmed dest still downgrades */
+	hop->status.udp_confirmed = true;
+	relay_on_hard_send_error(mesh, hop, &hop->address, hop->sock + 1);
+	hop->status.udp_confirmed = true;
+
+	/* port mismatch */
+	relay_fill_port_mismatch(&hop->address, &other);
+	relay_on_hard_send_error(mesh, hop, &other, hop->sock);
+
+	/* host mismatch */
+	relay_fill_host_mismatch(&hop->address, &other);
+	relay_on_hard_send_error(mesh, hop, &other, hop->sock);
+
+	/* ff02::1 */
+	relay_fill_mcast_ff02_1(&mcast);
+	relay_on_hard_send_error(mesh, hop, &mcast, hop->sock);
+
+	/* IPv4 255.255.255.255 */
+	relay_fill_bcast_ipv4(&bcast);
+	relay_on_hard_send_error(mesh, hop, &bcast, hop->sock);
+
+	/* confirmed dest */
+	relay_on_hard_send_error(mesh, hop, &hop->address, hop->sock);
 	hop->status.udp_confirmed = saved_hop_uc;
 
 	{
