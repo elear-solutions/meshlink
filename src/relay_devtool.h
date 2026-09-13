@@ -25,6 +25,7 @@ typedef struct relay_report_entry {
 struct relay_devtool_state {
 	bool force_report_null_connection;
 	bool fail_realloc;
+	bool inject_hard_send_error;
 	uint8_t capture_buf[RELAY_CAPTURE_MAX];
 	size_t capture_len;
 };

@@ -569,46 +569,50 @@ static void test_hard_send_clears_hop(meshlink_handle_t **mesh) {
 	assert_after(meshlink_channel_get_mss(mesh[2], ch) == relay_mss, 10);
 
 	meshlink_node_t *hop = meshlink_get_node(mesh[2], "foo");
-	devtool_node_status_t st;
+	devtool_node_status_t st = {0};
 	devtool_get_node_status(mesh[2], hop, &st);
 	assert(st.address.ss_family == AF_INET || st.address.ss_family == AF_INET6);
 
-	struct sockaddr_in6 mcast;
-	memset(&mcast, 0, sizeof mcast);
-	mcast.sin6_family = AF_INET6;
-	mcast.sin6_port = htons(1);
-	assert(inet_pton(AF_INET6, "ff02::1", &mcast.sin6_addr) == 1);
-	devtool_relay_hard_send_error_at(mesh[2], hop, (struct sockaddr *)&mcast, 0);
+	struct sockaddr_storage chosen = {0};
+	int hop_sock = 0;
+	assert(devtool_choose_udp_address(mesh[2], hop, &chosen, &hop_sock));
+
+	sockaddr_t mcast = {0};
+	relay_fill_mcast_ff02_1(&mcast);
+	devtool_relay_hard_send_error_at(mesh[2], hop, &mcast.sa, hop_sock);
 	assert(udp_confirmed_flag(mesh[2], "foo"));
 	assert(meshlink_channel_get_mss(mesh[2], ch) == relay_mss);
 
-	struct sockaddr_storage alt = st.address;
+	sockaddr_t alt = {0};
+	relay_fill_host_mismatch((const sockaddr_t *)&st.address, &alt);
+	devtool_relay_hard_send_error_at(mesh[2], hop, &alt.sa, hop_sock);
+	assert(udp_confirmed_flag(mesh[2], "foo"));
+	assert(meshlink_channel_get_mss(mesh[2], ch) == relay_mss);
 
-	if(alt.ss_family == AF_INET) {
-		((struct sockaddr_in *)&alt)->sin_addr.s_addr ^= htonl(1);
-	} else {
-		((struct sockaddr_in6 *)&alt)->sin6_addr.s6_addr[15] ^= 1;
+	sockaddr_t port = {0};
+	relay_fill_port_mismatch((const sockaddr_t *)&st.address, &port);
+	devtool_relay_hard_send_error_at(mesh[2], hop, &port.sa, hop_sock);
+	assert(udp_confirmed_flag(mesh[2], "foo"));
+	assert(meshlink_channel_get_mss(mesh[2], ch) == relay_mss);
+
+	sockaddr_t bcast = {0};
+	relay_fill_bcast_ipv4(&bcast);
+	devtool_relay_hard_send_error_at(mesh[2], hop, &bcast.sa, hop_sock);
+	assert(udp_confirmed_flag(mesh[2], "foo"));
+	assert(meshlink_channel_get_mss(mesh[2], ch) == relay_mss);
+
+	if(devtool_inject_broadcast_hard_send(mesh[2], hop)) {
+		assert(udp_confirmed_flag(mesh[2], "foo"));
+		assert(meshlink_channel_get_mss(mesh[2], ch) == relay_mss);
 	}
 
-	devtool_relay_hard_send_error_at(mesh[2], hop, (struct sockaddr *)&alt, 0);
+	devtool_relay_hard_send_error_at(mesh[2], hop, (struct sockaddr *)&st.address, hop_sock + 1);
+	assert(!udp_confirmed_flag(mesh[2], "foo"));
+	assert_after(meshlink_channel_get_mss(mesh[2], ch) == meta_mss, 10);
+	devtool_set_udp_confirmed(mesh[2], hop, true);
+	assert(devtool_set_minmtu(mesh[2], hop, MTU));
+	pin(mesh[2], "bar", "foo");
 	assert(udp_confirmed_flag(mesh[2], "foo"));
-	assert(meshlink_channel_get_mss(mesh[2], ch) == relay_mss);
-
-	struct sockaddr_storage port = st.address;
-
-	if(port.ss_family == AF_INET) {
-		((struct sockaddr_in *)&port)->sin_port ^= htons(0x8000);
-	} else {
-		((struct sockaddr_in6 *)&port)->sin6_port ^= htons(0x8000);
-	}
-
-	devtool_relay_hard_send_error_at(mesh[2], hop, (struct sockaddr *)&port, 0);
-	assert(udp_confirmed_flag(mesh[2], "foo"));
-	assert(meshlink_channel_get_mss(mesh[2], ch) == relay_mss);
-
-	devtool_relay_hard_send_error_at(mesh[2], hop, (struct sockaddr *)&st.address, -1);
-	assert(udp_confirmed_flag(mesh[2], "foo"));
-	assert(meshlink_channel_get_mss(mesh[2], ch) == relay_mss);
 	devtool_free_node_status(&st);
 
 	devtool_relay_hard_send_error(mesh[2], hop);

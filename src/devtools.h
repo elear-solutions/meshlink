@@ -434,11 +434,12 @@ bool devtool_handle_req_relay_mtu(struct meshlink_handle *mesh, struct meshlink_
 /// Drive remaining relay.c branches on a live trio (from / dest / hop).
 bool devtool_relay_cover_unit(struct meshlink_handle *mesh, struct meshlink_node *from, struct meshlink_node *dest, struct meshlink_node *hop);
 
-/// Simulate a hard UDP send failure on `hop`'s confirmed address and socket.
+/// Simulate a hard UDP send failure on `hop`'s confirmed address.
 void devtool_relay_hard_send_error(struct meshlink_handle *mesh, struct meshlink_node *hop);
 
 /// Simulate a hard UDP send failure to an explicit destination on `hop`.
-/** Clears readiness only when `addr` and `sock` match the hop's confirmed tuple.
+/** Clears readiness only when `addr` is the hop's confirmed destination.
+ *  `sock` is recorded as the attempted listen index and does not gate the clear.
  *
  *  @param mesh  Mesh handle.
  *  @param hop   Node whose UDP send failed.
@@ -446,5 +447,33 @@ void devtool_relay_hard_send_error(struct meshlink_handle *mesh, struct meshlink
  *  @param sock  Attempted listen-socket index.
  */
 void devtool_relay_hard_send_error_at(struct meshlink_handle *mesh, struct meshlink_node *hop, const struct sockaddr *addr, int sock);
+
+/// One-shot: the next `send_sptps_via_udp` skips `sendto` and takes the hard-error path.
+/** Uses the real chosen dest and listen index. Cleared after that send.
+ *
+ *  @param mesh  Mesh handle.
+ */
+void devtool_inject_next_udp_hard_send_error(struct meshlink_handle *mesh);
+
+/// Set `node_t.status.broadcast` so the next UDP send uses `choose_broadcast_address`.
+/** Requires `prevedge` when enabling. Used to drive a non-confirmed dest through
+ *  the production hard-error call site.
+ *
+ *  @param mesh       Mesh handle.
+ *  @param node       Peer to mark.
+ *  @param broadcast  New broadcast flag.
+ *  @return           true on success.
+ */
+bool devtool_set_udp_broadcast(struct meshlink_handle *mesh, struct meshlink_node *node, bool broadcast);
+
+/// Under the mesh lock: mark `hop` broadcast, inject a hard send, send a probe.
+/** Hits `send_sptps_via_udp` with the broadcast dest. Returns false if `hop`
+ *  has no `prevedge` or no session key.
+ *
+ *  @param mesh  Mesh handle.
+ *  @param hop   Confirmed hop to send through.
+ *  @return      true if the probe record was submitted.
+ */
+bool devtool_inject_broadcast_hard_send(struct meshlink_handle *mesh, struct meshlink_node *hop);
 
 #endif

@@ -30,6 +30,7 @@
 #include "netutl.h"
 #include "protocol.h"
 #include "relay.h"
+#include "relay_devtool.h"
 #include "route.h"
 #include "sptps.h"
 #include "utils.h"
@@ -702,6 +703,13 @@ static bool send_sptps_via_udp(meshlink_handle_t *mesh, node_t *to, const void *
 		logger(mesh, MESHLINK_DEBUG, "Sending MTU probe length %d to %s at %s port %s", to->mtu_probe_request_len, to->name, address, port);
 		free(address);
 		free(port);
+	}
+
+	if(mesh->relay_devtool && mesh->relay_devtool->inject_hard_send_error) {
+		mesh->relay_devtool->inject_hard_send_error = false;
+		logger(mesh, MESHLINK_WARNING, "Error sending UDP SPTPS packet to %s: %s", to->name, "injected hard send error");
+		relay_on_hard_send_error(mesh, to, sa, sock);
+		return false;
 	}
 
 	if(sendto(mesh->listen_socket[sock].udp.fd, data, len, 0, &sa->sa, SALEN(sa->sa)) < 0 && !sockwouldblock(sockerrno)) {
