@@ -3894,7 +3894,7 @@ static bool blacklist(meshlink_handle_t *mesh, node_t *n) {
 	if(mesh->outgoings) {
 		for list_each(outgoing_t, outgoing, mesh->outgoings) {
 			if(outgoing->node == n) {
-				outgoing_detach_bound(mesh, outgoing);
+				outgoing_detach_startup(mesh, outgoing);
 			}
 		}
 	}
@@ -4105,7 +4105,7 @@ bool meshlink_forget_node(meshlink_handle_t *mesh, meshlink_node_t *node) {
 	/* Check that we have no active connections to this node, nor a direct-upgrade probe in flight
 	   (its connection_t only knows the node by name until ack_h() and would recreate it) */
 	for list_each(connection_t, c, mesh->connections) {
-		if(c->node == n || c == n->upgrade_probe) {
+		if(c->node == n || c == n->upgrade_probe || (c->name && !strcmp(c->name, n->name))) {
 			pthread_mutex_unlock(&mesh->mutex);
 			logger(mesh, MESHLINK_WARNING, "Could not forget %s: active connection", n->name);
 			return false;

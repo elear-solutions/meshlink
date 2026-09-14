@@ -248,41 +248,62 @@ static void free_known_addresses(struct addrinfo *ai) {
 	}
 }
 
-int outgoing_startup_ms = OUTGOING_STARTUP_MS;
+static int outgoing_startup_ms = OUTGOING_STARTUP_MS;
+
+void outgoing_set_startup_ms(int ms) {
+	outgoing_startup_ms = ms > 0 ? ms : OUTGOING_STARTUP_MS;
+}
+
+int outgoing_get_startup_ms(void) {
+	return outgoing_startup_ms > 0 ? outgoing_startup_ms : OUTGOING_STARTUP_MS;
+}
 
 static bool outgoing_has_canonical(const outgoing_t *outgoing) {
 	return outgoing->node && outgoing->node->canonical_address;
 }
 
-/* The 250 ms budget applies only when a canonical NLB exists to fall back to. */
-static bool outgoing_is_bound_direct(const outgoing_t *outgoing) {
+/* The startup budget applies only when a canonical NLB exists to fall back to. */
+static bool outgoing_is_startup_direct(const outgoing_t *outgoing) {
 	return outgoing_has_canonical(outgoing) && (outgoing->state == OUTGOING_RECENT || outgoing->state == OUTGOING_KNOWN);
 }
 
-static struct timespec outgoing_bound_tv(void) {
-	int ms = outgoing_startup_ms > 0 ? outgoing_startup_ms : OUTGOING_STARTUP_MS;
+static struct timespec outgoing_startup_tv(void) {
+	int ms = outgoing_get_startup_ms();
 
 	return (struct timespec) {
 		ms / 1000, (long)(ms % 1000) * 1000000L
 	};
 }
 
-void outgoing_detach_bound(meshlink_handle_t *mesh, outgoing_t *outgoing) {
-	if(!mesh || !outgoing) {
+static bool connection_is_listed(meshlink_handle_t *mesh, const connection_t *c) {
+	if(!mesh || !c) {
+		return false;
+	}
+
+	for list_each(connection_t, other, mesh->connections) {
+		if(other == c) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static void outgoing_record_skip(outgoing_t *outgoing, const sockaddr_t *sa) {
+	if(!outgoing || !sa || !sa->sa.sa_family) {
 		return;
 	}
 
-	timeout_del(&mesh->loop, &outgoing->bound_ev);
-	outgoing->generation++;
-	outgoing->bound_waiting_dns = false;
+	path_copy_sockaddr(&outgoing->skip_sa, sa);
 
-	if(outgoing->pending) {
-		outgoing->pending->outgoing = NULL;
-		outgoing->pending = NULL;
+	if(outgoing->node) {
+		path_copy_sockaddr(&outgoing->node->startup_skip_sa, sa);
 	}
 }
 
-void outgoing_abort_bound(meshlink_handle_t *mesh, outgoing_t *outgoing) {
+/* cancel: bump generation and unlink the socket so a late ACK is stale.
+   Keep generation unchanged when the socket just became the primary. */
+static void outgoing_clear_pending(meshlink_handle_t *mesh, outgoing_t *outgoing, bool cancel) {
 	connection_t *c;
 
 	if(!mesh || !outgoing) {
@@ -290,21 +311,43 @@ void outgoing_abort_bound(meshlink_handle_t *mesh, outgoing_t *outgoing) {
 	}
 
 	c = outgoing->pending;
-	outgoing_detach_bound(mesh, outgoing);
+	timeout_del(&mesh->loop, &outgoing->startup_ev);
+	outgoing->startup_waiting_dns = false;
 
-	if(c) {
-		bool live = false;
+	if(c && cancel) {
+		outgoing_record_skip(outgoing, &c->address);
+		outgoing->generation++;
+		c->outgoing = NULL;
+	} else if(c && !cancel) {
+		/* Activation: keep c->outgoing so retry still owns the walk. */
+	}
 
-		for list_each(connection_t, other, mesh->connections) {
-			if(other == c) {
-				live = true;
-				break;
-			}
-		}
+	outgoing->pending = NULL;
+}
 
-		if(live) {
-			terminate_connection(mesh, c, c->status.active);
-		}
+void outgoing_detach_startup(meshlink_handle_t *mesh, outgoing_t *outgoing) {
+	outgoing_clear_pending(mesh, outgoing, true);
+}
+
+void outgoing_abort_startup(meshlink_handle_t *mesh, outgoing_t *outgoing) {
+	connection_t *c;
+
+	if(!mesh || !outgoing) {
+		return;
+	}
+
+	c = outgoing->pending;
+
+	if(c && c->status.active) {
+		outgoing_clear_pending(mesh, outgoing, false);
+		return;
+	}
+
+	outgoing_clear_pending(mesh, outgoing, true);
+
+	/* Never terminate a socket the caller still owns via list_delete(outgoings). */
+	if(c && connection_is_listed(mesh, c)) {
+		terminate_connection(mesh, c, false);
 	}
 }
 
@@ -315,27 +358,21 @@ static void outgoing_bound_timeout(event_loop_t *loop, void *data) {
 	node_t *n = outgoing->node;
 
 	if(c && c->status.active) {
-		timeout_del(&mesh->loop, &outgoing->bound_ev);
-		outgoing->bound_used = true;
+		outgoing_clear_pending(mesh, outgoing, false);
 		return;
 	}
 
 	if(n && path_canonical_is_hostname(n) && n->canonical_resolve_pending && n->canonical_sa_count == 0) {
-		outgoing->bound_waiting_dns = true;
+		outgoing->startup_waiting_dns = true;
 		return;
 	}
 
 	if(c) {
-		outgoing->generation++;
-		outgoing->pending = NULL;
-		path_copy_sockaddr(&outgoing->skip_sa, &c->address);
-		c->outgoing = NULL;
-		terminate_connection(mesh, c, false);
+		outgoing_abort_startup(mesh, outgoing);
+	} else {
+		outgoing_clear_pending(mesh, outgoing, true);
 	}
 
-	timeout_del(&mesh->loop, &outgoing->bound_ev);
-	outgoing->bound_used = true;
-	outgoing->bound_waiting_dns = false;
 	free_outgoing_addresses(outgoing);
 	outgoing->state = OUTGOING_CANONICAL_RESOLVE;
 	do_outgoing_connection(mesh, outgoing);
@@ -347,11 +384,9 @@ void outgoing_on_canonical_resolved(meshlink_handle_t *mesh, node_t *n, struct a
 			continue;
 		}
 
-		if(outgoing->bound_waiting_dns) {
+		if(outgoing->startup_waiting_dns) {
 			if(outgoing->pending && outgoing->pending->status.active) {
-				outgoing->bound_waiting_dns = false;
-				outgoing->bound_used = true;
-				timeout_del(&mesh->loop, &outgoing->bound_ev);
+				outgoing_clear_pending(mesh, outgoing, false);
 
 				if(ai) {
 					freeaddrinfo(ai);
@@ -363,16 +398,11 @@ void outgoing_on_canonical_resolved(meshlink_handle_t *mesh, node_t *n, struct a
 			}
 
 			if(outgoing->pending) {
-				outgoing->generation++;
-				path_copy_sockaddr(&outgoing->skip_sa, &outgoing->pending->address);
-				outgoing->pending->outgoing = NULL;
-				terminate_connection(mesh, outgoing->pending, false);
-				outgoing->pending = NULL;
+				outgoing_abort_startup(mesh, outgoing);
+			} else {
+				outgoing_clear_pending(mesh, outgoing, true);
 			}
 
-			timeout_del(&mesh->loop, &outgoing->bound_ev);
-			outgoing->bound_waiting_dns = false;
-			outgoing->bound_used = true;
 			free_outgoing_addresses(outgoing);
 
 			if(usable) {
@@ -499,11 +529,11 @@ static bool get_next_outgoing_address(meshlink_handle_t *mesh, outgoing_t *outgo
 	bool start = false;
 
 	if((outgoing->state == OUTGOING_RECENT || outgoing->state == OUTGOING_KNOWN) && !outgoing_has_canonical(outgoing)) {
-		if(outgoing->bound_sa.sa.sa_family) {
-			path_copy_sockaddr(&outgoing->skip_sa, &outgoing->bound_sa);
+		if(outgoing->startup_sa.sa.sa_family) {
+			outgoing_record_skip(outgoing, &outgoing->startup_sa);
 		}
 
-		timeout_del(&mesh->loop, &outgoing->bound_ev);
+		timeout_del(&mesh->loop, &outgoing->startup_ev);
 		free_outgoing_addresses(outgoing);
 		outgoing->state = OUTGOING_START;
 	}
@@ -515,37 +545,26 @@ static bool get_next_outgoing_address(meshlink_handle_t *mesh, outgoing_t *outgo
 
 		start = true;
 
-		if(outgoing->direct_tries >= MAX_RECENT + 2) {
+		if(outgoing->direct_tries >= OUTGOING_MAX_DIRECT_TRIES) {
 			outgoing->state = OUTGOING_CANONICAL_RESOLVE;
-		} else if(path_best_direct_meta(outgoing->node, skip, &sa, &src)) {
-			outgoing->direct_tries++;
-			outgoing->ai = sockaddr_to_stream_addrinfo(&sa);
-			outgoing->aip = outgoing->ai;
-			outgoing->ai_is_getaddrinfo = false;
-			outgoing->state = OUTGOING_RECENT;
-			outgoing->bound_src = src;
-			path_copy_sockaddr(&outgoing->bound_sa, &sa);
-			return outgoing->ai != NULL;
 		} else if(path_best_startup_meta(outgoing->node, skip, &sa, &src)) {
 			outgoing->direct_tries++;
 			outgoing->ai = sockaddr_to_stream_addrinfo(&sa);
 			outgoing->aip = outgoing->ai;
 			outgoing->ai_is_getaddrinfo = false;
 			outgoing->state = (src == ADDR_SRC_EDGE_DIRECT) ? OUTGOING_KNOWN : OUTGOING_RECENT;
-			outgoing->bound_src = src;
-			path_copy_sockaddr(&outgoing->bound_sa, &sa);
+			path_copy_sockaddr(&outgoing->startup_sa, &sa);
 			return outgoing->ai != NULL;
 		} else {
 			outgoing->state = OUTGOING_CANONICAL_RESOLVE;
 		}
 	}
 
-	if(outgoing_is_bound_direct(outgoing)) {
-		outgoing->bound_used = true;
-		timeout_del(&mesh->loop, &outgoing->bound_ev);
+	if(outgoing_is_startup_direct(outgoing)) {
+		timeout_del(&mesh->loop, &outgoing->startup_ev);
 
-		if(outgoing->bound_sa.sa.sa_family) {
-			path_copy_sockaddr(&outgoing->skip_sa, &outgoing->bound_sa);
+		if(outgoing->startup_sa.sa.sa_family) {
+			outgoing_record_skip(outgoing, &outgoing->startup_sa);
 		}
 
 		free_outgoing_addresses(outgoing);
@@ -649,6 +668,10 @@ begin:
 		return;
 	}
 
+	if(outgoing->generation == 0) {
+		outgoing->generation = 1;
+	}
+
 	connection_t *c = new_connection();
 	c->outgoing = outgoing;
 	c->outgoing_generation = outgoing->generation;
@@ -666,15 +689,14 @@ begin:
 	if(!connect_meta_socket(mesh, c)) {
 		free_connection(c);
 
-		if(outgoing_is_bound_direct(outgoing)) {
-			outgoing->bound_used = true;
-			timeout_del(&mesh->loop, &outgoing->bound_ev);
-			path_copy_sockaddr(&outgoing->skip_sa, &outgoing->bound_sa);
+		if(outgoing_is_startup_direct(outgoing)) {
+			timeout_del(&mesh->loop, &outgoing->startup_ev);
+			outgoing_record_skip(outgoing, &outgoing->startup_sa);
 			free_outgoing_addresses(outgoing);
 			outgoing->state = OUTGOING_CANONICAL_RESOLVE;
 		} else if(outgoing->state == OUTGOING_RECENT || outgoing->state == OUTGOING_KNOWN) {
-			if(outgoing->bound_sa.sa.sa_family) {
-				path_copy_sockaddr(&outgoing->skip_sa, &outgoing->bound_sa);
+			if(outgoing->startup_sa.sa.sa_family) {
+				outgoing_record_skip(outgoing, &outgoing->startup_sa);
 			}
 
 			free_outgoing_addresses(outgoing);
@@ -686,9 +708,9 @@ begin:
 
 	outgoing->pending = c;
 
-	if(outgoing_is_bound_direct(outgoing)) {
-		struct timespec tv = outgoing_bound_tv();
-		timeout_add(&mesh->loop, &outgoing->bound_ev, outgoing_bound_timeout, outgoing, &tv);
+	if(outgoing_is_startup_direct(outgoing)) {
+		struct timespec tv = outgoing_startup_tv();
+		timeout_add(&mesh->loop, &outgoing->startup_ev, outgoing_bound_timeout, outgoing, &tv);
 		path_request_canonical_resolve(mesh, outgoing->node);
 	}
 }
@@ -753,23 +775,20 @@ bool connect_meta_socket(meshlink_handle_t *mesh, connection_t *c) {
 
 void reset_outgoing(outgoing_t *outgoing) {
 	if(outgoing->node && outgoing->node->mesh) {
-		timeout_del(&outgoing->node->mesh->loop, &outgoing->bound_ev);
+		outgoing_clear_pending(outgoing->node->mesh, outgoing, false);
 	}
 
 	free_outgoing_addresses(outgoing);
 	outgoing->state = OUTGOING_START;
-	outgoing->bound_used = false;
-	outgoing->bound_waiting_dns = false;
+	outgoing->startup_waiting_dns = false;
 	outgoing->direct_tries = 0;
-	outgoing->pending = NULL;
-	memset(&outgoing->bound_sa, 0, sizeof outgoing->bound_sa);
+	memset(&outgoing->startup_sa, 0, sizeof outgoing->startup_sa);
 	memset(&outgoing->skip_sa, 0, sizeof outgoing->skip_sa);
-	outgoing->bound_src = ADDR_SRC_UNKNOWN;
 }
 
 void setup_outgoing_connection(meshlink_handle_t *mesh, outgoing_t *outgoing) {
 	timeout_del(&mesh->loop, &outgoing->ev);
-	outgoing_abort_bound(mesh, outgoing);
+	outgoing_abort_startup(mesh, outgoing);
 
 	if(outgoing->node->connection) {
 		logger(mesh, MESHLINK_INFO, "Already connected to %s", outgoing->node->name);
@@ -881,9 +900,9 @@ void handle_new_meta_connection(event_loop_t *loop, void *data, int flags) {
 static void free_outgoing(outgoing_t *outgoing) {
 	meshlink_handle_t *mesh = outgoing->node->mesh;
 
-	outgoing_abort_bound(mesh, outgoing);
+	outgoing_clear_pending(mesh, outgoing, true);
 	timeout_del(&mesh->loop, &outgoing->ev);
-	timeout_del(&mesh->loop, &outgoing->bound_ev);
+	timeout_del(&mesh->loop, &outgoing->startup_ev);
 	free_outgoing_addresses(outgoing);
 	free(outgoing);
 }

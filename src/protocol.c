@@ -149,6 +149,10 @@ void forward_request(meshlink_handle_t *mesh, connection_t *from, const submesh_
 bool receive_request(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	assert(request);
 
+	if(c->status.drain_only) {
+		return true;
+	}
+
 	int reqno = atoi(request);
 
 	if(reqno || *request == '0') {

@@ -1193,5 +1193,5 @@ void devtool_fill_bcast_ipv4(struct sockaddr_storage *dst) {
 }
 
 void devtool_set_outgoing_startup_ms(int ms) {
-	outgoing_startup_ms = ms > 0 ? ms : OUTGOING_STARTUP_MS;
+	outgoing_set_startup_ms(ms);
 }

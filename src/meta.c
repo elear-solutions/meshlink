@@ -140,6 +140,24 @@ bool receive_meta(meshlink_handle_t *mesh, connection_t *c) {
 	int inlen;
 	char inbuf[MAXBUFSIZE];
 
+	if(c->status.drain_only) {
+		inlen = recv(c->socket, inbuf, sizeof(inbuf), 0);
+
+		if(inlen <= 0) {
+			if(!inlen || !errno) {
+				logger(mesh, MESHLINK_INFO, "Connection closed by %s", c->name);
+			} else if(sockwouldblock(sockerrno)) {
+				return true;
+			} else {
+				logger(mesh, MESHLINK_ERROR, "Metadata socket read error for %s: %s", c->name, sockstrerror(sockerrno));
+			}
+
+			return false;
+		}
+
+		return true;
+	}
+
 	inlen = recv(c->socket, inbuf, sizeof(inbuf), 0);
 
 	if(inlen <= 0) {

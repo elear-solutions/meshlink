@@ -1203,6 +1203,48 @@ static void test_blacklist_after_migrate(void) {
 	printf("T20 ok: blacklist after migrate\n");
 }
 
+/* --- T21 -------------------------------------------------------------------- */
+
+static void test_failover_after_promote(void) {
+	printf("\n=== T21: post-promotion failover rekeys at most once ===\n");
+
+	struct pair p;
+	open_relayed_pair(&p, "canonical_migrate_t21", true);
+	reset_probe_events();
+	watch_peer(p.a, "b");
+
+	assert(meshlink_start(p.b));
+	assert(meshlink_start(p.a));
+	assert(wait_sync_flag(&peer_reachable, 15));
+	assert_after(check_sync_flag(&probe_succeeded) || connected_direct(p.a, p.a_b, p.b_port), 20);
+	assert_direct(p.a, p.a_b, p.b_port);
+
+	devtool_node_status_t st;
+	devtool_get_node_status(p.a, p.a_b, &st);
+	uint32_t restarts = st.sptps_restart_count;
+	assert(st.validkey);
+	devtool_free_node_status(&st);
+
+	meshlink_stop(p.b);
+	assert(wait_sync_flag(&peer_unreachable, 15));
+	reset_probe_events();
+	init_sync_flag(&peer_reachable);
+	memset(&status_at_reachable, 0, sizeof status_at_reachable);
+	assert(meshlink_start(p.b));
+	assert(wait_sync_flag(&peer_reachable, 30));
+
+	devtool_get_node_status(p.a, p.a_b, &st);
+	assert(st.meta_connected);
+	assert(st.validkey);
+	assert(st.sptps_restart_count <= restarts + 1);
+	devtool_free_node_status(&st);
+
+	printf("T21 ok: post-promotion failover recovered with at most one rekey\n");
+
+	meshlink_set_node_status_cb(p.a, NULL);
+	close_relayed_pair(&p);
+}
+
 int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, capture_log_cb);
 	devtool_upgrade_probe = upgrade_probe_hook;
@@ -1218,6 +1260,7 @@ int main(void) {
 	test_late_canonical_reclassifies();
 	test_stop_during_probe();
 	test_blacklist_after_migrate();
+	test_failover_after_promote();
 
 	free_captured_log();
 	return 0;

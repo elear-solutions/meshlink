@@ -466,7 +466,7 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		}
 	}
 
-	if(c->outgoing && c->outgoing_generation && c->outgoing_generation != c->outgoing->generation) {
+	if(c->outgoing_generation && (!c->outgoing || c->outgoing_generation != c->outgoing->generation)) {
 		logger(mesh, MESHLINK_INFO, "Ignoring stale startup connection with %s", c->name);
 		return false;
 	}
@@ -487,6 +487,10 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	}
 
 	if(n->connection && n->connection != c) {
+		if(drain_old && old) {
+			old->status.drain_only = true;
+		}
+
 		replace_existing_connection(mesh, n, c, drain_old);
 	}
 

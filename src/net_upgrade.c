@@ -59,6 +59,10 @@ static bool pick_probe_address(node_t *n, sockaddr_t *out) {
 			continue;
 		}
 
+		if(n->startup_skip_sa.sa.sa_family && !sockaddrcmp(sa, &n->startup_skip_sa)) {
+			continue;
+		}
+
 		if(!path_is_meta_candidate(n, sa, n->recent_source[idx], n->recent_cap[idx])) {
 			continue;
 		}
@@ -164,6 +168,74 @@ bool upgrade_should_preserve_node_session(meshlink_handle_t *mesh, const node_t 
 		return false;
 	}
 
+	if(n->session_id && n->prevedge && n->prevedge->reverse
+	                && n->prevedge->reverse->session_id
+	                && n->prevedge->reverse->session_id != n->session_id) {
+		return false;
+	}
+
+	return true;
+}
+
+bool upgrade_preserve_cover_unit(meshlink_handle_t *mesh) {
+	node_t n;
+	edge_t pred;
+	edge_t reverse;
+
+	memset(&n, 0, sizeof n);
+	memset(&pred, 0, sizeof pred);
+	memset(&reverse, 0, sizeof reverse);
+	n.name = "preserve";
+	n.status.validkey = true;
+	n.sptps.state = SPTPS_SECONDARY_KEX;
+
+	if(!upgrade_should_preserve_node_session(mesh, &n, true, true)) {
+		return false;
+	}
+
+	if(upgrade_should_preserve_node_session(mesh, &n, false, true)
+	                || upgrade_should_preserve_node_session(mesh, &n, true, false)
+	                || upgrade_should_preserve_node_session(NULL, NULL, true, true)) {
+		return false;
+	}
+
+	n.status.validkey = false;
+
+	if(upgrade_should_preserve_node_session(mesh, &n, true, true)) {
+		return false;
+	}
+
+	n.status.validkey = true;
+	n.sptps.state = 0;
+
+	if(upgrade_should_preserve_node_session(mesh, &n, true, true)) {
+		return false;
+	}
+
+	n.sptps.state = SPTPS_KEX;
+	n.status.waitingforkey = true;
+
+	if(upgrade_should_preserve_node_session(mesh, &n, true, true)) {
+		return false;
+	}
+
+	n.status.waitingforkey = false;
+	n.sptps.state = SPTPS_SECONDARY_KEX;
+	n.session_id = 1;
+	reverse.session_id = 2;
+	pred.reverse = &reverse;
+	n.prevedge = &pred;
+
+	if(upgrade_should_preserve_node_session(mesh, &n, true, true)) {
+		return false;
+	}
+
+	reverse.session_id = 1;
+
+	if(!upgrade_should_preserve_node_session(mesh, &n, true, true)) {
+		return false;
+	}
+
 	return true;
 }
 
@@ -193,7 +265,7 @@ void upgrade_begin_drain(meshlink_handle_t *mesh, connection_t *c) {
 	}
 
 	if(c->io.cb) {
-		io_set(&mesh->loop, &c->io, IO_READ | IO_WRITE);
+		io_set(&mesh->loop, &c->io, IO_WRITE);
 	}
 
 	logger(mesh, MESHLINK_INFO, "Draining old META connection with %s", c->name ? c->name : "?");

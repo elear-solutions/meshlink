@@ -51,6 +51,7 @@ void upgrade_probe_succeeded(struct meshlink_handle *mesh, connection_t *c);
 /* True when an authenticated direct upgrade may keep the existing node SPTPS session.
    Do not key this off sptps.label alone. */
 bool upgrade_should_preserve_node_session(struct meshlink_handle *mesh, const node_t *n, bool was_upgrade_probe, bool old_was_canonical) __attribute__((__warn_unused_result__));
+bool upgrade_preserve_cover_unit(struct meshlink_handle *mesh) __attribute__((__warn_unused_result__));
 
 /* Retired META: flush already-queued bytes, then close. Bounded timeout is cleanup only. */
 #define UPGRADE_DRAIN_TIMEOUT_SEC 2

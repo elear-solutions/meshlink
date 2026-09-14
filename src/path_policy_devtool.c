@@ -848,28 +848,7 @@ static bool cover_transport(meshlink_handle_t *mesh) {
 }
 
 static bool cover_preserve(meshlink_handle_t *mesh) {
-	node_t n;
-
-	memset(&n, 0, sizeof n);
-	n.name = "preserve";
-	n.status.validkey = true;
-	n.sptps.state = SPTPS_SECONDARY_KEX;
-	CHECK(upgrade_should_preserve_node_session(mesh, &n, true, true));
-	CHECK(!upgrade_should_preserve_node_session(mesh, &n, false, true));
-	CHECK(!upgrade_should_preserve_node_session(mesh, &n, true, false));
-	CHECK(!upgrade_should_preserve_node_session(NULL, NULL, true, true));
-	n.status.validkey = false;
-	CHECK(!upgrade_should_preserve_node_session(mesh, &n, true, true));
-	n.status.validkey = true;
-	n.sptps.state = 0;
-	CHECK(!upgrade_should_preserve_node_session(mesh, &n, true, true));
-	n.sptps.state = SPTPS_KEX;
-	n.status.waitingforkey = true;
-	CHECK(!upgrade_should_preserve_node_session(mesh, &n, true, true));
-	n.status.waitingforkey = false;
-	n.sptps.state = SPTPS_SECONDARY_KEX;
-	CHECK(upgrade_should_preserve_node_session(mesh, &n, true, true));
-	return true;
+	return upgrade_preserve_cover_unit(mesh);
 }
 
 bool path_policy_cover_unit(meshlink_handle_t *mesh, node_t *live) {

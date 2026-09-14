@@ -1333,7 +1333,7 @@ void path_note_selected_route(meshlink_handle_t *mesh, node_t *n, const char *re
 
 	n->last_path_tier = to;
 
-	if(!mesh || mesh->log_level > MESHLINK_INFO || from == to) {
+	if(!mesh || mesh->log_level > MESHLINK_INFO) {
 		return;
 	}
 
@@ -1379,9 +1379,10 @@ void path_log_udp_tier(meshlink_handle_t *mesh, const node_t *n, path_tier_t fro
 }
 
 void path_log_transition(meshlink_handle_t *mesh, const node_t *n, path_tier_t from, path_tier_t to, const char *reason) {
-	if(!mesh || !n || mesh->log_level > MESHLINK_INFO || from == to) {
-		return;
-	}
-
-	logger(mesh, MESHLINK_INFO, "Path route: %s %s -> %s (%s)", n->name, path_tier_name(from), path_tier_name(to), reason ? reason : "");
+	/* Production Path route: logs go through path_note_selected_route() so last_path_tier stays authoritative. */
+	(void)mesh;
+	(void)n;
+	(void)from;
+	(void)to;
+	(void)reason;
 }

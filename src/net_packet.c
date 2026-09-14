@@ -635,9 +635,7 @@ void choose_udp_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **s
 		if(candidate) {
 			*sa = &candidate->address;
 		} else if(lan_candidate(&n->address, self_ext, skip)
-		                && path_is_udp_candidate(n, &n->address,
-		                                        n->address_source ? n->address_source : ADDR_SRC_UNKNOWN,
-		                                        n->address_cap ? n->address_cap : PATH_CAP_UDP)) {
+		                && path_is_udp_candidate(n, &n->address, n->address_source, n->address_cap)) {
 			*sa = &n->address;
 		} else if(lan_slot != UDP_LAN_SLOT_RECENT && try_recent(mesh, n, sa, sock, self_ext, skip)) {
 			return;

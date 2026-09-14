@@ -59,7 +59,6 @@ typedef enum packet_type_t {
 
 #include "conf.h"
 #include "list.h"
-#include "path_policy.h"
 
 /* TCP connect plus Meshlink authentication budget for the one startup direct attempt. */
 #define OUTGOING_STARTUP_MS 250
@@ -78,23 +77,24 @@ typedef struct outgoing_t {
 	} state;
 	int timeout;
 	timeout_t ev;
-	timeout_t bound_ev;             /* 250 ms startup budget for the one direct attempt */
+	timeout_t startup_ev;           /* outgoing_startup_ms budget for the one direct attempt */
 	struct addrinfo *ai;
 	struct addrinfo *aip;
 	bool ai_is_getaddrinfo;         /* true if ai came from getaddrinfo() (free with freeaddrinfo), false if built locally */
-	uint32_t generation;            /* bumped when a pending startup socket is canceled */
+	uint32_t generation;            /* starts at 1; bumped when a pending startup socket is canceled */
 	struct connection_t *pending;   /* the single in-flight startup socket, if any */
-	sockaddr_t bound_sa;            /* direct candidate that received the startup budget */
-	sockaddr_t skip_sa;             /* last failed bound candidate; skipped on the next pick */
-	address_source_t bound_src;
-	bool bound_used;                /* the 250 ms budget was spent this walk */
-	bool bound_waiting_dns;         /* deadline expired but canonical DNS is still in flight */
+	sockaddr_t startup_sa;          /* direct candidate that received the startup budget */
+	sockaddr_t skip_sa;             /* last failed startup candidate; skipped on the next pick */
+	bool startup_waiting_dns;       /* deadline expired but canonical DNS is still in flight */
 	uint8_t direct_tries;           /* no-canonical leftover directs; capped to avoid a refuse loop */
 } outgoing_t;
 
 /* Yes, very strange placement indeed, but otherwise the typedefs get all tangled up */
 #include "connection.h"
 #include "node.h"
+
+/* leftover directs without a canonical fallback; +2 covers recent[] plus a known edge */
+#define OUTGOING_MAX_DIRECT_TRIES (MAX_RECENT + 2)
 
 void init_outgoings(struct meshlink_handle *mesh);
 void exit_outgoings(struct meshlink_handle *mesh);
@@ -118,10 +118,14 @@ void load_all_nodes(struct meshlink_handle *mesh);
 bool setup_myself_reloadable(struct meshlink_handle *mesh) __attribute__((__warn_unused_result__));
 bool setup_network(struct meshlink_handle *mesh) __attribute__((__warn_unused_result__));
 void reset_outgoing(struct outgoing_t *);
-void outgoing_abort_bound(struct meshlink_handle *mesh, struct outgoing_t *);
-void outgoing_detach_bound(struct meshlink_handle *mesh, struct outgoing_t *);
+/* Close the in-flight startup socket and record it as skip. Never call from a
+   list destructor that still holds the connection. */
+void outgoing_abort_startup(struct meshlink_handle *mesh, struct outgoing_t *);
+/* Untrack the startup socket without closing it (activation, blacklist, forget). */
+void outgoing_detach_startup(struct meshlink_handle *mesh, struct outgoing_t *);
 void setup_outgoing_connection(struct meshlink_handle *mesh, struct outgoing_t *);
-extern int outgoing_startup_ms;
+void outgoing_set_startup_ms(int ms);
+int outgoing_get_startup_ms(void);
 void close_network_connections(struct meshlink_handle *mesh);
 void main_loop(struct meshlink_handle *mesh);
 void terminate_connection(struct meshlink_handle *mesh, struct connection_t *, bool);

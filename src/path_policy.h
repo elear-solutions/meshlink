@@ -118,7 +118,7 @@ void path_clear_recent(struct node_t *n);
 /* Force ADDR_SRC_UNKNOWN / UDP-only at the front (test/devtools plant of a leftover NLB). */
 void path_plant_recent(struct node_t *n, const sockaddr_t *sa);
 
-/* Drop canonical-equivalent and ADDR_SRC_CANONICAL slots. Returns true if recent[] changed. */
+/* Drop canonical-equivalent, ADDR_SRC_CANONICAL, and untrusted hybrid slots. Returns true if recent[] changed. */
 bool path_sanitize_recent(struct meshlink_handle *mesh, struct node_t *n);
 
 bool path_best_direct_meta(const struct node_t *n, const sockaddr_t *skip, sockaddr_t *out, address_source_t *src_out);

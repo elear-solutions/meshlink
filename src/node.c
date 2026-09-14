@@ -219,6 +219,7 @@ void update_node_udp_from(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *
 
 		path_copy_sockaddr(&n->address, sa);
 
+		/* UNKNOWN must not demote a known source on the same address. */
 		if(!same || src != ADDR_SRC_UNKNOWN || n->address_source == ADDR_SRC_UNKNOWN) {
 			n->address_source = src;
 			n->address_cap = path_default_cap(src);

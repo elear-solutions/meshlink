@@ -107,6 +107,7 @@ typedef struct node_t {
 	time_t upgrade_next_try;                /* Earliest time for the next probe (0 = now) */
 	int upgrade_backoff;                    /* Current backoff in seconds; 0 until a probe fails */
 	uint8_t upgrade_recent_idx;             /* recent[] slot the next probe tries */
+	sockaddr_t startup_skip_sa;             /* dest the startup budget canceled; upgrade probes skip it */
 
 	char *canonical_address;                /* The canonical address of this node, if known */
 	char *external_ip_address;              /* The external IP address of this node, if known */

@@ -150,7 +150,7 @@ void terminate_connection(meshlink_handle_t *mesh, connection_t *c, bool report)
 			if(o->pending == c) {
 				path_copy_sockaddr(&o->skip_sa, &c->address);
 				o->pending = NULL;
-				timeout_del(&mesh->loop, &o->bound_ev);
+				timeout_del(&mesh->loop, &o->startup_ev);
 			}
 		}
 	}
@@ -478,7 +478,7 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 		unsigned int cur_connects = 0;
 
 		for list_each(connection_t, c, mesh->connections) {
-			if(c->status.active && !c->status.spare) {
+			if(c->status.active && !c->status.spare && !c->status.drain_only) {
 				cur_connects += 1;
 			}
 		}
@@ -527,7 +527,7 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 
 			for(dev_class_t devclass = 0; devclass <= mesh->devclass; ++devclass) {
 				for list_each(connection_t, c, mesh->connections) {
-					if(c->status.active && !c->status.spare && c->node && c->node->devclass == devclass) {
+					if(c->status.active && !c->status.spare && !c->status.drain_only && c->node && c->node->devclass == devclass) {
 						connects += 1;
 					}
 				}
@@ -622,7 +622,7 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 
 			for(dev_class_t devclass = 0; devclass <= mesh->devclass; ++devclass) {
 				for list_each(connection_t, c, mesh->connections) {
-					if(c->status.active && !c->status.spare && c->node && c->node->devclass == devclass) {
+					if(c->status.active && !c->status.spare && !c->status.drain_only && c->node && c->node->devclass == devclass) {
 						connects += 1;
 					}
 				}
@@ -631,7 +631,7 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 					splay_tree_t *nodes = splay_alloc_tree(node_compare_devclass_desc, NULL);
 
 					for list_each(connection_t, c, mesh->connections) {
-						if(c->outgoing && !c->status.spare && c->node && c->node->devclass >= devclass) {
+						if(c->outgoing && !c->status.spare && !c->status.drain_only && c->node && c->node->devclass >= devclass) {
 							splay_insert(nodes, c->node);
 						}
 					}
@@ -658,7 +658,7 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 			splay_tree_t *nodes = splay_alloc_tree(node_compare_devclass_desc, NULL);
 
 			for list_each(connection_t, c, mesh->connections) {
-				if(c->status.active && !c->status.spare && c->node) {
+				if(c->status.active && !c->status.spare && !c->status.drain_only && c->node) {
 					splay_insert(nodes, c->node);
 				}
 			}
@@ -740,7 +740,7 @@ void retry(meshlink_handle_t *mesh) {
 		outgoing->timeout = 0;
 
 		if(outgoing->pending && !outgoing->pending->status.active) {
-			outgoing_abort_bound(mesh, outgoing);
+			outgoing_abort_startup(mesh, outgoing);
 			outgoing->state = OUTGOING_START;
 			do_outgoing_connection(mesh, outgoing);
 		}

@@ -99,11 +99,13 @@ static void test_black_hole_falls_to_canonical(void) {
 	watched_peer = "b";
 	init_sync_flag(&peer_reachable);
 	meshlink_set_node_status_cb(a, status_cb);
+	devtool_set_outgoing_startup_ms(200);
 	size_t mark = log_mark();
 	time_t started = time(NULL);
 	assert(meshlink_start(b));
 	assert(meshlink_start(a));
 	assert(wait_sync_flag(&peer_reachable, 15));
+	devtool_set_outgoing_startup_ms(0);
 
 	char recent_needle[128], canonical_needle[128];
 	snprintf(recent_needle, sizeof recent_needle, "Trying to connect to b at 127.0.0.1 port %d (recent)", hole_port);
@@ -113,7 +115,7 @@ static void test_black_hole_falls_to_canonical(void) {
 	assert(recent_at >= 0);
 	assert(canonical_at >= 0);
 	assert(recent_at < canonical_at);
-	assert(time(NULL) - started <= 3);
+	assert(time(NULL) - started <= 2);
 
 	printf("outgoing-bounded T2 ok: canonical started after the bound, not the ordinary timeout\n");
 
@@ -210,11 +212,11 @@ static void test_no_direct_canonical_now(void) {
 	assert(meshlink_start(a));
 	assert(wait_sync_flag(&peer_reachable, 15));
 
-	char recent_needle[] = "Trying to connect to b at ";
 	char canonical_needle[128];
 	snprintf(canonical_needle, sizeof canonical_needle, "Trying to connect to b at 127.0.0.1 port %d (canonical)", relay_port);
 	assert(log_find(mark, canonical_needle) >= 0);
-	(void)recent_needle;
+	assert(log_find(mark, "(recent)") < 0);
+	assert(log_find(mark, "(known)") < 0);
 
 	printf("outgoing-bounded T4 ok: no direct, canonical first\n");
 
