@@ -315,7 +315,7 @@ static void test_canonical_equivalent_external(void) {
 	assert(wait_sync_flag(&peer_reachable, 15));
 
 	assert_after(log_count("a: Got REQ_EXTERNAL from b") >= 1, 5);
-	assert_after(log_count("a: Path policy: not storing") >= 1, 5);
+	assert_after(log_count("a: Path candidate:") >= 1 && log_count("rejected canonical") >= 1, 5);
 
 	devtool_node_status_t st;
 	devtool_get_node_status(p.a, p.a_b, &st);
@@ -327,6 +327,36 @@ static void test_canonical_equivalent_external(void) {
 	close_direct_pair(&p);
 }
 
+/* T9e: a REQ_EXTERNAL already in recent[] is stripped when a matching
+   canonical arrives later. The live loopback META stays direct. */
+static void test_late_canonical_strips_external(void) {
+	printf("\n=== T9e: late canonical strips an equivalent REQ_EXTERNAL ===\n");
+
+	struct pair p;
+	open_direct_pair(&p, "req_external_recent_t9e", NULL);
+
+	assert(meshlink_start(p.b));
+	assert(meshlink_start(p.a));
+	assert(wait_sync_flag(&peer_reachable, 15));
+	assert_after(ext_in_recent(p.a, p.a_b, p.b_port), 5);
+
+	char ext_port[16];
+	snprintf(ext_port, sizeof ext_port, "%d", p.b_port);
+	assert(meshlink_set_canonical_address(p.a, p.a_b, EXT_IP, ext_port));
+	assert_after(!ext_in_recent(p.a, p.a_b, p.b_port), 5);
+
+	devtool_node_status_t st;
+	devtool_get_node_status(p.a, p.a_b, &st);
+	assert(st.meta_connected);
+	assert(!st.meta_via_canonical);
+	assert(recent_occurrences(&st, EXT_IP, p.b_port) == 0);
+	devtool_free_node_status(&st);
+
+	printf("T9e ok: late canonical stripped %s:%d; live META stayed direct\n", EXT_IP, p.b_port);
+
+	close_direct_pair(&p);
+}
+
 int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, capture_log_cb);
 
@@ -334,6 +364,7 @@ int main(void) {
 	test_own_external_not_added();
 	test_forwarded_empty_recent();
 	test_canonical_equivalent_external();
+	test_late_canonical_strips_external();
 
 	free_captured_log();
 	return 0;

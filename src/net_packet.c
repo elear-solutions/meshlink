@@ -220,7 +220,7 @@ static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet
 			/* The confirmed UDP address is a direct path to the node (UDP and TCP share
 			   a port): remember it and see if it can replace a canonical meta connection. */
 
-			if(n->address.sa.sa_family != AF_UNSPEC && node_add_recent_address(mesh, n, &n->address, ADDR_SRC_AUTH_DIRECT)) {
+			if(n->address.sa.sa_family != AF_UNSPEC && node_add_recent_address_cap(mesh, n, &n->address, ADDR_SRC_UDP_REFLEXIVE, PATH_CAP_UDP)) {
 				n->upgrade_recent_idx = 0;
 			}
 
@@ -504,7 +504,7 @@ static bool try_recent(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **sa
 	for(int i = 0; i < MAX_RECENT && n->recent[i].sa.sa_family; i++) {
 		const sockaddr_t *candidate = &n->recent[i];
 
-		if(!path_is_direct_candidate(n, candidate, n->recent_source[i])) {
+		if(!path_is_udp_candidate(n, candidate, n->recent_source[i], n->recent_cap[i])) {
 			continue;
 		}
 
@@ -831,7 +831,7 @@ bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 
 				if(mesh->log_level <= MESHLINK_INFO) {
 					char *hostname = sockaddr2hostname(&local);
-					logger(mesh, MESHLINK_INFO, "Path policy: validating local UDP candidate %s for %s", hostname, to->name);
+					logger(mesh, MESHLINK_INFO, "Path validation: %s probe-start %s local UDP", to->name, hostname);
 					free(hostname);
 				}
 
@@ -1010,7 +1010,8 @@ void handle_incoming_vpn_data(event_loop_t *loop, void *data, int flags) {
 			if(n->status.udp_confirmed && sockaddrcmp(&from, &n->address)) {
 				node_udp_cache_alias(mesh, n, &from);
 			} else {
-				update_node_udp_from(mesh, n, &from, ADDR_SRC_AUTH_DIRECT);
+				path_learn_address_cap(mesh, n, &from, ADDR_SRC_UDP_REFLEXIVE, PATH_CAP_UDP);
+				update_node_udp(mesh, n, &from);
 			}
 		} else if(mesh->log_level <= MESHLINK_WARNING) {
 			hostname = sockaddr2hostname(&from);

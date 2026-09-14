@@ -28,6 +28,8 @@ sockaddr_t str2sockaddr(const char *, const char *);
 sockaddr_t str2sockaddr_random(struct meshlink_handle *mesh, const char *, const char *);
 void sockaddr2str(const sockaddr_t *, char **, char **);
 char *sockaddr2hostname(const sockaddr_t *) __attribute__((__malloc__));
+/* Heap addrinfo + trailing sockaddr. Caller frees with free(). */
+struct addrinfo *sockaddr_to_stream_addrinfo(const sockaddr_t *sa) __attribute__((__malloc__));
 int sockaddrcmp(const sockaddr_t *, const sockaddr_t *) __attribute__((__warn_unused_result__));
 int sockaddrcmp_noport(const sockaddr_t *, const sockaddr_t *) __attribute__((__warn_unused_result__));
 void sockaddrunmap(sockaddr_t *);

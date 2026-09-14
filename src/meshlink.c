@@ -29,6 +29,7 @@
 #include "net_upgrade.h"
 #include "netutl.h"
 #include "node.h"
+#include "path_policy.h"
 #include "submesh.h"
 #include "packmsg.h"
 #include "prf.h"
@@ -39,6 +40,7 @@
 #include "utils.h"
 #include "xalloc.h"
 #include "ed25519/sha512.h"
+#include "utcp.h"
 #include "discovery.h"
 #include "devtools.h"
 #include "graph.h"
@@ -585,6 +587,8 @@ static char *get_my_hostname(meshlink_handle_t *mesh, uint32_t flags) {
 	}
 
 	// Add public/canonical addresses if requested
+	int canonical_idx = -1;
+
 	if(flags & MESHLINK_INVITE_PUBLIC) {
 		// Try the CanonicalAddress first
 		get_canonical_address(mesh->self, &hostname[n], &port[n]);
@@ -597,7 +601,8 @@ static char *get_my_hostname(meshlink_handle_t *mesh, uint32_t flags) {
 			if(flags & MESHLINK_INVITE_IPV6) {
 				hostname[n++] = meshlink_get_external_address_for_family(mesh, AF_INET6);
 			}
-		} else {
+		} else if(hostname[n]) {
+			canonical_idx = n;
 			n++;
 		}
 	}
@@ -624,9 +629,12 @@ static char *get_my_hostname(meshlink_handle_t *mesh, uint32_t flags) {
 			continue;
 		}
 
-		// Remember the address(es)
-		for(struct addrinfo *aip = ai_in; aip; aip = aip->ai_next) {
-			node_add_recent_address(mesh, mesh->self, (sockaddr_t *)aip->ai_addr, ADDR_SRC_HINT);
+		/* Canonical-derived invitation endpoints stay in the URL and the
+		   canonical field. They are not direct recent[] candidates. */
+		if(i != canonical_idx) {
+			for(struct addrinfo *aip = ai_in; aip; aip = aip->ai_next) {
+				node_add_recent_address_cap(mesh, mesh->self, (sockaddr_t *)aip->ai_addr, ADDR_SRC_HINT, PATH_CAP_BOTH);
+			}
 		}
 
 		freeaddrinfo(ai_in);
@@ -794,6 +802,8 @@ typedef struct {
 	size_t blen;
 	char line[4096];
 	char buffer[4096];
+	char *join_host;
+	char *join_port;
 } join_state_t;
 
 static bool finalize_join(join_state_t *state, const void *buf, uint16_t len) {
@@ -893,17 +903,26 @@ static bool finalize_join(join_state_t *state, const void *buf, uint16_t len) {
 			return false;
 		}
 
-		if(i == 0 && !n->canonical_address) {
-			/* The first host config file is of the inviter itself;
-			 * remember the address we are currently using for the invitation connection.
-			 * If the inviter has a canonical address, the invitation most likely went
-			 * through that relay, and recent[] must only hold direct addresses.
-			 */
+		if(i == 0) {
+			/* The first host config file is of the inviter itself. */
 			sockaddr_t sa;
 			socklen_t salen = sizeof(sa);
 
 			if(getpeername(state->sock, &sa.sa, &salen) == 0) {
-				node_add_recent_address(mesh, n, &sa, ADDR_SRC_AUTH_DIRECT);
+				if(n->canonical_address) {
+					/* Seed the hostname canonical cache only when this join
+					   actually used that hostname (ADR 0002). LOCAL-first
+					   invitation URLs must not plant the TCP peer as NLB. */
+					if(path_canonical_is_hostname(n)
+					                && state->join_host && state->join_port
+					                && path_canonical_host_matches(n, state->join_host, state->join_port)) {
+						path_add_canonical_endpoint(n, &sa);
+					}
+
+					path_sanitize_recent(mesh, n);
+				} else {
+					node_add_recent_address_cap(mesh, n, &sa, ADDR_SRC_AUTH_DIRECT, PATH_CAP_BOTH);
+				}
 			}
 		}
 
@@ -1144,7 +1163,7 @@ static void add_local_addresses(meshlink_handle_t *mesh) {
 
 	if(getlocaladdr("93.184.216.34", &sa, &salen, mesh->netns)) {
 		sa.in.sin_port = ntohs(atoi(mesh->myport));
-		node_add_recent_address(mesh, mesh->self, &sa, ADDR_SRC_HINT);
+		node_add_recent_address_cap(mesh, mesh->self, &sa, ADDR_SRC_HINT, PATH_CAP_BOTH);
 	}
 
 	// IPv6 example.org
@@ -1153,7 +1172,7 @@ static void add_local_addresses(meshlink_handle_t *mesh) {
 
 	if(getlocaladdr("2606:2800:220:1:248:1893:25c8:1946", &sa, &salen, mesh->netns)) {
 		sa.in6.sin6_port = ntohs(atoi(mesh->myport));
-		node_add_recent_address(mesh, mesh->self, &sa, ADDR_SRC_HINT);
+		node_add_recent_address_cap(mesh, mesh->self, &sa, ADDR_SRC_HINT, PATH_CAP_BOTH);
 	}
 }
 
@@ -1930,12 +1949,13 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 		return false;
 	}
 
-	// Reset node connection timers and canonical -> direct upgrade backoff
+	// Reset node connection timers, upgrade backoff, and in-flight DNS cookies
 	for splay_each(node_t, n, mesh->nodes) {
 		n->last_connect_try = 0;
 		n->upgrade_probe = NULL;
 		n->upgrade_next_try = 0;
 		n->upgrade_backoff = 0;
+		path_reset_canonical_resolve(n);
 	}
 
 	// TODO: open listening sockets first
@@ -1950,6 +1970,10 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 
 	init_outgoings(mesh);
 	init_adns(mesh);
+
+	for splay_each(node_t, n, mesh->nodes) {
+		path_request_canonical_resolve(mesh, n);
+	}
 
 	// Start the main thread
 
@@ -2035,6 +2059,13 @@ void meshlink_stop(meshlink_handle_t *mesh) {
 	}
 
 	exit_adns(mesh);
+
+	if(mesh->nodes) {
+		for splay_each(node_t, n, mesh->nodes) {
+			path_reset_canonical_resolve(n);
+		}
+	}
+
 	exit_outgoings(mesh);
 
 	// Ensure we are considered unreachable
@@ -2938,14 +2969,28 @@ bool meshlink_set_canonical_address(meshlink_handle_t *mesh, meshlink_node_t *no
 	}
 
 	node_t *n = (node_t *)node;
-	free(n->canonical_address);
-	n->canonical_address = canonical_address;
-	path_refresh_canonical_endpoint(n);
+
+	if(!path_assign_canonical_address(n, canonical_address)) {
+		pthread_mutex_unlock(&mesh->mutex);
+		return true;
+	}
+
 	path_sanitize_recent(mesh, n);
+	path_request_canonical_resolve(mesh, n);
+	path_reclassify_active_meta(mesh, n);
+	outgoing_on_canonical_reset(mesh, n);
 
 	if(!node_write_config(mesh, n, false)) {
 		pthread_mutex_unlock(&mesh->mutex);
 		return false;
+	}
+
+	if(n == mesh->self && mesh->threadstarted) {
+		for splay_each(node_t, peer, mesh->nodes) {
+			if(peer != mesh->self && peer->nexthop && peer->nexthop->connection) {
+				send_canonical_address(mesh, peer);
+			}
+		}
 	}
 
 	pthread_mutex_unlock(&mesh->mutex);
@@ -2968,7 +3013,9 @@ bool meshlink_clear_canonical_address(meshlink_handle_t *mesh, meshlink_node_t *
 	node_t *n = (node_t *)node;
 	free(n->canonical_address);
 	n->canonical_address = NULL;
-	memset(&n->canonical_sa, 0, sizeof n->canonical_sa);
+	path_clear_canonical_endpoints(n);
+	path_reset_canonical_resolve(n);
+	outgoing_on_canonical_reset(mesh, n);
 
 	if(!node_write_config(mesh, n, false)) {
 		pthread_mutex_unlock(&mesh->mutex);
@@ -3269,6 +3316,8 @@ char *meshlink_invite_ex(meshlink_handle_t *mesh, meshlink_submesh_t *submesh, c
 		return NULL;
 	}
 
+	path_sanitize_recent(mesh, mesh->self);
+
 	// If we changed our own host config file, write it out now
 	if(mesh->self->status.dirty) {
 		if(!node_write_config(mesh, mesh->self, false)) {
@@ -3514,6 +3563,11 @@ bool meshlink_join(meshlink_handle_t *mesh, const char *invitation) {
 		goto exit;
 	}
 
+	free(state.join_host);
+	free(state.join_port);
+	state.join_host = xstrdup(address);
+	state.join_port = xstrdup(port);
+
 	logger(mesh, MESHLINK_DEBUG, "Connected to %s port %s...\n", address, port);
 
 	// Tell him we have an invitation, and give him our throw-away key.
@@ -3602,6 +3656,8 @@ bool meshlink_join(meshlink_handle_t *mesh, const char *invitation) {
 	ecdsa_free(hiskey);
 	ecdsa_free(key);
 	closesocket(state.sock);
+	free(state.join_host);
+	free(state.join_port);
 
 	pthread_mutex_unlock(&mesh->mutex);
 	return true;
@@ -3617,6 +3673,9 @@ exit:
 	if(state.sock != -1) {
 		closesocket(state.sock);
 	}
+
+	free(state.join_host);
+	free(state.join_port);
 
 	pthread_mutex_unlock(&mesh->mutex);
 	return false;
@@ -3671,6 +3730,18 @@ char *meshlink_export(meshlink_handle_t *mesh) {
 
 	packmsg_add_int64(&out, 0);
 	packmsg_add_int64(&out, 0);
+
+	packmsg_add_array(&out, count);
+
+	for(uint32_t i = 0; i < count; i++) {
+		packmsg_add_uint8(&out, (uint8_t)mesh->self->recent_source[i]);
+	}
+
+	packmsg_add_array(&out, count);
+
+	for(uint32_t i = 0; i < count; i++) {
+		packmsg_add_uint8(&out, mesh->self->recent_cap[i]);
+	}
 
 	pthread_mutex_unlock(&mesh->mutex);
 
@@ -4076,7 +4147,7 @@ void meshlink_hint_address(meshlink_handle_t *mesh, meshlink_node_t *node, const
 
 	node_t *n = (node_t *)node;
 
-	if(node_add_recent_address(mesh, n, (sockaddr_t *)addr, ADDR_SRC_HINT)) {
+	if(node_add_recent_address_cap(mesh, n, (sockaddr_t *)addr, ADDR_SRC_HINT, PATH_CAP_BOTH)) {
 		n->upgrade_recent_idx = 0;
 
 		if(!node_write_config(mesh, n, false)) {
@@ -4258,7 +4329,18 @@ static void channel_retransmit(struct utcp_connection *utcp_connection) {
 	node_t *n = utcp_connection->utcp->priv;
 	meshlink_handle_t *mesh = n->mesh;
 
-	if(n->mtuprobes == 31 && n->mtutimeout.cb) {
+	/* Established data retransmit means the selected direct UDP path did
+	   not deliver. SYN/handshake loss is not enough to demote a working path. */
+	if(utcp_connection_established(utcp_connection)
+	                && n->status.udp_confirmed && !n->status.temp_udp_confirmed) {
+		logger(mesh, MESHLINK_INFO, "Reliable channel retransmit to %s, invalidating direct UDP path", n->name);
+		path_note_udp_demoted(mesh, n);
+		update_node_pmtu(mesh, n);
+		relay_recompute_dependents(mesh, n);
+		relay_update_destination_transport(mesh, n);
+	}
+
+	if(n->mtutimeout.cb) {
 		timeout_set(&mesh->loop, &n->mtutimeout, &(struct timespec) {
 			0, 0
 		});

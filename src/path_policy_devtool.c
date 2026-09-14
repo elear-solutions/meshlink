@@ -54,8 +54,16 @@ static bool cover_names(meshlink_handle_t *mesh) {
 	CHECK(!strcmp(address_source_name(ADDR_SRC_EDGE_DIRECT), "edge-direct"));
 	CHECK(!strcmp(address_source_name(ADDR_SRC_CANONICAL), "canonical"));
 	CHECK(!strcmp(address_source_name(ADDR_SRC_INDIRECT), "indirect"));
+	CHECK(!strcmp(address_source_name(ADDR_SRC_UDP_REFLEXIVE), "udp-reflexive"));
 	CHECK(!strcmp(address_source_name(ADDR_SRC_UNKNOWN), "unknown"));
 	CHECK(!strcmp(address_source_name((address_source_t)99), "unknown"));
+	CHECK(!strcmp(path_cap_name(PATH_CAP_BOTH), "meta+udp"));
+	CHECK(!strcmp(path_cap_name(PATH_CAP_META), "meta"));
+	CHECK(!strcmp(path_cap_name(PATH_CAP_UDP), "udp"));
+	CHECK(!strcmp(path_cap_name(PATH_CAP_NONE), "none"));
+	CHECK(path_default_cap(ADDR_SRC_HINT) == PATH_CAP_BOTH);
+	CHECK(path_default_cap(ADDR_SRC_UDP_REFLEXIVE) == PATH_CAP_UDP);
+	CHECK(path_default_cap(ADDR_SRC_UNKNOWN) == PATH_CAP_UDP);
 
 	CHECK(!strcmp(path_tier_name(PATH_TIER_DIRECT_LOCAL_UDP), "direct-local-udp"));
 	CHECK(!strcmp(path_tier_name(PATH_TIER_DIRECT_WAN_UDP), "direct-wan-udp"));
@@ -77,6 +85,7 @@ static bool cover_names(meshlink_handle_t *mesh) {
 	CHECK(path_source_is_direct(ADDR_SRC_UNKNOWN));
 	CHECK(!path_source_is_direct(ADDR_SRC_CANONICAL));
 	CHECK(!path_source_is_direct(ADDR_SRC_INDIRECT));
+	CHECK(!path_source_is_direct(ADDR_SRC_UDP_REFLEXIVE));
 	CHECK(!path_source_is_direct((address_source_t)99));
 
 	CHECK(path_tier_better(PATH_TIER_DIRECT_LOCAL_UDP, PATH_TIER_DIRECT_WAN_UDP));
@@ -188,6 +197,54 @@ static bool cover_canonical(meshlink_handle_t *mesh) {
 
 	n.canonical_address = "198.51.100.8 9";
 	CHECK(!path_address_matches_canonical(&n, &sa));
+
+	n.canonical_address = "198.51.100.7 9";
+	path_refresh_canonical_endpoint(&n);
+	sockaddr_t hybrid;
+	set_v4(&hybrid, "198.51.100.7", 23349);
+	CHECK(path_address_shares_canonical_ip(&n, &hybrid));
+	CHECK(!path_address_matches_canonical(&n, &hybrid));
+	CHECK(!path_is_direct_candidate(&n, &hybrid, ADDR_SRC_EDGE_DIRECT));
+	CHECK(path_is_direct_candidate(&n, &hybrid, ADDR_SRC_EXTERNAL));
+	CHECK(path_is_direct_candidate(&n, &hybrid, ADDR_SRC_AUTH_DIRECT));
+
+	path_clear_canonical_endpoints(&n);
+	sockaddr_t weird;
+	memset(&weird, 0, sizeof weird);
+	weird.sa.sa_family = AF_UNIX;
+	CHECK(!path_add_canonical_endpoint(&n, &weird));
+	CHECK(n.canonical_sa_count == 0);
+
+	n.canonical_resolve_pending = true;
+	n.canonical_resolve_gen = 7;
+	n.canonical_resolve_backoff = 5;
+	n.canonical_resolve_next = 99;
+	path_reset_canonical_resolve(&n);
+	CHECK(!n.canonical_resolve_pending);
+	CHECK(n.canonical_resolve_gen == 0);
+	CHECK(n.canonical_resolve_backoff == 0);
+	CHECK(n.canonical_resolve_next == 0);
+	path_reset_canonical_resolve(&n);
+	CHECK(n.canonical_resolve_gen == 0);
+
+	CHECK(!path_assign_canonical_address(NULL, xstrdup("nlb.example 443")));
+
+	node_t assign;
+	memset(&assign, 0, sizeof assign);
+	assign.name = "cover-assign";
+	assign.canonical_address = xstrdup("nlb.example 443");
+	set_v4(&sa, "198.51.100.9", 443);
+	path_set_canonical_sockaddr(&assign, &sa);
+	CHECK(assign.canonical_sa_count == 1);
+	assign.canonical_resolve_gen = 7;
+	CHECK(!path_assign_canonical_address(&assign, xstrdup("nlb.example 443")));
+	CHECK(assign.canonical_resolve_gen == 7);
+	CHECK(assign.canonical_sa_count == 1);
+	CHECK(path_assign_canonical_address(&assign, xstrdup("nlb.example 444")));
+	CHECK(assign.canonical_resolve_gen == 0);
+	CHECK(assign.canonical_sa_count == 0);
+	CHECK(assign.canonical_address && !strcmp(assign.canonical_address, "nlb.example 444"));
+	free(assign.canonical_address);
 	return true;
 }
 
@@ -316,8 +373,10 @@ static bool cover_sanitize(meshlink_handle_t *mesh) {
 	CHECK(path_learn_address(mesh, &n, &nlb, ADDR_SRC_UNKNOWN) == false);
 	n.recent[0] = nlb;
 	n.recent_source[0] = ADDR_SRC_UNKNOWN;
+	n.recent_cap[0] = PATH_CAP_UDP;
 	n.recent[1] = wan;
 	n.recent_source[1] = ADDR_SRC_HINT;
+	n.recent_cap[1] = PATH_CAP_BOTH;
 	CHECK(path_sanitize_recent(mesh, &n));
 	CHECK(!sockaddrcmp(&n.recent[0], &wan));
 	CHECK(!n.recent[1].sa.sa_family);
@@ -332,9 +391,13 @@ static bool cover_sanitize(meshlink_handle_t *mesh) {
 	path_clear_recent(&n);
 	n.recent[0] = nlb;
 	n.recent_source[0] = ADDR_SRC_UNKNOWN;
+	n.recent_cap[0] = PATH_CAP_UDP;
 	CHECK(!path_is_direct_candidate(&n, &nlb, ADDR_SRC_UNKNOWN));
 	CHECK(!path_best_direct_meta(&n, NULL, &wan2, NULL));
 	CHECK(path_learn_address(mesh, &n, &wan, ADDR_SRC_HINT));
+	CHECK(!path_is_direct_candidate(&n, &wan, ADDR_SRC_HINT));
+	CHECK(!path_best_direct_meta(&n, NULL, &wan2, NULL));
+	CHECK(path_learn_address(mesh, &n, &wan, ADDR_SRC_AUTH_DIRECT));
 	CHECK(path_best_direct_meta(&n, NULL, &wan2, NULL));
 	CHECK(!sockaddrcmp(&wan2, &wan));
 	return true;
@@ -420,8 +483,10 @@ static bool cover_select(meshlink_handle_t *mesh) {
 	path_clear_recent(&dest);
 	dest.recent[0] = nlb;
 	dest.recent_source[0] = ADDR_SRC_UNKNOWN;
+	dest.recent_cap[0] = PATH_CAP_UDP;
 	dest.recent[1] = wan;
 	dest.recent_source[1] = ADDR_SRC_INDIRECT;
+	dest.recent_cap[1] = PATH_CAP_META;
 	CHECK(!path_best_direct_meta(NULL, NULL, &out, NULL));
 	CHECK(!path_best_direct_meta(&dest, NULL, NULL, NULL));
 	address_source_t src = ADDR_SRC_UNKNOWN;
@@ -465,10 +530,13 @@ static bool cover_probe(meshlink_handle_t *mesh) {
 	path_refresh_canonical_endpoint(&dummy);
 	dummy.recent[0] = nlb;
 	dummy.recent_source[0] = ADDR_SRC_UNKNOWN;
+	dummy.recent_cap[0] = PATH_CAP_UDP;
 	dummy.recent[1] = wan;
 	dummy.recent_source[1] = ADDR_SRC_HINT;
+	dummy.recent_cap[1] = PATH_CAP_BOTH;
 	dummy.recent[2] = unixish;
 	dummy.recent_source[2] = ADDR_SRC_DISCOVERY;
+	dummy.recent_cap[2] = PATH_CAP_BOTH;
 	dummy.address = wan;
 	CHECK(!path_pick_local_udp_candidate(mesh, &dummy, &out));
 	CHECK(!path_udp_should_probe_local(mesh, &dummy, NULL));
@@ -476,8 +544,10 @@ static bool cover_probe(meshlink_handle_t *mesh) {
 	dummy.address = local;
 	dummy.recent[3] = local;
 	dummy.recent_source[3] = ADDR_SRC_HINT;
+	dummy.recent_cap[3] = PATH_CAP_BOTH;
 	dummy.recent[4] = relayed;
 	dummy.recent_source[4] = ADDR_SRC_INDIRECT;
+	dummy.recent_cap[4] = PATH_CAP_META;
 	CHECK(!path_pick_local_udp_candidate(mesh, &dummy, &out));
 	dummy.address = wan;
 	CHECK(path_pick_local_udp_candidate(mesh, &dummy, &out));
@@ -509,6 +579,7 @@ typedef struct live_snapshot_t {
 	sockaddr_t addr;
 	sockaddr_t recent[MAX_RECENT];
 	address_source_t src[MAX_RECENT];
+	path_cap_t cap[MAX_RECENT];
 	sockaddr_t catta;
 	sockaddr_t csa;
 	sockaddr_t extra;
@@ -533,15 +604,17 @@ static void snapshot_live(node_t *live, live_snapshot_t *s) {
 	s->sock = live->sock;
 	memcpy(s->recent, live->recent, sizeof s->recent);
 	memcpy(s->src, live->recent_source, sizeof s->src);
+	memcpy(s->cap, live->recent_cap, sizeof s->cap);
 }
 
 static void restore_live(meshlink_handle_t *mesh, node_t *live, const live_snapshot_t *s) {
 	if(s->addr.sa.sa_family) {
-		update_node_udp_from(mesh, live, &s->addr, ADDR_SRC_AUTH_DIRECT);
+		update_node_udp(mesh, live, &s->addr);
 	}
 
 	memcpy(live->recent, s->recent, sizeof s->recent);
 	memcpy(live->recent_source, s->src, sizeof s->src);
+	memcpy(live->recent_cap, s->cap, sizeof s->cap);
 	live->address = s->addr;
 	live->catta_address = s->catta;
 	live->canonical_sa = s->csa;
@@ -641,11 +714,11 @@ static bool cover_udp_cache(meshlink_handle_t *mesh, node_t *live) {
 	} \
 } while(0)
 
-	update_node_udp_from(mesh, live, &old_addr, ADDR_SRC_AUTH_DIRECT);
+	update_node_udp(mesh, live, &old_addr);
 	path_copy_sockaddr(&live->last_udp_from, &old_addr);
 	CHECK_LIVE(lookup_node_udp(mesh, &old_addr) == live);
 
-	update_node_udp_from(mesh, live, &new_addr, ADDR_SRC_AUTH_DIRECT);
+	update_node_udp(mesh, live, &new_addr);
 	CHECK_LIVE(!live->last_udp_from.sa.sa_family);
 	CHECK_LIVE(lookup_node_udp(mesh, &new_addr) == live);
 	CHECK_LIVE(!lookup_node_udp(mesh, &old_addr));
@@ -653,12 +726,12 @@ static bool cover_udp_cache(meshlink_handle_t *mesh, node_t *live) {
 	other = new_node();
 	other->name = xstrdup("cover-udp-other");
 	node_add(mesh, other);
-	update_node_udp_from(mesh, other, &old_addr, ADDR_SRC_AUTH_DIRECT);
+	update_node_udp(mesh, other, &old_addr);
 	CHECK_LIVE(lookup_node_udp(mesh, &old_addr) == other);
 
 	/* Stale last_udp_from on live must not evict other's cache key. */
 	path_copy_sockaddr(&live->last_udp_from, &old_addr);
-	update_node_udp_from(mesh, live, &third, ADDR_SRC_AUTH_DIRECT);
+	update_node_udp(mesh, live, &third);
 	CHECK_LIVE(lookup_node_udp(mesh, &old_addr) == other);
 	CHECK_LIVE(lookup_node_udp(mesh, &third) == live);
 	CHECK_LIVE(!live->last_udp_from.sa.sa_family);
@@ -678,6 +751,56 @@ done:
 #undef CHECK_LIVE
 }
 
+static bool cover_transport(meshlink_handle_t *mesh) {
+	node_t n;
+	sockaddr_t r1, r2, r3, tcp, nlb;
+
+	memset(&n, 0, sizeof n);
+	n.name = "transport";
+	set_v4(&r1, "203.0.113.10", 60300);
+	set_v4(&r2, "203.0.113.10", 51803);
+	set_v4(&r3, "203.0.113.10", 31182);
+	set_v4(&tcp, "203.0.113.10", 23349);
+	set_v4(&nlb, "198.51.100.1", 443);
+
+	CHECK(path_learn_address_cap(mesh, &n, &r1, ADDR_SRC_UDP_REFLEXIVE, PATH_CAP_UDP));
+	CHECK(n.recent_cap[0] == PATH_CAP_UDP);
+	CHECK(!path_is_meta_candidate(&n, &r1, ADDR_SRC_UDP_REFLEXIVE, n.recent_cap[0]));
+	CHECK(path_is_udp_candidate(&n, &r1, ADDR_SRC_UDP_REFLEXIVE, n.recent_cap[0]));
+	CHECK(path_learn_address_cap(mesh, &n, &r2, ADDR_SRC_UDP_REFLEXIVE, PATH_CAP_UDP));
+	CHECK(path_learn_address_cap(mesh, &n, &r3, ADDR_SRC_UDP_REFLEXIVE, PATH_CAP_UDP));
+	CHECK(!path_best_direct_meta(&n, NULL, &tcp, NULL));
+
+	CHECK(path_learn_address_cap(mesh, &n, &tcp, ADDR_SRC_AUTH_DIRECT, PATH_CAP_META));
+	CHECK(path_is_meta_candidate(&n, &tcp, ADDR_SRC_AUTH_DIRECT, n.recent_cap[0]));
+
+	CHECK(path_learn_address_cap(mesh, &n, &tcp, ADDR_SRC_UDP_REFLEXIVE, PATH_CAP_UDP));
+	CHECK(n.recent_source[0] == ADDR_SRC_AUTH_DIRECT);
+	CHECK(n.recent_cap[0] == PATH_CAP_BOTH);
+
+	path_clear_recent(&n);
+	n.canonical_address = "nlb.example 443";
+	n.canonical_sa_count = 0;
+	n.canonical_resolve_backoff = 0;
+	CHECK(path_learn_address_cap(mesh, &n, &r1, ADDR_SRC_UDP_REFLEXIVE, PATH_CAP_BOTH));
+	CHECK(path_is_meta_candidate(&n, &r1, ADDR_SRC_UDP_REFLEXIVE, PATH_CAP_BOTH));
+
+	path_clear_recent(&n);
+	n.canonical_address = "nlb.example 443";
+	path_refresh_canonical_endpoint(&n);
+	CHECK(path_learn_address(mesh, &n, &r1, ADDR_SRC_HINT));
+	CHECK(!path_is_direct_candidate(&n, &r1, ADDR_SRC_HINT));
+
+	path_clear_recent(&n);
+	n.recent[0] = r1;
+	n.recent_source[0] = ADDR_SRC_UNKNOWN;
+	n.recent_cap[0] = PATH_CAP_NONE;
+	path_migrate_legacy_caps(&n);
+	CHECK(n.recent_cap[0] == PATH_CAP_UDP);
+	CHECK(!path_is_meta_candidate(&n, &r1, ADDR_SRC_UNKNOWN, n.recent_cap[0]));
+	return true;
+}
+
 bool path_policy_cover_unit(meshlink_handle_t *mesh, node_t *live) {
 	if(!mesh || !live) {
 		return false;
@@ -691,7 +814,8 @@ bool path_policy_cover_unit(meshlink_handle_t *mesh, node_t *live) {
 	                || !cover_select(mesh)
 	                || !cover_probe(mesh)
 	                || !cover_promote(mesh, live)
-	                || !cover_udp_cache(mesh, live)) {
+	                || !cover_udp_cache(mesh, live)
+	                || !cover_transport(mesh)) {
 		return false;
 	}
 

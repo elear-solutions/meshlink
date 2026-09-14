@@ -332,7 +332,7 @@ static void mdns_io_handler(event_loop_t *loop, void *data, int flags) {
 				n->catta_address = sa;
 				n->last_connect_try = 0;
 
-				if(node_add_recent_address(mesh, n, &sa, ADDR_SRC_DISCOVERY)) {
+				if(node_add_recent_address_cap(mesh, n, &sa, ADDR_SRC_DISCOVERY, PATH_CAP_BOTH)) {
 					n->upgrade_recent_idx = 0;
 				}
 

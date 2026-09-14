@@ -91,6 +91,9 @@ void handle_incoming_vpn_data(struct event_loop_t *loop, void *, int);
 void finish_connecting(struct meshlink_handle *mesh, struct connection_t *);
 bool connect_meta_socket(struct meshlink_handle *mesh, struct connection_t *) __attribute__((__warn_unused_result__));
 void do_outgoing_connection(struct meshlink_handle *mesh, struct outgoing_t *);
+void outgoing_on_canonical_resolved(struct meshlink_handle *mesh, struct node_t *n, struct addrinfo *ai, int err, bool usable, char *host, char *serv);
+/* Pump OUTGOING_CANONICAL_RESOLVE after a cookie reset so waiters do not hang. */
+void outgoing_on_canonical_reset(struct meshlink_handle *mesh, struct node_t *n);
 void handle_new_meta_connection(struct event_loop_t *loop, void *, int);
 int setup_tcp_listen_socket(struct meshlink_handle *mesh, const struct addrinfo *aip) __attribute__((__warn_unused_result__));
 int setup_udp_listen_socket(struct meshlink_handle *mesh, const struct addrinfo *aip) __attribute__((__warn_unused_result__));

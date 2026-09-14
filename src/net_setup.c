@@ -56,6 +56,30 @@ static void unpack_recent_sources(packmsg_input_t *in, node_t *n, uint32_t count
 	}
 }
 
+static void unpack_recent_caps(packmsg_input_t *in, node_t *n, uint32_t count, uint32_t dest_base, uint32_t dest_max) {
+	uint32_t ncap;
+	uint32_t i;
+
+	if(packmsg_done(in) || !packmsg_input_ok(in)) {
+		path_migrate_legacy_caps(n);
+		return;
+	}
+
+	ncap = packmsg_get_array(in);
+
+	for(i = 0; i < ncap; i++) {
+		uint8_t cap = packmsg_get_uint8(in);
+
+		if(i < dest_max && i < count) {
+			n->recent_cap[dest_base + i] = cap;
+		}
+	}
+
+	if(!ncap) {
+		path_migrate_legacy_caps(n);
+	}
+}
+
 /// Helper function to start parsing a host config file
 static bool node_get_config(meshlink_handle_t *mesh, node_t *n, config_t *config, packmsg_input_t *in) {
 	if(!config_read(mesh, "current", n->name, config, mesh->config_key)) {
@@ -154,11 +178,13 @@ bool node_read_public_key(meshlink_handle_t *mesh, node_t *n) {
 		n->last_unreachable = last_unreachable;
 	}
 
-	/* Optional provenance array after the original host-config tail. */
+	/* Optional provenance and capability arrays after the original host-config tail. */
 	unpack_recent_sources(&in, n, count, known_count, MAX_RECENT - known_count);
+	unpack_recent_caps(&in, n, count, known_count, MAX_RECENT - known_count);
 
 	path_refresh_canonical_endpoint(n);
 	path_sanitize_recent(mesh, n);
+	path_migrate_legacy_caps(n);
 
 	config_free(&config);
 	return true;
@@ -244,9 +270,11 @@ bool node_read_from_config(meshlink_handle_t *mesh, node_t *n, const config_t *c
 	n->last_unreachable = packmsg_get_int64(&in);
 
 	unpack_recent_sources(&in, n, count, 0, MAX_RECENT);
+	unpack_recent_caps(&in, n, count, 0, MAX_RECENT);
 
 	path_refresh_canonical_endpoint(n);
 	path_sanitize_recent(mesh, n);
+	path_migrate_legacy_caps(n);
 
 	return packmsg_done(&in);
 }
@@ -311,6 +339,12 @@ bool node_write_config(meshlink_handle_t *mesh, node_t *n, bool new_key) {
 
 	for(uint32_t i = 0; i < count; i++) {
 		packmsg_add_uint8(&out, (uint8_t)n->recent_source[i]);
+	}
+
+	packmsg_add_array(&out, count);
+
+	for(uint32_t i = 0; i < count; i++) {
+		packmsg_add_uint8(&out, n->recent_cap[i]);
 	}
 
 	if(!packmsg_output_ok(&out)) {

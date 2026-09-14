@@ -49,6 +49,7 @@ static struct sync_flag dest_got_data;
 static struct sync_flag bar_got_relay_mtu;
 static struct sync_flag bar_relay_log;
 static struct sync_flag foo_down;
+static struct sync_flag direct_retransmit_log;
 static unsigned relay_mtu_count;
 static unsigned bar_relay_mtu_count;
 
@@ -60,6 +61,7 @@ static void reset_logs(void) {
 	set_sync_flag(&dest_got_data, false);
 	set_sync_flag(&bar_got_relay_mtu, false);
 	set_sync_flag(&bar_relay_log, false);
+	set_sync_flag(&direct_retransmit_log, false);
 	relay_mtu_count = 0;
 	bar_relay_mtu_count = 0;
 }
@@ -90,6 +92,10 @@ static void baz_log(meshlink_handle_t *mesh, meshlink_log_level_t level, const c
 	if(text && strstr(text, "Got REQ_RELAY_MTU")) {
 		set_sync_flag(&got_relay_mtu, true);
 		relay_mtu_count++;
+	}
+
+	if(text && strstr(text, "Reliable channel retransmit to bar, invalidating direct UDP path")) {
+		set_sync_flag(&direct_retransmit_log, true);
 	}
 
 	if(leftover(text)) {
@@ -404,6 +410,23 @@ static void test_channels_and_mss(meshlink_handle_t **mesh) {
 	assert(meshlink_channel_send(mesh[2], ch2, "Hello", 5) == 5);
 	assert(wait_sync_flag(&received2, 10));
 	assert(!check_sync_flag(&baz_relay_log));
+
+	/* A direct UDP path can become one-way after NAT rebinding. The first
+	   reliable-channel retransmit must invalidate it and resend via relay. */
+	struct sockaddr_in dead = {
+		.sin_family = AF_INET,
+		.sin_port = htons(1),
+		.sin_addr.s_addr = htonl(INADDR_LOOPBACK),
+	};
+	meshlink_node_t *bar = meshlink_get_node(mesh[2], "bar");
+	devtool_update_node_udp(mesh[2], bar, (const struct sockaddr *)&dead);
+	devtool_set_udp_confirmed(mesh[2], bar, true);
+	reset_logs();
+	set_sync_flag(&received2, false);
+	assert(meshlink_channel_send(mesh[2], ch1, "Hello", 5) == 5);
+	assert(wait_sync_flag(&direct_retransmit_log, 10));
+	assert(wait_sync_flag(&baz_relay_log, 10));
+	assert(wait_sync_flag(&received2, 10));
 
 	meshlink_channel_abort(mesh[2], ch1);
 	meshlink_channel_abort(mesh[2], ch2);
@@ -750,6 +773,10 @@ static void test_path_preference(meshlink_handle_t **mesh) {
 	int hop_meta = dest_tier(mesh[2], "bar");
 	assert(hop_meta == 3 || hop_meta == 4); /* META_DIRECT or META_CANONICAL */
 
+	/* A hop META reclassification must not clear dest UDP confirmation. */
+	devtool_set_udp_confirmed(mesh[2], meshlink_get_node(mesh[2], "bar"), true);
+	assert(udp_confirmed_flag(mesh[2], "bar"));
+
 	/* Restore hop UDP, then confirm dest again so later tests see a live path. */
 	devtool_set_udp_confirmed(mesh[2], meshlink_get_node(mesh[2], "foo"), true);
 	devtool_set_udp_confirmed(mesh[2], meshlink_get_node(mesh[2], "bar"), true);
@@ -796,6 +823,7 @@ int main(void) {
 	init_sync_flag(&bar_got_relay_mtu);
 	init_sync_flag(&bar_relay_log);
 	init_sync_flag(&foo_down);
+	init_sync_flag(&direct_retransmit_log);
 
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
 
@@ -869,6 +897,10 @@ int main(void) {
 	assert(wait_sync_flag(&got_relay_mtu, 10));
 	reset_logs();
 	sleep(31);
+	/* Dest UDP can win during the idle window after a canonical→direct
+	   META upgrade. Re-pin so the re-arm still exercises the relay path. */
+	pin(mesh[2], "bar", "foo");
+	confirm_final(mesh[0], "bar", 600);
 	send_hello(mesh[2], "bar");
 	assert(wait_sync_flag(&got_relay_mtu, 10));
 

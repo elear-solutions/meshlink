@@ -306,12 +306,26 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 			logger(mesh, MESHLINK_DEBUG, "Updating canonical address of %s to %s", from->name, canonical_address);
 		}
 
-		free(from->canonical_address);
-		from->canonical_address = canonical_address;
+		if(!path_assign_canonical_address(from, canonical_address)) {
+			if(!path_canonical_is_hostname(from)) {
+				try_upgrade_probe(mesh, from);
+			}
+
+			return true;
+		}
+
 		from->status.dirty = true;
 
-		if(path_sanitize_recent(mesh, from) && !node_write_config(mesh, from, false)) {
-			logger(mesh, MESHLINK_DEBUG, "Could not rewrite sanitized config for %s", from->name);
+		if(path_sanitize_recent(mesh, from)) {
+			path_persist_node(mesh, from);
+		}
+
+		path_request_canonical_resolve(mesh, from);
+		path_reclassify_active_meta(mesh, from);
+		outgoing_on_canonical_reset(mesh, from);
+
+		if(!path_canonical_is_hostname(from)) {
+			try_upgrade_probe(mesh, from);
 		}
 
 		return true;
@@ -374,13 +388,13 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 		   it as a fallback instead of paying a connect timeout on it at every reconnect. */
 
 		if(path_meta_is_canonical(from, c)) {
-			if(node_add_recent_address(mesh, from, &sa, ADDR_SRC_EXTERNAL)) {
+			if(node_add_recent_address_cap(mesh, from, &sa, ADDR_SRC_EXTERNAL, PATH_CAP_BOTH)) {
 				from->upgrade_recent_idx = 0;
 			}
 
 			try_upgrade_probe(mesh, from);
 		} else {
-			node_append_recent_address(mesh, from, &sa, ADDR_SRC_EXTERNAL);
+			node_append_recent_address_cap(mesh, from, &sa, ADDR_SRC_EXTERNAL, PATH_CAP_BOTH);
 		}
 
 		return true;
@@ -596,7 +610,8 @@ bool ans_key_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		if(*address && *port) {
 			logger(mesh, MESHLINK_DEBUG, "Using reflexive UDP address from %s: %s port %s", from->name, address, port);
 			sockaddr_t sa = str2sockaddr(address, port);
-			update_node_udp_from(mesh, from, &sa, ADDR_SRC_EXTERNAL);
+			path_learn_address_cap(mesh, from, &sa, ADDR_SRC_UDP_REFLEXIVE, PATH_CAP_UDP);
+			update_node_udp(mesh, from, &sa);
 		}
 
 		send_mtu_probe(mesh, from);

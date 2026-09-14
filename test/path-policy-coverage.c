@@ -353,7 +353,7 @@ int main(void) {
 		mesh[i] = meshlink_open(path, name[i], "path-policy", DEV_CLASS_BACKBONE);
 		assert(mesh[i]);
 		free(path);
-		assert(meshlink_set_canonical_address(mesh[i], meshlink_get_self(mesh[i]), "localhost", NULL));
+		assert(meshlink_set_canonical_address(mesh[i], meshlink_get_self(mesh[i]), "localhost", "9"));
 		data[i] = meshlink_export(mesh[i]);
 		assert(data[i]);
 	}

@@ -37,25 +37,7 @@
 /* Only the side that owns the outgoing_t probes; the peer migrates when the
    probe shows up as a second inbound connection. */
 bool upgrade_probe_eligible(meshlink_handle_t *mesh, node_t *n) {
-	connection_t *c = n->connection;
-
-	if(!c || !c->status.active || !c->outgoing) {
-		return false;
-	}
-
-	if(!path_meta_is_canonical(n, c)) {
-		return false;
-	}
-
-	if(n->upgrade_probe || n->status.blacklisted) {
-		return false;
-	}
-
-	if(!path_has_direct_meta_candidate(n, &c->address)) {
-		return false;
-	}
-
-	return mesh->loop.now.tv_sec >= n->upgrade_next_try;
+	return !path_upgrade_ineligible_reason(mesh, n);
 }
 
 /* Pick the next recent[] slot that is not the address we are already connected
@@ -77,7 +59,7 @@ static bool pick_probe_address(node_t *n, sockaddr_t *out) {
 			continue;
 		}
 
-		if(!path_is_direct_candidate(n, sa, n->recent_source[idx])) {
+		if(!path_is_meta_candidate(n, sa, n->recent_source[idx], n->recent_cap[idx])) {
 			continue;
 		}
 
@@ -117,11 +99,7 @@ void start_upgrade_probe(meshlink_handle_t *mesh, node_t *n) {
 	c->name = xstrdup(n->name);
 	c->address = sa;
 
-	if(mesh->log_level <= MESHLINK_INFO) {
-		char *hostname = sockaddr2hostname(&c->address);
-		logger(mesh, MESHLINK_INFO, "Path policy: validating direct META candidate %s for %s", hostname, n->name);
-		free(hostname);
-	}
+	path_log_validation(mesh, n, &c->address, "probe-start", "direct META");
 
 	if(!connect_meta_socket(mesh, c)) {
 		free_connection(c);
@@ -146,10 +124,12 @@ void upgrade_probe_failed(meshlink_handle_t *mesh, node_t *n, const char *reason
 
 	if(c && c->status.active && !path_meta_is_canonical(n, c)) {
 		/* A regular connection got there first: nothing left to upgrade, so no backoff. */
-		logger(mesh, MESHLINK_INFO, "Direct probe to %s abandoned: %s, already directly connected", n->name, reason);
+		path_log_validation(mesh, n, NULL, "probe-abandoned", reason);
 	} else {
 		apply_backoff(mesh, n);
-		logger(mesh, MESHLINK_INFO, "Direct probe to %s failed: %s, next try in %d seconds", n->name, reason, n->upgrade_backoff);
+		char detail[64];
+		snprintf(detail, sizeof detail, "%s backoff=%d", reason, n->upgrade_backoff);
+		path_log_validation(mesh, n, NULL, "probe-failed", detail);
 	}
 
 	devtool_upgrade_probe(mesh, (meshlink_node_t *)n, DEVTOOL_UPGRADE_PROBE_FAILED);
@@ -163,12 +143,8 @@ void upgrade_probe_succeeded(meshlink_handle_t *mesh, connection_t *c) {
 	n->upgrade_backoff = 0;
 	n->upgrade_next_try = 0;
 
-	if(mesh->log_level <= MESHLINK_INFO) {
-		char *hostname = sockaddr2hostname(&c->address);
-		path_log_transition(mesh, n, PATH_TIER_META_CANONICAL, PATH_TIER_META_DIRECT, "authenticated spare");
-		logger(mesh, MESHLINK_INFO, "Migrated meta connection to %s from canonical to direct %s", n->name, hostname);
-		free(hostname);
-	}
+	path_log_transition(mesh, n, PATH_TIER_META_CANONICAL, PATH_TIER_META_DIRECT, "authenticated spare");
+	path_log_meta(mesh, n, &c->address, "migrated canonical -> direct");
 
 	devtool_upgrade_probe(mesh, (meshlink_node_t *)n, DEVTOOL_UPGRADE_PROBE_SUCCEEDED);
 }
@@ -215,7 +191,7 @@ void upgrade_hold_spare(meshlink_handle_t *mesh, connection_t *c, node_t *n, con
 	c->status.spare = true;
 	c->edge = new_connection_edge(mesh, c, n, hisport, devclass);
 
-	node_add_recent_address(mesh, n, &c->address, ADDR_SRC_AUTH_DIRECT);
+	node_add_recent_address_cap(mesh, n, &c->address, ADDR_SRC_AUTH_DIRECT, PATH_CAP_BOTH);
 
 	if(mesh->log_level <= MESHLINK_INFO) {
 		char *hostname = sockaddr2hostname(&c->address);

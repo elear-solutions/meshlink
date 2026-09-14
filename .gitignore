@@ -103,3 +103,8 @@ test/canonical-migrate
 test/req-external-recent
 test/udp-relay
 test/relay-coverage
+test/join-canonical-nlb
+test/transport-recent
+test/mtu-probe-log
+test/port-range
+test/reconnect-backoff

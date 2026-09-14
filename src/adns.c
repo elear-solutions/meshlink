@@ -30,11 +30,27 @@ typedef struct adns_item {
 	adns_cb_t cb;
 	void *data;
 	time_t deadline;
+	int timeout;
 	struct addrinfo *ai;
 	int err;
 	char *host;
 	char *serv;
 } adns_item_t;
+
+static void adns_item_discard(adns_item_t *item) {
+	if(!item) {
+		return;
+	}
+
+	if(item->ai) {
+		freeaddrinfo(item->ai);
+	}
+
+	free(item->host);
+	free(item->serv);
+	free(item->data);
+	free(item);
+}
 
 static void *adns_loop(void *data) {
 	meshlink_handle_t *mesh = data;
@@ -44,6 +60,10 @@ static void *adns_loop(void *data) {
 
 		if(!item) {
 			break;
+		}
+
+		if(!item->deadline) {
+			item->deadline = time(NULL) + item->timeout;
 		}
 
 		if(time(NULL) < item->deadline) {
@@ -64,9 +84,7 @@ static void *adns_loop(void *data) {
 		if(meshlink_queue_push(&mesh->adns_done_queue, item)) {
 			signal_trigger(&mesh->loop, &mesh->adns_signal);
 		} else {
-			free(item->host);
-			free(item->serv);
-			free(item);
+			adns_item_discard(item);
 		}
 	}
 
@@ -95,11 +113,9 @@ void exit_adns(meshlink_handle_t *mesh) {
 		return;
 	}
 
-	/* Drain the queue of any pending ADNS requests */
+	/* Drain not-yet-started requests without invoking callbacks. */
 	for(adns_item_t *item; (item = meshlink_queue_pop(&mesh->adns_queue));) {
-		free(item->host);
-		free(item->serv);
-		free(item);
+		adns_item_discard(item);
 	}
 
 	/* Signal the ADNS thread to stop */
@@ -110,7 +126,14 @@ void exit_adns(meshlink_handle_t *mesh) {
 	pthread_cond_signal(&mesh->adns_cond);
 
 	pthread_join(mesh->adns_thread, NULL);
+
+	/* Worker is gone; drop in-flight results without invoking cbs into freed nodes. */
+	for(adns_item_t *item; (item = meshlink_queue_pop(&mesh->adns_done_queue));) {
+		adns_item_discard(item);
+	}
+
 	meshlink_queue_exit(&mesh->adns_queue);
+	meshlink_queue_exit(&mesh->adns_done_queue);
 	signal_del(&mesh->loop, &mesh->adns_signal);
 }
 
@@ -118,7 +141,10 @@ void adns_queue(meshlink_handle_t *mesh, char *host, char *serv, adns_cb_t cb, v
 	adns_item_t *item = xmalloc(sizeof(*item));
 	item->cb = cb;
 	item->data = data;
-	item->deadline = time(NULL) + timeout;
+	item->timeout = timeout;
+	item->deadline = 0;
+	item->ai = NULL;
+	item->err = 0;
 	item->host = host;
 	item->serv = serv;
 

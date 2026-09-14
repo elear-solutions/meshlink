@@ -160,6 +160,7 @@ void node_udp_cache_alias(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *
 }
 
 void node_del(meshlink_handle_t *mesh, node_t *n) {
+	path_reset_canonical_resolve(n);
 	node_udp_cache_forget(mesh, n);
 	node_clear_inbound_prev_nexthop(mesh, n);
 	timeout_del(&mesh->loop, &n->mtutimeout);
@@ -197,7 +198,7 @@ bool graph_may_seed_udp(const node_t *n, const sockaddr_t *edge_addr) {
 		return false;
 	}
 
-	if(path_address_matches_canonical(n, edge_addr)) {
+	if(path_address_matches_canonical(n, edge_addr) || path_address_shares_canonical_ip(n, edge_addr)) {
 		return false;
 	}
 
@@ -205,10 +206,6 @@ bool graph_may_seed_udp(const node_t *n, const sockaddr_t *edge_addr) {
 }
 
 void update_node_udp(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa) {
-	update_node_udp_from(mesh, n, sa, ADDR_SRC_UNKNOWN);
-}
-
-void update_node_udp_from(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa, address_source_t src) {
 	if(n == mesh->self) {
 		logger(mesh, MESHLINK_WARNING, "Trying to update UDP address of mesh->self!");
 		return;
@@ -229,8 +226,6 @@ void update_node_udp_from(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *
 
 		hash_insert(mesh->node_udp_cache, &n->address, n);
 
-		node_add_recent_address(mesh, n, sa, src);
-
 		if(mesh->log_level <= MESHLINK_DEBUG) {
 			char *hostname = sockaddr2hostname(&n->address);
 			logger(mesh, MESHLINK_DEBUG, "UDP address of %s set to %s", n->name, hostname);
@@ -243,6 +238,14 @@ bool node_add_recent_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_
 	return path_learn_address(mesh, n, sa, src);
 }
 
+bool node_add_recent_address_cap(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa, address_source_t src, path_cap_t cap) {
+	return path_learn_address_cap(mesh, n, sa, src, cap);
+}
+
 bool node_append_recent_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa, address_source_t src) {
 	return path_learn_address_fallback(mesh, n, sa, src);
+}
+
+bool node_append_recent_address_cap(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa, address_source_t src, path_cap_t cap) {
+	return path_learn_address_fallback_cap(mesh, n, sa, src, cap);
 }

@@ -179,6 +179,23 @@ char *sockaddr2hostname(const sockaddr_t *sa) {
 	return str;
 }
 
+struct addrinfo *sockaddr_to_stream_addrinfo(const sockaddr_t *sa) {
+	struct addrinfo *nai;
+
+	if(!sa || (sa->sa.sa_family != AF_INET && sa->sa.sa_family != AF_INET6)) {
+		return NULL;
+	}
+
+	nai = xzalloc(sizeof(*nai) + SALEN(sa->sa));
+	nai->ai_family = sa->sa.sa_family;
+	nai->ai_socktype = SOCK_STREAM;
+	nai->ai_protocol = IPPROTO_TCP;
+	nai->ai_addrlen = SALEN(sa->sa);
+	nai->ai_addr = (struct sockaddr *)(nai + 1);
+	memcpy(nai->ai_addr, sa, nai->ai_addrlen);
+	return nai;
+}
+
 int sockaddrcmp_noport(const sockaddr_t *a, const sockaddr_t *b) {
 	int result;
 

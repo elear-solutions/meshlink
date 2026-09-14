@@ -1,4 +1,5 @@
 __emutls_v.meshlink_errno
+devtool_adns_resolve_probe
 devtool_choose_udp_address
 devtool_choose_udp_address_advance
 devtool_confirm_udp_from

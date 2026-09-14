@@ -2644,6 +2644,10 @@ void utcp_set_retransmit_cb(struct utcp *utcp, utcp_retransmit_t cb) {
 	utcp->retransmit = cb;
 }
 
+bool utcp_connection_established(const struct utcp_connection *c) {
+	return c && (c->state == ESTABLISHED || c->state == CLOSE_WAIT);
+}
+
 void utcp_set_clock_granularity(long granularity) {
 	CLOCK_GRANULARITY = granularity;
 }
