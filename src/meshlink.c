@@ -3891,12 +3891,20 @@ static bool blacklist(meshlink_handle_t *mesh, node_t *n) {
 
 	n->status.blacklisted = true;
 
+	if(mesh->outgoings) {
+		for list_each(outgoing_t, outgoing, mesh->outgoings) {
+			if(outgoing->node == n) {
+				outgoing_detach_bound(mesh, outgoing);
+			}
+		}
+	}
+
 	/* Immediately shut down any connections we have with the blacklisted node, including a
 	 * direct-upgrade probe that has not authenticated yet (it has no c->node until ack_h()).
 	 * We can't call terminate_connection(), because we might be called from a callback function.
 	 */
 	for list_each(connection_t, c, mesh->connections) {
-		if(c->node == n || c == n->upgrade_probe) {
+		if(c->node == n || c == n->upgrade_probe || (c->name && !strcmp(c->name, n->name))) {
 			if(c->status.active) {
 				send_error(mesh, c, BLACKLISTED, "blacklisted");
 			}

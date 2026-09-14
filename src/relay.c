@@ -248,7 +248,7 @@ void relay_on_hard_send_error(meshlink_handle_t *mesh, node_t *hop, const sockad
 		return;
 	}
 
-	hop->status.udp_confirmed = false;
+	path_note_udp_demoted_reason(mesh, hop, "hard send error");
 	relay_recompute_dependents(mesh, hop);
 	relay_update_destination_transport(mesh, hop);
 }
@@ -273,6 +273,7 @@ void relay_clear_budget_if_nexthop_changed(meshlink_handle_t *mesh, node_t *dest
 		dest->relay_budget = 0;
 		dest->prev_nexthop = dest->nexthop;
 		relay_update_destination_transport(mesh, dest);
+		path_note_selected_route(mesh, dest, "nexthop change");
 	} else {
 		dest->prev_nexthop = dest->nexthop;
 	}

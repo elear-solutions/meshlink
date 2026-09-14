@@ -66,7 +66,7 @@ void broadcast_meta(meshlink_handle_t *mesh, connection_t *from, const char *buf
 	assert(length);
 
 	for list_each(connection_t, c, mesh->connections)
-		if(c != from && c->status.active && !(c->flags & PROTOCOL_TINY)) {
+		if(c != from && c->status.active && !c->status.drain_only && !(c->flags & PROTOCOL_TINY)) {
 			send_meta(mesh, c, buffer, length);
 		}
 }
@@ -76,7 +76,7 @@ void broadcast_submesh_meta(meshlink_handle_t *mesh, connection_t *from, const s
 	assert(length);
 
 	for list_each(connection_t, c, mesh->connections)
-		if(c != from && c->status.active && !(c->flags & PROTOCOL_TINY)) {
+		if(c != from && c->status.active && !c->status.drain_only && !(c->flags & PROTOCOL_TINY)) {
 			if(c->node && submesh_allows_node(s, c->node)) {
 				send_meta(mesh, c, buffer, length);
 			}

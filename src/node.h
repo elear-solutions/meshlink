@@ -65,6 +65,9 @@ typedef struct node_t {
 	uint32_t session_id;                    /* Unique ID for this node's currently running process */
 	sptps_t sptps;
 	sockaddr_t address;                     /* his real (internet) ip to send UDP packets to */
+	address_source_t address_source;        /* provenance of the active UDP dest */
+	path_cap_t address_cap;                 /* transport eligibility of the active UDP dest */
+	uint32_t sptps_restart_count;           /* send_req_key() restarts of node SPTPS */
 
 	struct utcp *utcp;
 
@@ -147,6 +150,7 @@ void node_set_validkey(struct meshlink_handle *mesh, node_t *n, bool valid);
 node_t *lookup_node(struct meshlink_handle *mesh, const char *name) __attribute__((__warn_unused_result__));
 node_t *lookup_node_udp(struct meshlink_handle *mesh, const sockaddr_t *sa) __attribute__((__warn_unused_result__));
 void update_node_udp(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *sa);
+void update_node_udp_from(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *sa, address_source_t src);
 void node_udp_cache_alias(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *sa);
 bool node_add_recent_address(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *addr, address_source_t src);
 bool node_add_recent_address_cap(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *addr, address_source_t src, path_cap_t cap);

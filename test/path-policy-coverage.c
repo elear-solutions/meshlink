@@ -38,6 +38,7 @@
  *   P9  Hostname canonical does not strip unrelated numeric recent[]
  *   P10 HINT persists across close/reopen
  *   P11 Planted NLB is stripped on reload
+ *   P12 Planted NLB-IP/NMN-port hybrid is stripped on reload
 
  * META classification
  *   M1  via_canonical, meta_dial_tier, or address match => canonical META
@@ -301,11 +302,31 @@ static void test_persist_hint_and_nlb(void) {
 	assert(saw_hint);
 	devtool_free_node_status(&st);
 
+	struct sockaddr_in hybrid = {
+		.sin_family = AF_INET,
+		.sin_port = htons(23349),
+	};
+	assert(inet_pton(AF_INET, "198.51.100.20", &hybrid.sin_addr) == 1);
+	assert(devtool_plant_recent_address(a, node_b, (struct sockaddr *)&hybrid));
+	meshlink_close(a);
+	a = meshlink_open("path_policy_persist_a", "a", "path-policy", DEV_CLASS_BACKBONE);
+	assert(a);
+	meshlink_enable_discovery(a, false);
+	node_b = meshlink_get_node(a, "b");
+	assert(node_b);
+	devtool_get_node_status(a, node_b, &st);
+
+	for(size_t i = 0; i < st.recent_count; i++) {
+		assert(!addr_is(&st.recent[i], "198.51.100.20", 23349));
+	}
+
+	devtool_free_node_status(&st);
+
 	meshlink_close(a);
 	meshlink_close(b);
 	assert(meshlink_destroy("path_policy_persist_a"));
 	assert(meshlink_destroy("path_policy_persist_b"));
-	printf("P10/P11 ok\n");
+	printf("P10/P11/P12 ok\n");
 }
 
 static void test_canonical_learn_rejected(meshlink_handle_t **mesh) {

@@ -62,6 +62,7 @@ static void transfer_outgoing(meshlink_handle_t *mesh, connection_t *from, conne
 	}
 
 	to->outgoing = from->outgoing;
+	to->outgoing_generation = from->outgoing_generation;
 	from->outgoing = NULL;
 }
 
@@ -387,13 +388,14 @@ static void send_everything(meshlink_handle_t *mesh, connection_t *c) {
    A spare held behind the old connection must go first, otherwise
    terminate_connection() would promote it and we would end up with two self->n
    edges (see upgrade_connection_closing). Leaves n->connection NULL for the
-   caller to install c. */
-static void replace_existing_connection(meshlink_handle_t *mesh, node_t *n, connection_t *c) {
+   caller to install c. When drain_old is set, the old socket stays in the
+   connection list so queued META bytes can flush. */
+static void replace_existing_connection(meshlink_handle_t *mesh, node_t *n, connection_t *c, bool drain_old) {
 	connection_t *old = n->connection;
 
 	upgrade_drop_spare(mesh, n);
 
-	logger(mesh, MESHLINK_INFO, "Established a second connection with %s, closing old connection", old->name);
+	logger(mesh, MESHLINK_INFO, "Established a second connection with %s, %s old connection", old->name, drain_old ? "draining" : "closing");
 	transfer_outgoing(mesh, old, c);
 
 	if(old->edge) {
@@ -401,8 +403,12 @@ static void replace_existing_connection(meshlink_handle_t *mesh, node_t *n, conn
 		old->edge = NULL;
 	}
 
-	terminate_connection(mesh, old, false);
-	assert(!n->connection);
+	n->connection = NULL;
+
+	if(!drain_old) {
+		terminate_connection(mesh, old, false);
+		assert(!n->connection);
+	}
 }
 
 bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
@@ -446,7 +452,7 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	/* Simultaneous connect: keep the TCP session initiated by the smaller name.
 	   Last-ACK-wins picks different sockets on each side; both get RST, then a 5s retry. */
 	for list_each(connection_t, other, mesh->connections) {
-		if(other == c || !other->name || strcmp(other->name, c->name)) {
+		if(other == c || !other->name || strcmp(other->name, c->name) || other->status.drain_only) {
 			continue;
 		}
 
@@ -460,11 +466,20 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		}
 	}
 
+	if(c->outgoing && c->outgoing_generation && c->outgoing_generation != c->outgoing->generation) {
+		logger(mesh, MESHLINK_INFO, "Ignoring stale startup connection with %s", c->name);
+		return false;
+	}
+
 	/* The peer is replacing its canonical connection to us with this direct one. Keep the
 	   old one until the peer closes it (it does so once it has our ACK), then
 	   terminate_connection() promotes this one so the node never leaves the graph. */
 
 	bool deferred_ack = upgrade_defers_ack(c);
+	bool was_upgrade_probe = c->status.upgrade_probe;
+	connection_t *old = (n->connection && n->connection != c) ? n->connection : NULL;
+	bool old_was_canonical = old && old->status.active && path_meta_is_canonical(n, old);
+	bool drain_old = was_upgrade_probe && old_was_canonical;
 
 	if(deferred_ack && n->connection && n->connection != c && n->connection->status.active) {
 		upgrade_hold_spare(mesh, c, n, hisport, devclass);
@@ -472,12 +487,12 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	}
 
 	if(n->connection && n->connection != c) {
-		replace_existing_connection(mesh, n, c);
+		replace_existing_connection(mesh, n, c, drain_old);
 	}
 
 	/* A probe that got this far replaces the canonical connection it was opened next to. */
 
-	if(c->status.upgrade_probe) {
+	if(was_upgrade_probe) {
 		c->node = n;
 		upgrade_probe_succeeded(mesh, c);
 	}
@@ -509,14 +524,16 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		return false;
 	}
 
-	if(mesh->meta_status_cb) {
+	/* Socket replacement is not node unreachability. A META upgrade must
+	   not emit a second up (or a down) through meta_status_cb. */
+	if(mesh->meta_status_cb && !was_upgrade_probe) {
 		mesh->meta_status_cb(mesh, (meshlink_node_t *)n, true);
 	}
 
 	/*  Terminate any connections to this node that are not activated yet */
 
 	for list_each(connection_t, other, mesh->connections) {
-		if(!other->status.active && other->name && !strcmp(other->name, c->name)) {
+		if(!other->status.active && !other->status.drain_only && other->name && !strcmp(other->name, c->name)) {
 			transfer_outgoing(mesh, other, c);
 			logger(mesh, MESHLINK_DEBUG, "Terminating pending second connection with %s", n->name);
 			terminate_connection(mesh, other, false);
@@ -546,10 +563,24 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 
 	add_connection_edge(mesh, c);
 
-	/* Request a session key to jump start UDP traffic */
+	if(drain_old && old) {
+		upgrade_begin_drain(mesh, old);
+	}
+
+	if(was_upgrade_probe) {
+		path_note_selected_route(mesh, n, "authenticated spare");
+	}
+
+	/* Request a session key to jump start UDP traffic, unless this is a
+	   hitless META migration that must keep the existing node SPTPS session. */
 
 	if(c->status.initiator) {
-		send_req_key(mesh, n);
+		if(upgrade_should_preserve_node_session(mesh, n, was_upgrade_probe, old_was_canonical)) {
+			send_canonical_address(mesh, n);
+			send_external_ip_address(mesh, n);
+		} else {
+			send_req_key(mesh, n);
+		}
 	}
 
 	return true;

@@ -143,10 +143,60 @@ void upgrade_probe_succeeded(meshlink_handle_t *mesh, connection_t *c) {
 	n->upgrade_backoff = 0;
 	n->upgrade_next_try = 0;
 
-	path_log_transition(mesh, n, PATH_TIER_META_CANONICAL, PATH_TIER_META_DIRECT, "authenticated spare");
+	path_log_validation(mesh, n, &c->address, "probe-succeeded", "direct META");
 	path_log_meta(mesh, n, &c->address, "migrated canonical -> direct");
 
 	devtool_upgrade_probe(mesh, (meshlink_node_t *)n, DEVTOOL_UPGRADE_PROBE_SUCCEEDED);
+}
+
+bool upgrade_should_preserve_node_session(meshlink_handle_t *mesh, const node_t *n, bool was_upgrade_probe, bool old_was_canonical) {
+	(void)mesh;
+
+	if(!n || !was_upgrade_probe || !old_was_canonical) {
+		return false;
+	}
+
+	if(!n->status.validkey || n->status.waitingforkey) {
+		return false;
+	}
+
+	if(!n->sptps.state) {
+		return false;
+	}
+
+	return true;
+}
+
+static void drain_timeout_handler(event_loop_t *loop, void *data) {
+	connection_t *c = data;
+	meshlink_handle_t *mesh = loop->data;
+
+	logger(mesh, MESHLINK_INFO, "Drain timeout for old META with %s, closing", c->name ? c->name : "?");
+	terminate_connection(mesh, c, false);
+}
+
+void upgrade_begin_drain(meshlink_handle_t *mesh, connection_t *c) {
+	if(!mesh || !c) {
+		return;
+	}
+
+	c->status.drain_only = true;
+	c->outgoing = NULL;
+
+	timeout_add(&mesh->loop, &c->drain_ev, drain_timeout_handler, c, &(struct timespec) {
+		UPGRADE_DRAIN_TIMEOUT_SEC, 0
+	});
+
+	if(c->outbuf.len <= c->outbuf.offset) {
+		terminate_connection(mesh, c, false);
+		return;
+	}
+
+	if(c->io.cb) {
+		io_set(&mesh->loop, &c->io, IO_READ | IO_WRITE);
+	}
+
+	logger(mesh, MESHLINK_INFO, "Draining old META connection with %s", c->name ? c->name : "?");
 }
 
 bool upgrade_defers_ack(const connection_t *c) {
@@ -214,9 +264,8 @@ static void promote_spare(meshlink_handle_t *mesh, connection_t *old, connection
 
 	logger(mesh, MESHLINK_INFO, "Promoting spare direct connection with %s, its previous connection is closing", n->name);
 
-	if(mesh->meta_status_cb) {
-		mesh->meta_status_cb(mesh, (meshlink_node_t *)n, false);
-	}
+	/* meta_status_cb may describe socket replacement; it must not be read as
+	   node unreachability. node_status_cb must not fire: graph runs once below. */
 
 	if(old->outgoing && !spare->outgoing) {
 		spare->outgoing = old->outgoing;
@@ -231,10 +280,7 @@ static void promote_spare(meshlink_handle_t *mesh, connection_t *old, connection
 	spare->status.spare = false;
 	install_node_connection(mesh, n, spare);
 	add_connection_edge(mesh, spare);
-
-	if(mesh->meta_status_cb) {
-		mesh->meta_status_cb(mesh, (meshlink_node_t *)n, true);
-	}
+	path_note_selected_route(mesh, n, "promoted spare");
 }
 
 void upgrade_connection_closing(meshlink_handle_t *mesh, connection_t *c) {

@@ -48,6 +48,14 @@ void upgrade_probe_failed(struct meshlink_handle *mesh, node_t *n, const char *r
 /* Called from ack_h() when a probe authenticated. Clears probe state and backoff. */
 void upgrade_probe_succeeded(struct meshlink_handle *mesh, connection_t *c);
 
+/* True when an authenticated direct upgrade may keep the existing node SPTPS session.
+   Do not key this off sptps.label alone. */
+bool upgrade_should_preserve_node_session(struct meshlink_handle *mesh, const node_t *n, bool was_upgrade_probe, bool old_was_canonical) __attribute__((__warn_unused_result__));
+
+/* Retired META: flush already-queued bytes, then close. Bounded timeout is cleanup only. */
+#define UPGRADE_DRAIN_TIMEOUT_SEC 2
+void upgrade_begin_drain(struct meshlink_handle *mesh, connection_t *c);
+
 /* Periodic sweep: start at most one probe per tick for an eligible node. */
 void upgrade_probe_sweep(struct meshlink_handle *mesh);
 

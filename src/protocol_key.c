@@ -132,6 +132,7 @@ bool send_req_key(meshlink_handle_t *mesh, node_t *to) {
 
 	char label[sizeof(meshlink_udp_label) + strlen(mesh->self->name) + strlen(to->name) + 2];
 	snprintf(label, sizeof(label), "%s %s %s", meshlink_udp_label, mesh->self->name, to->name);
+	to->sptps_restart_count++;
 	sptps_stop(&to->sptps);
 	node_set_validkey(mesh, to, false);
 	to->status.waitingforkey = true;
@@ -611,7 +612,7 @@ bool ans_key_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 			logger(mesh, MESHLINK_DEBUG, "Using reflexive UDP address from %s: %s port %s", from->name, address, port);
 			sockaddr_t sa = str2sockaddr(address, port);
 			path_learn_address_cap(mesh, from, &sa, ADDR_SRC_UDP_REFLEXIVE, PATH_CAP_UDP);
-			update_node_udp(mesh, from, &sa);
+			update_node_udp_from(mesh, from, &sa, ADDR_SRC_UDP_REFLEXIVE);
 		}
 
 		send_mtu_probe(mesh, from);

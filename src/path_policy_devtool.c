@@ -16,8 +16,10 @@
 #include "net.h"
 #include "netutl.h"
 #include "node.h"
+#include "net_upgrade.h"
 #include "path_policy.h"
 #include "path_policy_devtool.h"
+#include "sptps.h"
 #include "xalloc.h"
 
 #include <arpa/inet.h>
@@ -204,9 +206,41 @@ static bool cover_canonical(meshlink_handle_t *mesh) {
 	set_v4(&hybrid, "198.51.100.7", 23349);
 	CHECK(path_address_shares_canonical_ip(&n, &hybrid));
 	CHECK(!path_address_matches_canonical(&n, &hybrid));
+	CHECK(path_is_untrusted_hybrid(&n, &hybrid, ADDR_SRC_EDGE_DIRECT));
+	CHECK(path_is_untrusted_hybrid(&n, &hybrid, ADDR_SRC_UNKNOWN));
+	CHECK(!path_is_untrusted_hybrid(&n, &hybrid, ADDR_SRC_EXTERNAL));
+	CHECK(!path_is_untrusted_hybrid(&n, &hybrid, ADDR_SRC_AUTH_DIRECT));
+	CHECK(!path_is_untrusted_hybrid(&n, &hybrid, ADDR_SRC_UDP_REFLEXIVE));
+	CHECK(!path_is_untrusted_hybrid(&n, &hybrid, ADDR_SRC_DISCOVERY));
+	CHECK(!path_is_untrusted_hybrid(&n, &hybrid, ADDR_SRC_HINT));
 	CHECK(!path_is_direct_candidate(&n, &hybrid, ADDR_SRC_EDGE_DIRECT));
+	CHECK(!path_is_direct_candidate(&n, &hybrid, ADDR_SRC_UNKNOWN));
 	CHECK(path_is_direct_candidate(&n, &hybrid, ADDR_SRC_EXTERNAL));
 	CHECK(path_is_direct_candidate(&n, &hybrid, ADDR_SRC_AUTH_DIRECT));
+	CHECK(path_is_direct_candidate(&n, &hybrid, ADDR_SRC_DISCOVERY));
+	CHECK(path_is_direct_candidate(&n, &hybrid, ADDR_SRC_HINT));
+	CHECK(!path_is_udp_candidate(&n, &hybrid, ADDR_SRC_EDGE_DIRECT, PATH_CAP_BOTH));
+	CHECK(!path_is_udp_candidate(&n, &hybrid, ADDR_SRC_UNKNOWN, PATH_CAP_UDP));
+	CHECK(path_is_udp_candidate(&n, &hybrid, ADDR_SRC_EXTERNAL, PATH_CAP_BOTH));
+	CHECK(path_is_udp_candidate(&n, &hybrid, ADDR_SRC_AUTH_DIRECT, PATH_CAP_BOTH));
+	CHECK(path_is_udp_candidate(&n, &hybrid, ADDR_SRC_UDP_REFLEXIVE, PATH_CAP_UDP));
+	CHECK(path_is_udp_candidate(&n, &hybrid, ADDR_SRC_DISCOVERY, PATH_CAP_BOTH));
+	CHECK(path_is_udp_candidate(&n, &hybrid, ADDR_SRC_HINT, PATH_CAP_BOTH));
+
+	sockaddr_t extra, extra_hybrid, other_direct;
+	set_v4(&extra, "198.51.100.8", 443);
+	CHECK(path_add_canonical_endpoint(&n, &extra));
+	set_v4(&extra_hybrid, "198.51.100.8", 23349);
+	CHECK(path_address_shares_canonical_ip(&n, &extra_hybrid));
+	CHECK(path_is_untrusted_hybrid(&n, &extra_hybrid, ADDR_SRC_EDGE_DIRECT));
+	CHECK(path_is_untrusted_hybrid(&n, &extra_hybrid, ADDR_SRC_UNKNOWN));
+	CHECK(!path_is_untrusted_hybrid(&n, &extra_hybrid, ADDR_SRC_EXTERNAL));
+	CHECK(!path_is_udp_candidate(&n, &extra_hybrid, ADDR_SRC_EDGE_DIRECT, PATH_CAP_BOTH));
+	CHECK(path_is_udp_candidate(&n, &extra_hybrid, ADDR_SRC_EXTERNAL, PATH_CAP_BOTH));
+	set_v4(&other_direct, "203.0.113.50", 23349);
+	CHECK(!path_is_untrusted_hybrid(&n, &other_direct, ADDR_SRC_EDGE_DIRECT));
+	CHECK(path_is_direct_candidate(&n, &other_direct, ADDR_SRC_EDGE_DIRECT));
+	CHECK(path_is_udp_candidate(&n, &other_direct, ADDR_SRC_EDGE_DIRECT, PATH_CAP_BOTH));
 
 	path_clear_canonical_endpoints(&n);
 	sockaddr_t weird;
@@ -380,6 +414,18 @@ static bool cover_sanitize(meshlink_handle_t *mesh) {
 	CHECK(path_sanitize_recent(mesh, &n));
 	CHECK(!sockaddrcmp(&n.recent[0], &wan));
 	CHECK(!n.recent[1].sa.sa_family);
+
+	sockaddr_t hybrid;
+	set_v4(&hybrid, "198.51.100.1", 23349);
+	CHECK(!path_learn_address(mesh, &n, &hybrid, ADDR_SRC_EDGE_DIRECT));
+	CHECK(!path_learn_address(mesh, &n, &hybrid, ADDR_SRC_UNKNOWN));
+	CHECK(path_learn_address(mesh, &n, &hybrid, ADDR_SRC_EXTERNAL));
+	path_clear_recent(&n);
+	n.recent[0] = hybrid;
+	n.recent_source[0] = ADDR_SRC_EDGE_DIRECT;
+	n.recent_cap[0] = PATH_CAP_BOTH;
+	CHECK(path_sanitize_recent(mesh, &n));
+	CHECK(!n.recent[0].sa.sa_family);
 
 	CHECK(!path_sanitize_recent(NULL, NULL));
 	CHECK(!path_sanitize_recent(mesh, &n));
@@ -801,6 +847,31 @@ static bool cover_transport(meshlink_handle_t *mesh) {
 	return true;
 }
 
+static bool cover_preserve(meshlink_handle_t *mesh) {
+	node_t n;
+
+	memset(&n, 0, sizeof n);
+	n.name = "preserve";
+	n.status.validkey = true;
+	n.sptps.state = SPTPS_SECONDARY_KEX;
+	CHECK(upgrade_should_preserve_node_session(mesh, &n, true, true));
+	CHECK(!upgrade_should_preserve_node_session(mesh, &n, false, true));
+	CHECK(!upgrade_should_preserve_node_session(mesh, &n, true, false));
+	CHECK(!upgrade_should_preserve_node_session(NULL, NULL, true, true));
+	n.status.validkey = false;
+	CHECK(!upgrade_should_preserve_node_session(mesh, &n, true, true));
+	n.status.validkey = true;
+	n.sptps.state = 0;
+	CHECK(!upgrade_should_preserve_node_session(mesh, &n, true, true));
+	n.sptps.state = SPTPS_KEX;
+	n.status.waitingforkey = true;
+	CHECK(!upgrade_should_preserve_node_session(mesh, &n, true, true));
+	n.status.waitingforkey = false;
+	n.sptps.state = SPTPS_SECONDARY_KEX;
+	CHECK(upgrade_should_preserve_node_session(mesh, &n, true, true));
+	return true;
+}
+
 bool path_policy_cover_unit(meshlink_handle_t *mesh, node_t *live) {
 	if(!mesh || !live) {
 		return false;
@@ -815,7 +886,8 @@ bool path_policy_cover_unit(meshlink_handle_t *mesh, node_t *live) {
 	                || !cover_probe(mesh)
 	                || !cover_promote(mesh, live)
 	                || !cover_udp_cache(mesh, live)
-	                || !cover_transport(mesh)) {
+	                || !cover_transport(mesh)
+	                || !cover_preserve(mesh)) {
 		return false;
 	}
 

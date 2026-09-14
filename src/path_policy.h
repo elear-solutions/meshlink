@@ -74,12 +74,14 @@ void path_copy_sockaddr(sockaddr_t *dst, const sockaddr_t *src);
 
 /* True for AUTH/DISCOVERY/HINT/EXTERNAL/EDGE and UNKNOWN (legacy load). Not CANONICAL/INDIRECT/UDP_REFLEXIVE. */
 bool path_source_is_direct(address_source_t src);
-/* Direct META candidate: source_is_direct, not canonical-equivalent, HINT/UNKNOWN blocked while a hostname canonical has not been resolved or failed, EDGE_DIRECT hybrid-IP rejected. */
+/* Direct META candidate: source_is_direct, not canonical-equivalent, HINT/UNKNOWN blocked while a hostname canonical has not been resolved or failed, EDGE_DIRECT/UNKNOWN hybrid-IP rejected. */
 bool path_is_direct_candidate(const struct node_t *n, const sockaddr_t *sa, address_source_t src);
 /* META walk: PATH_CAP_META + direct candidate. UDP_REFLEXIVE that later gained META stays eligible. */
 bool path_is_meta_candidate(const struct node_t *n, const sockaddr_t *sa, address_source_t src, path_cap_t cap);
-/* UDP dest: PATH_CAP_UDP, not CANONICAL/INDIRECT, not canonical-equivalent. */
+/* UDP dest: PATH_CAP_UDP, not CANONICAL/INDIRECT, not canonical-equivalent, not an untrusted hybrid. */
 bool path_is_udp_candidate(const struct node_t *n, const sockaddr_t *sa, address_source_t src, path_cap_t cap);
+/* Same IP as a cached canonical endpoint, different port, and the source is EDGE_DIRECT or UNKNOWN. */
+bool path_is_untrusted_hybrid(const struct node_t *n, const sockaddr_t *sa, address_source_t src);
 bool path_canonical_unresolved(const struct node_t *n);
 bool path_canonical_is_hostname(const struct node_t *n);
 bool path_tier_better(path_tier_t a, path_tier_t b);
@@ -120,6 +122,8 @@ void path_plant_recent(struct node_t *n, const sockaddr_t *sa);
 bool path_sanitize_recent(struct meshlink_handle *mesh, struct node_t *n);
 
 bool path_best_direct_meta(const struct node_t *n, const sockaddr_t *skip, sockaddr_t *out, address_source_t *src_out);
+/* One startup META pick: best recent[] candidate, else a direct known edge. */
+bool path_best_startup_meta(const struct node_t *n, const sockaddr_t *skip, sockaddr_t *out, address_source_t *src_out);
 bool path_has_direct_meta_candidate(const struct node_t *n, const sockaddr_t *skip);
 /* Sole reader for "this META is canonical": via_canonical (kept in sync with meta_dial_tier) or address match. */
 bool path_meta_is_canonical(const struct node_t *n, const struct connection_t *c);
@@ -137,11 +141,16 @@ bool path_pick_local_udp_candidate(struct meshlink_handle *mesh, const struct no
 void path_schedule_local_udp_probe(struct meshlink_handle *mesh, struct node_t *n);
 void path_note_udp_confirmed(struct meshlink_handle *mesh, struct node_t *n);
 void path_note_udp_demoted(struct meshlink_handle *mesh, struct node_t *n);
+void path_note_udp_demoted_reason(struct meshlink_handle *mesh, struct node_t *n, const char *reason);
 bool path_promote_udp_if_better(struct meshlink_handle *mesh, struct node_t *n, const sockaddr_t *from);
+
+/* Compute the selected destination route, log only on change, update last_path_tier. */
+void path_note_selected_route(struct meshlink_handle *mesh, struct node_t *n, const char *reason);
 
 void path_log_candidate(struct meshlink_handle *mesh, const struct node_t *n, const sockaddr_t *sa, address_source_t src, path_cap_t cap, const char *action);
 void path_log_validation(struct meshlink_handle *mesh, const struct node_t *n, const sockaddr_t *sa, const char *action, const char *detail);
 void path_log_meta(struct meshlink_handle *mesh, const struct node_t *n, const sockaddr_t *sa, const char *action);
+void path_log_udp_tier(struct meshlink_handle *mesh, const struct node_t *n, path_tier_t from, path_tier_t to, const char *reason);
 void path_log_transition(struct meshlink_handle *mesh, const struct node_t *n, path_tier_t from, path_tier_t to, const char *reason);
 
 #endif

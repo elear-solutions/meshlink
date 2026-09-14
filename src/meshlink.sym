@@ -44,6 +44,7 @@ devtool_set_inviter_commits_first
 devtool_set_meta_status_cb
 devtool_send_raw_record
 devtool_set_minmtu
+devtool_set_outgoing_startup_ms
 devtool_set_udp_confirmed
 devtool_trybind_probe
 devtool_update_node_udp

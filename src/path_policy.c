@@ -22,6 +22,7 @@
 #include "node.h"
 #include "path_policy.h"
 #include "protocol.h"
+#include "splay_tree.h"
 #include "xalloc.h"
 
 /* source_trust ranks: AUTH_DIRECT is highest, UNKNOWN is legacy-weak, others 0. */
@@ -262,13 +263,29 @@ bool path_is_direct_candidate(const node_t *n, const sockaddr_t *sa, address_sou
 		return false;
 	}
 
-	/* EDGE_DIRECT + NLB-IP + another port is the hybrid hole. Peer-advertised
-	   AUTH/EXTERNAL/DISCOVERY on the same public IP is allowed. */
-	if(src == ADDR_SRC_EDGE_DIRECT && path_address_shares_canonical_ip(n, sa)) {
+	/* Graph-derived NLB-IP + another port is the hybrid hole. Peer-vouched
+	   AUTH/EXTERNAL/DISCOVERY/HINT/UDP_REFLEXIVE on the same public IP is allowed. */
+	if(path_is_untrusted_hybrid(n, sa, src)) {
 		return false;
 	}
 
 	return true;
+}
+
+bool path_is_untrusted_hybrid(const node_t *n, const sockaddr_t *sa, address_source_t src) {
+	if(!n || !sa) {
+		return false;
+	}
+
+	if(src != ADDR_SRC_EDGE_DIRECT && src != ADDR_SRC_UNKNOWN) {
+		return false;
+	}
+
+	if(path_address_matches_canonical(n, sa)) {
+		return false;
+	}
+
+	return path_address_shares_canonical_ip(n, sa);
 }
 
 bool path_is_meta_candidate(const node_t *n, const sockaddr_t *sa, address_source_t src, path_cap_t cap) {
@@ -295,6 +312,10 @@ bool path_is_udp_candidate(const node_t *n, const sockaddr_t *sa, address_source
 	}
 
 	if(path_address_matches_canonical(n, sa)) {
+		return false;
+	}
+
+	if(path_is_untrusted_hybrid(n, sa, src)) {
 		return false;
 	}
 
@@ -825,6 +846,11 @@ bool path_learn_address_cap(meshlink_handle_t *mesh, node_t *n, const sockaddr_t
 		return false;
 	}
 
+	if(path_is_untrusted_hybrid(n, sa, src)) {
+		path_log_candidate(mesh, n, sa, src, cap, "rejected hybrid");
+		return false;
+	}
+
 	int i;
 
 	for(i = 0; i < MAX_RECENT && n->recent[i].sa.sa_family; i++) {
@@ -856,6 +882,11 @@ bool path_learn_address_fallback_cap(meshlink_handle_t *mesh, node_t *n, const s
 	}
 
 	if(reject_canonical(mesh, n, sa, src)) {
+		return false;
+	}
+
+	if(path_is_untrusted_hybrid(n, sa, src)) {
+		path_log_candidate(mesh, n, sa, src, cap, "rejected hybrid");
 		return false;
 	}
 
@@ -952,7 +983,8 @@ bool path_sanitize_recent(meshlink_handle_t *mesh, node_t *n) {
 	memset(kept_cap, 0, sizeof kept_cap);
 
 	for(int i = 0; i < MAX_RECENT && n->recent[i].sa.sa_family; i++) {
-		if(path_address_matches_canonical(n, &n->recent[i]) || n->recent_source[i] == ADDR_SRC_CANONICAL) {
+		if(path_address_matches_canonical(n, &n->recent[i]) || n->recent_source[i] == ADDR_SRC_CANONICAL
+		                || path_is_untrusted_hybrid(n, &n->recent[i], n->recent_source[i])) {
 			path_log_candidate(mesh, n, &n->recent[i], n->recent_source[i], n->recent_cap[i], "sanitized");
 			changed = true;
 			continue;
@@ -992,6 +1024,48 @@ bool path_best_direct_meta(const node_t *n, const sockaddr_t *skip, sockaddr_t *
 
 		if(src_out) {
 			*src_out = n->recent_source[i];
+		}
+
+		return true;
+	}
+
+	return false;
+}
+
+bool path_best_startup_meta(const node_t *n, const sockaddr_t *skip, sockaddr_t *out, address_source_t *src_out) {
+	if(path_best_direct_meta(n, skip, out, src_out)) {
+		return true;
+	}
+
+	if(!n || !out || !n->edge_tree) {
+		return false;
+	}
+
+	for splay_each(edge_t, e, n->edge_tree) {
+		const sockaddr_t *sa;
+
+		if(!e->reverse) {
+			continue;
+		}
+
+		if(e->reverse->options & OPTION_INDIRECT) {
+			continue;
+		}
+
+		sa = &e->reverse->address;
+
+		if(skip && !sockaddrcmp(sa, skip)) {
+			continue;
+		}
+
+		if(!path_is_meta_candidate(n, sa, ADDR_SRC_EDGE_DIRECT, PATH_CAP_BOTH)) {
+			continue;
+		}
+
+		path_copy_sockaddr(out, sa);
+
+		if(src_out) {
+			*src_out = ADDR_SRC_EDGE_DIRECT;
 		}
 
 		return true;
@@ -1189,11 +1263,11 @@ void path_note_udp_confirmed(meshlink_handle_t *mesh, node_t *n) {
 	n->udp_local_probe_next = 0;
 
 	if(was != n->udp_tier) {
-		path_log_transition(mesh, n, was, n->udp_tier, "udp confirmed");
+		path_log_udp_tier(mesh, n, was, n->udp_tier, "confirmed");
 	}
 }
 
-void path_note_udp_demoted(meshlink_handle_t *mesh, node_t *n) {
+void path_note_udp_demoted_reason(meshlink_handle_t *mesh, node_t *n, const char *reason) {
 	path_tier_t was;
 
 	if(!n || !n->status.udp_confirmed || n->status.temp_udp_confirmed) {
@@ -1206,7 +1280,12 @@ void path_note_udp_demoted(meshlink_handle_t *mesh, node_t *n) {
 	n->mtuprobes = 0;
 	n->minmtu = 0;
 	n->maxmtu = MTU;
-	path_log_transition(mesh, n, was, PATH_TIER_NONE, "reliable retransmit");
+	path_log_udp_tier(mesh, n, was, PATH_TIER_NONE, reason);
+	path_note_selected_route(mesh, n, reason);
+}
+
+void path_note_udp_demoted(meshlink_handle_t *mesh, node_t *n) {
+	path_note_udp_demoted_reason(mesh, n, "reliable retransmit");
 }
 
 bool path_promote_udp_if_better(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *from) {
@@ -1230,11 +1309,35 @@ bool path_promote_udp_if_better(meshlink_handle_t *mesh, node_t *n, const sockad
 	}
 
 	path_tier_t was = n->udp_tier;
-	update_node_udp(mesh, n, from);
+	update_node_udp_from(mesh, n, from, ADDR_SRC_AUTH_DIRECT);
 	path_learn_address_cap(mesh, n, from, ADDR_SRC_AUTH_DIRECT, path_address_is_local(from) ? PATH_CAP_BOTH : PATH_CAP_UDP);
 	n->udp_tier = next;
-	path_log_transition(mesh, n, was, next, "local probe reply");
+	path_log_udp_tier(mesh, n, was, next, "local probe reply");
 	return true;
+}
+
+void path_note_selected_route(meshlink_handle_t *mesh, node_t *n, const char *reason) {
+	path_tier_t to;
+	path_tier_t from;
+
+	if(!n) {
+		return;
+	}
+
+	to = path_select_destination_tier(n, false);
+	from = n->last_path_tier;
+
+	if(from == to) {
+		return;
+	}
+
+	n->last_path_tier = to;
+
+	if(!mesh || mesh->log_level > MESHLINK_INFO || from == to) {
+		return;
+	}
+
+	logger(mesh, MESHLINK_INFO, "Path route: %s %s -> %s (%s)", n->name, path_tier_name(from), path_tier_name(to), reason ? reason : "");
 }
 
 void path_log_candidate(meshlink_handle_t *mesh, const node_t *n, const sockaddr_t *sa, address_source_t src, path_cap_t cap, const char *action) {
@@ -1267,8 +1370,16 @@ void path_log_meta(meshlink_handle_t *mesh, const node_t *n, const sockaddr_t *s
 	free(hostname);
 }
 
+void path_log_udp_tier(meshlink_handle_t *mesh, const node_t *n, path_tier_t from, path_tier_t to, const char *reason) {
+	if(!mesh || !n || mesh->log_level > MESHLINK_INFO || from == to) {
+		return;
+	}
+
+	logger(mesh, MESHLINK_INFO, "Path UDP: %s %s -> %s (%s)", n->name, path_tier_name(from), path_tier_name(to), reason ? reason : "");
+}
+
 void path_log_transition(meshlink_handle_t *mesh, const node_t *n, path_tier_t from, path_tier_t to, const char *reason) {
-	if(!mesh || !n) {
+	if(!mesh || !n || mesh->log_level > MESHLINK_INFO || from == to) {
 		return;
 	}
 

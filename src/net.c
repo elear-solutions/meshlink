@@ -98,9 +98,11 @@ void add_connection_edge(meshlink_handle_t *mesh, connection_t *c) {
 void terminate_connection(meshlink_handle_t *mesh, connection_t *c, bool report) {
 	/* last_key_renewal is set when the connection activates (and again on every hourly
 	   key renewal, so a drop right after one of those costs one extra backoff step). */
-	bool flapped = c->status.active && mesh->loop.now.tv_sec - c->last_key_renewal < min_connection_lifetime;
+	bool flapped = c->status.active && !c->status.drain_only && mesh->loop.now.tv_sec - c->last_key_renewal < min_connection_lifetime;
 
-	if(c->status.active) {
+	timeout_del(&mesh->loop, &c->drain_ev);
+
+	if(c->status.active && !c->status.drain_only) {
 		logger(mesh, MESHLINK_INFO, "Closing connection with %s", c->name);
 	}
 
@@ -143,7 +145,18 @@ void terminate_connection(meshlink_handle_t *mesh, connection_t *c, bool report)
 		}
 	}
 
+	if(mesh->outgoings) {
+		for list_each(outgoing_t, o, mesh->outgoings) {
+			if(o->pending == c) {
+				path_copy_sockaddr(&o->skip_sa, &c->address);
+				o->pending = NULL;
+				timeout_del(&mesh->loop, &o->bound_ev);
+			}
+		}
+	}
+
 	outgoing_t *outgoing = c->outgoing;
+	c->outgoing = NULL;
 	connection_del(mesh, c);
 
 	/* Check if this was our outgoing connection. ack_h() reset the address walk when it
@@ -176,6 +189,10 @@ static void timeout_handler(event_loop_t *loop, void *data) {
 	for list_each(connection_t, c, mesh->connections) {
 		int pingtimeout = c->node ? mesh->dev_class_traits[c->node->devclass].pingtimeout : default_timeout;
 		int pinginterval = c->node ? mesh->dev_class_traits[c->node->devclass].pinginterval : default_interval;
+
+		if(c->status.drain_only) {
+			continue;
+		}
 
 		if(c->outgoing && !c->status.active && c->outgoing->timeout < 5) {
 			pingtimeout = 1;
@@ -721,6 +738,12 @@ void retry(meshlink_handle_t *mesh) {
 	/* Reset the reconnection timers for all outgoing connections */
 	for list_each(outgoing_t, outgoing, mesh->outgoings) {
 		outgoing->timeout = 0;
+
+		if(outgoing->pending && !outgoing->pending->status.active) {
+			outgoing_abort_bound(mesh, outgoing);
+			outgoing->state = OUTGOING_START;
+			do_outgoing_connection(mesh, outgoing);
+		}
 
 		if(outgoing->ev.cb) {
 			timeout_set(&mesh->loop, &outgoing->ev, &(struct timespec) {

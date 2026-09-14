@@ -90,6 +90,7 @@ void node_set_validkey(meshlink_handle_t *mesh, node_t *n, bool valid) {
 	n->status.validkey = valid;
 	relay_recompute_dependents(mesh, n);
 	relay_update_destination_transport(mesh, n);
+	path_note_selected_route(mesh, n, valid ? "key recovered" : "key invalidated");
 }
 
 void free_node(node_t *n) {
@@ -205,7 +206,7 @@ bool graph_may_seed_udp(const node_t *n, const sockaddr_t *edge_addr) {
 	return udp_address_usable(edge_addr);
 }
 
-void update_node_udp(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa) {
+void update_node_udp_from(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa, address_source_t src) {
 	if(n == mesh->self) {
 		logger(mesh, MESHLINK_WARNING, "Trying to update UDP address of mesh->self!");
 		return;
@@ -214,7 +215,15 @@ void update_node_udp(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa) {
 	node_udp_cache_forget(mesh, n);
 
 	if(sa) {
+		bool same = n->address.sa.sa_family && !sockaddrcmp(&n->address, sa);
+
 		path_copy_sockaddr(&n->address, sa);
+
+		if(!same || src != ADDR_SRC_UNKNOWN || n->address_source == ADDR_SRC_UNKNOWN) {
+			n->address_source = src;
+			n->address_cap = path_default_cap(src);
+		}
+
 		n->sock = 0;
 
 		for(int i = 0; i < mesh->listen_sockets; i++) {
@@ -231,7 +240,14 @@ void update_node_udp(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa) {
 			logger(mesh, MESHLINK_DEBUG, "UDP address of %s set to %s", n->name, hostname);
 			free(hostname);
 		}
+	} else {
+		n->address_source = ADDR_SRC_UNKNOWN;
+		n->address_cap = PATH_CAP_NONE;
 	}
+}
+
+void update_node_udp(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa) {
+	update_node_udp_from(mesh, n, sa, ADDR_SRC_UNKNOWN);
 }
 
 bool node_add_recent_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa, address_source_t src) {

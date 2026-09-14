@@ -26,12 +26,14 @@ TESTS = \
 	metering \
 	metering-relayed \
 	metering-slowping \
-	metering-tcponly \		
+	metering-tcponly \
 	meta-connections \
 	get-external-address \
 	mtu-probe-log \
 	outgoing-order \
+	outgoing-bounded \
 	canonical-migrate \
+	hybrid-udp-probe \
 	req-external-recent \
 	port \
 	port-range \
@@ -96,7 +98,9 @@ check_PROGRAMS = \
 	get-external-address \
 	mtu-probe-log \
 	outgoing-order \
+	outgoing-bounded \
 	canonical-migrate \
+	hybrid-udp-probe \
 	req-external-recent \
 	port \
 	port-range \
@@ -219,8 +223,14 @@ mtu_probe_log_LDADD = $(top_builddir)/src/libmeshlink.la
 outgoing_order_SOURCES = outgoing-order.c utils.c utils.h
 outgoing_order_LDADD = $(top_builddir)/src/libmeshlink.la
 
+outgoing_bounded_SOURCES = outgoing-bounded.c utils.c utils.h
+outgoing_bounded_LDADD = $(top_builddir)/src/libmeshlink.la
+
 canonical_migrate_SOURCES = canonical-migrate.c utils.c utils.h
 canonical_migrate_LDADD = $(top_builddir)/src/libmeshlink.la
+
+hybrid_udp_probe_SOURCES = hybrid-udp-probe.c utils.c utils.h
+hybrid_udp_probe_LDADD = $(top_builddir)/src/libmeshlink.la
 
 req_external_recent_SOURCES = req-external-recent.c utils.c utils.h
 req_external_recent_LDADD = $(top_builddir)/src/libmeshlink.la

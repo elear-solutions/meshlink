@@ -99,7 +99,9 @@ test/utcp-benchmark
 test/utcp-benchmark-stream
 test/path-policy-coverage
 test/outgoing-order
+test/outgoing-bounded
 test/canonical-migrate
+test/hybrid-udp-probe
 test/req-external-recent
 test/udp-relay
 test/relay-coverage

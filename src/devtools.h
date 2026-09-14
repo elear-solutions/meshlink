@@ -150,6 +150,13 @@ struct devtool_node_status {
 	int active_meta_tier;                 /// path_select_hop_tier of the node itself
 	struct sockaddr_storage upgrade_target; /// next META-capable direct candidate
 	const char *upgrade_ineligible_reason; /// NULL if an upgrade probe may start
+	bool validkey;                        /// node SPTPS has a valid key
+	bool waitingforkey;                   /// node is waiting for a key exchange
+	int sptps_state;                      /// node_t.sptps.state
+	uint32_t sptps_outseqno;              /// node SPTPS outbound sequence
+	uint32_t sptps_restart_count;         /// send_req_key() restarts
+	bool meta_drain_active;               /// a retired META socket is still flushing
+	uint32_t connection_generation;       /// outgoing generation of the active META
 };
 
 /// Get the status of a node.
@@ -509,5 +516,8 @@ void devtool_fill_mcast_ff02_1(struct sockaddr_storage *dst);
 
 /// Build IPv4 `255.255.255.255`.
 void devtool_fill_bcast_ipv4(struct sockaddr_storage *dst);
+
+/// Override the bounded-startup budget (milliseconds). 0 or negative restores 250.
+void devtool_set_outgoing_startup_ms(int ms);
 
 #endif

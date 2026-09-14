@@ -21,6 +21,7 @@
 #include <assert.h>
 
 #include "connection.h"
+#include "list.h"
 #include "logger.h"
 #include "meshlink_internal.h"
 #include "net.h"
@@ -348,6 +349,20 @@ static void devtool_get_reset_node_status(meshlink_handle_t *mesh, meshlink_node
 
 		status->active_meta_tier = (int)path_select_hop_tier(internal, true);
 		status->upgrade_ineligible_reason = path_upgrade_ineligible_reason(mesh, internal);
+		status->validkey = internal->status.validkey;
+		status->waitingforkey = internal->status.waitingforkey;
+		status->sptps_state = internal->sptps.state;
+		status->sptps_outseqno = internal->sptps.outseqno;
+		status->sptps_restart_count = internal->sptps_restart_count;
+		status->connection_generation = c && c->outgoing ? c->outgoing->generation : 0;
+		status->meta_drain_active = false;
+
+		for list_each(connection_t, other, mesh->connections) {
+			if(other->status.drain_only && other->name && !strcmp(other->name, internal->name)) {
+				status->meta_drain_active = true;
+				break;
+			}
+		}
 
 		sockaddr_t target;
 		memset(&target, 0, sizeof target);
@@ -1175,4 +1190,8 @@ void devtool_fill_bcast_ipv4(struct sockaddr_storage *dst) {
 
 	relay_fill_bcast_ipv4(&out);
 	*dst = out.storage;
+}
+
+void devtool_set_outgoing_startup_ms(int ms) {
+	outgoing_startup_ms = ms > 0 ? ms : OUTGOING_STARTUP_MS;
 }

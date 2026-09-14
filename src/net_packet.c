@@ -82,11 +82,8 @@ static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 		}
 
 		logger(mesh, MESHLINK_INFO, "%s did not respond to UDP ping, restarting PMTU discovery", n->name);
-		n->status.udp_confirmed = false;
-		n->udp_tier = PATH_TIER_NONE;
+		path_note_udp_demoted_reason(mesh, n, "probe give-up");
 		n->mtuprobes = 1;
-		n->minmtu = 0;
-		n->maxmtu = MTU;
 
 		update_node_pmtu(mesh, n);
 		relay_recompute_dependents(mesh, n);
@@ -532,7 +529,8 @@ static bool try_canonical(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *
 		return false;
 	}
 
-	if(!host_port_to_sockaddr(host, port, sa_buf) || !udp_address_bound(sa_buf)) {
+	if(!host_port_to_sockaddr(host, port, sa_buf) || !udp_address_bound(sa_buf)
+	                || !path_is_udp_candidate(n, sa_buf, ADDR_SRC_CANONICAL, PATH_CAP_UDP)) {
 		free(host);
 		return false;
 	}
@@ -606,7 +604,8 @@ void choose_udp_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **s
 		if(try_recent(mesh, n, sa, sock, self_ext, skip)) {
 			return;
 		}
-	} else if(lan_slot == UDP_LAN_SLOT_CATTA && lan_candidate(&n->catta_address, self_ext, skip)) {
+	} else if(lan_slot == UDP_LAN_SLOT_CATTA && lan_candidate(&n->catta_address, self_ext, skip)
+	                && path_is_udp_candidate(n, &n->catta_address, ADDR_SRC_DISCOVERY, PATH_CAP_BOTH)) {
 		*sa = &n->catta_address;
 	}
 
@@ -618,7 +617,15 @@ void choose_udp_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **s
 		int usable = 0;
 
 		for splay_each(edge_t, e, n->edge_tree) {
-			if(e->reverse && lan_candidate(&e->reverse->address, self_ext, skip)) {
+			if(!e->reverse || (e->reverse->options & OPTION_INDIRECT)) {
+				continue;
+			}
+
+			if(!path_is_udp_candidate(n, &e->reverse->address, ADDR_SRC_EDGE_DIRECT, PATH_CAP_BOTH)) {
+				continue;
+			}
+
+			if(lan_candidate(&e->reverse->address, self_ext, skip)) {
 				if(prng(mesh, ++usable) == 0) {
 					candidate = e->reverse;
 				}
@@ -627,7 +634,10 @@ void choose_udp_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **s
 
 		if(candidate) {
 			*sa = &candidate->address;
-		} else if(lan_candidate(&n->address, self_ext, skip)) {
+		} else if(lan_candidate(&n->address, self_ext, skip)
+		                && path_is_udp_candidate(n, &n->address,
+		                                        n->address_source ? n->address_source : ADDR_SRC_UNKNOWN,
+		                                        n->address_cap ? n->address_cap : PATH_CAP_UDP)) {
 			*sa = &n->address;
 		} else if(lan_slot != UDP_LAN_SLOT_RECENT && try_recent(mesh, n, sa, sock, self_ext, skip)) {
 			return;
@@ -769,12 +779,7 @@ static bool send_relay_outer(meshlink_handle_t *mesh, node_t *hop, const void *d
 }
 
 static bool send_application_record(meshlink_handle_t *mesh, node_t *to, const void *data, size_t len) {
-	path_tier_t tier = path_select_destination_tier(to, false);
-
-	if(to->last_path_tier != tier) {
-		path_log_transition(mesh, to, to->last_path_tier, tier, "destination route");
-		to->last_path_tier = tier;
-	}
+	path_note_selected_route(mesh, to, "destination route");
 
 	/* Confirmed UDP does not compare (len-21) against minmtu. */
 	if(to->status.udp_confirmed) {
@@ -1011,7 +1016,7 @@ void handle_incoming_vpn_data(event_loop_t *loop, void *data, int flags) {
 				node_udp_cache_alias(mesh, n, &from);
 			} else {
 				path_learn_address_cap(mesh, n, &from, ADDR_SRC_UDP_REFLEXIVE, PATH_CAP_UDP);
-				update_node_udp(mesh, n, &from);
+				update_node_udp_from(mesh, n, &from, ADDR_SRC_UDP_REFLEXIVE);
 			}
 		} else if(mesh->log_level <= MESHLINK_WARNING) {
 			hostname = sockaddr2hostname(&from);

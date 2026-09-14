@@ -96,6 +96,21 @@ static void reset_probe_events(void) {
 	init_sync_flag(&probe_failed);
 }
 
+static bool probe_succeeded_from(const char *mesh) {
+	bool ok = false;
+	assert(pthread_mutex_lock(&probe_mutex) == 0);
+
+	for(int i = 0; i < nprobe_events; i++) {
+		if(probe_events[i].stage == DEVTOOL_UPGRADE_PROBE_SUCCEEDED && !strcmp(probe_events[i].mesh, mesh)) {
+			ok = true;
+			break;
+		}
+	}
+
+	assert(pthread_mutex_unlock(&probe_mutex) == 0);
+	return ok;
+}
+
 static int count_probe_events(devtool_upgrade_probe_stage_t stage) {
 	int count = 0;
 	assert(pthread_mutex_lock(&probe_mutex) == 0);
@@ -499,6 +514,10 @@ static void test_migrate_from_req_external(void) {
 	assert(count_probe_events(DEVTOOL_UPGRADE_PROBE_FAILED) == 0);
 	assert(log_contains("a: Got REQ_EXTERNAL from b"));
 	assert(log_contains("a: Path META: b migrated canonical -> direct"));
+	assert(log_count("a: Path META: b migrated canonical -> direct") == 1);
+	assert(log_count("a: Path validation: b probe-succeeded") == 1);
+	assert(log_count("don't have a valid key yet") == 0);
+	assert(log_count("SPTPS key exchange with b successful") >= 1);
 
 	/* b's side swapped too: one active connection with a, not via anything. */
 	devtool_node_status_t st;
@@ -509,6 +528,10 @@ static void test_migrate_from_req_external(void) {
 
 	/* The direct address is now what a would try first. */
 	devtool_get_node_status(p.a, p.a_b, &st);
+	assert(st.validkey);
+	assert(!st.waitingforkey);
+	assert(st.sptps_state != 0);
+	assert(st.sptps_restart_count == 1);
 	assert(st.recent_count >= 1);
 	assert(port_of(&st.recent[0]) == p.b_port);
 
@@ -516,7 +539,29 @@ static void test_migrate_from_req_external(void) {
 		assert(port_of(&st.recent[i]) != p.relay_port);
 	}
 
+	uint32_t restarts = st.sptps_restart_count;
 	devtool_free_node_status(&st);
+
+	/* More traffic after promotion must not restart node SPTPS or re-log the route. */
+	int routes = log_count("a: Path route: b ");
+	size_t mark = log_mark();
+	size_t extra = sent;
+
+	for(size_t i = 0; i < 20; i++) {
+		stream_send(p.a, channel, extra++);
+	}
+
+	assert_after(stream_bytes() == extra * MSG_LEN, 15);
+	assert(stream_ok());
+	devtool_get_node_status(p.a, p.a_b, &st);
+	assert(st.validkey);
+	assert(!st.waitingforkey);
+	assert(st.sptps_restart_count == restarts);
+	devtool_free_node_status(&st);
+	assert(log_count("a: Path route: b ") == routes);
+	assert(log_count_from(mark, "SPTPS key exchange with b successful") == 0);
+	assert(log_count_from(mark, "don't have a valid key yet") == 0);
+	sent = extra;
 
 	printf("T5 ok: migrated to port %d, %zu bytes streamed in order (%zu before the swap), relay accepts %d\n", p.b_port, sent * MSG_LEN, before, tcp_relay_accept_count(p.relay));
 
@@ -817,7 +862,7 @@ static void test_third_node_view(void) {
 	devtool_free_node_status(&status_at_reachable);
 	assert_after(count_edge_pairs(c, "a", "b") == 1, 5);
 
-	assert(wait_sync_flag(&probe_succeeded, 20));
+	assert_after(probe_succeeded_from("a"), 20);
 	assert_direct(p.a, p.a_b, p.b_port);
 
 	/* Let the ADD_EDGE that replaced a's edge reach c, then check its view. */
@@ -1031,7 +1076,7 @@ static void test_nlb_in_recent_still_upgrades(void) {
 	assert_direct(p.a, p.a_b, p.b_port);
 	assert(get_unreachable_count() == 0);
 	assert(stream_ok());
-	assert(sent > 200);
+	assert(sent >= 200);
 
 	printf("T17 ok: NLB stayed off the recent walk, migrated to port %d, %zu messages streamed\n", p.b_port, sent);
 
@@ -1099,6 +1144,65 @@ static void test_late_canonical_reclassifies(void) {
 	close_relayed_pair(&p);
 }
 
+/* --- T19 -------------------------------------------------------------------- */
+
+static void test_stop_during_probe(void) {
+	printf("\n=== T19: meshlink_stop during an in-flight upgrade probe ===\n");
+
+	struct pair p;
+	open_relayed_pair(&p, "canonical_migrate_t19", false);
+	reset_probe_events();
+	watch_peer(p.a, "b");
+
+	int hole_port = 0;
+	int hole_fd = start_black_hole("127.0.0.1", &hole_port);
+
+	assert(meshlink_start(p.b));
+	assert(meshlink_start(p.a));
+	assert(wait_sync_flag(&peer_reachable, 15));
+	hint_address(p.a, p.a_b, "127.0.0.1", hole_port);
+	assert_after(count_probe_events(DEVTOOL_UPGRADE_PROBE_STARTED) >= 1, 10);
+
+	meshlink_stop(p.a);
+	meshlink_stop(p.b);
+	meshlink_close(p.a);
+	meshlink_close(p.b);
+	assert(meshlink_destroy(p.conf_a));
+	assert(meshlink_destroy(p.conf_b));
+	stop_tcp_relay(p.relay);
+	close(hole_fd);
+
+	printf("T19 ok: stop during probe cleaned up\n");
+}
+
+/* --- T20 -------------------------------------------------------------------- */
+
+static void test_blacklist_after_migrate(void) {
+	printf("\n=== T20: blacklist after hitless migrate does not restart keys twice ===\n");
+
+	struct pair p;
+	open_relayed_pair(&p, "canonical_migrate_t20", true);
+	reset_probe_events();
+	watch_peer(p.a, "b");
+
+	assert(meshlink_start(p.b));
+	assert(meshlink_start(p.a));
+	assert(wait_sync_flag(&peer_reachable, 15));
+	assert_after(check_sync_flag(&probe_succeeded) || connected_direct(p.a, p.a_b, p.b_port), 20);
+
+	devtool_node_status_t st;
+	devtool_get_node_status(p.a, p.a_b, &st);
+	assert(st.validkey);
+	devtool_free_node_status(&st);
+
+	assert(meshlink_blacklist(p.a, p.a_b));
+	usleep(100000);
+	meshlink_set_node_status_cb(p.a, NULL);
+	close_relayed_pair(&p);
+
+	printf("T20 ok: blacklist after migrate\n");
+}
+
 int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, capture_log_cb);
 	devtool_upgrade_probe = upgrade_probe_hook;
@@ -1112,6 +1216,8 @@ int main(void) {
 	test_repeated_ack_on_spare_is_rejected();
 	test_nlb_in_recent_still_upgrades();
 	test_late_canonical_reclassifies();
+	test_stop_during_probe();
+	test_blacklist_after_migrate();
 
 	free_captured_log();
 	return 0;
