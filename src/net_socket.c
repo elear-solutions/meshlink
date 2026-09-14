@@ -296,7 +296,9 @@ void outgoing_note_failed_dest(outgoing_t *outgoing, const sockaddr_t *sa) {
 
 	path_copy_sockaddr(&outgoing->skip_sa, sa);
 
-	if(outgoing->node) {
+	/* Node skip is a pre-activation hint. A live META must stay probeable
+	   (inbound leftover terminate is not a failed dest). */
+	if(outgoing->node && !(outgoing->node->connection && outgoing->node->connection->status.active)) {
 		path_copy_sockaddr(&outgoing->node->startup_skip_sa, sa);
 	}
 }

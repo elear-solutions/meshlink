@@ -519,7 +519,6 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	c->allow_request = ALL;
 	c->last_key_renewal = mesh->loop.now.tv_sec;
 	c->status.active = true;
-	memset(&n->startup_skip_sa, 0, sizeof n->startup_skip_sa);
 
 	logger(mesh, MESHLINK_INFO, "Connection with %s activated", c->name);
 
@@ -544,6 +543,10 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 			terminate_connection(mesh, other, false);
 		}
 	}
+
+	/* Skip expires on a live path. Do this after leftover terminate so a
+	   pending sibling cannot restamp n->startup_skip_sa. */
+	memset(&n->startup_skip_sa, 0, sizeof n->startup_skip_sa);
 
 	/* Send him everything we know */
 

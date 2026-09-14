@@ -123,7 +123,7 @@ void reset_outgoing(struct outgoing_t *);
 void outgoing_abort_startup(struct meshlink_handle *mesh, struct outgoing_t *);
 /* Untrack the startup socket without closing it. Today: blacklist. */
 void outgoing_detach_startup(struct meshlink_handle *mesh, struct outgoing_t *);
-/* Persist the canceled dest on the outgoing walk and the node (upgrade probes skip it until a path activates). */
+/* Persist a failed startup dest on the outgoing walk and, if no META is active yet, on the node. */
 void outgoing_note_failed_dest(struct outgoing_t *outgoing, const sockaddr_t *sa);
 void setup_outgoing_connection(struct meshlink_handle *mesh, struct outgoing_t *);
 void outgoing_set_startup_ms(int ms);

@@ -452,6 +452,84 @@ static void test_upgrade_after_timeout(void) {
 	assert(meshlink_destroy("outgoing_bounded_up_conf.2"));
 }
 
+static void test_inbound_wins_during_startup(void) {
+	printf("\n=== outgoing-bounded: inbound win during startup still probes the leftover dest ===\n");
+
+	assert(meshlink_destroy("outgoing_bounded_in_conf.1"));
+	assert(meshlink_destroy("outgoing_bounded_in_conf.2"));
+
+	meshlink_handle_t *a = meshlink_open("outgoing_bounded_in_conf.1", "a", "outgoing-bounded-in", DEV_CLASS_PORTABLE);
+	meshlink_handle_t *b = meshlink_open("outgoing_bounded_in_conf.2", "b", "outgoing-bounded-in", DEV_CLASS_STATIONARY);
+	assert(a && b);
+	meshlink_enable_discovery(a, false);
+	meshlink_enable_discovery(b, false);
+
+	int a_port = meshlink_get_port(a);
+	int hole_port = 0;
+	int hole_fd = start_black_hole("127.0.0.1", &hole_port);
+	int relay_port = 0;
+	tcp_relay_t *relay = start_tcp_relay("127.0.0.1", &relay_port, "127.0.0.1", a_port);
+	char relay_port_str[16];
+	snprintf(relay_port_str, sizeof relay_port_str, "%d", relay_port);
+
+	exchange_meshlink_pair(a, b);
+	meshlink_node_t *node_b = meshlink_get_node(a, "b");
+	meshlink_node_t *node_a = meshlink_get_node(b, "a");
+	forget_addresses(a, node_b);
+	forget_addresses(b, node_a);
+	hint_address(a, node_b, "127.0.0.1", hole_port);
+	assert(meshlink_set_canonical_address(b, node_a, "127.0.0.1", relay_port_str));
+
+	watched_peer = "b";
+	init_sync_flag(&peer_reachable);
+	meshlink_set_node_status_cb(a, status_cb);
+	devtool_set_outgoing_startup_ms(5000);
+	size_t mark = log_mark();
+	assert(meshlink_start(a));
+
+	char hole_dial[128];
+	snprintf(hole_dial, sizeof hole_dial, "Trying to connect to b at 127.0.0.1 port %d (recent)", hole_port);
+	assert_after(log_find(mark, hole_dial) >= 0, 5);
+	assert(meshlink_start(b));
+	assert(wait_sync_flag(&peer_reachable, 15));
+	devtool_set_outgoing_startup_ms(0);
+
+	assert_after(log_find(mark, "Terminating pending second connection with b") >= 0, 5);
+
+	devtool_node_status_t st;
+	bool keyed = false;
+
+	for(int i = 0; i < 20; i++) {
+		devtool_get_node_status(a, node_b, &st);
+		keyed = st.validkey;
+		devtool_free_node_status(&st);
+
+		if(keyed) {
+			break;
+		}
+
+		usleep(100000);
+	}
+
+	assert(keyed);
+
+	char hole_probe[160];
+	snprintf(hole_probe, sizeof hole_probe, "Path validation: b probe-start 127.0.0.1 port %d", hole_port);
+	assert_after(log_find(mark, hole_probe) >= 0, 10);
+
+	printf("outgoing-bounded T9 ok: inbound leftover terminate did not starve the burned dest\n");
+
+	meshlink_set_node_status_cb(a, NULL);
+	meshlink_stop(a);
+	meshlink_stop(b);
+	meshlink_close(a);
+	meshlink_close(b);
+	close(hole_fd);
+	stop_tcp_relay(relay);
+	assert(meshlink_destroy("outgoing_bounded_in_conf.1"));
+	assert(meshlink_destroy("outgoing_bounded_in_conf.2"));
+}
+
 int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, capture_log_cb);
 
@@ -463,6 +541,7 @@ int main(void) {
 	test_only_best_gets_budget();
 	test_blacklist_during_bound();
 	test_upgrade_after_timeout();
+	test_inbound_wins_during_startup();
 
 	free_captured_log();
 	return 0;
