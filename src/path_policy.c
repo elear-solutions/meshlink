@@ -1267,10 +1267,69 @@ void path_note_udp_confirmed(meshlink_handle_t *mesh, node_t *n) {
 	}
 }
 
+static void path_defer_demotion(meshlink_handle_t *mesh, node_t *n, const char *reason) {
+	if(n->demote_deferred) {
+		return;
+	}
+
+	n->demote_deferred = true;
+	snprintf(n->demote_reason, sizeof n->demote_reason, "%s", reason ? reason : "");
+
+	if(mesh->route_guard_deferred_count < ROUTE_GUARD_DEFERRED_MAX) {
+		mesh->route_guard_deferred[mesh->route_guard_deferred_count++] = n;
+	} else {
+		mesh->route_guard_overflow = true;
+	}
+}
+
+static void path_apply_deferred_demotion(meshlink_handle_t *mesh, node_t *n) {
+	if(!n->demote_deferred) {
+		return;
+	}
+
+	n->demote_deferred = false;
+	path_note_udp_demoted_reason(mesh, n, n->demote_reason);
+}
+
+void path_send_guard_enter(meshlink_handle_t *mesh) {
+	if(mesh) {
+		mesh->route_guard_depth++;
+	}
+}
+
+void path_send_guard_leave(meshlink_handle_t *mesh) {
+	if(!mesh || !mesh->route_guard_depth || --mesh->route_guard_depth) {
+		return;
+	}
+
+	bool overflow = mesh->route_guard_overflow;
+	unsigned count = mesh->route_guard_deferred_count;
+
+	mesh->route_guard_overflow = false;
+	mesh->route_guard_deferred_count = 0;
+
+	for(unsigned i = 0; i < count; i++) {
+		path_apply_deferred_demotion(mesh, mesh->route_guard_deferred[i]);
+	}
+
+	if(overflow) {
+		for splay_each(node_t, n, mesh->nodes) {
+			path_apply_deferred_demotion(mesh, n);
+		}
+	}
+}
+
 void path_note_udp_demoted_reason(meshlink_handle_t *mesh, node_t *n, const char *reason) {
 	path_tier_t was;
 
 	if(!n || !n->status.udp_confirmed || n->status.temp_udp_confirmed) {
+		return;
+	}
+
+	if(mesh && mesh->route_guard_depth) {
+		/* Mid-datagram. Switching carriers now would split this datagram
+		   across two paths; the next one gets the new route. */
+		path_defer_demotion(mesh, n, reason);
 		return;
 	}
 
@@ -1338,6 +1397,416 @@ void path_note_selected_route(meshlink_handle_t *mesh, node_t *n, const char *re
 	}
 
 	logger(mesh, MESHLINK_INFO, "Path route: %s %s -> %s (%s)", n->name, path_tier_name(from), path_tier_name(to), reason ? reason : "");
+}
+
+/* --- one candidate under validation -------------------------------------- */
+
+static int64_t timespec_ms_between(const struct timespec *from, const struct timespec *to) {
+	return (int64_t)(to->tv_sec - from->tv_sec) * 1000 + (to->tv_nsec - from->tv_nsec) / 1000000;
+}
+
+static const int path_cooldown_ladder[] = {30, 60, 120, 300, 600};
+
+static int path_cooldown_seconds(meshlink_handle_t *mesh, uint8_t failures) {
+	size_t steps = sizeof path_cooldown_ladder / sizeof path_cooldown_ladder[0];
+	int base = path_cooldown_ladder[failures >= steps ? steps - 1 : failures];
+	int span = base / 5;
+
+	/* +/-20% so a mesh-wide event does not make every node retry in lockstep. */
+	return base - span + prng(mesh, (uint64_t)(2 * span + 1));
+}
+
+static uint64_t path_fresh_nonce(void) {
+	uint64_t nonce = 0;
+
+	do {
+		randomize(&nonce, sizeof nonce);
+	} while(!nonce);
+
+	return nonce;
+}
+
+/* The active route has carried data long enough that replacing it is worth the
+   disturbance. A route that was never recorded has no residency to serve. */
+static bool path_residency_served(meshlink_handle_t *mesh, const node_t *n) {
+	if(n->active_route.kind == DATA_ROUTE_NONE || !n->active_route.selected_at.tv_sec) {
+		return true;
+	}
+
+	return mesh->loop.now.tv_sec - n->active_route.selected_at.tv_sec >= PATH_ROUTE_MIN_RESIDENCY_SEC;
+}
+
+static void path_candidate_discard(node_t *n) {
+	memset(&n->promotion_candidate, 0, sizeof n->promotion_candidate);
+}
+
+/* End the in-flight attempt but keep what we learned about this endpoint: its
+   identity, how often it has let us down, and how long it owes us. */
+static void path_candidate_end_attempt(node_t *n) {
+	route_candidate_t *c = &n->promotion_candidate;
+
+	c->active = false;
+	c->nonce = 0;
+	c->successful_rounds = 0;
+	memset(&c->first_success, 0, sizeof c->first_success);
+	memset(&c->deadline, 0, sizeof c->deadline);
+}
+
+/* A fresh discovery or network change is new information, so the endpoint may
+   be tried again now. It is not evidence that the earlier failures were wrong,
+   so the escalation ladder keeps its position. */
+void path_candidate_clear_cooldown(meshlink_handle_t *mesh, node_t *n) {
+	(void)mesh;
+
+	if(!n) {
+		return;
+	}
+
+	memset(&n->promotion_candidate.cooldown_until, 0, sizeof n->promotion_candidate.cooldown_until);
+}
+
+/* A long healthy stretch does say the earlier failures are not representative. */
+static void path_candidate_reset_escalation(node_t *n) {
+	n->promotion_candidate.failures = 0;
+	memset(&n->promotion_candidate.cooldown_until, 0, sizeof n->promotion_candidate.cooldown_until);
+}
+
+void path_candidate_timeout(meshlink_handle_t *mesh, node_t *n, const char *reason) {
+	if(!mesh || !n || !n->promotion_candidate.active) {
+		return;
+	}
+
+	route_candidate_t *c = &n->promotion_candidate;
+	int cooldown = path_cooldown_seconds(mesh, c->failures);
+
+	if(c->failures < UINT8_MAX) {
+		c->failures++;
+	}
+
+	path_candidate_end_attempt(n);
+	c->cooldown_until = mesh->loop.now;
+	c->cooldown_until.tv_sec += cooldown;
+
+	if(mesh->log_level <= MESHLINK_INFO) {
+		char detail[64];
+		snprintf(detail, sizeof detail, "%s cooldown=%ds", reason ? reason : "no reply", cooldown);
+		path_log_validation(mesh, n, &c->endpoint, "candidate-dropped", detail);
+	}
+}
+
+bool path_candidate_probe_target(meshlink_handle_t *mesh, node_t *n, sockaddr_t *out, uint64_t *nonce_out) {
+	if(!mesh || !n || !out || !nonce_out) {
+		return false;
+	}
+
+	route_candidate_t *c = &n->promotion_candidate;
+
+	/* Keep probing the one candidate already under validation, at a bounded rate. */
+	if(c->active) {
+		if(mesh->loop.now.tv_sec < n->candidate_probe_next) {
+			return false;
+		}
+
+		n->candidate_probe_next = mesh->loop.now.tv_sec + PATH_CANDIDATE_PROBE_INTERVAL_SEC;
+		*out = c->endpoint;
+		*nonce_out = c->nonce;
+		return true;
+	}
+
+	if(c->cooldown_until.tv_sec && mesh->loop.now.tv_sec < c->cooldown_until.tv_sec) {
+		return false;
+	}
+
+	sockaddr_t better;
+
+	if(!path_udp_should_probe_local(mesh, n, &better)) {
+		return false;
+	}
+
+	/* Retrying the endpoint that already failed keeps its place on the
+	   escalation ladder. A different endpoint starts with a clean record. */
+	uint8_t failures = c->endpoint.sa.sa_family && !sockaddrcmp(&c->endpoint, &better) ? c->failures : 0;
+
+	memset(c, 0, sizeof *c);
+	c->failures = failures;
+	c->active = true;
+	c->kind = DATA_ROUTE_DIRECT_UDP;
+	c->endpoint = better;
+	c->source = ADDR_SRC_DISCOVERY;
+	c->nonce = path_fresh_nonce();
+	c->deadline = mesh->loop.now;
+	c->deadline.tv_sec += PATH_PROMOTION_DEADLINE_SEC;
+	n->candidate_probe_next = mesh->loop.now.tv_sec + PATH_CANDIDATE_PROBE_INTERVAL_SEC;
+
+	path_log_validation(mesh, n, &better, "candidate-start", "local UDP");
+
+	*out = c->endpoint;
+	*nonce_out = c->nonce;
+	return true;
+}
+
+/* Commit is a pure endpoint swap for future records: the node session, its
+   channels and its UDP proof all stay exactly as they are. */
+static void path_candidate_commit(meshlink_handle_t *mesh, node_t *n) {
+	route_candidate_t *c = &n->promotion_candidate;
+	sockaddr_t endpoint = c->endpoint;
+
+	path_candidate_discard(n);
+	path_log_validation(mesh, n, &endpoint, "candidate-promoted", "validated");
+	(void)path_promote_udp_if_better(mesh, n, &endpoint);
+	n->active_route.selected_at = mesh->loop.now;
+}
+
+void path_observe_probe_reply(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *from, uint64_t nonce) {
+	if(!mesh || !n || !from) {
+		return;
+	}
+
+	route_candidate_t *c = &n->promotion_candidate;
+
+	/* A reply on the endpoint we are already using is liveness, not promotion.
+	   It also clears any suspicion raised by a retransmission. */
+	if(n->address.sa.sa_family != AF_UNSPEC && !sockaddrcmp(from, &n->address)) {
+		if(n->active_route.suspect) {
+			n->active_route.suspect = false;
+			path_log_validation(mesh, n, from, "suspect-cleared", "probe answered");
+		}
+
+		return;
+	}
+
+	if(!c->active || !c->nonce || nonce != c->nonce || sockaddrcmp(from, &c->endpoint)) {
+		return;
+	}
+
+	/* Two replies from one burst prove nothing about stability, so rounds have
+	   to be separated in time and each one gets a fresh nonce. */
+	if(c->successful_rounds && timespec_ms_between(&c->first_success, &mesh->loop.now) < PATH_PROMOTION_ROUND_GAP_MS) {
+		return;
+	}
+
+	if(!c->successful_rounds) {
+		c->first_success = mesh->loop.now;
+	}
+
+	c->successful_rounds++;
+	c->nonce = path_fresh_nonce();
+
+	if(c->successful_rounds < PATH_PROMOTION_ROUNDS) {
+		path_log_validation(mesh, n, from, "candidate-round", "awaiting next round");
+		return;
+	}
+
+	if(timespec_ms_between(&c->first_success, &mesh->loop.now) < PATH_PROMOTION_HOLD_MS) {
+		return;
+	}
+
+	if(!path_residency_served(mesh, n)) {
+		return;
+	}
+
+	path_candidate_commit(mesh, n);
+}
+
+void path_note_route_suspect(meshlink_handle_t *mesh, node_t *n, const char *reason) {
+	if(!mesh || !n || n->active_route.suspect) {
+		return;
+	}
+
+	n->active_route.suspect = true;
+	n->active_route.suspect_at = mesh->loop.now;
+	path_log_validation(mesh, n, &n->address, "route-suspect", reason ? reason : "");
+}
+
+bool path_has_live_fallback(meshlink_handle_t *mesh, const node_t *n) {
+	if(!mesh || !n) {
+		return false;
+	}
+
+	if(n->nexthop && n->nexthop != mesh->self && n->nexthop != n
+	                && n->nexthop->connection && n->nexthop->connection->status.active) {
+		return true;
+	}
+
+	return n->connection && n->connection->status.active;
+}
+
+bool path_liveness_probe_warranted(meshlink_handle_t *mesh, const node_t *n) {
+	if(!mesh || !n) {
+		return false;
+	}
+
+	/* Still discovering, validating, or recovering: keep probing. */
+	if(!n->status.udp_confirmed || n->promotion_candidate.active || n->active_route.suspect || n->status.want_udp) {
+		return true;
+	}
+
+	/* Never used by the application: nothing depends on this path being warm. */
+	if(!n->last_application_traffic) {
+		return false;
+	}
+
+	return mesh->loop.now.tv_sec - n->last_application_traffic < PATH_LIVENESS_INTERVAL_SEC;
+}
+
+void path_route_tick(meshlink_handle_t *mesh, node_t *n) {
+	if(!mesh || !n) {
+		return;
+	}
+
+	route_candidate_t *c = &n->promotion_candidate;
+	bool validated = c->active && c->successful_rounds >= PATH_PROMOTION_ROUNDS;
+
+	/* A candidate that proved itself while the active route was still inside
+	   its residency commits as soon as that residency is served. It is waiting
+	   on us, not on the network, so the validation deadline does not apply. */
+	if(validated
+	                && timespec_ms_between(&c->first_success, &mesh->loop.now) >= PATH_PROMOTION_HOLD_MS
+	                && path_residency_served(mesh, n)) {
+		path_candidate_commit(mesh, n);
+	} else if(!validated && c->active && c->deadline.tv_sec && mesh->loop.now.tv_sec >= c->deadline.tv_sec) {
+		path_candidate_timeout(mesh, n, "no validated reply");
+	}
+
+	/* Suspicion is resolved by probes, not by assumption. Demote only once the
+	   probe window has closed unanswered, and only when something else is
+	   already live to carry the traffic: a node with nowhere else to go stays
+	   on its suspect path rather than being declared broken. */
+	if(n->active_route.suspect
+	                && timespec_ms_between(&n->active_route.suspect_at, &mesh->loop.now) >= PATH_SUSPECT_WINDOW_MS) {
+		if(path_has_live_fallback(mesh, n)) {
+			n->active_route.suspect = false;
+			path_note_udp_demoted_reason(mesh, n, "suspect probes unanswered");
+		} else {
+			n->active_route.suspect_at = mesh->loop.now;
+			path_log_validation(mesh, n, &n->address, "route-degraded", "no live fallback, still probing");
+		}
+	}
+
+	/* A long healthy stretch means the earlier failures are not representative. */
+	if(!n->active_route.suspect && n->active_route.selected_at.tv_sec
+	                && mesh->loop.now.tv_sec - n->active_route.selected_at.tv_sec >= PATH_HEALTHY_RESET_SEC) {
+		path_candidate_reset_escalation(n);
+	}
+}
+
+const char *data_route_kind_name(data_route_kind_t kind) {
+	switch(kind) {
+	case DATA_ROUTE_DIRECT_UDP:
+		return "direct-udp";
+
+	case DATA_ROUTE_DIRECT_LOCAL_META:
+		return "direct-local-meta";
+
+	case DATA_ROUTE_RELAY:
+		return "relay";
+
+	case DATA_ROUTE_NONE:
+	default:
+		return "none";
+	}
+}
+
+const char *relay_carrier_name(relay_carrier_t carrier) {
+	switch(carrier) {
+	case RELAY_CARRIER_UDP:
+		return "udp";
+
+	case RELAY_CARRIER_META_DIRECT:
+		return "meta-direct";
+
+	case RELAY_CARRIER_META_CANONICAL:
+		return "meta-canonical";
+
+	case RELAY_CARRIER_NONE:
+	default:
+		return "none";
+	}
+}
+
+/* Which carrier a relay hop can take right now. META-in pinning is applied by
+   the caller; this only reports what the hop itself offers. */
+static relay_carrier_t relay_carrier_for(const node_t *hop) {
+	if(hop_udp_ready(hop)) {
+		return RELAY_CARRIER_UDP;
+	}
+
+	if(!hop->connection || !hop->connection->status.active) {
+		return RELAY_CARRIER_NONE;
+	}
+
+	return path_meta_is_canonical(hop, hop->connection) ? RELAY_CARRIER_META_CANONICAL : RELAY_CARRIER_META_DIRECT;
+}
+
+bool path_active_send_target(meshlink_handle_t *mesh, node_t *n, path_target_t *out) {
+	if(!mesh || !n || !out) {
+		return false;
+	}
+
+	memset(out, 0, sizeof *out);
+
+	if(!n->status.reachable) {
+		return false;
+	}
+
+	/* A validated direct UDP endpoint always wins: it is the top of the ladder
+	   and needs no hop. Local versus WAN is an attribute of the same mechanism.
+	   A suspect endpoint steps aside only while something else is already live;
+	   with no fallback it keeps carrying data and is probed instead. */
+	if(hop_udp_ready(n) && !(n->active_route.suspect && path_has_live_fallback(mesh, n))) {
+		out->kind = DATA_ROUTE_DIRECT_UDP;
+		out->local = n->udp_tier == PATH_TIER_DIRECT_LOCAL_UDP;
+		return true;
+	}
+
+	node_t *hop = n->nexthop;
+
+	if(hop && hop != mesh->self && hop != n) {
+		relay_carrier_t carrier = relay_carrier_for(hop);
+
+		if(carrier != RELAY_CARRIER_NONE) {
+			out->kind = DATA_ROUTE_RELAY;
+			out->relay_carrier = carrier;
+			out->first_hop = hop;
+			return true;
+		}
+	}
+
+	/* No hop, or the hop offers nothing: fall back to this node's own META. */
+	if(n->connection && n->connection->status.active) {
+		out->kind = DATA_ROUTE_DIRECT_LOCAL_META;
+		out->local = path_address_is_local(&n->connection->address);
+		return true;
+	}
+
+	/* Nothing validated. The caller still tries META so a first record can
+	   bootstrap a session rather than being dropped outright. */
+	out->kind = DATA_ROUTE_DIRECT_LOCAL_META;
+	return true;
+}
+
+void path_record_active_route(meshlink_handle_t *mesh, node_t *n, const path_target_t *target) {
+	if(!mesh || !n || !target) {
+		return;
+	}
+
+	data_route_t *route = &n->active_route;
+	bool changed = route->kind != target->kind
+	               || route->relay_carrier != target->relay_carrier
+	               || route->first_hop != target->first_hop;
+
+	n->last_application_traffic = mesh->loop.now.tv_sec;
+
+	if(!changed) {
+		return;
+	}
+
+	route->kind = target->kind;
+	route->relay_carrier = target->relay_carrier;
+	route->first_hop = target->first_hop;
+	route->local = target->local;
+	route->suspect = false;
+	route->selected_at = mesh->loop.now;
 }
 
 void path_log_candidate(meshlink_handle_t *mesh, const node_t *n, const sockaddr_t *sa, address_source_t src, path_cap_t cap, const char *action) {

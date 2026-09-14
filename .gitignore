@@ -98,6 +98,7 @@ test/trio2
 test/utcp-benchmark
 test/utcp-benchmark-stream
 test/path-policy-coverage
+test/path-stability
 test/outgoing-order
 test/outgoing-bounded
 test/canonical-migrate

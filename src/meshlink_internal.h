@@ -38,6 +38,10 @@
 
 #define MAXSOCKETS 4    /* Probably overkill... */
 
+/* A single datagram can only ever demote its destination and that destination's
+   first hop. Anything beyond that falls back to a full node walk. */
+#define ROUTE_GUARD_DEFERRED_MAX 4
+
 static const char meshlink_invitation_label[] = "MeshLink invitation";
 static const char meshlink_tcp_label[] = "MeshLink TCP";
 static const char meshlink_udp_label[] = "MeshLink UDP";
@@ -104,6 +108,14 @@ struct meshlink_handle {
 	signal_t datafromapp;
 
 	hash_t *node_udp_cache;
+
+	/* One utcp_send() is one application datagram. While it is unwinding, a
+	   path demotion is recorded instead of applied, so every fragment leaves
+	   on the carrier the first one chose (ADR 0004). */
+	unsigned route_guard_depth;
+	struct node_t *route_guard_deferred[ROUTE_GUARD_DEFERRED_MAX];
+	unsigned route_guard_deferred_count;
+	bool route_guard_overflow;
 
 	struct splay_tree_t *nodes;
 	struct splay_tree_t *edges;

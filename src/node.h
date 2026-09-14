@@ -49,6 +49,7 @@ typedef struct node_status_t {
    in the public header; devtools.c static-asserts the two agree. */
 #define MAX_RECENT 5
 
+
 typedef struct node_t {
 	// Public member variables
 	char *name;                             /* name of this node */
@@ -128,6 +129,18 @@ typedef struct node_t {
 	path_tier_t udp_tier;                   /* Validated UDP dest tier */
 	path_tier_t last_path_tier;             /* Last logged destination-wide tier */
 	time_t udp_local_probe_next;            /* Earliest local-UDP validation while WAN is active */
+	bool demote_deferred;                   /* UDP demotion seen inside a send, applied when it unwinds */
+	char demote_reason[32];                 /* Reason to log once the deferred demotion is applied */
+
+	// One active data route, at most one candidate being validated (ADR 0004)
+	data_route_t active_route;
+	route_candidate_t promotion_candidate;
+	timeout_t promotion_timer;
+	time_t last_application_traffic;        /* Drives demand-only dialling and idle cleanup */
+	time_t candidate_probe_next;            /* Earliest next probe at the candidate endpoint */
+	time_t pmtu_increase_next;              /* Earliest next full-size "is the path bigger now" probe */
+	sockaddr_t probe_candidate_sa;          /* Endpoint one packet of this burst is aimed at */
+	bool probe_candidate_pending;           /* Consumed by the next PKT_PROBE send */
 
 	// Graph-related member variables
 	time_t last_reachable;

@@ -296,14 +296,10 @@ static void relay_cover_sanity(meshlink_handle_t *mesh, node_t *from, node_t *de
 	(void)relay_capture_send(from, 0, ctx->inner, sizeof(ctx->inner));
 	(void)relay_capture_send(from, 0, ctx->wrapped, RELAY_CAPTURE_MAX + 1);
 
-	relay_update_destination_transport(mesh, NULL);
-	relay_update_destination_transport(mesh, mesh->self);
-	relay_recompute_dependents(NULL, hop);
-	relay_recompute_dependents(mesh, NULL);
-	relay_recompute_dependents(mesh, hop);
+	(void)relay_fixed_channel_mtu(NULL, dest);
+	(void)relay_fixed_channel_mtu(mesh, NULL);
+	(void)relay_fixed_channel_mtu(mesh, hop);
 	relay_on_hard_send_error(mesh, NULL, NULL, 0);
-	relay_wake_probes(mesh, NULL);
-	relay_wake_probes(mesh, hop);
 	relay_clear_budget_if_nexthop_changed(mesh, NULL);
 	relay_clear_budget_if_nexthop_changed(mesh, mesh->self);
 	dest->prev_nexthop = hop;
@@ -505,30 +501,32 @@ static void relay_cover_req_mtu(meshlink_handle_t *mesh, node_t *from, node_t *d
 		}
 	}
 
+	/* The fixed size depends only on the name pair, so none of this state can
+	   move it. Walk the same states anyway to prove that. */
+	uint16_t fixed = relay_fixed_channel_mtu(mesh, dest);
 	dest->status.udp_confirmed = true;
 	dest->minmtu = 0;
-	relay_update_destination_transport(mesh, dest);
+	assert(relay_fixed_channel_mtu(mesh, dest) == fixed);
 	dest->minmtu = MTU;
-	relay_update_destination_transport(mesh, dest);
+	assert(relay_fixed_channel_mtu(mesh, dest) == fixed);
 	dest->status.udp_confirmed = false;
 	dest->status.reachable = false;
-	relay_update_destination_transport(mesh, dest);
+	assert(relay_fixed_channel_mtu(mesh, dest) == fixed);
 	dest->status.reachable = true;
 	dest->nexthop = NULL;
-	relay_update_destination_transport(mesh, dest);
+	assert(relay_fixed_channel_mtu(mesh, dest) == fixed);
 	dest->nexthop = mesh->self;
-	relay_update_destination_transport(mesh, dest);
+	assert(relay_fixed_channel_mtu(mesh, dest) == fixed);
 	dest->nexthop = hop;
 	hop->status.udp_confirmed = false;
-	relay_update_destination_transport(mesh, dest);
+	assert(relay_fixed_channel_mtu(mesh, dest) == fixed);
 	hop->status.udp_confirmed = true;
 	hop->status.validkey = true;
 	hop->status.temp_udp_confirmed = false;
 	dest->relay_budget = 0;
-	relay_update_destination_transport(mesh, dest);
+	assert(relay_fixed_channel_mtu(mesh, dest) == fixed);
 	dest->relay_budget = 800;
-	relay_update_destination_transport(mesh, dest);
-
+	assert(relay_fixed_channel_mtu(mesh, dest) == fixed);
 }
 
 static void relay_cover_hard_send_block(meshlink_handle_t *mesh, node_t *from, node_t *dest, node_t *hop, relay_cover_ctx_t *ctx) {
@@ -733,6 +731,7 @@ static void relay_cover_inject_alias(meshlink_handle_t *mesh, node_t *from, node
 
 static void relay_cover_restore(meshlink_handle_t *mesh, node_t *from, node_t *dest, node_t *hop, relay_cover_ctx_t *ctx) {
 	uint32_t math = 0;
+	(void)mesh;
 	dest->nexthop = ctx->saved_nh;
 	dest->prev_nexthop = ctx->saved_prev;
 	dest->status.udp_confirmed = ctx->saved_uc;
@@ -746,8 +745,6 @@ static void relay_cover_restore(meshlink_handle_t *mesh, node_t *from, node_t *d
 	hop->status.udp_confirmed = ctx->saved_huc;
 	hop->connection = ctx->saved_conn;
 	hop->mtuprobes = ctx->saved_probes;
-	relay_update_destination_transport(mesh, dest);
-	relay_update_destination_transport(mesh, hop);
 }
 
 static void relay_cover_exit_uninitialized(void) {

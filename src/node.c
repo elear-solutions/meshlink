@@ -62,6 +62,8 @@ node_t *new_node(void) {
 	n->devclass = DEV_CLASS_UNKNOWN;
 	n->udp_tier = PATH_TIER_NONE;
 	n->last_path_tier = PATH_TIER_NONE;
+	n->active_route.kind = DATA_ROUTE_NONE;
+	n->active_route.relay_carrier = RELAY_CARRIER_NONE;
 
 	return n;
 }
@@ -78,6 +80,33 @@ static void node_clear_inbound_prev_nexthop(meshlink_handle_t *mesh, node_t *dyi
 	}
 }
 
+/* A recorded route names its first hop, and a send in progress may have queued
+   this node for a deferred demotion. Both outlive the node unless cleared. */
+static void node_clear_route_references(meshlink_handle_t *mesh, node_t *dying) {
+	if(!mesh || !dying) {
+		return;
+	}
+
+	if(mesh->nodes) {
+		for splay_each(node_t, n, mesh->nodes) {
+			if(n->active_route.first_hop == dying) {
+				n->active_route.first_hop = NULL;
+				n->active_route.kind = DATA_ROUTE_NONE;
+				n->active_route.relay_carrier = RELAY_CARRIER_NONE;
+			}
+		}
+	}
+
+	for(unsigned i = 0; i < mesh->route_guard_deferred_count; i++) {
+		if(mesh->route_guard_deferred[i] == dying) {
+			mesh->route_guard_deferred[i] = mesh->route_guard_deferred[--mesh->route_guard_deferred_count];
+			break;
+		}
+	}
+
+	dying->demote_deferred = false;
+}
+
 void node_set_validkey(meshlink_handle_t *mesh, node_t *n, bool valid) {
 	if(!n) {
 		return;
@@ -88,8 +117,6 @@ void node_set_validkey(meshlink_handle_t *mesh, node_t *n, bool valid) {
 	}
 
 	n->status.validkey = valid;
-	relay_recompute_dependents(mesh, n);
-	relay_update_destination_transport(mesh, n);
 	path_note_selected_route(mesh, n, valid ? "key recovered" : "key invalidated");
 }
 
@@ -107,7 +134,7 @@ void free_node(node_t *n) {
 	ecdsa_free(n->ecdsa);
 	sptps_stop(&n->sptps);
 
-	if(n->mtutimeout.cb) {
+	if(n->mtutimeout.cb || n->promotion_timer.cb) {
 		abort();
 	}
 
@@ -164,7 +191,9 @@ void node_del(meshlink_handle_t *mesh, node_t *n) {
 	path_reset_canonical_resolve(n);
 	node_udp_cache_forget(mesh, n);
 	node_clear_inbound_prev_nexthop(mesh, n);
+	node_clear_route_references(mesh, n);
 	timeout_del(&mesh->loop, &n->mtutimeout);
+	timeout_del(&mesh->loop, &n->promotion_timer);
 
 	for splay_each(edge_t, e, n->edge_tree) {
 		edge_del(mesh, e);

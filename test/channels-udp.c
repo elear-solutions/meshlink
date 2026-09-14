@@ -16,6 +16,7 @@
 #define SMALL_SIZE 512
 #define SMALL_COUNT 2500
 #define LARGE_SIZE 131072
+#define LARGE_ATTEMPTS 3
 
 static struct sync_flag accept_flag;
 
@@ -125,12 +126,19 @@ int main(void) {
 		assert(clients[i].channel);
 	}
 
-	// Check that we can send up to 65535 bytes without errors
+	// Check that we can send a datagram far larger than one packet without errors.
+	// The channel MSS is the fixed relay-safe floor, so this spans a few hundred
+	// fragments and an unreliable channel may lose the whole datagram if any one
+	// of them is dropped. Send it a few times: what is being checked is that the
+	// send succeeds and that a delivered datagram is reassembled whole, not that
+	// UDP never loses anything.
 
 	char large_data[LARGE_SIZE] = "";
 
-	for(int i = 0; i < 3; i++) {
-		assert(meshlink_channel_send(server, channels[i], large_data, sizeof(large_data)) == sizeof(large_data));
+	for(int attempt = 0; attempt < LARGE_ATTEMPTS; attempt++) {
+		for(int i = 0; i < 3; i++) {
+			assert(meshlink_channel_send(server, channels[i], large_data, sizeof(large_data)) == sizeof(large_data));
+		}
 	}
 
 	// Assert that packets larger than 16 MiB are not allowed
@@ -170,8 +178,8 @@ int main(void) {
 	}
 
 	for(int i = 0; i < 3; i++) {
-		size_t max_received = SMALL_SIZE * SMALL_COUNT + LARGE_SIZE;
-		assert(clients[i].received >= max_received / 2);
+		size_t max_received = SMALL_SIZE * SMALL_COUNT + (size_t)LARGE_SIZE * LARGE_ATTEMPTS;
+		assert(clients[i].received >= (SMALL_SIZE * SMALL_COUNT) / 2);
 		assert(clients[i].received <= max_received);
 		assert(clients[i].got_large_packet);
 	}

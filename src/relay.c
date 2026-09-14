@@ -112,67 +112,33 @@ bool relay_names_unusable(const char *origin, const char *destination) {
 	return MINMTU < need;
 }
 
-void relay_update_destination_transport(meshlink_handle_t *mesh, node_t *dest) {
-	if(!dest || !dest->utcp || dest == mesh->self) {
-		return;
+uint16_t relay_fixed_channel_mtu(meshlink_handle_t *mesh, const node_t *dest) {
+	uint32_t direct_floor = 0;
+
+	/* MINMTU is the smallest payload any validated UDP path may carry, so it is
+	   the only size that stays correct for the whole life of the channel. */
+	if(!relay_sub_u32(MINMTU, (uint32_t)sizeof(meshlink_packethdr_t), &direct_floor)) {
+		return 0;
 	}
 
-	if(dest->status.udp_confirmed) {
-		uint16_t base = dest->minmtu > MINMTU ? dest->minmtu : MINMTU;
-		utcp_set_mtu(dest->utcp, base - sizeof(meshlink_packethdr_t));
-		return;
+	if(!mesh || !dest || relay_names_unusable(mesh->self->name, dest->name)) {
+		return (uint16_t)direct_floor;
 	}
 
-	if(!dest->status.reachable || !dest->nexthop || dest->nexthop == mesh->self) {
-		return;
-	}
-
-	if(relay_names_unusable(mesh->self->name, dest->name) || !relay_hop_udp_ready(dest->nexthop)) {
-		utcp_set_mtu(dest->utcp, MTU - sizeof(meshlink_packethdr_t));
-		return;
-	}
-
-	/* names_unusable already proved prefix+overhead fits MINMTU, so these cannot fail. */
+	/* This pair can be relayed, so reserve the type-8 prefix too. names_unusable
+	   already proved the result leaves room for a UTCP header plus one byte. */
 	uint32_t prefix21 = 0;
 	uint32_t floor = 0;
-	uint32_t first = 0;
 	uint32_t ch = 0;
-	(void)relay_prefix21(mesh->self->name, dest->name, &prefix21);
-	(void)relay_sub_u32(MINMTU, prefix21, &floor);
 
-	uint32_t last = dest->relay_budget ? dest->relay_budget : floor;
-	uint32_t first_base = dest->nexthop->minmtu > MINMTU ? dest->nexthop->minmtu : MINMTU;
-	(void)relay_sub_u32(first_base, prefix21, &first);
-
-	uint32_t budget = last < first ? last : first;
-	(void)relay_sub_u32(budget, (uint32_t)sizeof(meshlink_packethdr_t), &ch);
-	utcp_set_mtu(dest->utcp, (uint16_t)ch);
-}
-
-void relay_recompute_dependents(meshlink_handle_t *mesh, node_t *hop) {
-	if(!mesh || !hop) {
-		return;
+	if(!relay_prefix21(mesh->self->name, dest->name, &prefix21)
+	                || !relay_sub_u32(MINMTU, prefix21, &floor)
+	                || !relay_sub_u32(floor, (uint32_t)sizeof(meshlink_packethdr_t), &ch)
+	                || ch <= RELAY_UTCP_HDR) {
+		return (uint16_t)direct_floor;
 	}
 
-	for splay_each(node_t, dest, mesh->nodes) {
-		if(dest == hop || dest == mesh->self) {
-			continue;
-		}
-
-		if(dest->nexthop != hop) {
-			continue;
-		}
-
-		if(dest->status.udp_confirmed) {
-			continue;
-		}
-
-		if(!dest->utcp) {
-			continue;
-		}
-
-		relay_update_destination_transport(mesh, dest);
-	}
+	return (uint16_t)ch;
 }
 
 static bool relay_is_confirmed_send_dest(const node_t *hop, const sockaddr_t *sa) {
@@ -249,19 +215,6 @@ void relay_on_hard_send_error(meshlink_handle_t *mesh, node_t *hop, const sockad
 	}
 
 	path_note_udp_demoted_reason(mesh, hop, "hard send error");
-	relay_recompute_dependents(mesh, hop);
-	relay_update_destination_transport(mesh, hop);
-}
-
-void relay_wake_probes(meshlink_handle_t *mesh, node_t *hop) {
-	if(!hop || hop->mtuprobes != 31 || !hop->mtutimeout.cb) {
-		return;
-	}
-
-	timeout_set(&mesh->loop, &hop->mtutimeout, &(struct timespec) {
-		0, 0
-	});
-	signal_trigger(&mesh->loop, &mesh->datafromapp);
 }
 
 void relay_clear_budget_if_nexthop_changed(meshlink_handle_t *mesh, node_t *dest) {
@@ -272,7 +225,6 @@ void relay_clear_budget_if_nexthop_changed(meshlink_handle_t *mesh, node_t *dest
 	if(dest->nexthop != dest->prev_nexthop) {
 		dest->relay_budget = 0;
 		dest->prev_nexthop = dest->nexthop;
-		relay_update_destination_transport(mesh, dest);
 		path_note_selected_route(mesh, dest, "nexthop change");
 	} else {
 		dest->prev_nexthop = dest->nexthop;
@@ -658,8 +610,9 @@ bool relay_handle_req_relay_mtu(meshlink_handle_t *mesh, connection_t *c, const 
 		return true;
 	}
 
+	/* Telemetry and a send-side limit only. The channel MSS is fixed at the
+	   relay-safe floor, so a reported budget can never shrink it. */
 	dest->relay_budget = (uint16_t)budget;
 	logger(mesh, MESHLINK_DEBUG, "Got REQ_RELAY_MTU from %s for %s: %u", from->name, dest->name, (unsigned)dest->relay_budget);
-	relay_update_destination_transport(mesh, dest);
 	return true;
 }

@@ -452,6 +452,13 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 	mesh->contradicting_add_edge = 0;
 	mesh->contradicting_del_edge = 0;
 
+	/* Expire stale candidates, resolve suspect routes and reset escalation. */
+	for splay_each(node_t, n, mesh->nodes) {
+		if(n != mesh->self) {
+			path_route_tick(mesh, n);
+		}
+	}
+
 	int timeout = default_timeout;
 
 	/* Check if we need to make or break connections. */
@@ -586,7 +593,6 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 		// perform connect
 
 		if(connect_to && !connect_to->connection) {
-			connect_to->last_connect_try = mesh->loop.now.tv_sec;
 			logger(mesh, MESHLINK_DEBUG, "Autoconnect trying to connect to %s", connect_to->name);
 
 			/* check if there is already a connection attempt to this node */
@@ -600,12 +606,20 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 				}
 			}
 
-			if(!connect_to->status.reachable && !node_read_public_key(mesh, connect_to)) {
+			/* ID needs their key. A reachable-but-keyless dial fails the
+			   handshake and last_connect_try then blocks retries. */
+			if(!node_read_public_key(mesh, connect_to)) {
 				logger(mesh, MESHLINK_DEBUG, "* skip autoconnect since we don't know this node's public key");
+
+				if(connect_to->status.reachable) {
+					send_req_key(mesh, connect_to);
+				}
+
 				skip = true;
 			}
 
 			if(!skip) {
+				connect_to->last_connect_try = mesh->loop.now.tv_sec;
 				logger(mesh, MESHLINK_DEBUG, "Autoconnecting to %s", connect_to->name);
 				outgoing_t *outgoing = xzalloc(sizeof(outgoing_t));
 				outgoing->node = connect_to;
@@ -739,16 +753,20 @@ void retry(meshlink_handle_t *mesh) {
 	for list_each(outgoing_t, outgoing, mesh->outgoings) {
 		outgoing->timeout = 0;
 
-		if(outgoing->pending && !outgoing->pending->status.active) {
-			outgoing_abort_startup(mesh, outgoing);
-			outgoing->state = OUTGOING_START;
-			do_outgoing_connection(mesh, outgoing);
-		}
-
+		/* Arm the retry before dialling: do_outgoing_connection() can run out
+		   of addresses and delete this entry, and free_outgoing() takes the
+		   timer with it. Touching outgoing afterwards would be a use after
+		   free. */
 		if(outgoing->ev.cb) {
 			timeout_set(&mesh->loop, &outgoing->ev, &(struct timespec) {
 				0, 0
 			});
+		}
+
+		if(outgoing->pending && !outgoing->pending->status.active) {
+			outgoing_abort_startup(mesh, outgoing);
+			outgoing->state = OUTGOING_START;
+			do_outgoing_connection(mesh, outgoing);
 		}
 	}
 

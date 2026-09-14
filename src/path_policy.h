@@ -15,6 +15,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <time.h>
 
 struct meshlink_handle;
 struct node_t;
@@ -57,8 +58,73 @@ typedef enum meta_dial_tier_t {
 	META_DIAL_CANONICAL
 } meta_dial_tier_t;
 
+/* The six preference labels of ADR 0004 are attributes of three mechanisms. */
+typedef enum data_route_kind_t {
+	DATA_ROUTE_NONE = 0,
+	DATA_ROUTE_DIRECT_UDP,
+	DATA_ROUTE_DIRECT_LOCAL_META,
+	DATA_ROUTE_RELAY
+} data_route_kind_t;
+
+typedef enum relay_carrier_t {
+	RELAY_CARRIER_NONE = 0,
+	RELAY_CARRIER_UDP,
+	RELAY_CARRIER_META_DIRECT,
+	RELAY_CARRIER_META_CANONICAL
+} relay_carrier_t;
+
+/* Where this destination's application records go right now. Never holds a
+   connection_t *: META targets are resolved from the node under mesh->mutex at
+   send time, so tearing a connection down cannot leave a dangling route. */
+typedef struct data_route_t {
+	data_route_kind_t kind;
+	relay_carrier_t relay_carrier;
+	struct node_t *first_hop;               /* NULL unless kind is RELAY */
+	bool local;
+	bool suspect;                           /* probing after a retransmit, still carrying */
+	struct timespec selected_at;            /* start of the minimum residency */
+	struct timespec suspect_at;             /* when the retransmission raised suspicion */
+} data_route_t;
+
+/* The one higher-ranked endpoint being validated, if any. */
+typedef struct route_candidate_t {
+	bool active;
+	data_route_kind_t kind;
+	sockaddr_t endpoint;
+	address_source_t source;
+	uint64_t nonce;
+	uint8_t successful_rounds;
+	uint8_t failures;                       /* drives the cooldown ladder */
+	struct timespec first_success;
+	struct timespec deadline;
+	struct timespec cooldown_until;
+} route_candidate_t;
+
+/* What the send path was told to use for one record. */
+typedef struct path_target_t {
+	data_route_kind_t kind;
+	relay_carrier_t relay_carrier;
+	struct node_t *first_hop;
+	bool local;
+} path_target_t;
+
 #define UDP_LOCAL_PROBE_SEC 15
 #define MAX_CANONICAL_SA 8
+
+/* ADR 0004 stability budget. Promotion is deliberately slow: a better path has
+   to prove itself twice, then wait, and the path it would replace has to have
+   served long enough that swapping is worth the disturbance. */
+#define PATH_LIVENESS_INTERVAL_SEC       60
+#define PATH_PROMOTION_ROUNDS             2
+#define PATH_PROMOTION_ROUND_GAP_MS     500
+#define PATH_PROMOTION_HOLD_MS         1000
+#define PATH_PROMOTION_DEADLINE_SEC      10
+#define PATH_CANDIDATE_PROBE_INTERVAL_SEC 1
+#define PATH_ROUTE_MIN_RESIDENCY_SEC     30
+#define PATH_PMTU_INCREASE_INTERVAL_SEC 600
+#define PATH_SUSPECT_PROBES               2
+#define PATH_SUSPECT_WINDOW_MS         1000
+#define PATH_HEALTHY_RESET_SEC           60
 #define CANONICAL_RESOLVE_TIMEOUT 2
 #define CANONICAL_RESOLVE_BACKOFF_MIN 5
 #define CANONICAL_RESOLVE_BACKOFF_MAX 600
@@ -142,10 +208,62 @@ void path_schedule_local_udp_probe(struct meshlink_handle *mesh, struct node_t *
 void path_note_udp_confirmed(struct meshlink_handle *mesh, struct node_t *n);
 void path_note_udp_demoted(struct meshlink_handle *mesh, struct node_t *n);
 void path_note_udp_demoted_reason(struct meshlink_handle *mesh, struct node_t *n, const char *reason);
+
+/* --- promotion of one candidate endpoint, and honest demotion ------------- */
+
+/* Start validating sa if it outranks the active endpoint and is out of
+   cooldown. Returns the endpoint to probe next and the nonce to stamp into it.
+   False means there is nothing to validate right now. */
+bool path_candidate_probe_target(struct meshlink_handle *mesh, struct node_t *n, sockaddr_t *out, uint64_t *nonce_out);
+
+/* An authenticated probe reply arrived from `from` carrying `nonce`. Counts a
+   validation round, and commits the candidate once it has proven itself and
+   the active route has served its minimum residency. */
+void path_observe_probe_reply(struct meshlink_handle *mesh, struct node_t *n, const sockaddr_t *from, uint64_t nonce);
+
+/* Give up on the candidate and put its endpoint into escalating cooldown. */
+void path_candidate_timeout(struct meshlink_handle *mesh, struct node_t *n, const char *reason);
+
+/* A fresh discovery or network change may clear cooldown once. */
+void path_candidate_clear_cooldown(struct meshlink_handle *mesh, struct node_t *n);
+
+/* Periodic: expire a stale candidate, resolve suspect state, reset escalation
+   after a long healthy stretch. Requires mesh->mutex. */
+void path_route_tick(struct meshlink_handle *mesh, struct node_t *n);
+
+/* Mark the active route suspect after a reliable retransmission. Does not
+   demote: the route keeps carrying data until its probes go unanswered. */
+void path_note_route_suspect(struct meshlink_handle *mesh, struct node_t *n, const char *reason);
+
+/* True when a lower-ranked route is already live and could take over now. */
+bool path_has_live_fallback(struct meshlink_handle *mesh, const struct node_t *n);
+
+/* True when this peer is worth spending a liveness probe on: either it is
+   carrying application traffic, or something about its path is unresolved. */
+bool path_liveness_probe_warranted(struct meshlink_handle *mesh, const struct node_t *n);
+
+/* Bracket one synchronous utcp_send(). Demotions seen in between are recorded
+   and applied on leave, so every fragment of one datagram uses one carrier.
+   Both require mesh->mutex and nest. */
+void path_send_guard_enter(struct meshlink_handle *mesh);
+void path_send_guard_leave(struct meshlink_handle *mesh);
 bool path_promote_udp_if_better(struct meshlink_handle *mesh, struct node_t *n, const sockaddr_t *from);
 
 /* Compute the selected destination route, log only on change, update last_path_tier. */
 void path_note_selected_route(struct meshlink_handle *mesh, struct node_t *n, const char *reason);
+
+/* --- ADR 0004: one active route, one validation candidate ----------------- */
+
+/* Resolve where this destination's next application record goes. False means
+   there is nothing usable and the caller should drop. Requires mesh->mutex. */
+bool path_active_send_target(struct meshlink_handle *mesh, struct node_t *n, path_target_t *out);
+
+/* Record the route the send path just used, so residency and logs agree with
+   what actually happened. Requires mesh->mutex. */
+void path_record_active_route(struct meshlink_handle *mesh, struct node_t *n, const path_target_t *target);
+
+const char *data_route_kind_name(data_route_kind_t kind);
+const char *relay_carrier_name(relay_carrier_t carrier);
 
 void path_log_candidate(struct meshlink_handle *mesh, const struct node_t *n, const sockaddr_t *sa, address_source_t src, path_cap_t cap, const char *action);
 void path_log_validation(struct meshlink_handle *mesh, const struct node_t *n, const sockaddr_t *sa, const char *action, const char *detail);

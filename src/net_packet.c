@@ -45,6 +45,11 @@ static void send_udppacket(meshlink_handle_t *mesh, node_t *, vpn_packet_t *);
 #define MAX_SEQNO 1073741824
 #define PROBE_OVERHEAD (SPTPS_DATAGRAM_OVERHEAD + 40)
 
+/* data[0] is the request/reply flag and data[14..] is random padding. Bytes
+   1..13 are zeroed by the sender and echoed verbatim by the replier, so the
+   promotion nonce rides there without a wire format change. */
+#define PROBE_NONCE_OFFSET 1
+
 /* mtuprobes == 1..30: initial discovery, send bursts with 1 second interval
    mtuprobes ==    31: sleep pinginterval seconds
    mtuprobes ==    32: send 1 burst, sleep pingtimeout second
@@ -86,8 +91,6 @@ static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 		n->mtuprobes = 1;
 
 		update_node_pmtu(mesh, n);
-		relay_recompute_dependents(mesh, n);
-		relay_update_destination_transport(mesh, n);
 	}
 
 	if(n->mtuprobes >= 10 && n->mtuprobes < 32 && !n->minmtu) {
@@ -119,6 +122,26 @@ static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 		goto end;
 	} else if(n->mtuprobes == 32) {
 		timeout = mesh->dev_class_traits[n->devclass].pingtimeout;
+
+		/* Liveness only matters for a peer we are actually talking to. An idle
+		   peer is not probed at all, so a quiet mesh costs nothing (ADR 0004). */
+		if(!path_liveness_probe_warranted(mesh, n)) {
+			n->mtuprobes = 31;
+			timeout = mesh->dev_class_traits[n->devclass].pinginterval;
+			goto end;
+		}
+	}
+
+	/* Decide before building the burst, so the nonce in the payload is the one
+	   the candidate endpoint is expected to echo. A probe reply carries bytes
+	   1..13 back unchanged, which is where the nonce rides. */
+	sockaddr_t candidate;
+	uint64_t nonce = 0;
+
+	n->probe_candidate_pending = path_candidate_probe_target(mesh, n, &candidate, &nonce);
+
+	if(n->probe_candidate_pending) {
+		n->probe_candidate_sa = candidate;
 	}
 
 	for(int i = 0; i < 5; i++) {
@@ -129,6 +152,13 @@ static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 				continue;
 			}
 
+			/* Looking for a bigger path is worth a full-size packet only
+			   occasionally; it is the most expensive probe there is. */
+			if(mesh->loop.now.tv_sec < n->pmtu_increase_next) {
+				continue;
+			}
+
+			n->pmtu_increase_next = mesh->loop.now.tv_sec + PATH_PMTU_INCREASE_INTERVAL_SEC;
 			len = n->maxmtu + 8;
 		} else if(n->maxmtu <= n->minmtu) {
 			len = n->maxmtu;
@@ -143,6 +173,7 @@ static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 		vpn_packet_t packet;
 		packet.probe = true;
 		memset(packet.data, 0, 14);
+		memcpy(packet.data + PROBE_NONCE_OFFSET, &nonce, sizeof nonce);
 		randomize(packet.data + 14, len - 14);
 		packet.len = len;
 		n->status.broadcast = i >= 4 && n->mtuprobes <= 10 && n->prevedge;
@@ -223,11 +254,10 @@ static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet
 
 			path_note_udp_confirmed(mesh, n);
 			try_upgrade_probe(mesh, n);
-			relay_update_destination_transport(mesh, n);
-			relay_recompute_dependents(mesh, n);
-		} else if(path_promote_udp_if_better(mesh, n, &n->last_udp_from)) {
-			relay_update_destination_transport(mesh, n);
-			relay_recompute_dependents(mesh, n);
+		} else {
+			uint64_t nonce = 0;
+			memcpy(&nonce, packet->data + PROBE_NONCE_OFFSET, sizeof nonce);
+			path_observe_probe_reply(mesh, n, &n->last_udp_from, nonce);
 		}
 
 		/* If we haven't established the PMTU yet, restart the discovery process. */
@@ -768,37 +798,44 @@ static bool send_relay_outer(meshlink_handle_t *mesh, node_t *hop, const void *d
 	const char *origin_name = hop->relay_send_origin;
 
 	/* Dest falls back to hop (first hop / dest==hop). Origin is unknown if not stashed. */
+	/* Forwarding does not accelerate probing: a parked path-MTU timer stays
+	   parked, otherwise a busy relay hop produces a continuous probe burst. */
 	logger(mesh, MESHLINK_DEBUG, "Relaying type-8 via UDP to %s for %s from %s",
 	       hop->name,
 	       dest_name && dest_name[0] ? dest_name : hop->name,
 	       origin_name && origin_name[0] ? origin_name : "?");
-	relay_wake_probes(mesh, hop);
 	return true;
 }
 
 static bool send_application_record(meshlink_handle_t *mesh, node_t *to, const void *data, size_t len) {
+	path_target_t target;
+
 	path_note_selected_route(mesh, to, "destination route");
 
-	/* Confirmed UDP does not compare (len-21) against minmtu. */
-	if(to->status.udp_confirmed) {
-		if(!send_sptps_via_udp(mesh, to, data, len)) {
-			return false;
-		}
-
-		relay_wake_probes(mesh, to);
-		return true;
+	if(!path_active_send_target(mesh, to, &target)) {
+		return false;
 	}
 
-	if(relay_names_unusable(mesh->self->name, to->name)) {
-		return send_sptps_via_meta(mesh, to, data, len);
+	/* A relay hop that offers UDP still needs a name pair that fits a type-8
+	   record. When it does not, this hop carries the record over META instead. */
+	if(target.kind == DATA_ROUTE_RELAY && target.relay_carrier == RELAY_CARRIER_UDP
+	                && relay_names_unusable(mesh->self->name, to->name)) {
+		target.relay_carrier = RELAY_CARRIER_META_DIRECT;
 	}
 
-	if(to->nexthop && relay_hop_udp_ready(to->nexthop)) {
+	path_record_active_route(mesh, to, &target);
+
+	if(target.kind == DATA_ROUTE_DIRECT_UDP) {
+		/* Confirmed UDP does not compare (len-21) against minmtu. */
+		return send_sptps_via_udp(mesh, to, data, len);
+	}
+
+	if(target.kind == DATA_ROUTE_RELAY && target.relay_carrier == RELAY_CARRIER_UDP) {
 		uint8_t wrapped[MAXSIZE];
 		size_t wlen = sizeof(wrapped);
 
 		if(relay_encode(mesh->self->name, to->name, data, len, wrapped, &wlen)) {
-			return relay_send_outer_record(mesh, to->nexthop, mesh->self->name, to->name, wrapped, wlen);
+			return relay_send_outer_record(mesh, target.first_hop, mesh->self->name, to->name, wrapped, wlen);
 		}
 	}
 
@@ -823,22 +860,25 @@ bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 	}
 
 	if(type == PKT_PROBE) {
-		sockaddr_t local;
-
-		if(path_udp_should_probe_local(mesh, to, &local)) {
+		/* Exactly one packet of a burst is aimed at the endpoint under
+		   validation; the rest keep proving the endpoint already in use. */
+		if(to->probe_candidate_pending) {
+			sockaddr_t candidate = to->probe_candidate_sa;
 			int sock = to->sock;
 
-			if(select_listen_socket(mesh, &local, &sock)) {
-				node_udp_cache_alias(mesh, to, &local);
+			to->probe_candidate_pending = false;
+
+			if(select_listen_socket(mesh, &candidate, &sock)) {
+				node_udp_cache_alias(mesh, to, &candidate);
 				path_schedule_local_udp_probe(mesh, to);
 
 				if(mesh->log_level <= MESHLINK_INFO) {
-					char *hostname = sockaddr2hostname(&local);
+					char *hostname = sockaddr2hostname(&candidate);
 					logger(mesh, MESHLINK_INFO, "Path validation: %s probe-start %s local UDP", to->name, hostname);
 					free(hostname);
 				}
 
-				if(sendto(mesh->listen_socket[sock].udp.fd, data, len, 0, &local.sa, SALEN(local.sa)) < 0 && !sockwouldblock(sockerrno) && !sockmsgsize(sockerrno)) {
+				if(sendto(mesh->listen_socket[sock].udp.fd, data, len, 0, &candidate.sa, SALEN(candidate.sa)) < 0 && !sockwouldblock(sockerrno) && !sockmsgsize(sockerrno)) {
 					logger(mesh, MESHLINK_WARNING, "Error sending local UDP probe to %s: %s", to->name, sockstrerror(sockerrno));
 				}
 

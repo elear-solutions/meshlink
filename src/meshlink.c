@@ -3921,7 +3921,6 @@ static bool blacklist(meshlink_handle_t *mesh, node_t *n) {
 	n->mtuprobes = 0;
 	n->status.udp_confirmed = false;
 	n->relay_budget = 0;
-	relay_recompute_dependents(mesh, n);
 
 	if(n->status.reachable) {
 		n->last_unreachable = time(NULL);
@@ -4337,15 +4336,13 @@ static void channel_retransmit(struct utcp_connection *utcp_connection) {
 	node_t *n = utcp_connection->utcp->priv;
 	meshlink_handle_t *mesh = n->mesh;
 
-	/* Established data retransmit means the selected direct UDP path did
-	   not deliver. SYN/handshake loss is not enough to demote a working path. */
+	/* Established data retransmit means the selected direct UDP path may not be
+	   delivering. One retransmission is not proof, so the path is marked
+	   suspect and probed; subsequent records take a live fallback meanwhile and
+	   the path is only demoted if those probes go unanswered (ADR 0004). */
 	if(utcp_connection_established(utcp_connection)
 	                && n->status.udp_confirmed && !n->status.temp_udp_confirmed) {
-		logger(mesh, MESHLINK_INFO, "Reliable channel retransmit to %s, invalidating direct UDP path", n->name);
-		path_note_udp_demoted(mesh, n);
-		update_node_pmtu(mesh, n);
-		relay_recompute_dependents(mesh, n);
-		relay_update_destination_transport(mesh, n);
+		path_note_route_suspect(mesh, n, "reliable retransmit");
 	}
 
 	if(n->mtutimeout.cb) {
@@ -4364,6 +4361,19 @@ static ssize_t channel_send(struct utcp *utcp, const void *data, size_t len) {
 
 	meshlink_handle_t *mesh = n->mesh;
 	return meshlink_send_immediate(mesh, (meshlink_node_t *)n, data, len) ? (ssize_t)len : -1;
+}
+
+/* The only place a node's UTCP is created, and the only place its MTU is set.
+   Every later path event leaves the packetization alone. */
+static void channel_utcp_init(meshlink_handle_t *mesh, node_t *n) {
+	n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, n);
+
+	if(!n->utcp) {
+		return;
+	}
+
+	utcp_set_mtu(n->utcp, relay_fixed_channel_mtu(mesh, n));
+	utcp_set_retransmit_cb(n->utcp, channel_retransmit);
 }
 
 void meshlink_set_channel_receive_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, meshlink_channel_receive_cb_t cb) {
@@ -4418,7 +4428,9 @@ static void channel_poll(struct utcp_connection *connection, size_t len) {
 		}
 
 		if(aio->data) {
+			path_send_guard_enter(mesh);
 			sent = utcp_send(connection, (char *)aio->data + aio->done, todo);
+			path_send_guard_leave(mesh);
 		} else {
 			/* Limit the amount we read at once to avoid stack overflows */
 			if(todo > 65536) {
@@ -4430,7 +4442,9 @@ static void channel_poll(struct utcp_connection *connection, size_t len) {
 
 			if(result > 0) {
 				todo = result;
+				path_send_guard_enter(mesh);
 				sent = utcp_send(connection, buf, todo);
+				path_send_guard_leave(mesh);
 			} else {
 				if(result < 0 && errno == EINTR) {
 					continue;
@@ -4534,10 +4548,7 @@ void meshlink_set_channel_accept_cb(meshlink_handle_t *mesh, meshlink_channel_ac
 
 	for splay_each(node_t, n, mesh->nodes) {
 		if(!n->utcp && n != mesh->self) {
-			n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, n);
-			utcp_set_mtu(n->utcp, MTU - sizeof(meshlink_packethdr_t));
-			utcp_set_retransmit_cb(n->utcp, channel_retransmit);
-			relay_update_destination_transport(mesh, n);
+			channel_utcp_init(mesh, n);
 		}
 	}
 
@@ -4623,10 +4634,7 @@ meshlink_channel_t *meshlink_channel_open_ex(meshlink_handle_t *mesh, meshlink_n
 	node_t *n = (node_t *)node;
 
 	if(!n->utcp) {
-		n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, n);
-		utcp_set_mtu(n->utcp, MTU - sizeof(meshlink_packethdr_t));
-		utcp_set_retransmit_cb(n->utcp, channel_retransmit);
-		relay_update_destination_transport(mesh, n);
+		channel_utcp_init(mesh, n);
 
 		if(!n->utcp) {
 			meshlink_errno = errno == ENOMEM ? MESHLINK_ENOMEM : MESHLINK_EINTERNAL;
@@ -4778,7 +4786,9 @@ ssize_t meshlink_channel_send(meshlink_handle_t *mesh, meshlink_channel_t *chann
 			meshlink_errno = MESHLINK_ENETWORK;
 			retval = -1;
 		} else {
+			path_send_guard_enter(mesh);
 			retval = utcp_send(channel->c, data, len);
+			path_send_guard_leave(mesh);
 		}
 	}
 
@@ -4982,13 +4992,28 @@ size_t meshlink_channel_get_recvq(meshlink_handle_t *mesh, meshlink_channel_t *c
 	return utcp_get_recvq(channel->c);
 }
 
+/* The fixed payload budget for this channel's destination. It is chosen when
+   the destination's UTCP is created and does not change with the route, so an
+   application may read it once and keep using it. */
 size_t meshlink_channel_get_mss(meshlink_handle_t *mesh, meshlink_channel_t *channel) {
 	if(!mesh || !channel) {
 		meshlink_errno = MESHLINK_EINVAL;
 		return -1;
 	}
 
-	return utcp_get_mss(channel->node->utcp);
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	node_t *n = channel->node;
+	size_t mss = n && n->utcp ? utcp_get_mss(n->utcp) : (size_t) - 1;
+
+	if(!n || !n->utcp) {
+		meshlink_errno = MESHLINK_EINVAL;
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return mss;
 }
 
 void meshlink_set_channel_timeout(meshlink_handle_t *mesh, meshlink_channel_t *channel, int timeout) {
@@ -5022,10 +5047,7 @@ void meshlink_set_node_channel_timeout(meshlink_handle_t *mesh, meshlink_node_t 
 	}
 
 	if(!n->utcp) {
-		n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, n);
-		utcp_set_mtu(n->utcp, MTU - sizeof(meshlink_packethdr_t));
-		utcp_set_retransmit_cb(n->utcp, channel_retransmit);
-		relay_update_destination_transport(mesh, n);
+		channel_utcp_init(mesh, n);
 	}
 
 	utcp_set_user_timeout(n->utcp, timeout);
@@ -5035,10 +5057,7 @@ void meshlink_set_node_channel_timeout(meshlink_handle_t *mesh, meshlink_node_t 
 
 void update_node_status(meshlink_handle_t *mesh, node_t *n) {
 	if(n->status.reachable && mesh->channel_accept_cb && !n->utcp) {
-		n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, n);
-		utcp_set_mtu(n->utcp, MTU - sizeof(meshlink_packethdr_t));
-		utcp_set_retransmit_cb(n->utcp, channel_retransmit);
-		relay_update_destination_transport(mesh, n);
+		channel_utcp_init(mesh, n);
 	}
 
 	if(mesh->node_status_cb) {
@@ -5050,16 +5069,14 @@ void update_node_status(meshlink_handle_t *mesh, node_t *n) {
 	}
 }
 
+/* Path-MTU discovery is endpoint validation and telemetry. It reports the
+   measurement and bounds what the send path may put on the wire; it never
+   repacketizes a live channel (see ADR 0004). */
 void update_node_pmtu(meshlink_handle_t *mesh, node_t *n) {
-	if(n->status.udp_confirmed) {
-		utcp_set_mtu(n->utcp, (n->minmtu > MINMTU ? n->minmtu : MINMTU) - sizeof(meshlink_packethdr_t));
-	}
-
 	if(mesh->node_pmtu_cb && !n->status.blacklisted) {
 		mesh->node_pmtu_cb(mesh, (meshlink_node_t *)n, n->minmtu);
 	}
 
-	relay_recompute_dependents(mesh, n);
 	relay_notify_minmtu_change(mesh, n);
 }
 

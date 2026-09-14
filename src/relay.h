@@ -49,19 +49,16 @@ bool relay_hop_udp_ready(const struct node_t *hop);
 /* True when origin+dest names cannot fit a type-8 record under MINMTU. */
 bool relay_names_unusable(const char *origin, const char *destination);
 
-/* Dest-wide UTCP MSS from direct UDP, relay budget, or META fallback. */
-void relay_update_destination_transport(struct meshlink_handle *mesh, struct node_t *dest);
-
-/* Recompute MSS for every dest whose nexthop is hop (skip udp_confirmed dests). */
-void relay_recompute_dependents(struct meshlink_handle *mesh, struct node_t *hop);
+/* The one UTCP MTU a destination ever gets, fixed when its utcp is created.
+   Relay-safe floor when a type-8 record can carry this name pair, otherwise the
+   direct UDP floor. Never recomputed: PMTU, relay budget reports and route
+   changes must not repacketize live channels. */
+uint16_t relay_fixed_channel_mtu(struct meshlink_handle *mesh, const struct node_t *dest);
 
 /* Clear hop UDP readiness only when the failed dest is the confirmed address.
    `sock` is the attempted listen index from the send site and is unused:
    hop->sock is last-RX and select_listen_socket may rematch. */
 void relay_on_hard_send_error(struct meshlink_handle *mesh, struct node_t *hop, const sockaddr_t *sa, int sock);
-
-/* Arm hop probes at 0-timeout and kick pselect so the mesh thread runs now. */
-void relay_wake_probes(struct meshlink_handle *mesh, struct node_t *hop);
 
 void relay_clear_budget_if_nexthop_changed(struct meshlink_handle *mesh, struct node_t *dest);
 

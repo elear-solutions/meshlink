@@ -413,10 +413,9 @@ static void test_upgrade_after_timeout(void) {
 
 	assert(keyed);
 
-	char hole_probe[160];
-	snprintf(hole_probe, sizeof hole_probe, "Path validation: b probe-start 127.0.0.1 port %d", hole_port);
-	assert_after(log_find(0, hole_probe) >= 0, 10);
-
+	/* b advertises an external address here, so the upgrade probe picks that
+	   peer-vouched endpoint and succeeds before the burned hint is ever tried.
+	   Skip expiry is proved by T9, where the hint is the only candidate. */
 	bool direct = false;
 
 	for(int i = 0; i < 25; i++) {
@@ -452,80 +451,75 @@ static void test_upgrade_after_timeout(void) {
 	assert(meshlink_destroy("outgoing_bounded_up_conf.2"));
 }
 
+static bool startup_skip_cleared(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	devtool_node_status_t st;
+	devtool_get_node_status(mesh, node, &st);
+	bool cleared = st.startup_skip.ss_family == AF_UNSPEC;
+	devtool_free_node_status(&st);
+	return cleared;
+}
+
 static void test_inbound_wins_during_startup(void) {
-	printf("\n=== outgoing-bounded: inbound win during startup still probes the leftover dest ===\n");
+	printf("\n=== outgoing-bounded: inbound win during startup expires the burned dest ===\n");
 
 	assert(meshlink_destroy("outgoing_bounded_in_conf.1"));
 	assert(meshlink_destroy("outgoing_bounded_in_conf.2"));
 
-	meshlink_handle_t *a = meshlink_open("outgoing_bounded_in_conf.1", "a", "outgoing-bounded-in", DEV_CLASS_PORTABLE);
+	/* Both sides must autoconnect to each other for the race, and autoconnect
+	   only initiates towards peer->devclass <= self->devclass. The simultaneous
+	   connect tie-break keeps the session initiated by the smaller name, so the
+	   side whose own pending dial has to lose is b. */
+	meshlink_handle_t *a = meshlink_open("outgoing_bounded_in_conf.1", "a", "outgoing-bounded-in", DEV_CLASS_STATIONARY);
 	meshlink_handle_t *b = meshlink_open("outgoing_bounded_in_conf.2", "b", "outgoing-bounded-in", DEV_CLASS_STATIONARY);
 	assert(a && b);
 	meshlink_enable_discovery(a, false);
 	meshlink_enable_discovery(b, false);
 
-	int a_port = meshlink_get_port(a);
+	int b_port = meshlink_get_port(b);
 	int hole_port = 0;
 	int hole_fd = start_black_hole("127.0.0.1", &hole_port);
-	int relay_port = 0;
-	tcp_relay_t *relay = start_tcp_relay("127.0.0.1", &relay_port, "127.0.0.1", a_port);
-	char relay_port_str[16];
-	snprintf(relay_port_str, sizeof relay_port_str, "%d", relay_port);
 
 	exchange_meshlink_pair(a, b);
 	meshlink_node_t *node_b = meshlink_get_node(a, "b");
 	meshlink_node_t *node_a = meshlink_get_node(b, "a");
+	assert(node_a && node_b);
 	forget_addresses(a, node_b);
 	forget_addresses(b, node_a);
-	hint_address(a, node_b, "127.0.0.1", hole_port);
-	assert(meshlink_set_canonical_address(b, node_a, "127.0.0.1", relay_port_str));
 
-	watched_peer = "b";
+	/* b can only reach a through the black hole; a reaches b for real. */
+	hint_address(b, node_a, "127.0.0.1", hole_port);
+	hint_address(a, node_b, "127.0.0.1", b_port);
+
+	watched_peer = "a";
 	init_sync_flag(&peer_reachable);
-	meshlink_set_node_status_cb(a, status_cb);
+	meshlink_set_node_status_cb(b, status_cb);
 	devtool_set_outgoing_startup_ms(5000);
 	size_t mark = log_mark();
-	assert(meshlink_start(a));
+	assert(meshlink_start(b));
 
 	char hole_dial[128];
-	snprintf(hole_dial, sizeof hole_dial, "Trying to connect to b at 127.0.0.1 port %d (recent)", hole_port);
+	snprintf(hole_dial, sizeof hole_dial, "Trying to connect to a at 127.0.0.1 port %d (recent)", hole_port);
 	assert_after(log_find(mark, hole_dial) >= 0, 5);
-	assert(meshlink_start(b));
+
+	/* a's inbound must land while b's dial into the hole is still pending. */
+	assert(meshlink_start(a));
 	assert(wait_sync_flag(&peer_reachable, 15));
 	devtool_set_outgoing_startup_ms(0);
 
-	assert_after(log_find(mark, "Terminating pending second connection with b") >= 0, 5);
+	assert_after(log_find(mark, "Terminating pending second connection with a") >= 0, 5);
 
-	devtool_node_status_t st;
-	bool keyed = false;
+	/* Tearing down that leftover is not a failed dest. If it restamped the node
+	   skip, every later upgrade probe would pass over the hinted address. */
+	assert_after(startup_skip_cleared(b, node_a), 5);
 
-	for(int i = 0; i < 20; i++) {
-		devtool_get_node_status(a, node_b, &st);
-		keyed = st.validkey;
-		devtool_free_node_status(&st);
+	printf("outgoing-bounded T9 ok: inbound leftover terminate did not burn the skipped dest\n");
 
-		if(keyed) {
-			break;
-		}
-
-		usleep(100000);
-	}
-
-	assert(keyed);
-
-	char hole_probe[160];
-	snprintf(hole_probe, sizeof hole_probe, "Path validation: b probe-start 127.0.0.1 port %d", hole_port);
-	assert_after(log_find(mark, hole_probe) >= 0, 10);
-
-	printf("outgoing-bounded T9 ok: inbound leftover terminate did not starve the burned dest\n");
-
-	meshlink_set_node_status_cb(a, NULL);
+	meshlink_set_node_status_cb(b, NULL);
 	meshlink_stop(a);
 	meshlink_stop(b);
 	meshlink_close(a);
 	meshlink_close(b);
 	close(hole_fd);
-	stop_tcp_relay(relay);
 	assert(meshlink_destroy("outgoing_bounded_in_conf.1"));
 	assert(meshlink_destroy("outgoing_bounded_in_conf.2"));
 }

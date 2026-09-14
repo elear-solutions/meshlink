@@ -254,8 +254,9 @@ static void test_known_path(void) {
 	exchange_meshlink_pair(b, c);
 
 	/* The edge b->c carries the address b saw c connect from, plus c's port. The graph
-	   seeds that as a META candidate even on RFC1918 (UDP still will not). a therefore
-	   dials c from RECENT, not KNOWN. */
+	   seeds that as a META candidate even on RFC1918 (UDP still will not), so it lands
+	   in a's recent[]. The startup walk still labels the dial by provenance, and a
+	   graph-derived entry is EDGE_DIRECT, so the attempt is reported as KNOWN. */
 	char *local = meshlink_get_local_address_for_family(c, AF_INET);
 	const char *b_ip = local && is_rfc1918(local) ? local : "127.0.0.1";
 	printf("c connects to b at %s\n", b_ip);
@@ -316,8 +317,8 @@ static void test_known_path(void) {
 	snprintf(known_needle, sizeof known_needle, "a: Trying to connect to c at %s port %d (known)", b_ip, c_port);
 	snprintf(recent_needle, sizeof recent_needle, "a: Trying to connect to c at %s port %d (recent)", b_ip, c_port);
 
-	assert(log_find(mark, recent_needle) >= 0);
-	assert(log_find(mark, known_needle) < 0);
+	assert(log_find(mark, known_needle) >= 0);
+	assert(log_find(mark, recent_needle) < 0);
 
 	devtool_get_node_status(a, a_c, &st);
 	bool seeded = false;
@@ -328,7 +329,7 @@ static void test_known_path(void) {
 
 	assert(seeded);
 	devtool_free_node_status(&st);
-	printf("T3 ok: a connected to c at %s port %d from the graph-seeded RECENT entry\n", b_ip, c_port);
+	printf("T3 ok: a connected to c at %s port %d from the graph-seeded EDGE_DIRECT entry\n", b_ip, c_port);
 
 	free(local);
 

@@ -171,10 +171,15 @@ static void test_live_transitions(meshlink_handle_t **mesh) {
 	};
 	assert(inet_pton(AF_INET, "127.0.0.1", &local.sin_addr) == 1);
 
-	/* U1: pin dest via hop. force_relay_path stops dest probes so dest stays unconfirmed. */
-	devtool_set_udp_confirmed(mesh[2], meshlink_get_node(mesh[2], "foo"), true);
+	meshlink_node_t *bar = meshlink_get_node(mesh[2], "bar");
+	meshlink_node_t *foo = meshlink_get_node(mesh[2], "foo");
+	assert(bar && foo);
+
+	/* U1: pin dest via hop. The pin and the read need one lock, otherwise a probe
+	   reply already in flight can re-confirm dest before the tier is sampled. */
+	devtool_set_udp_confirmed(mesh[2], foo, true);
 	pin(mesh[2], "bar", "foo");
-	assert(dest_tier(mesh[2], "bar", false) == TIER_RELAY);
+	assert(devtool_select_dest_with_udp(mesh[2], bar, false, foo, true, false) == TIER_RELAY);
 	assert(hop_tier(mesh[2], "foo", false) == TIER_RELAY);
 	printf("U1 dest RELAY_UDP\n");
 
@@ -220,8 +225,6 @@ static void test_live_transitions(meshlink_handle_t **mesh) {
 
 	/* D1 / D5: dest UDP down, hop UDP up, one lock so inbound probes cannot
 	   re-confirm dest before we read the tier. Must be RELAY, not leftover WAN. */
-	meshlink_node_t *bar = meshlink_get_node(mesh[2], "bar");
-	meshlink_node_t *foo = meshlink_get_node(mesh[2], "foo");
 	assert(devtool_select_dest_with_udp(mesh[2], bar, false, foo, true, false) == TIER_RELAY);
 	printf("D1/D5 dest RELAY after dest UDP fail (WAN not invented)\n");
 

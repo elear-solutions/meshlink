@@ -331,6 +331,31 @@ static void devtool_get_reset_node_status(meshlink_handle_t *mesh, meshlink_node
 		memset(status->canonical_resolved, 0, sizeof status->canonical_resolved);
 		status->canonical_resolved_count = 0;
 		memset(&status->upgrade_target, 0, sizeof status->upgrade_target);
+		memset(&status->startup_skip, 0, sizeof status->startup_skip);
+
+		status->active_route_kind = (int)internal->active_route.kind;
+		status->active_route_carrier = (int)internal->active_route.relay_carrier;
+		status->active_route_suspect = internal->active_route.suspect;
+		status->active_route_local = internal->active_route.local;
+		status->candidate_active = internal->promotion_candidate.active;
+		status->candidate_rounds = internal->promotion_candidate.successful_rounds;
+		status->candidate_failures = internal->promotion_candidate.failures;
+		status->channel_mtu = internal->utcp ? utcp_get_mtu(internal->utcp) : 0;
+		memset(&status->candidate_endpoint, 0, sizeof status->candidate_endpoint);
+
+		if(internal->promotion_candidate.active) {
+			memcpy(&status->candidate_endpoint, &internal->promotion_candidate.endpoint, sizeof status->candidate_endpoint);
+		}
+
+		status->candidate_cooldown_remaining = 0;
+
+		if(internal->promotion_candidate.cooldown_until.tv_sec > mesh->loop.now.tv_sec) {
+			status->candidate_cooldown_remaining = (int)(internal->promotion_candidate.cooldown_until.tv_sec - mesh->loop.now.tv_sec);
+		}
+
+		if(internal->startup_skip_sa.sa.sa_family) {
+			memcpy(&status->startup_skip, &internal->startup_skip_sa, sizeof status->startup_skip);
+		}
 
 		for(int i = 0; i < MAX_RECENT && internal->recent[i].sa.sa_family; i++) {
 			memcpy(&status->recent[i], &internal->recent[i], sizeof status->recent[i]);
@@ -544,8 +569,8 @@ void devtool_update_node_udp(meshlink_handle_t *mesh, meshlink_node_t *node, con
 
 	if(n != mesh->self && sa && sa->sa.sa_family == AF_UNSPEC) {
 		/* Forget every learned dest: cache entry, n->address and recent[].
-		   update_node_udp() cannot take the address itself, it would log it
-		   through sockaddr2hostname(), which aborts on AF_UNSPEC at DEBUG level.
+		   update_node_udp() must not take the address itself: it would install
+		   AF_UNSPEC as a real dest and log it as an unknown address.
 		   n->address may own AF_UNKNOWN strings; recent[] only holds shallow
 		   copies of them, so free once and zero both. recent[] is persisted,
 		   so mark the node dirty like node_add_recent_address() does. Self is
@@ -648,8 +673,6 @@ bool devtool_force_relay_path(meshlink_handle_t *mesh, meshlink_node_t *dest, me
 	timeout_del(&mesh->loop, &d->mtutimeout);
 	d->mtuprobes = 0;
 	d->relay_budget = 0;
-	relay_update_destination_transport(mesh, d);
-	relay_recompute_dependents(mesh, h);
 	pthread_mutex_unlock(&mesh->mutex);
 	return true;
 }
@@ -665,13 +688,7 @@ void devtool_set_udp_confirmed(meshlink_handle_t *mesh, meshlink_node_t *node, b
 	}
 
 	node_t *n = (node_t *)node;
-	bool was = n->status.udp_confirmed;
 	n->status.udp_confirmed = confirmed;
-
-	if(was != confirmed) {
-		relay_recompute_dependents(mesh, n);
-		relay_update_destination_transport(mesh, n);
-	}
 
 	if(!confirmed && n->status.validkey && n->status.reachable && !n->mtutimeout.cb) {
 		send_mtu_probe(mesh, n);
@@ -738,8 +755,6 @@ bool devtool_confirm_udp_from(meshlink_handle_t *mesh, meshlink_node_t *node, co
 	n->status.udp_confirmed = true;
 	n->udp_tier = (path_tier_t)tier;
 	n->udp_local_probe_next = 0;
-	relay_recompute_dependents(mesh, n);
-	relay_update_destination_transport(mesh, n);
 	pthread_mutex_unlock(&mesh->mutex);
 	return true;
 }
@@ -768,12 +783,6 @@ bool devtool_promote_udp_if_better(meshlink_handle_t *mesh, meshlink_node_t *nod
 	}
 
 	ok = path_promote_udp_if_better(mesh, n, &sa);
-
-	if(ok) {
-		relay_recompute_dependents(mesh, n);
-		relay_update_destination_transport(mesh, n);
-	}
-
 	pthread_mutex_unlock(&mesh->mutex);
 	return ok;
 }
@@ -814,7 +823,6 @@ bool devtool_set_minmtu(meshlink_handle_t *mesh, meshlink_node_t *node, uint16_t
 	node_t *n = (node_t *)node;
 	n->minmtu = mtu;
 	update_node_pmtu(mesh, n);
-	relay_update_destination_transport(mesh, n);
 	pthread_mutex_unlock(&mesh->mutex);
 	return true;
 }
@@ -1062,6 +1070,170 @@ int devtool_select_dest_with_udp(meshlink_handle_t *mesh, meshlink_node_t *dest,
 	path_tier_t selected = path_select_destination_tier(d, meta_in);
 	pthread_mutex_unlock(&mesh->mutex);
 	return (int)selected;
+}
+
+void devtool_path_route_tick(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	path_route_tick(mesh, (node_t *)node);
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+bool devtool_candidate_probe_target(meshlink_handle_t *mesh, meshlink_node_t *node, struct sockaddr_storage *addr, uint64_t *nonce) {
+	if(!mesh || !node || !addr || !nonce) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	sockaddr_t sa;
+	memset(&sa, 0, sizeof sa);
+	bool ok = path_candidate_probe_target(mesh, (node_t *)node, &sa, nonce);
+
+	memset(addr, 0, sizeof *addr);
+
+	if(ok) {
+		memcpy(addr, &sa, sizeof sa < sizeof *addr ? sizeof sa : sizeof *addr);
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return ok;
+}
+
+void devtool_observe_probe_reply(meshlink_handle_t *mesh, meshlink_node_t *node, const struct sockaddr *addr, uint64_t nonce) {
+	if(!mesh || !node || !addr) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	path_observe_probe_reply(mesh, (node_t *)node, (const sockaddr_t *)addr, nonce);
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+void devtool_note_route_suspect(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	path_note_route_suspect(mesh, (node_t *)node, "reliable retransmit");
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+bool devtool_has_live_fallback(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	bool live = path_has_live_fallback(mesh, (node_t *)node);
+	pthread_mutex_unlock(&mesh->mutex);
+	return live;
+}
+
+void devtool_age_route(meshlink_handle_t *mesh, meshlink_node_t *node, int seconds) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	node_t *n = (node_t *)node;
+
+	if(n->active_route.selected_at.tv_sec) {
+		n->active_route.selected_at.tv_sec -= seconds;
+	}
+
+	if(n->active_route.suspect_at.tv_sec) {
+		n->active_route.suspect_at.tv_sec -= seconds;
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+void devtool_age_candidate(meshlink_handle_t *mesh, meshlink_node_t *node, int seconds) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	node_t *n = (node_t *)node;
+
+	if(n->promotion_candidate.first_success.tv_sec) {
+		n->promotion_candidate.first_success.tv_sec -= seconds;
+	}
+
+	if(n->promotion_candidate.deadline.tv_sec) {
+		n->promotion_candidate.deadline.tv_sec -= seconds;
+	}
+
+	if(n->promotion_candidate.cooldown_until.tv_sec) {
+		n->promotion_candidate.cooldown_until.tv_sec -= seconds;
+	}
+
+	if(n->candidate_probe_next) {
+		n->candidate_probe_next -= seconds;
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+void devtool_candidate_clear_cooldown(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	path_candidate_clear_cooldown(mesh, (node_t *)node);
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+bool devtool_liveness_probe_warranted(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	bool warranted = path_liveness_probe_warranted(mesh, (node_t *)node);
+	pthread_mutex_unlock(&mesh->mutex);
+	return warranted;
 }
 
 bool devtool_relay_cover_unit(meshlink_handle_t *mesh, meshlink_node_t *from, meshlink_node_t *dest, meshlink_node_t *hop) {

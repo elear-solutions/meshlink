@@ -436,6 +436,14 @@ static bool buffer_set_size(struct buffer *buf, uint32_t minsize, uint32_t maxsi
 }
 
 static void buffer_transfer(struct buffer *buf, char *newdata, size_t newsize) {
+	if(!buf->data) {
+		/* Nothing to carry over. Offsetting a null pointer is undefined even
+		   when the length is zero. */
+		buf->offset = 0;
+		buf->size = newsize;
+		return;
+	}
+
 	if(buffer_wraps(buf)) {
 		// Old situation:
 		// [345......012]

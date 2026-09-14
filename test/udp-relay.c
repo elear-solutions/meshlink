@@ -94,7 +94,7 @@ static void baz_log(meshlink_handle_t *mesh, meshlink_log_level_t level, const c
 		relay_mtu_count++;
 	}
 
-	if(text && strstr(text, "Reliable channel retransmit to bar, invalidating direct UDP path")) {
+	if(text && strstr(text, "Path validation: bar route-suspect") && strstr(text, "reliable retransmit")) {
 		set_sync_flag(&direct_retransmit_log, true);
 	}
 
@@ -382,21 +382,23 @@ static void test_channels_and_mss(meshlink_handle_t **mesh) {
 
 	size_t prefix = 2 + strlen("baz") + strlen("bar");
 	size_t floor_mss = MINMTU - prefix - 21 - sizeof(udp_relay_packethdr_t) - UTCP_HDR;
-	assert_after(meshlink_channel_get_mss(mesh[2], ch1) == floor_mss, 5);
+	assert(meshlink_channel_get_mss(mesh[2], ch1) == floor_mss);
+	assert(meshlink_channel_get_mss(mesh[2], ch2) == floor_mss);
 
-	size_t mid_mss = 600 - prefix - 21 - sizeof(udp_relay_packethdr_t) - UTCP_HDR;
+	/* A relay budget report and a bigger measurement on either hop are
+	   telemetry. Neither may repacketize a channel that is carrying data. */
 	reset_logs();
 	confirm_final(mesh[0], "bar", 600);
 	assert(devtool_set_minmtu(mesh[2], meshlink_get_node(mesh[2], "foo"), MTU));
 	set_sync_flag(&received2, false);
 	assert(meshlink_channel_send(mesh[2], ch1, "Hello", 5) == 5);
-	assert_after(meshlink_channel_get_mss(mesh[2], ch1) == mid_mss, 15);
 	assert(wait_sync_flag(&received2, 10));
+	assert(meshlink_channel_get_mss(mesh[2], ch1) == floor_mss);
 
 	reset_logs();
 	assert(devtool_set_minmtu(mesh[0], meshlink_get_node(mesh[0], "bar"), MTU));
 	assert(meshlink_channel_send(mesh[2], ch1, "Hello", 5) == 5);
-	assert_after(meshlink_channel_get_mss(mesh[2], ch1) > mid_mss, 15);
+	assert(meshlink_channel_get_mss(mesh[2], ch1) == floor_mss);
 
 	/* two channels leave together on dest probe reply */
 	reset_logs();
@@ -412,7 +414,9 @@ static void test_channels_and_mss(meshlink_handle_t **mesh) {
 	assert(!check_sync_flag(&baz_relay_log));
 
 	/* A direct UDP path can become one-way after NAT rebinding. The first
-	   reliable-channel retransmit must invalidate it and resend via relay. */
+	   reliable-channel retransmit makes it suspect rather than dead: records
+	   move to the live relay straight away, and the endpoint is only demoted
+	   later if its probes go unanswered. */
 	struct sockaddr_in dead = {
 		.sin_family = AF_INET,
 		.sin_port = htons(1),
@@ -579,10 +583,11 @@ static void test_dest_meta_type8_quiet(meshlink_handle_t **mesh) {
 	expect_hello_after_drop(mesh);
 }
 
+/* Every hard-send case below must clear hop UDP readiness without ever moving
+   the channel MSS: it is fixed at the relay-safe floor for baz -> bar. */
 static void test_hard_send_clears_hop(meshlink_handle_t **mesh) {
 	size_t prefix = 2 + strlen("baz") + strlen("bar");
 	size_t relay_mss = MINMTU - prefix - 21 - sizeof(udp_relay_packethdr_t) - UTCP_HDR;
-	size_t meta_mss = MTU - sizeof(udp_relay_packethdr_t) - UTCP_HDR;
 
 	pin(mesh[2], "bar", "foo");
 	assert(devtool_set_minmtu(mesh[2], meshlink_get_node(mesh[2], "foo"), MTU));
@@ -591,7 +596,7 @@ static void test_hard_send_clears_hop(meshlink_handle_t **mesh) {
 	meshlink_channel_t *ch = meshlink_channel_open(mesh[2], meshlink_get_node(mesh[2], "bar"), 11, receive2_cb, NULL, 0);
 	assert(ch);
 	assert(udp_confirmed_flag(mesh[2], "foo"));
-	assert_after(meshlink_channel_get_mss(mesh[2], ch) == relay_mss, 10);
+	assert(meshlink_channel_get_mss(mesh[2], ch) == relay_mss);
 
 	meshlink_node_t *hop = meshlink_get_node(mesh[2], "foo");
 	devtool_node_status_t st = {0};
@@ -629,7 +634,7 @@ static void test_hard_send_clears_hop(meshlink_handle_t **mesh) {
 	assert(udp_confirmed_flag(mesh[2], "foo"));
 	devtool_relay_hard_send_error_at(mesh[2], hop, (struct sockaddr *)&hop_addr, hop_sock + 1);
 	assert(!udp_confirmed_flag(mesh[2], "foo"));
-	assert_after(meshlink_channel_get_mss(mesh[2], ch) == meta_mss, 10);
+	assert(meshlink_channel_get_mss(mesh[2], ch) == relay_mss);
 	devtool_set_udp_confirmed(mesh[2], hop, true);
 	assert(devtool_set_minmtu(mesh[2], hop, MTU));
 	pin(mesh[2], "bar", "foo");
@@ -642,7 +647,7 @@ static void test_hard_send_clears_hop(meshlink_handle_t **mesh) {
 
 	devtool_relay_hard_send_error(mesh[2], hop);
 	assert(!udp_confirmed_flag(mesh[2], "foo"));
-	assert_after(meshlink_channel_get_mss(mesh[2], ch) == meta_mss, 10);
+	assert(meshlink_channel_get_mss(mesh[2], ch) == relay_mss);
 
 	devtool_set_udp_confirmed(mesh[2], hop, true);
 	assert(devtool_set_minmtu(mesh[2], hop, MTU));
@@ -688,27 +693,33 @@ static void test_long_names(meshlink_handle_t **mesh) {
 	meshlink_channel_t *ch_short = meshlink_channel_open(mesh[2], meshlink_get_node(mesh[2], "bar"), 10, receive2_cb, NULL, 0);
 	assert(ch_long);
 	assert(ch_short);
-	assert_after(meshlink_channel_get_mss(longa, ch_long) > 0, 10);
+	/* 230 + 230 character names cannot fit a type-8 prefix under MINMTU, so this
+	   pair is never relayed and gets the plain direct floor. The short pair is
+	   relayable and pays for the prefix. Both are decided once, from the names
+	   alone, and no later path state may move them. */
+	size_t long_floor = MINMTU - sizeof(udp_relay_packethdr_t) - UTCP_HDR;
+	size_t short_prefix = 2 + strlen("baz") + strlen("bar");
+	size_t short_floor = MINMTU - short_prefix - 21 - sizeof(udp_relay_packethdr_t) - UTCP_HDR;
+	assert(meshlink_channel_get_mss(longa, ch_long) == long_floor);
+	assert(meshlink_channel_get_mss(mesh[2], ch_short) == short_floor);
 
 	pin(longa, long_b, "foo");
 	pin(mesh[2], "bar", "foo");
 	assert(devtool_set_minmtu(longa, meshlink_get_node(longa, "foo"), MTU));
-	size_t meta_mss = MTU - sizeof(udp_relay_packethdr_t) - UTCP_HDR;
-	size_t short_prefix = 2 + strlen("baz") + strlen("bar");
-	size_t short_floor = MINMTU - short_prefix - 21 - sizeof(udp_relay_packethdr_t) - UTCP_HDR;
-	assert_after(meshlink_channel_get_mss(longa, ch_long) == meta_mss, 5);
-	assert_after(meshlink_channel_get_mss(mesh[2], ch_short) == short_floor, 5);
+	assert(meshlink_channel_get_mss(longa, ch_long) == long_floor);
+	assert(meshlink_channel_get_mss(mesh[2], ch_short) == short_floor);
 	(void)meshlink_channel_send(longa, ch_long, "Hello", 5);
 	(void)meshlink_send(longa, meshlink_get_node(longa, long_b), "Hello", 5);
 
+	/* Losing and regaining direct UDP is the event that used to repacketize. */
 	devtool_set_udp_confirmed(longa, meshlink_get_node(longa, long_b), false);
+	assert(meshlink_channel_get_mss(longa, ch_long) == long_floor);
 	assert_after(udp_confirmed_flag(longa, long_b), 20);
-	devtool_node_status_t longst;
-	devtool_get_node_status(longa, meshlink_get_node(longa, long_b), &longst);
-	uint16_t base = longst.minmtu > MINMTU ? longst.minmtu : MINMTU;
-	assert(meshlink_channel_get_mss(longa, ch_long) == (size_t)(base - sizeof(udp_relay_packethdr_t) - UTCP_HDR));
+	assert(meshlink_channel_get_mss(longa, ch_long) == long_floor);
+	assert(devtool_set_minmtu(longa, meshlink_get_node(longa, long_b), MTU));
+	assert(meshlink_channel_get_mss(longa, ch_long) == long_floor);
 	pin(mesh[2], "bar", "foo");
-	assert_after(meshlink_channel_get_mss(mesh[2], ch_short) == short_floor, 5);
+	assert(meshlink_channel_get_mss(mesh[2], ch_short) == short_floor);
 
 	meshlink_channel_abort(longa, ch_long);
 	meshlink_channel_abort(mesh[2], ch_short);
@@ -727,13 +738,14 @@ static void test_reachability_flip_mss(meshlink_handle_t **mesh) {
 
 	size_t prefix = 2 + strlen("baz") + strlen("bar");
 	size_t floor_mss = MINMTU - prefix - 21 - sizeof(udp_relay_packethdr_t) - UTCP_HDR;
-	size_t meta_mss = MTU - sizeof(udp_relay_packethdr_t) - UTCP_HDR;
-	assert_after(meshlink_channel_get_mss(mesh[2], ch) == floor_mss, 5);
+	assert(meshlink_channel_get_mss(mesh[2], ch) == floor_mss);
 
+	/* Losing the relay hop entirely is the largest route change there is, and
+	   it still leaves the channel packetization alone. */
 	set_sync_flag(&foo_down, false);
 	meshlink_stop(mesh[0]);
 	assert(wait_sync_flag(&foo_down, 20));
-	assert_after(meshlink_channel_get_mss(mesh[2], ch) == meta_mss, 5);
+	assert(meshlink_channel_get_mss(mesh[2], ch) == floor_mss);
 	/* Attempt a send so dest META is used; hop is down so do not require delivery. */
 	(void)meshlink_channel_send(mesh[2], ch, "Hello", 5);
 	assert(!check_sync_flag(&leftover_udp));

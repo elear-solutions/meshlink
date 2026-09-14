@@ -149,6 +149,7 @@ struct devtool_node_status {
 	bool would_probe_local_udp;           /// WAN UDP is active and a local candidate is waiting
 	int active_meta_tier;                 /// path_select_hop_tier of the node itself
 	struct sockaddr_storage upgrade_target; /// next META-capable direct candidate
+	struct sockaddr_storage startup_skip; /// dest the bounded startup cancelled; upgrade probes skip it (AF_UNSPEC once a META activates)
 	const char *upgrade_ineligible_reason; /// NULL if an upgrade probe may start
 	bool validkey;                        /// node SPTPS has a valid key
 	bool waitingforkey;                   /// node is waiting for a key exchange
@@ -157,6 +158,18 @@ struct devtool_node_status {
 	uint32_t sptps_restart_count;         /// send_req_key() restarts
 	bool meta_drain_active;               /// a retired META socket is still flushing
 	uint32_t connection_generation;       /// outgoing generation of the active META
+
+	// One active route and at most one candidate (ADR 0004)
+	int active_route_kind;                /// data_route_kind_t currently carrying application records
+	int active_route_carrier;             /// relay_carrier_t when the route is a relay
+	bool active_route_suspect;            /// a retransmission raised suspicion, probes pending
+	bool active_route_local;              /// the route's endpoint is on the local network
+	bool candidate_active;                /// an endpoint is being validated for promotion
+	uint8_t candidate_rounds;             /// validation rounds this candidate has passed
+	uint8_t candidate_failures;           /// consecutive failures, drives the cooldown ladder
+	struct sockaddr_storage candidate_endpoint; /// endpoint under validation (AF_UNSPEC if none)
+	int candidate_cooldown_remaining;     /// seconds until this endpoint may be tried again
+	uint16_t channel_mtu;                 /// fixed UTCP MTU chosen when the node's utcp was created
 };
 
 /// Get the status of a node.
@@ -479,6 +492,42 @@ int devtool_select_hop_tier(struct meshlink_handle *mesh, struct meshlink_node *
  *  cannot change the snapshot before the caller reads it.
  */
 int devtool_select_dest_with_udp(struct meshlink_handle *mesh, struct meshlink_node *dest, bool dest_udp, struct meshlink_node *hop, bool hop_udp, bool meta_in);
+
+/// Run one periodic route tick for this node without waiting for the timer.
+/** Expires a stale candidate, resolves a suspect route and resets escalation
+ *  after a healthy stretch, so tests do not depend on wall-clock timing.
+ */
+void devtool_path_route_tick(struct meshlink_handle *mesh, struct meshlink_node *node);
+
+/// Start or fetch the endpoint under validation, and the nonce its probe carries.
+/** @return false when there is nothing to validate right now.
+ */
+bool devtool_candidate_probe_target(struct meshlink_handle *mesh, struct meshlink_node *node, struct sockaddr_storage *addr, uint64_t *nonce);
+
+/// Feed an authenticated probe reply into the promotion state machine.
+void devtool_observe_probe_reply(struct meshlink_handle *mesh, struct meshlink_node *node, const struct sockaddr *addr, uint64_t nonce);
+
+/// Mark the active route suspect, as a reliable retransmission would.
+void devtool_note_route_suspect(struct meshlink_handle *mesh, struct meshlink_node *node);
+
+/// True when a lower-ranked route is already live for this node.
+bool devtool_has_live_fallback(struct meshlink_handle *mesh, struct meshlink_node *node);
+
+/// Age the active route's residency and suspicion by `seconds`.
+/** Lets a test reach the residency and suspect-window boundaries immediately.
+ *  A negative value moves them away, so a test can hold a route inside its
+ *  residency for as long as it needs.
+ */
+void devtool_age_route(struct meshlink_handle *mesh, struct meshlink_node *node, int seconds);
+
+/// Age the promotion candidate's round gap, deadline and cooldown by `seconds`.
+void devtool_age_candidate(struct meshlink_handle *mesh, struct meshlink_node *node, int seconds);
+
+/// True when this peer currently warrants a liveness probe.
+bool devtool_liveness_probe_warranted(struct meshlink_handle *mesh, struct meshlink_node *node);
+
+/// Clear a candidate cooldown, as a fresh discovery or network change does.
+void devtool_candidate_clear_cooldown(struct meshlink_handle *mesh, struct meshlink_node *node);
 
 /// Simulate a hard UDP send failure on `hop`'s confirmed address.
 void devtool_relay_hard_send_error(struct meshlink_handle *mesh, struct meshlink_node *hop);

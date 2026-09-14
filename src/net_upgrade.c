@@ -275,6 +275,18 @@ bool upgrade_defers_ack(const connection_t *c) {
 	return (c->flags & PROTOCOL_UPGRADE) && !c->status.initiator;
 }
 
+static void spare_timeout_handler(event_loop_t *loop, void *data) {
+	connection_t *c = data;
+	meshlink_handle_t *mesh = loop->data;
+
+	if(!c->status.spare) {
+		return;
+	}
+
+	logger(mesh, MESHLINK_INFO, "Spare connection with %s was never promoted, closing", c->name ? c->name : "?");
+	terminate_connection(mesh, c, c->status.active);
+}
+
 static connection_t *find_spare(meshlink_handle_t *mesh, const node_t *n) {
 	for list_each(connection_t, c, mesh->connections) {
 		if(c->status.spare && c->status.active && c->node == n) {
@@ -315,6 +327,11 @@ void upgrade_hold_spare(meshlink_handle_t *mesh, connection_t *c, node_t *n, con
 
 	node_add_recent_address_cap(mesh, n, &c->address, ADDR_SRC_AUTH_DIRECT, PATH_CAP_BOTH);
 
+	/* drain_ev is free on a spare: it is not draining anything. */
+	timeout_add(&mesh->loop, &c->drain_ev, spare_timeout_handler, c, &(struct timespec) {
+		UPGRADE_SPARE_TIMEOUT_SEC, 0
+	});
+
 	if(mesh->log_level <= MESHLINK_INFO) {
 		char *hostname = sockaddr2hostname(&c->address);
 		logger(mesh, MESHLINK_INFO, "Holding direct connection from %s at %s as a spare until its current connection closes", n->name, hostname);
@@ -349,6 +366,7 @@ static void promote_spare(meshlink_handle_t *mesh, connection_t *old, connection
 		old->edge = NULL;
 	}
 
+	timeout_del(&mesh->loop, &spare->drain_ev);
 	spare->status.spare = false;
 	install_node_connection(mesh, n, spare);
 	add_connection_edge(mesh, spare);

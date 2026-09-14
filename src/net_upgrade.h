@@ -57,6 +57,13 @@ bool upgrade_preserve_cover_unit(struct meshlink_handle *mesh) __attribute__((__
 #define UPGRADE_DRAIN_TIMEOUT_SEC 2
 void upgrade_begin_drain(struct meshlink_handle *mesh, connection_t *c);
 
+/* The receiver holds the peer's new socket as a spare until the peer closes the
+   old one. That must also be bounded, or a peer that goes away mid-handover
+   leaves this side holding two connections. It has to outlast the peer's drain
+   guard, otherwise this side would drop a good spare just as the old socket
+   closes and force the peer to dial again. */
+#define UPGRADE_SPARE_TIMEOUT_SEC (UPGRADE_DRAIN_TIMEOUT_SEC + 1)
+
 /* Periodic sweep: start at most one probe per tick for an eligible node. */
 void upgrade_probe_sweep(struct meshlink_handle *mesh);
 

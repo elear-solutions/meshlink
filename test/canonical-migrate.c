@@ -308,6 +308,17 @@ static void poll_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, size_t
 	set_sync_flag(&channel_ready, true);
 }
 
+static struct sync_flag stream_writable;
+
+static void writable_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, size_t len) {
+	if(!len) {
+		return;
+	}
+
+	meshlink_set_channel_poll_cb(mesh, channel, NULL);
+	set_sync_flag(&stream_writable, true);
+}
+
 static void reset_stream(void) {
 	assert(pthread_mutex_lock(&stream_mutex) == 0);
 	stream_received = 0;
@@ -344,7 +355,7 @@ static void stream_send(meshlink_handle_t *a, meshlink_channel_t *channel, size_
 	char msg[MSG_LEN + 1];
 	format_msg(msg, seq);
 
-	for(int tries = 0; tries < 1000; tries++) {
+	for(int tries = 0; tries < 20; tries++) {
 		ssize_t sent = meshlink_channel_send(a, channel, msg, MSG_LEN);
 
 		if(sent == MSG_LEN) {
@@ -352,7 +363,12 @@ static void stream_send(meshlink_handle_t *a, meshlink_channel_t *channel, size_
 		}
 
 		assert(sent == 0 || sent == -1);
-		usleep(10000);
+
+		/* The send buffer is full. Wait for the channel to report space instead
+		   of spinning on a fixed budget, which a loaded host runs out of. */
+		init_sync_flag(&stream_writable);
+		meshlink_set_channel_poll_cb(a, channel, writable_cb);
+		wait_sync_flag(&stream_writable, 5);
 	}
 
 	assert(!"channel send kept failing");
@@ -470,6 +486,15 @@ static void assert_direct(meshlink_handle_t *mesh, meshlink_node_t *node, int po
 	assert(!st.upgrade_probe_active);
 	assert(st.upgrade_backoff == 0);
 	devtool_free_node_status(&st);
+}
+
+/* Graph reachability precedes the key exchange, so validkey needs its own wait. */
+static bool has_validkey(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	devtool_node_status_t st;
+	devtool_get_node_status(mesh, node, &st);
+	bool keyed = st.meta_connected && st.validkey;
+	devtool_free_node_status(&st);
+	return keyed;
 }
 
 /* True once mesh's meta connection with node is up, direct and not via anything. */
@@ -1232,6 +1257,7 @@ static void test_failover_after_promote(void) {
 	memset(&status_at_reachable, 0, sizeof status_at_reachable);
 	assert(meshlink_start(p.b));
 	assert(wait_sync_flag(&peer_reachable, 30));
+	assert_after(has_validkey(p.a, p.a_b), 20);
 
 	devtool_get_node_status(p.a, p.a_b, &st);
 	assert(st.meta_connected);

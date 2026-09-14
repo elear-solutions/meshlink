@@ -831,7 +831,10 @@ bool sptps_stop(sptps_t *s) {
 	free(s->key);
 	free(s->label);
 	free(s->late);
-	memset(s->decrypted_buffer, 0, s->decrypted_buffer_len);
+	if(s->decrypted_buffer) {
+		memset(s->decrypted_buffer, 0, s->decrypted_buffer_len);
+	}
+
 	free(s->decrypted_buffer);
 	memset(s, 0, sizeof(*s));
 	return true;
