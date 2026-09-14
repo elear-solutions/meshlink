@@ -1649,6 +1649,24 @@ bool path_liveness_probe_warranted(meshlink_handle_t *mesh, const node_t *n) {
 	return mesh->loop.now.tv_sec - n->last_application_traffic < PATH_LIVENESS_INTERVAL_SEC;
 }
 
+static void path_commit_active_route(node_t *n, const path_target_t *target, const struct timespec *now) {
+	data_route_t *route = &n->active_route;
+	bool changed = route->kind != target->kind
+	               || route->relay_carrier != target->relay_carrier
+	               || route->first_hop != target->first_hop;
+
+	if(!changed) {
+		return;
+	}
+
+	route->kind = target->kind;
+	route->relay_carrier = target->relay_carrier;
+	route->first_hop = target->first_hop;
+	route->local = target->local;
+	route->suspect = false;
+	route->selected_at = *now;
+}
+
 void path_route_tick(meshlink_handle_t *mesh, node_t *n) {
 	if(!mesh || !n) {
 		return;
@@ -1677,6 +1695,12 @@ void path_route_tick(meshlink_handle_t *mesh, node_t *n) {
 		if(path_has_live_fallback(mesh, n)) {
 			n->active_route.suspect = false;
 			path_note_udp_demoted_reason(mesh, n, "suspect probes unanswered");
+
+			path_target_t target;
+
+			if(path_active_send_target(mesh, n, &target)) {
+				path_commit_active_route(n, &target, &mesh->loop.now);
+			}
 		} else {
 			n->active_route.suspect_at = mesh->loop.now;
 			path_log_validation(mesh, n, &n->address, "route-degraded", "no live fallback, still probing");
@@ -1724,10 +1748,10 @@ const char *relay_carrier_name(relay_carrier_t carrier) {
 	}
 }
 
-/* Which carrier a relay hop can take right now. META-in pinning is applied by
-   the caller; this only reports what the hop itself offers. */
-static relay_carrier_t relay_carrier_for(const node_t *hop) {
-	if(hop_udp_ready(hop)) {
+/* Which carrier a relay hop can take right now. META-in and devtool pinning are
+   applied by the caller through force_meta. */
+static relay_carrier_t relay_carrier_for(const node_t *hop, bool force_meta) {
+	if(!force_meta && hop_udp_ready(hop)) {
 		return RELAY_CARRIER_UDP;
 	}
 
@@ -1753,7 +1777,10 @@ bool path_active_send_target(meshlink_handle_t *mesh, node_t *n, path_target_t *
 	   and needs no hop. Local versus WAN is an attribute of the same mechanism.
 	   A suspect endpoint steps aside only while something else is already live;
 	   with no fallback it keeps carrying data and is probed instead. */
-	if(hop_udp_ready(n) && !(n->active_route.suspect && path_has_live_fallback(mesh, n))) {
+	bool direct_udp_ready = !n->devtool_force_meta && hop_udp_ready(n);
+	bool stepping_aside = direct_udp_ready && n->active_route.suspect && path_has_live_fallback(mesh, n);
+
+	if(direct_udp_ready && !stepping_aside) {
 		out->kind = DATA_ROUTE_DIRECT_UDP;
 		out->local = n->udp_tier == PATH_TIER_DIRECT_LOCAL_UDP;
 		return true;
@@ -1762,12 +1789,13 @@ bool path_active_send_target(meshlink_handle_t *mesh, node_t *n, path_target_t *
 	node_t *hop = n->nexthop;
 
 	if(hop && hop != mesh->self && hop != n) {
-		relay_carrier_t carrier = relay_carrier_for(hop);
+		relay_carrier_t carrier = relay_carrier_for(hop, n->devtool_force_meta);
 
 		if(carrier != RELAY_CARRIER_NONE) {
 			out->kind = DATA_ROUTE_RELAY;
 			out->relay_carrier = carrier;
 			out->first_hop = hop;
+			out->temporary_fallback = stepping_aside;
 			return true;
 		}
 	}
@@ -1776,12 +1804,14 @@ bool path_active_send_target(meshlink_handle_t *mesh, node_t *n, path_target_t *
 	if(n->connection && n->connection->status.active) {
 		out->kind = DATA_ROUTE_DIRECT_LOCAL_META;
 		out->local = path_address_is_local(&n->connection->address);
+		out->temporary_fallback = stepping_aside;
 		return true;
 	}
 
 	/* Nothing validated. The caller still tries META so a first record can
 	   bootstrap a session rather than being dropped outright. */
 	out->kind = DATA_ROUTE_DIRECT_LOCAL_META;
+	out->temporary_fallback = stepping_aside;
 	return true;
 }
 
@@ -1790,23 +1820,13 @@ void path_record_active_route(meshlink_handle_t *mesh, node_t *n, const path_tar
 		return;
 	}
 
-	data_route_t *route = &n->active_route;
-	bool changed = route->kind != target->kind
-	               || route->relay_carrier != target->relay_carrier
-	               || route->first_hop != target->first_hop;
-
 	n->last_application_traffic = mesh->loop.now.tv_sec;
 
-	if(!changed) {
+	if(target->temporary_fallback) {
 		return;
 	}
 
-	route->kind = target->kind;
-	route->relay_carrier = target->relay_carrier;
-	route->first_hop = target->first_hop;
-	route->local = target->local;
-	route->suspect = false;
-	route->selected_at = mesh->loop.now;
+	path_commit_active_route(n, target, &mesh->loop.now);
 }
 
 void path_log_candidate(meshlink_handle_t *mesh, const node_t *n, const sockaddr_t *sa, address_source_t src, path_cap_t cap, const char *action) {

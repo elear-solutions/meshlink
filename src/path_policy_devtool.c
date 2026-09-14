@@ -847,6 +847,89 @@ static bool cover_transport(meshlink_handle_t *mesh) {
 	return true;
 }
 
+static bool cover_active_route(meshlink_handle_t *mesh) {
+	node_t dest;
+	connection_t conn;
+	path_target_t target;
+
+	memset(&dest, 0, sizeof dest);
+	memset(&conn, 0, sizeof conn);
+	dest.name = "dest";
+	dest.status.reachable = true;
+	dest.status.udp_confirmed = true;
+	dest.status.validkey = true;
+	dest.udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+	conn.status.active = true;
+	set_v4(&conn.address, "10.0.0.1", 1);
+	dest.connection = &conn;
+
+	CHECK(!strcmp(data_route_kind_name(DATA_ROUTE_DIRECT_UDP), "direct-udp"));
+	CHECK(!strcmp(data_route_kind_name(DATA_ROUTE_DIRECT_LOCAL_META), "direct-local-meta"));
+	CHECK(!strcmp(data_route_kind_name(DATA_ROUTE_RELAY), "relay"));
+	CHECK(!strcmp(data_route_kind_name(DATA_ROUTE_NONE), "none"));
+	CHECK(!strcmp(relay_carrier_name(RELAY_CARRIER_UDP), "udp"));
+	CHECK(!strcmp(relay_carrier_name(RELAY_CARRIER_META_DIRECT), "meta-direct"));
+	CHECK(!strcmp(relay_carrier_name(RELAY_CARRIER_META_CANONICAL), "meta-canonical"));
+	CHECK(!strcmp(relay_carrier_name(RELAY_CARRIER_NONE), "none"));
+
+	CHECK(!path_active_send_target(NULL, &dest, &target));
+	CHECK(!path_active_send_target(mesh, NULL, &target));
+	CHECK(!path_active_send_target(mesh, &dest, NULL));
+	path_record_active_route(NULL, &dest, &target);
+	path_record_active_route(mesh, NULL, &target);
+	path_record_active_route(mesh, &dest, NULL);
+
+	CHECK(path_active_send_target(mesh, &dest, &target));
+	CHECK(target.kind == DATA_ROUTE_DIRECT_UDP);
+	CHECK(!target.temporary_fallback);
+	path_record_active_route(mesh, &dest, &target);
+	CHECK(dest.active_route.kind == DATA_ROUTE_DIRECT_UDP);
+	CHECK(!dest.active_route.suspect);
+
+	path_note_route_suspect(mesh, &dest, "reliable retransmit");
+	CHECK(dest.active_route.suspect);
+	CHECK(path_has_live_fallback(mesh, &dest));
+
+	CHECK(path_active_send_target(mesh, &dest, &target));
+	CHECK(target.kind == DATA_ROUTE_DIRECT_LOCAL_META);
+	CHECK(target.temporary_fallback);
+	path_record_active_route(mesh, &dest, &target);
+	CHECK(dest.active_route.kind == DATA_ROUTE_DIRECT_UDP);
+	CHECK(dest.active_route.suspect);
+
+	node_t hop;
+	connection_t hopconn;
+	memset(&hop, 0, sizeof hop);
+	memset(&hopconn, 0, sizeof hopconn);
+	hop.name = "hop";
+	hop.status.udp_confirmed = true;
+	hop.status.validkey = true;
+	hopconn.status.active = true;
+	hop.connection = &hopconn;
+	dest.nexthop = &hop;
+
+	CHECK(path_active_send_target(mesh, &dest, &target));
+	CHECK(target.kind == DATA_ROUTE_RELAY);
+	CHECK(target.relay_carrier == RELAY_CARRIER_UDP);
+	CHECK(target.temporary_fallback);
+	path_record_active_route(mesh, &dest, &target);
+	CHECK(dest.active_route.kind == DATA_ROUTE_DIRECT_UDP);
+	CHECK(dest.active_route.suspect);
+	CHECK(dest.last_application_traffic == mesh->loop.now.tv_sec);
+
+	dest.active_route.suspect_at.tv_sec = mesh->loop.now.tv_sec - 2;
+	path_route_tick(mesh, &dest);
+	CHECK(!dest.active_route.suspect);
+	CHECK(!dest.status.udp_confirmed);
+	CHECK(dest.active_route.kind == DATA_ROUTE_RELAY);
+
+	dest.status.reachable = false;
+	CHECK(!path_active_send_target(mesh, &dest, &target));
+	path_route_tick(mesh, NULL);
+	path_route_tick(NULL, &dest);
+	return true;
+}
+
 static bool cover_preserve(meshlink_handle_t *mesh) {
 	return upgrade_preserve_cover_unit(mesh);
 }
@@ -866,6 +949,7 @@ bool path_policy_cover_unit(meshlink_handle_t *mesh, node_t *live) {
 	                || !cover_promote(mesh, live)
 	                || !cover_udp_cache(mesh, live)
 	                || !cover_transport(mesh)
+	                || !cover_active_route(mesh)
 	                || !cover_preserve(mesh)) {
 		return false;
 	}

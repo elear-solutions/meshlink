@@ -46,10 +46,12 @@ devtool_send_raw_record
 devtool_set_minmtu
 devtool_set_outgoing_startup_ms
 devtool_set_udp_confirmed
+devtool_force_meta
 devtool_trybind_probe
 devtool_update_node_udp
 devtool_upgrade_probe
 devtool_path_route_tick
+devtool_apply_send_target
 devtool_candidate_probe_target
 devtool_observe_probe_reply
 devtool_note_route_suspect

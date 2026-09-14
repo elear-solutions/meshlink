@@ -106,6 +106,7 @@ typedef struct path_target_t {
 	relay_carrier_t relay_carrier;
 	struct node_t *first_hop;
 	bool local;
+	bool temporary_fallback;                /* live fallback while the preferred route is still suspect */
 } path_target_t;
 
 #define UDP_LOCAL_PROBE_SEC 15

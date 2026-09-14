@@ -141,6 +141,7 @@ typedef struct node_t {
 	time_t pmtu_increase_next;              /* Earliest next full-size "is the path bigger now" probe */
 	sockaddr_t probe_candidate_sa;          /* Endpoint one packet of this burst is aimed at */
 	bool probe_candidate_pending;           /* Consumed by the next PKT_PROBE send */
+	bool devtool_force_meta;                /* Test-only persistent application-route override */
 
 	// Graph-related member variables
 	time_t last_reachable;

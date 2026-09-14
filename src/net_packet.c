@@ -190,6 +190,10 @@ end:
 }
 
 void send_mtu_probe(meshlink_handle_t *mesh, node_t *n) {
+	if(n->devtool_force_meta) {
+		return;
+	}
+
 	timeout_add(&mesh->loop, &n->mtutimeout, send_mtu_probe_handler, n, &(struct timespec) {
 		1, 0
 	});
@@ -227,6 +231,12 @@ static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet
 
 		n->status.temp_udp_confirmed = false;
 	} else {
+		/* A test can pin application traffic to META. Requests are still
+		   answered, but delayed replies cannot silently re-enable UDP. */
+		if(n->devtool_force_meta) {
+			return;
+		}
+
 		/* It's a valid reply: now we know bidirectional communication
 		   is possible using the address and socket that the reply
 		   packet used. */

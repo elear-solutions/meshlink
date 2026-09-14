@@ -370,6 +370,12 @@ bool devtool_choose_udp_address_advance(struct meshlink_handle *mesh, struct mes
  */
 void devtool_set_udp_confirmed(struct meshlink_handle *mesh, struct meshlink_node *node, bool confirmed);
 
+/// Persistently force a node's application records onto META.
+/** Used by tests that are not about UDP. Enabling stops UDP probes and ignores
+ *  delayed probe replies without clearing recent[]; disabling resumes probing.
+ */
+void devtool_force_meta(struct meshlink_handle *mesh, struct meshlink_node *node, bool enabled);
+
 /// Plant an address in recent[] as ADDR_SRC_UNKNOWN, bypassing canonical rejection.
 /** Used to reconstruct a persisted NLB-in-recent[] entry from an old install.
  *  Marks the node dirty and writes its host config.
@@ -498,6 +504,12 @@ int devtool_select_dest_with_udp(struct meshlink_handle *mesh, struct meshlink_n
  *  after a healthy stretch, so tests do not depend on wall-clock timing.
  */
 void devtool_path_route_tick(struct meshlink_handle *mesh, struct meshlink_node *node);
+
+/// Resolve and record the send target as send_application_record() does.
+/** @param chosen_kind  Filled with the data_route_kind_t that would carry this record.
+ *  @return             false if there is no usable target.
+ */
+bool devtool_apply_send_target(struct meshlink_handle *mesh, struct meshlink_node *node, int *chosen_kind);
 
 /// Start or fetch the endpoint under validation, and the nonce its probe carries.
 /** @return false when there is nothing to validate right now.

@@ -615,6 +615,77 @@ static void test_recorded_route(void) {
 	printf("path-stability T7 ok: one recorded route, no stray candidate\n");
 }
 
+/* --- T8: fallback records do not clear suspicion ---------------------------- */
+
+static void test_fallback_keeps_suspect(void) {
+	printf("\n=== path-stability T8: fallback traffic does not clear UDP suspicion ===\n");
+
+	assert(meshlink_destroy("path_stability_t8_conf.1"));
+	assert(meshlink_destroy("path_stability_t8_conf.2"));
+
+	meshlink_handle_t *a = meshlink_open("path_stability_t8_conf.1", "aaa", "path-stability-8", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *b = meshlink_open("path_stability_t8_conf.2", "bbb", "path-stability-8", DEV_CLASS_BACKBONE);
+	assert(a && b);
+	meshlink_enable_discovery(a, false);
+	meshlink_enable_discovery(b, false);
+	link_meshlink_pair(a, b);
+	assert(meshlink_start(a));
+	assert(meshlink_start(b));
+
+	meshlink_node_t *a_b = meshlink_get_node(a, "bbb");
+	assert(a_b);
+	assert_after(node_is_reachable(a, a_b), 15);
+	assert_after(node_is_keyed(a, a_b), 20);
+
+	struct sockaddr_in wan = v4("203.0.113.12", 9);
+
+	assert(devtool_has_live_fallback(a, a_b));
+	assert(devtool_confirm_udp_from(a, a_b, (struct sockaddr *)&wan, 1));
+
+	int chosen = ROUTE_NONE;
+	assert(devtool_apply_send_target(a, a_b, &chosen));
+	assert(chosen == ROUTE_DIRECT_UDP);
+	devtool_node_status_t st = snapshot(a, a_b);
+	assert(st.active_route_kind == ROUTE_DIRECT_UDP);
+	assert(!st.active_route_suspect);
+	devtool_free_node_status(&st);
+
+	devtool_note_route_suspect(a, a_b);
+
+	chosen = ROUTE_NONE;
+	assert(devtool_apply_send_target(a, a_b, &chosen));
+	assert(chosen != ROUTE_DIRECT_UDP);
+	st = snapshot(a, a_b);
+	assert(st.active_route_kind == ROUTE_DIRECT_UDP);
+	assert(st.active_route_suspect);
+	assert(st.udp_status == DEVTOOL_UDP_WORKING);
+	devtool_free_node_status(&st);
+
+	chosen = ROUTE_NONE;
+	assert(devtool_apply_send_target(a, a_b, &chosen));
+	assert(chosen != ROUTE_DIRECT_UDP);
+	st = snapshot(a, a_b);
+	assert(st.active_route_kind == ROUTE_DIRECT_UDP);
+	assert(st.active_route_suspect);
+	assert(st.udp_status == DEVTOOL_UDP_WORKING);
+	devtool_free_node_status(&st);
+
+	devtool_age_route(a, a_b, 2);
+	devtool_path_route_tick(a, a_b);
+	st = snapshot(a, a_b);
+	assert(!st.active_route_suspect);
+	assert(st.udp_status != DEVTOOL_UDP_WORKING);
+	assert(st.active_route_kind != ROUTE_DIRECT_UDP);
+	assert(st.active_route_kind == ROUTE_DIRECT_LOCAL_META || st.active_route_kind == ROUTE_RELAY);
+	devtool_free_node_status(&st);
+
+	meshlink_close(a);
+	meshlink_close(b);
+	assert(meshlink_destroy("path_stability_t8_conf.1"));
+	assert(meshlink_destroy("path_stability_t8_conf.2"));
+	printf("path-stability T8 ok: fallback records kept suspicion until the window closed\n");
+}
+
 int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_WARNING, NULL);
 
@@ -625,6 +696,7 @@ int main(void) {
 	test_suspect_before_demote();
 	test_idle_peer_is_not_probed();
 	test_recorded_route();
+	test_fallback_keeps_suspect();
 
 	printf("\npath-stability: all checks passed\n");
 	return 0;

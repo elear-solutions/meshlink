@@ -697,6 +697,37 @@ void devtool_set_udp_confirmed(meshlink_handle_t *mesh, meshlink_node_t *node, b
 	pthread_mutex_unlock(&mesh->mutex);
 }
 
+void devtool_force_meta(meshlink_handle_t *mesh, meshlink_node_t *node, bool enabled) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	node_t *n = (node_t *)node;
+
+	n->devtool_force_meta = enabled;
+
+	if(enabled) {
+		timeout_del(&mesh->loop, &n->mtutimeout);
+		timeout_del(&mesh->loop, &n->promotion_timer);
+		n->mtuprobes = 31;
+		n->status.udp_confirmed = false;
+		n->status.want_udp = false;
+		n->udp_tier = PATH_TIER_NONE;
+		n->probe_candidate_pending = false;
+		memset(&n->promotion_candidate, 0, sizeof n->promotion_candidate);
+	} else if(n->status.validkey && n->status.reachable && !n->mtutimeout.cb) {
+		n->mtuprobes = 0;
+		send_mtu_probe(mesh, n);
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
 bool devtool_plant_recent_address(meshlink_handle_t *mesh, meshlink_node_t *node, const struct sockaddr *addr) {
 	if(!mesh || !node || !addr) {
 		meshlink_errno = MESHLINK_EINVAL;
@@ -1084,6 +1115,28 @@ void devtool_path_route_tick(meshlink_handle_t *mesh, meshlink_node_t *node) {
 
 	path_route_tick(mesh, (node_t *)node);
 	pthread_mutex_unlock(&mesh->mutex);
+}
+
+bool devtool_apply_send_target(meshlink_handle_t *mesh, meshlink_node_t *node, int *chosen_kind) {
+	if(!mesh || !node || !chosen_kind) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	path_target_t target;
+	bool ok = path_active_send_target(mesh, (node_t *)node, &target);
+
+	if(ok) {
+		*chosen_kind = (int)target.kind;
+		path_record_active_route(mesh, (node_t *)node, &target);
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return ok;
 }
 
 bool devtool_candidate_probe_target(meshlink_handle_t *mesh, meshlink_node_t *node, struct sockaddr_storage *addr, uint64_t *nonce) {
