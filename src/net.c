@@ -148,7 +148,7 @@ void terminate_connection(meshlink_handle_t *mesh, connection_t *c, bool report)
 	if(mesh->outgoings) {
 		for list_each(outgoing_t, o, mesh->outgoings) {
 			if(o->pending == c) {
-				path_copy_sockaddr(&o->skip_sa, &c->address);
+				outgoing_note_failed_dest(o, &c->address);
 				o->pending = NULL;
 				timeout_del(&mesh->loop, &o->startup_ev);
 			}

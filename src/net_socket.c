@@ -289,7 +289,7 @@ static bool connection_is_listed(meshlink_handle_t *mesh, const connection_t *c)
 	return false;
 }
 
-static void outgoing_record_skip(outgoing_t *outgoing, const sockaddr_t *sa) {
+void outgoing_note_failed_dest(outgoing_t *outgoing, const sockaddr_t *sa) {
 	if(!outgoing || !sa || !sa->sa.sa_family) {
 		return;
 	}
@@ -315,7 +315,7 @@ static void outgoing_clear_pending(meshlink_handle_t *mesh, outgoing_t *outgoing
 	outgoing->startup_waiting_dns = false;
 
 	if(c && cancel) {
-		outgoing_record_skip(outgoing, &c->address);
+		outgoing_note_failed_dest(outgoing, &c->address);
 		outgoing->generation++;
 		c->outgoing = NULL;
 	} else if(c && !cancel) {
@@ -351,7 +351,7 @@ void outgoing_abort_startup(meshlink_handle_t *mesh, outgoing_t *outgoing) {
 	}
 }
 
-static void outgoing_bound_timeout(event_loop_t *loop, void *data) {
+static void outgoing_startup_timeout(event_loop_t *loop, void *data) {
 	outgoing_t *outgoing = data;
 	meshlink_handle_t *mesh = loop->data;
 	connection_t *c = outgoing->pending;
@@ -530,7 +530,7 @@ static bool get_next_outgoing_address(meshlink_handle_t *mesh, outgoing_t *outgo
 
 	if((outgoing->state == OUTGOING_RECENT || outgoing->state == OUTGOING_KNOWN) && !outgoing_has_canonical(outgoing)) {
 		if(outgoing->startup_sa.sa.sa_family) {
-			outgoing_record_skip(outgoing, &outgoing->startup_sa);
+			outgoing_note_failed_dest(outgoing, &outgoing->startup_sa);
 		}
 
 		timeout_del(&mesh->loop, &outgoing->startup_ev);
@@ -564,7 +564,7 @@ static bool get_next_outgoing_address(meshlink_handle_t *mesh, outgoing_t *outgo
 		timeout_del(&mesh->loop, &outgoing->startup_ev);
 
 		if(outgoing->startup_sa.sa.sa_family) {
-			outgoing_record_skip(outgoing, &outgoing->startup_sa);
+			outgoing_note_failed_dest(outgoing, &outgoing->startup_sa);
 		}
 
 		free_outgoing_addresses(outgoing);
@@ -691,12 +691,12 @@ begin:
 
 		if(outgoing_is_startup_direct(outgoing)) {
 			timeout_del(&mesh->loop, &outgoing->startup_ev);
-			outgoing_record_skip(outgoing, &outgoing->startup_sa);
+			outgoing_note_failed_dest(outgoing, &outgoing->startup_sa);
 			free_outgoing_addresses(outgoing);
 			outgoing->state = OUTGOING_CANONICAL_RESOLVE;
 		} else if(outgoing->state == OUTGOING_RECENT || outgoing->state == OUTGOING_KNOWN) {
 			if(outgoing->startup_sa.sa.sa_family) {
-				outgoing_record_skip(outgoing, &outgoing->startup_sa);
+				outgoing_note_failed_dest(outgoing, &outgoing->startup_sa);
 			}
 
 			free_outgoing_addresses(outgoing);
@@ -710,7 +710,7 @@ begin:
 
 	if(outgoing_is_startup_direct(outgoing)) {
 		struct timespec tv = outgoing_startup_tv();
-		timeout_add(&mesh->loop, &outgoing->startup_ev, outgoing_bound_timeout, outgoing, &tv);
+		timeout_add(&mesh->loop, &outgoing->startup_ev, outgoing_startup_timeout, outgoing, &tv);
 		path_request_canonical_resolve(mesh, outgoing->node);
 	}
 }

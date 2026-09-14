@@ -413,6 +413,10 @@ static void test_upgrade_after_timeout(void) {
 
 	assert(keyed);
 
+	char hole_probe[160];
+	snprintf(hole_probe, sizeof hole_probe, "Path validation: b probe-start 127.0.0.1 port %d", hole_port);
+	assert_after(log_find(0, hole_probe) >= 0, 10);
+
 	bool direct = false;
 
 	for(int i = 0; i < 25; i++) {
