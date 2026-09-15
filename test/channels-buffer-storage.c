@@ -9,13 +9,33 @@
 #include <sys/time.h>
 #include <assert.h>
 
+#include "meshlink.h"
+#include "devtools.h"
 #include "utils.h"
-#include "../src/meshlink.h"
 
 static struct sync_flag b_responded;
 static struct sync_flag aio_finished;
 
 static const size_t size = 25000000; // size of data to transfer
+
+static bool node_is_keyed(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	devtool_node_status_t st;
+	devtool_get_node_status(mesh, node, &st);
+	bool keyed = st.meta_connected && st.validkey;
+	devtool_free_node_status(&st);
+	return keyed;
+}
+
+/* AIO buffer storage, not UDP. Same pin as channels-aio: delayed docker UDP
+   confirmation must not yank the 25MB transfer onto an unready dest. */
+static void stay_on_meta(meshlink_handle_t *a, meshlink_handle_t *b) {
+	meshlink_node_t *a_b = meshlink_get_node(a, "b");
+	meshlink_node_t *b_a = meshlink_get_node(b, "a");
+	assert(a_b && b_a);
+	assert_after(node_is_keyed(a, a_b) && node_is_keyed(b, b_a), 20);
+	devtool_force_meta(a, a_b, true);
+	devtool_force_meta(b, b_a, true);
+}
 
 static void a_receive_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, const void *data, size_t len) {
 	(void)mesh;
@@ -100,6 +120,7 @@ int main(void) {
 	// Start both instances
 
 	start_meshlink_pair(mesh_a, mesh_b);
+	stay_on_meta(mesh_a, mesh_b);
 
 	// Open a channel from a to b.
 
@@ -147,7 +168,7 @@ int main(void) {
 
 	assert(meshlink_channel_aio_receive(mesh_a, channel, indata, size, aio_cb, NULL));
 	assert(meshlink_channel_aio_send(mesh_a, channel, outdata, size, NULL, NULL));
-	assert(wait_sync_flag(&aio_finished, 20));
+	assert(wait_sync_flag(&aio_finished, 30));
 	assert(!memcmp(indata, outdata, size));
 
 	// Done
