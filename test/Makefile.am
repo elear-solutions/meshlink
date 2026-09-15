@@ -47,6 +47,7 @@ TESTS = \
 	udp-relay \
 	relay-coverage \
 	path-policy-coverage \
+	backbone-identity \
 	path-stability \
 	transport-recent \
 	utcp-benchmark \
@@ -116,6 +117,7 @@ check_PROGRAMS = \
 	udp-relay \
 	relay-coverage \
 	path-policy-coverage \
+	backbone-identity \
 	path-stability \
 	transport-recent
 
@@ -272,6 +274,9 @@ relay_coverage_LDADD = $(top_builddir)/src/libmeshlink.la
 
 path_policy_coverage_SOURCES = path-policy-coverage.c utils.c utils.h
 path_policy_coverage_LDADD = $(top_builddir)/src/libmeshlink.la
+
+backbone_identity_SOURCES = backbone-identity.c utils.c utils.h
+backbone_identity_LDADD = $(top_builddir)/src/libmeshlink.la
 
 path_stability_SOURCES = path-stability.c utils.c utils.h
 path_stability_LDADD = $(top_builddir)/src/libmeshlink.la

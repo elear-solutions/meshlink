@@ -38,6 +38,15 @@ static void make_main_path(meshlink_handle_t *mesh, const char *conf_subdir, cha
 	snprintf(path, len, "%s" SLASH "%s" SLASH "meshlink.conf", mesh->confbase, conf_subdir);
 }
 
+/// Generate a path to the backbone identity file.
+static void make_backbone_path(meshlink_handle_t *mesh, const char *conf_subdir, char *path, size_t len) {
+	assert(conf_subdir);
+	assert(path);
+	assert(len);
+
+	snprintf(path, len, "%s" SLASH "%s" SLASH "backbone", mesh->confbase, conf_subdir);
+}
+
 /// Generate a path to a host configuration file.
 static void make_host_path(meshlink_handle_t *mesh, const char *conf_subdir, const char *name, char *path, size_t len) {
 	assert(conf_subdir);
@@ -829,6 +838,93 @@ bool main_config_write(meshlink_handle_t *mesh, const char *conf_subdir, const c
 	char path[PATH_MAX];
 	char tmp_path[PATH_MAX + 4];
 	make_main_path(mesh, conf_subdir, path, sizeof(path));
+	snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
+
+	FILE *f = fopen(tmp_path, "w");
+
+	if(!f) {
+		logger(mesh, MESHLINK_ERROR, "Failed to open `%s': %s", tmp_path, strerror(errno));
+		meshlink_errno = MESHLINK_ESTORAGE;
+		return false;
+	}
+
+	if(!config_write_file(mesh, f, config, key)) {
+		logger(mesh, MESHLINK_ERROR, "Failed to write `%s': %s", tmp_path, strerror(errno));
+		fclose(f);
+		return false;
+	}
+
+	if(rename(tmp_path, path)) {
+		logger(mesh, MESHLINK_ERROR, "Failed to rename `%s' to `%s': %s", tmp_path, path, strerror(errno));
+		meshlink_errno = MESHLINK_ESTORAGE;
+		fclose(f);
+		return false;
+	}
+
+	if(fclose(f)) {
+		logger(mesh, MESHLINK_ERROR, "Failed to close `%s': %s", tmp_path, strerror(errno));
+		meshlink_errno = MESHLINK_ESTORAGE;
+		return false;
+	}
+
+	return true;
+}
+
+/// Check the presence of the backbone identity file.
+bool backbone_config_exists(meshlink_handle_t *mesh, const char *conf_subdir) {
+	assert(conf_subdir);
+
+	if(!mesh->confbase) {
+		return false;
+	}
+
+	char path[PATH_MAX];
+	make_backbone_path(mesh, conf_subdir, path, sizeof(path));
+	return access(path, F_OK) == 0;
+}
+
+/// Read the backbone identity file.
+bool backbone_config_read(meshlink_handle_t *mesh, const char *conf_subdir, config_t *config, void *key) {
+	assert(conf_subdir);
+	assert(config);
+
+	if(!mesh->confbase) {
+		return false;
+	}
+
+	char path[PATH_MAX];
+	make_backbone_path(mesh, conf_subdir, path, sizeof(path));
+
+	FILE *f = fopen(path, "r");
+
+	if(!f) {
+		logger(mesh, MESHLINK_ERROR, "Failed to open `%s': %s", path, strerror(errno));
+		return false;
+	}
+
+	if(!config_read_file(mesh, f, config, key)) {
+		logger(mesh, MESHLINK_ERROR, "Failed to read `%s': %s", path, strerror(errno));
+		fclose(f);
+		return false;
+	}
+
+	fclose(f);
+
+	return true;
+}
+
+/// Write the backbone identity file.
+bool backbone_config_write(meshlink_handle_t *mesh, const char *conf_subdir, const config_t *config, void *key) {
+	assert(conf_subdir);
+	assert(config);
+
+	if(!mesh->confbase) {
+		return true;
+	}
+
+	char path[PATH_MAX];
+	char tmp_path[PATH_MAX + 4];
+	make_backbone_path(mesh, conf_subdir, path, sizeof(path));
 	snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
 
 	FILE *f = fopen(tmp_path, "w");

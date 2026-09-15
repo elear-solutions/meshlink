@@ -43,6 +43,7 @@ typedef struct node_status_t {
 	uint16_t in_req_sptps: 1;           /* 1 while processing dest META REQ_SPTPS */
 	uint16_t temp_udp_confirmed: 1;     /* 1 while sending a probe reply */
 	uint16_t forced_relay: 1;           /* 1 if devtool pinned nexthop */
+	uint16_t conflict_backbone: 1;      /* 1 if this node conflicts with stored backbone identity. Detection only; exclusion is findings 5 and 10. */
 } node_status_t;
 
 /* Size of node_t.recent[]. devtool_node_status_t.recent[] mirrors it as DEVTOOL_MAX_RECENT

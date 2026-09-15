@@ -25,6 +25,7 @@
 #include "net.h"
 #include "netutl.h"
 #include "node.h"
+#include "connection_policy.h"
 #include "path_policy.h"
 #include "relay.h"
 #include "splay_tree.h"
@@ -148,6 +149,7 @@ void free_node(node_t *n) {
 void node_add(meshlink_handle_t *mesh, node_t *n) {
 	n->mesh = mesh;
 	splay_insert(mesh->nodes, n);
+	connection_policy_on_node_added(mesh, n);
 }
 
 static void node_udp_cache_forget(meshlink_handle_t *mesh, node_t *n) {
@@ -199,7 +201,9 @@ void node_del(meshlink_handle_t *mesh, node_t *n) {
 		edge_del(mesh, e);
 	}
 
+	connection_policy_on_node_deleted(mesh, n);
 	splay_delete(mesh->nodes, n);
+	connection_policy_validate_topology(mesh);
 }
 
 node_t *lookup_node(meshlink_handle_t *mesh, const char *name) {

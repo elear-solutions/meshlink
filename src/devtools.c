@@ -26,6 +26,7 @@
 #include "meshlink_internal.h"
 #include "net.h"
 #include "node.h"
+#include "connection_policy.h"
 #include "path_policy.h"
 #include "path_policy_devtool.h"
 #include "relay.h"
@@ -174,6 +175,18 @@ bool devtool_export_json_all_edges_state(meshlink_handle_t *mesh, FILE *stream) 
 
 	// export begin
 	if(!fstrwrite("{\n", stream)) {
+		goto fail;
+	}
+
+	if(!fstrwrite("\t\"backbone\": ", stream)) {
+		goto fail;
+	}
+
+	if(mesh->backbone.name) {
+		if(!fstrwrite("\"", stream) || !fstrwrite(mesh->backbone.name, stream) || !fstrwrite("\",\n", stream)) {
+			goto fail;
+		}
+	} else if(!fstrwrite("null,\n", stream)) {
 		goto fail;
 	}
 
@@ -509,6 +522,51 @@ void devtool_force_sptps_renewal(meshlink_handle_t *mesh, meshlink_node_t *node)
 	if(c) {
 		c->last_key_renewal = -3600;
 	}
+}
+
+const char *devtool_get_backbone_name(meshlink_handle_t *mesh) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return NULL;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	const char *name = connection_policy_backbone_name(mesh);
+	pthread_mutex_unlock(&mesh->mutex);
+	return name;
+}
+
+meshlink_node_t *devtool_get_backbone(meshlink_handle_t *mesh) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return NULL;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	meshlink_node_t *node = (meshlink_node_t *)connection_policy_backbone(mesh);
+	pthread_mutex_unlock(&mesh->mutex);
+	return node;
+}
+
+bool devtool_node_has_conflict_backbone(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	bool conflict = ((node_t *)node)->status.conflict_backbone;
+	pthread_mutex_unlock(&mesh->mutex);
+	return conflict;
 }
 
 void devtool_free_node_status(devtool_node_status_t *status) {

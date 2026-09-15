@@ -19,6 +19,9 @@ devtool_free_node_status
 devtool_get_all_edges
 devtool_get_all_submeshes
 devtool_get_node_status
+devtool_get_backbone
+devtool_get_backbone_name
+devtool_node_has_conflict_backbone
 devtool_graph_may_seed_udp
 devtool_handle_relay_aliased
 devtool_handle_req_relay_mtu

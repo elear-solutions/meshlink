@@ -186,6 +186,10 @@ struct devtool_node_status {
  */
 void devtool_get_node_status(meshlink_handle_t *mesh, meshlink_node_t *node, devtool_node_status_t *status);
 
+const char *devtool_get_backbone_name(meshlink_handle_t *mesh);
+meshlink_node_t *devtool_get_backbone(meshlink_handle_t *mesh);
+bool devtool_node_has_conflict_backbone(meshlink_handle_t *mesh, meshlink_node_t *node);
+
 /// Free the memory allocated by devtool_get_node_status.
 /** This function frees the dynamically allocated strings in a devtool_node_status_t struct.
  *  Call this function when you're done with the status data to prevent memory leaks.

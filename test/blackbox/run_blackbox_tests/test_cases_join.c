@@ -98,7 +98,7 @@ static void test_case_meshlink_join_01(void **state) {
 	// Open both NUT and peer node instance, invite and join NUT with peer node.
 
 	meshlink_handle_t *mesh_peer = meshlink_open(peer_confbase, PEER, TEST_MESHLINK_JOIN,
-	                               DEV_CLASS_STATIONARY);
+	                               DEV_CLASS_BACKBONE);
 	assert_non_null(mesh_peer);
 	meshlink_set_inviter_commits_first(mesh_peer, true);
 	meshlink_set_node_status_cb(mesh_peer, meshlink_node_reachable_status_cb);
@@ -157,7 +157,7 @@ static void test_case_meshlink_join_02(void **state) {
 	// Open both NUT and peer node instance, invite and join NUT with peer node.
 
 	meshlink_handle_t *mesh_peer = meshlink_open(peer_confbase, PEER, TEST_MESHLINK_JOIN,
-	                               DEV_CLASS_STATIONARY);
+	                               DEV_CLASS_BACKBONE);
 	assert_non_null(mesh_peer);
 	meshlink_set_node_status_cb(mesh_peer, meshlink_node_reachable_status_cb);
 	char *invitation = meshlink_invite(mesh_peer, NULL, NUT);
@@ -208,7 +208,7 @@ static void test_case_meshlink_join_03(void **state) {
 
 	// Open NUT node instance and invite peer node. Close NUT node instance.
 
-	meshlink_handle_t *mesh = meshlink_open(nut_confbase, NUT, TEST_MESHLINK_JOIN, DEV_CLASS_STATIONARY);
+	meshlink_handle_t *mesh = meshlink_open(nut_confbase, NUT, TEST_MESHLINK_JOIN, DEV_CLASS_BACKBONE);
 	assert_non_null(mesh);
 	char *invitation = meshlink_invite(mesh, NULL, PEER);
 	meshlink_close(mesh);
@@ -227,7 +227,7 @@ static void test_case_meshlink_join_03(void **state) {
 	if(!pid) {
 		assert(signal(SIGUSR2, SIG_DFL) != SIG_ERR);
 
-		mesh = meshlink_open(nut_confbase, NUT, TEST_MESHLINK_JOIN, DEV_CLASS_STATIONARY);
+		mesh = meshlink_open(nut_confbase, NUT, TEST_MESHLINK_JOIN, DEV_CLASS_BACKBONE);
 		assert(mesh);
 		meshlink_set_log_cb(mesh, MESHLINK_DEBUG, log_cb);
 		meshlink_set_node_status_cb(mesh, meshlink_node_reachable_status_cb);
@@ -265,7 +265,7 @@ static void test_case_meshlink_join_03(void **state) {
 
 	// Reopen the NUT instance in the same test suite
 
-	mesh = meshlink_open(nut_confbase, NUT, TEST_MESHLINK_JOIN, DEV_CLASS_STATIONARY);
+	mesh = meshlink_open(nut_confbase, NUT, TEST_MESHLINK_JOIN, DEV_CLASS_BACKBONE);
 	assert_non_null(mesh);
 
 	assert_non_null(meshlink_get_node(mesh, PEER));
@@ -302,7 +302,7 @@ static void test_case_meshlink_join_04(void **state) {
 	// Open peer node instance and invite NUT.
 
 	meshlink_handle_t *mesh_peer = meshlink_open(peer_confbase, PEER, TEST_MESHLINK_JOIN,
-	                               DEV_CLASS_STATIONARY);
+	                               DEV_CLASS_BACKBONE);
 	assert_int_not_equal(mesh_peer, NULL);
 	char *invitation = meshlink_invite(mesh_peer, NULL, NUT);
 	assert_non_null(invitation);
@@ -387,7 +387,7 @@ static void test_case_meshlink_join_05(void **state) {
 	// Open peer node instance and invite NUT.
 
 	meshlink_handle_t *mesh_peer = meshlink_open(peer_confbase, PEER, TEST_MESHLINK_JOIN,
-	                               DEV_CLASS_STATIONARY);
+	                               DEV_CLASS_BACKBONE);
 	assert_int_not_equal(mesh_peer, NULL);
 	meshlink_set_inviter_commits_first(mesh_peer, false);
 	char *invitation = meshlink_invite(mesh_peer, NULL, NUT);
@@ -469,7 +469,7 @@ static void test_case_meshlink_join_06(void **state) {
 
 	// Open NUT node instance and invite peer node. Close NUT node instance.
 
-	meshlink_handle_t *mesh = meshlink_open(nut_confbase, NUT, TEST_MESHLINK_JOIN, DEV_CLASS_STATIONARY);
+	meshlink_handle_t *mesh = meshlink_open(nut_confbase, NUT, TEST_MESHLINK_JOIN, DEV_CLASS_BACKBONE);
 	assert_non_null(mesh);
 	meshlink_set_inviter_commits_first(mesh, true);
 	char *invitation = meshlink_invite(mesh, NULL, PEER);
@@ -490,7 +490,7 @@ static void test_case_meshlink_join_06(void **state) {
 	if(!pid) {
 		assert(signal(SIGUSR2, SIG_DFL) != SIG_ERR);
 
-		mesh = meshlink_open(nut_confbase, NUT, TEST_MESHLINK_JOIN, DEV_CLASS_STATIONARY);
+		mesh = meshlink_open(nut_confbase, NUT, TEST_MESHLINK_JOIN, DEV_CLASS_BACKBONE);
 		assert(mesh);
 		meshlink_set_inviter_commits_first(mesh, true);
 		meshlink_set_log_cb(mesh, MESHLINK_DEBUG, log_cb);
@@ -527,7 +527,7 @@ static void test_case_meshlink_join_06(void **state) {
 
 	// Reopen the NUT instance in the same test suite
 
-	mesh = meshlink_open(nut_confbase, NUT, TEST_MESHLINK_JOIN, DEV_CLASS_STATIONARY);
+	mesh = meshlink_open(nut_confbase, NUT, TEST_MESHLINK_JOIN, DEV_CLASS_BACKBONE);
 	assert_non_null(mesh);
 
 	// Inviter should first commit config file(s) into the disk
@@ -568,7 +568,7 @@ static void test_case_meshlink_join_07(void **state) {
 	// Open both NUT and peer node instance, invite and join NUT with peer node.
 
 	meshlink_handle_t *mesh_peer = meshlink_open(peer_confbase, PEER, TEST_MESHLINK_JOIN,
-	                               DEV_CLASS_STATIONARY);
+	                               DEV_CLASS_BACKBONE);
 	assert_non_null(mesh_peer);
 	meshlink_set_inviter_commits_first(mesh_peer, false);
 	meshlink_set_node_status_cb(mesh_peer, meshlink_node_reachable_status_cb);
@@ -620,7 +620,7 @@ static void test_case_meshlink_join_08(void **state) {
 	// Open both NUT and peer node instance, invite and join NUT with peer node.
 
 	meshlink_handle_t *mesh_peer = meshlink_open(peer_confbase, PEER, TEST_MESHLINK_JOIN,
-	                               DEV_CLASS_STATIONARY);
+	                               DEV_CLASS_BACKBONE);
 	assert_non_null(mesh_peer);
 	meshlink_set_inviter_commits_first(mesh_peer, true);
 	meshlink_set_node_status_cb(mesh_peer, meshlink_node_reachable_status_cb);
@@ -670,7 +670,7 @@ static void test_case_meshlink_join_09(void **state) {
 	// Open both NUT and peer node instance, invite and join NUT with peer node.
 
 	meshlink_handle_t *mesh_peer = meshlink_open(peer_confbase, PEER, TEST_MESHLINK_JOIN,
-	                               DEV_CLASS_STATIONARY);
+	                               DEV_CLASS_BACKBONE);
 	assert_non_null(mesh_peer);
 	meshlink_set_node_status_cb(mesh_peer, meshlink_node_reachable_status_cb);
 	char *invitation = meshlink_invite(mesh_peer, NULL, NUT);
@@ -724,7 +724,7 @@ static void test_case_meshlink_join_10(void **state) {
 	// Open both NUT and peer node instance, invite and join NUT with peer node.
 
 	meshlink_handle_t *mesh_peer = meshlink_open(peer_confbase, PEER, TEST_MESHLINK_JOIN,
-	                               DEV_CLASS_STATIONARY);
+	                               DEV_CLASS_BACKBONE);
 	assert_non_null(mesh_peer);
 	meshlink_set_node_status_cb(mesh_peer, meshlink_node_reachable_status_cb);
 	char *invitation = meshlink_invite(mesh_peer, NULL, NUT);

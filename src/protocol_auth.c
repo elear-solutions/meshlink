@@ -34,6 +34,7 @@
 #include "node.h"
 #include "packmsg.h"
 #include "path_policy.h"
+#include "connection_policy.h"
 #include "prf.h"
 #include "protocol.h"
 #include "sptps.h"
@@ -504,6 +505,7 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	n->devclass = devclass;
 	n->status.dirty = true;
 	n->status.tiny = c->flags & PROTOCOL_TINY;
+	connection_policy_on_devclass(mesh, n);
 
 	install_node_connection(mesh, n, c);
 

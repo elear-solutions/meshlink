@@ -54,6 +54,10 @@ bool config_write(struct meshlink_handle *mesh, const char *conf_subdir, const c
 bool config_delete(struct meshlink_handle *mesh, const char *conf_subdir, const char *name) __attribute__((__warn_unused_result__));
 bool config_scan_all(struct meshlink_handle *mesh, const char *conf_subdir, const char *conf_type, config_scan_action_t action, void *arg) __attribute__((__warn_unused_result__));
 
+bool backbone_config_exists(struct meshlink_handle *mesh, const char *conf_subdir) __attribute__((__warn_unused_result__));
+bool backbone_config_read(struct meshlink_handle *mesh, const char *conf_subdir, struct config_t *, void *key) __attribute__((__warn_unused_result__));
+bool backbone_config_write(struct meshlink_handle *mesh, const char *conf_subdir, const struct config_t *, void *key) __attribute__((__warn_unused_result__));
+
 bool invitation_read(struct meshlink_handle *mesh, const char *conf_subdir, const char *name, struct config_t *, void *key) __attribute__((__warn_unused_result__));
 bool invitation_write(struct meshlink_handle *mesh, const char *conf_subdir, const char *name, const struct config_t *, void *key) __attribute__((__warn_unused_result__));
 size_t invitation_purge_old(struct meshlink_handle *mesh, time_t deadline);

@@ -41,6 +41,7 @@ libmeshlink_la_SOURCES = \
 	buffer.c buffer.h \
 	conf.c conf.h \
 	connection.c connection.h \
+	connection_policy.c connection_policy.h \
 	crypto.c crypto.h \
 	discovery.c discovery.h \
 	dropin.c dropin.h \

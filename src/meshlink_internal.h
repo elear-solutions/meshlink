@@ -47,7 +47,8 @@ static const char meshlink_tcp_label[] = "MeshLink TCP";
 static const char meshlink_udp_label[] = "MeshLink UDP";
 
 #define MESHLINK_CONFIG_VERSION 2
-#define MESHLINK_INVITATION_VERSION 2
+#define MESHLINK_INVITATION_VERSION 3
+#define MESHLINK_BACKBONE_FILE_VERSION 1
 
 typedef struct listen_socket_t {
 	struct io_t tcp;
@@ -72,6 +73,12 @@ struct meshlink_open_params {
 	uint16_t port_range_lo;         /* Inclusive listen port range, both 0 = unconstrained */
 	uint16_t port_range_hi;
 };
+
+/// Persistent unique backbone identity. The name survives node deletion; the pointer is a cache.
+typedef struct backbone_identity_t {
+	char *name;
+	struct node_t *node;
+} backbone_identity_t;
 
 /// Device class traits
 typedef struct {
@@ -167,6 +174,7 @@ struct meshlink_handle {
 	struct ecdsa *invitation_key;
 
 	dev_class_t devclass;
+	backbone_identity_t backbone;
 
 	int invitation_timeout;
 
