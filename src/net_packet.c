@@ -46,8 +46,8 @@ static void send_udppacket(meshlink_handle_t *mesh, node_t *, vpn_packet_t *);
 #define PROBE_OVERHEAD (SPTPS_DATAGRAM_OVERHEAD + 40)
 
 /* data[0] is the request/reply flag and data[14..] is random padding. Bytes
-   1..13 are zeroed by the sender and echoed verbatim by the replier, so the
-   promotion nonce rides there without a wire format change. */
+   1..13 are zeroed on PMTU probes. Promotion probes stamp a nonce at offset 1
+   so the echo can be identified without a wire format change. */
 #define PROBE_NONCE_OFFSET 1
 
 /* mtuprobes == 1..30: initial discovery, send bursts with 1 second interval
@@ -132,18 +132,6 @@ static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 		}
 	}
 
-	/* Decide before building the burst, so the nonce in the payload is the one
-	   the candidate endpoint is expected to echo. A probe reply carries bytes
-	   1..13 back unchanged, which is where the nonce rides. */
-	sockaddr_t candidate;
-	uint64_t nonce = 0;
-
-	n->probe_candidate_pending = path_candidate_probe_target(mesh, n, &candidate, &nonce);
-
-	if(n->probe_candidate_pending) {
-		n->probe_candidate_sa = candidate;
-	}
-
 	for(int i = 0; i < 5; i++) {
 		int len;
 
@@ -173,7 +161,6 @@ static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 		vpn_packet_t packet;
 		packet.probe = true;
 		memset(packet.data, 0, 14);
-		memcpy(packet.data + PROBE_NONCE_OFFSET, &nonce, sizeof nonce);
 		randomize(packet.data + 14, len - 14);
 		packet.len = len;
 		n->status.broadcast = i >= 4 && n->mtuprobes <= 10 && n->prevedge;
@@ -200,6 +187,37 @@ void send_mtu_probe(meshlink_handle_t *mesh, node_t *n) {
 	send_mtu_probe_handler(&mesh->loop, n);
 }
 
+static void send_probe_to(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet, const sockaddr_t *destination) {
+	if(!destination || destination->sa.sa_family == AF_UNSPEC) {
+		send_udppacket(mesh, n, packet);
+		return;
+	}
+
+	path_copy_sockaddr(&n->probe_dest_override, destination);
+	n->probe_dest_override_active = true;
+	send_udppacket(mesh, n, packet);
+	n->probe_dest_override_active = false;
+}
+
+void send_candidate_probe(meshlink_handle_t *mesh, node_t *n) {
+	if(!mesh || !n || !n->promotion_candidate.active || !n->promotion_candidate.nonce) {
+		return;
+	}
+
+	if(!n->status.reachable || !n->status.validkey) {
+		return;
+	}
+
+	vpn_packet_t packet;
+	memset(&packet, 0, sizeof packet);
+	packet.probe = true;
+	memcpy(packet.data + PROBE_NONCE_OFFSET, &n->promotion_candidate.nonce, sizeof n->promotion_candidate.nonce);
+	randomize(packet.data + 14, PATH_PROMOTION_PROBE_LEN - 14);
+	packet.len = PATH_PROMOTION_PROBE_LEN;
+	n->out_meta += packet.len + PROBE_OVERHEAD;
+	send_probe_to(mesh, n, &packet, &n->promotion_candidate.endpoint);
+}
+
 static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet, uint16_t len) {
 	n->in_meta += len + PROBE_OVERHEAD;
 
@@ -223,7 +241,7 @@ static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet
 		n->status.udp_confirmed = true;
 		logger(mesh, MESHLINK_DEBUG, "Sending MTU probe reply %d to %s", packet->len, n->name);
 		n->out_meta += packet->len + PROBE_OVERHEAD;
-		send_udppacket(mesh, n, packet);
+		send_probe_to(mesh, n, packet, &n->last_udp_from);
 
 		if(n->status.udp_confirmed) {
 			n->status.udp_confirmed = udp_confirmed;
@@ -240,6 +258,9 @@ static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet
 		/* It's a valid reply: now we know bidirectional communication
 		   is possible using the address and socket that the reply
 		   packet used. */
+
+		uint64_t nonce = 0;
+		memcpy(&nonce, packet->data + PROBE_NONCE_OFFSET, sizeof nonce);
 
 		if(!n->status.udp_confirmed) {
 			char *address, *port;
@@ -265,9 +286,12 @@ static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet
 			path_note_udp_confirmed(mesh, n);
 			try_upgrade_probe(mesh, n);
 		} else {
-			uint64_t nonce = 0;
-			memcpy(&nonce, packet->data + PROBE_NONCE_OFFSET, sizeof nonce);
 			path_observe_probe_reply(mesh, n, &n->last_udp_from, nonce);
+		}
+
+		/* Promotion echoes carry a nonce. They must not unpark or resize PMTU. */
+		if(nonce) {
+			return;
 		}
 
 		/* If we haven't established the PMTU yet, restart the discovery process. */
@@ -870,30 +894,23 @@ bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 	}
 
 	if(type == PKT_PROBE) {
-		/* Exactly one packet of a burst is aimed at the endpoint under
-		   validation; the rest keep proving the endpoint already in use. */
-		if(to->probe_candidate_pending) {
-			sockaddr_t candidate = to->probe_candidate_sa;
+		/* Dest override is armed around send_udppacket and cleared by the
+		   caller even if SPTPS never reaches us. Do not consume it here. */
+		if(to->probe_dest_override_active) {
+			sockaddr_t dest = to->probe_dest_override;
 			int sock = to->sock;
 
-			to->probe_candidate_pending = false;
-
-			if(select_listen_socket(mesh, &candidate, &sock)) {
-				node_udp_cache_alias(mesh, to, &candidate);
-				path_schedule_local_udp_probe(mesh, to);
-
-				if(mesh->log_level <= MESHLINK_INFO) {
-					char *hostname = sockaddr2hostname(&candidate);
-					logger(mesh, MESHLINK_INFO, "Path validation: %s probe-start %s local UDP", to->name, hostname);
-					free(hostname);
-				}
-
-				if(sendto(mesh->listen_socket[sock].udp.fd, data, len, 0, &candidate.sa, SALEN(candidate.sa)) < 0 && !sockwouldblock(sockerrno) && !sockmsgsize(sockerrno)) {
-					logger(mesh, MESHLINK_WARNING, "Error sending local UDP probe to %s: %s", to->name, sockstrerror(sockerrno));
-				}
-
+			if(!select_listen_socket(mesh, &dest, &sock)) {
 				return true;
 			}
+
+			node_udp_cache_alias(mesh, to, &dest);
+
+			if(sendto(mesh->listen_socket[sock].udp.fd, data, len, 0, &dest.sa, SALEN(dest.sa)) < 0 && !sockwouldblock(sockerrno) && !sockmsgsize(sockerrno)) {
+				logger(mesh, MESHLINK_WARNING, "Error sending local UDP probe to %s: %s", to->name, sockstrerror(sockerrno));
+			}
+
+			return true;
 		}
 
 		return send_sptps_via_udp(mesh, to, data, len);

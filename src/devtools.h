@@ -167,6 +167,7 @@ struct devtool_node_status {
 	bool candidate_active;                /// an endpoint is being validated for promotion
 	uint8_t candidate_rounds;             /// validation rounds this candidate has passed
 	uint8_t candidate_failures;           /// consecutive failures, drives the cooldown ladder
+	uint64_t candidate_nonce;             /// nonce the current round must echo (0 if none)
 	struct sockaddr_storage candidate_endpoint; /// endpoint under validation (AF_UNSPEC if none)
 	int candidate_cooldown_remaining;     /// seconds until this endpoint may be tried again
 	uint16_t channel_mtu;                 /// fixed UTCP MTU chosen when the node's utcp was created

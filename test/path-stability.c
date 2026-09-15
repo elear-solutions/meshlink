@@ -111,6 +111,47 @@ static bool udp_status_working(meshlink_handle_t *mesh, meshlink_node_t *node) {
 	return working;
 }
 
+static bool pmtu_parked(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	devtool_node_status_t st = snapshot(mesh, node);
+	bool parked = st.udp_status == DEVTOOL_UDP_WORKING && st.mtuprobes >= 31;
+	devtool_free_node_status(&st);
+	return parked;
+}
+
+static bool candidate_is_active(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	devtool_node_status_t st = snapshot(mesh, node);
+	bool active = st.candidate_active;
+	devtool_free_node_status(&st);
+	return active;
+}
+
+static bool candidate_has_two_rounds(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	devtool_node_status_t st = snapshot(mesh, node);
+	bool ok = st.candidate_active && st.candidate_rounds == 2;
+	devtool_free_node_status(&st);
+	return ok;
+}
+
+static bool ss_addr_equal(const struct sockaddr_storage *a, const struct sockaddr_storage *b) {
+	if(a->ss_family != b->ss_family) {
+		return false;
+	}
+
+	if(a->ss_family == AF_INET) {
+		const struct sockaddr_in *aa = (const struct sockaddr_in *)a;
+		const struct sockaddr_in *bb = (const struct sockaddr_in *)b;
+		return aa->sin_port == bb->sin_port && aa->sin_addr.s_addr == bb->sin_addr.s_addr;
+	}
+
+	if(a->ss_family == AF_INET6) {
+		const struct sockaddr_in6 *aa = (const struct sockaddr_in6 *)a;
+		const struct sockaddr_in6 *bb = (const struct sockaddr_in6 *)b;
+		return aa->sin6_port == bb->sin6_port && memcmp(&aa->sin6_addr, &bb->sin6_addr, 16) == 0;
+	}
+
+	return false;
+}
+
 /* --- T1: the channel size is decided once, from the names alone ----------- */
 
 static void test_fixed_channel_size(void) {
@@ -312,19 +353,13 @@ static void test_promotion_is_slow(void) {
 	assert(devtool_confirm_udp_from(a, a_b, (struct sockaddr *)&wan, 1));
 	meshlink_hint_address(a, a_b, (struct sockaddr *)&local);
 
-	struct sockaddr_storage target;
-	uint64_t nonce = 0;
-	assert(devtool_candidate_probe_target(a, a_b, &target, &nonce));
-	assert(addr_is(&target, "192.168.77.10", 7777));
-	assert(nonce);
-
 	devtool_node_status_t st = snapshot(a, a_b);
 	assert(st.candidate_active);
 	assert(st.candidate_rounds == 0);
+	assert(st.candidate_nonce);
+	assert(addr_is(&st.candidate_endpoint, "192.168.77.10", 7777));
+	uint64_t nonce = st.candidate_nonce;
 	devtool_free_node_status(&st);
-
-	/* Learning is not validation: the WAN endpoint is still the one in use. */
-	assert(addr_is(&target, "192.168.77.10", 7777));
 
 	/* A wrong nonce proves nothing. */
 	devtool_observe_probe_reply(a, a_b, (struct sockaddr *)&local, nonce ^ 1);
@@ -337,6 +372,8 @@ static void test_promotion_is_slow(void) {
 	st = snapshot(a, a_b);
 	assert(st.candidate_rounds == 1);
 	uint64_t first_round_nonce = nonce;
+	nonce = st.candidate_nonce;
+	assert(nonce != first_round_nonce);
 	devtool_free_node_status(&st);
 
 	/* Replaying the same burst cannot be the second round: the nonce is spent
@@ -346,13 +383,10 @@ static void test_promotion_is_slow(void) {
 	assert(st.candidate_rounds == 1);
 	devtool_free_node_status(&st);
 
-	/* Separate the rounds in time, then take the fresh nonce for the next one.
-	   Hold the active route well inside its residency so the only thing that
-	   can release the promotion is the residency itself. */
+	/* Separate the rounds in time. Hold the active route well inside its
+	   residency so the only thing that can release the promotion is the residency. */
 	devtool_age_candidate(a, a_b, 2);
 	devtool_age_route(a, a_b, -3600);
-	assert(devtool_candidate_probe_target(a, a_b, &target, &nonce));
-	assert(nonce != first_round_nonce);
 
 	/* Second round passes, but the active route has not served its residency,
 	   so the endpoint still does not move. */
@@ -416,15 +450,15 @@ static void test_candidate_cooldown(void) {
 	assert(devtool_confirm_udp_from(a, a_b, (struct sockaddr *)&wan, 1));
 	meshlink_hint_address(a, a_b, (struct sockaddr *)&local);
 
-	struct sockaddr_storage target;
-	uint64_t nonce = 0;
-	assert(devtool_candidate_probe_target(a, a_b, &target, &nonce));
+	devtool_node_status_t st = snapshot(a, a_b);
+	assert(st.candidate_active);
+	devtool_free_node_status(&st);
 
 	/* Nothing ever answers: the deadline retires the candidate. */
 	devtool_age_candidate(a, a_b, 60);
 	devtool_path_route_tick(a, a_b);
 
-	devtool_node_status_t st = snapshot(a, a_b);
+	st = snapshot(a, a_b);
 	assert(!st.candidate_active);
 	assert(st.candidate_failures == 1);
 	int first_cooldown = st.candidate_cooldown_remaining;
@@ -432,13 +466,20 @@ static void test_candidate_cooldown(void) {
 	devtool_free_node_status(&st);
 
 	/* While it is cooling down the same endpoint is not retried. */
+	struct sockaddr_storage target;
+	uint64_t nonce = 0;
 	assert(!devtool_candidate_probe_target(a, a_b, &target, &nonce));
+	meshlink_hint_address(a, a_b, (struct sockaddr *)&local);
+	st = snapshot(a, a_b);
+	assert(!st.candidate_active);
+	devtool_free_node_status(&st);
 
 	/* A fresh discovery lets it be tried again, but does not forgive the
 	   earlier failure: the next cooldown is longer, not the same. */
-	meshlink_hint_address(a, a_b, (struct sockaddr *)&local);
 	devtool_candidate_clear_cooldown(a, a_b);
-	assert(devtool_candidate_probe_target(a, a_b, &target, &nonce));
+	st = snapshot(a, a_b);
+	assert(st.candidate_active);
+	devtool_free_node_status(&st);
 
 	devtool_age_candidate(a, a_b, 60);
 	devtool_path_route_tick(a, a_b);
@@ -686,6 +727,86 @@ static void test_fallback_keeps_suspect(void) {
 	printf("path-stability T8 ok: fallback records kept suspicion until the window closed\n");
 }
 
+/* --- T9: parked PMTU still completes two production-path rounds ----------- */
+
+static void test_parked_pmtu_promotes_local(void) {
+	printf("\n=== path-stability T9: parked PMTU still completes two promotion rounds ===\n");
+
+	assert(meshlink_destroy("path_stability_t9_conf.1"));
+	assert(meshlink_destroy("path_stability_t9_conf.2"));
+
+	meshlink_handle_t *a = meshlink_open("path_stability_t9_conf.1", "aaa", "path-stability-9", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *b = meshlink_open("path_stability_t9_conf.2", "bbb", "path-stability-9", DEV_CLASS_BACKBONE);
+	assert(a && b);
+	meshlink_enable_discovery(a, false);
+	meshlink_enable_discovery(b, false);
+
+	init_sync_flag(&accepted);
+	init_sync_flag(&received);
+	meshlink_set_channel_accept_cb(b, accept_cb);
+	link_meshlink_pair(a, b);
+	assert(meshlink_start(a));
+	assert(meshlink_start(b));
+
+	meshlink_node_t *a_b = meshlink_get_node(a, "bbb");
+	meshlink_node_t *b_a = meshlink_get_node(b, "aaa");
+	assert(a_b && b_a);
+	assert_after(node_is_reachable(a, a_b), 15);
+	assert_after(node_is_keyed(a, a_b), 20);
+	assert_after(udp_status_working(a, a_b), 30);
+	assert_after(pmtu_parked(a, a_b), 40);
+
+	meshlink_channel_t *ch = meshlink_channel_open(a, a_b, 7, receive_cb, NULL, 0);
+	assert(ch);
+	assert(wait_sync_flag(&accepted, 15));
+	assert(meshlink_channel_send(a, ch, "Hello", 5) == 5);
+	assert(wait_sync_flag(&received, 15));
+
+	devtool_node_status_t st = snapshot(a, a_b);
+	struct sockaddr_storage local = st.address;
+	int parked = st.mtuprobes;
+	uint32_t restarts = st.sptps_restart_count;
+	assert(parked >= 31);
+	assert(local.ss_family == AF_INET || local.ss_family == AF_INET6);
+	devtool_free_node_status(&st);
+
+	/* Both peers sit on WAN. A's probe is forced to B's local; B must reply
+	   to last_udp_from, not n->address, or the round never counts. */
+	struct sockaddr_in wan_b = v4("203.0.113.10", 9);
+	struct sockaddr_in wan_a = v4("203.0.113.11", 9);
+	assert(devtool_confirm_udp_from(a, a_b, (struct sockaddr *)&wan_b, 1));
+	assert(devtool_confirm_udp_from(b, b_a, (struct sockaddr *)&wan_a, 1));
+	meshlink_hint_address(a, a_b, (struct sockaddr *)&local);
+
+	assert_after(candidate_is_active(a, a_b), 2);
+	assert_after(candidate_has_two_rounds(a, a_b), 6);
+
+	st = snapshot(a, a_b);
+	assert(st.mtuprobes >= 31);
+	assert(st.candidate_rounds == 2);
+	assert(st.candidate_active);
+	assert(!ss_addr_equal(&st.address, &local));
+	devtool_free_node_status(&st);
+
+	devtool_age_candidate(a, a_b, 2);
+	devtool_age_route(a, a_b, PATH_ROUTE_MIN_RESIDENCY_SEC + 1);
+	devtool_path_route_tick(a, a_b);
+
+	st = snapshot(a, a_b);
+	assert(!st.candidate_active);
+	assert(ss_addr_equal(&st.address, &local));
+	assert(st.sptps_restart_count == restarts);
+	assert(st.mtuprobes >= 31);
+	devtool_free_node_status(&st);
+
+	meshlink_channel_abort(a, ch);
+	meshlink_close(a);
+	meshlink_close(b);
+	assert(meshlink_destroy("path_stability_t9_conf.1"));
+	assert(meshlink_destroy("path_stability_t9_conf.2"));
+	printf("path-stability T9 ok: two rounds completed while PMTU stayed parked\n");
+}
+
 int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_WARNING, NULL);
 
@@ -697,6 +818,7 @@ int main(void) {
 	test_idle_peer_is_not_probed();
 	test_recorded_route();
 	test_fallback_keeps_suspect();
+	test_parked_pmtu_promotes_local();
 
 	printf("\npath-stability: all checks passed\n");
 	return 0;

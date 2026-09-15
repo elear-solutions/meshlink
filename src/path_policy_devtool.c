@@ -13,6 +13,7 @@
 #include "connection.h"
 #include "logger.h"
 #include "meshlink_internal.h"
+#include "event.h"
 #include "net.h"
 #include "netutl.h"
 #include "node.h"
@@ -702,6 +703,8 @@ static bool cover_promote(meshlink_handle_t *mesh, node_t *live) {
 	path_note_udp_confirmed(mesh, live);
 
 	path_learn_address(mesh, live, &local, ADDR_SRC_DISCOVERY);
+	timeout_del(&mesh->loop, &live->promotion_timer);
+	memset(&live->promotion_candidate, 0, sizeof live->promotion_candidate);
 	live->address = local;
 	live->udp_tier = PATH_TIER_DIRECT_WAN_UDP;
 	path_note_udp_confirmed(mesh, live);
@@ -735,6 +738,8 @@ static bool cover_promote(meshlink_handle_t *mesh, node_t *live) {
 	CHECK_LIVE(!path_promote_udp_if_better(mesh, live, &wan));
 
 done:
+	timeout_del(&mesh->loop, &live->promotion_timer);
+	memset(&live->promotion_candidate, 0, sizeof live->promotion_candidate);
 	restore_live(mesh, live, &saved);
 	return ok;
 #undef CHECK_LIVE
@@ -934,6 +939,88 @@ static bool cover_preserve(meshlink_handle_t *mesh) {
 	return upgrade_preserve_cover_unit(mesh);
 }
 
+static bool cover_promotion(meshlink_handle_t *mesh, node_t *live) {
+	live_snapshot_t saved;
+	bool ok = true;
+	sockaddr_t local, wan;
+	uint64_t nonce, spent;
+
+	snapshot_live(live, &saved);
+	timeout_del(&mesh->loop, &live->promotion_timer);
+	memset(&live->promotion_candidate, 0, sizeof live->promotion_candidate);
+
+	set_v4(&local, "10.9.8.7", 4242);
+	set_v4(&wan, "203.0.113.40", 9);
+
+#define CHECK_LIVE(cond) do { \
+	if(!(cond)) { \
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: %s", #cond); \
+		ok = false; \
+		goto done; \
+	} \
+} while(0)
+
+	live->address = wan;
+	live->status.udp_confirmed = true;
+	path_clear_recent(live);
+	path_learn_address(mesh, live, &wan, ADDR_SRC_AUTH_DIRECT);
+	live->udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+	path_consider_promotion(mesh, live, PATH_PROMOTION_TICK);
+	CHECK_LIVE(!live->promotion_candidate.active);
+
+	path_learn_address(mesh, live, &local, ADDR_SRC_DISCOVERY);
+	CHECK_LIVE(live->promotion_candidate.active);
+	CHECK_LIVE(live->promotion_timer.cb);
+	send_candidate_probe(mesh, live);
+	CHECK_LIVE(!live->probe_dest_override_active);
+
+	path_candidate_timeout(mesh, live, "cover");
+	CHECK_LIVE(!live->promotion_candidate.active);
+	CHECK_LIVE(!live->promotion_timer.cb);
+	CHECK_LIVE(live->promotion_candidate.cooldown_until.tv_sec > mesh->loop.now.tv_sec);
+
+	path_consider_promotion(mesh, live, PATH_PROMOTION_TICK);
+	CHECK_LIVE(!live->promotion_candidate.active);
+
+	path_candidate_clear_cooldown(mesh, live);
+	CHECK_LIVE(live->promotion_candidate.active);
+	CHECK_LIVE(live->promotion_timer.cb);
+
+	nonce = live->promotion_candidate.nonce;
+	CHECK_LIVE(nonce);
+	path_observe_probe_reply(mesh, live, &local, nonce ^ 1);
+	CHECK_LIVE(live->promotion_candidate.successful_rounds == 0);
+
+	path_observe_probe_reply(mesh, live, &local, nonce);
+	CHECK_LIVE(live->promotion_candidate.successful_rounds == 1);
+	CHECK_LIVE(live->promotion_timer.cb);
+	spent = nonce;
+	nonce = live->promotion_candidate.nonce;
+	CHECK_LIVE(nonce != spent);
+	path_observe_probe_reply(mesh, live, &local, spent);
+	CHECK_LIVE(live->promotion_candidate.successful_rounds == 1);
+
+	live->active_route.kind = DATA_ROUTE_DIRECT_UDP;
+	live->active_route.selected_at = mesh->loop.now;
+	live->promotion_candidate.first_success.tv_sec -= 1;
+	path_observe_probe_reply(mesh, live, &local, nonce);
+	CHECK_LIVE(live->promotion_candidate.successful_rounds == 2);
+	CHECK_LIVE(!live->promotion_timer.cb);
+	CHECK_LIVE(live->promotion_candidate.active);
+
+	live->active_route.selected_at.tv_sec -= PATH_ROUTE_MIN_RESIDENCY_SEC + 1;
+	path_route_tick(mesh, live);
+	CHECK_LIVE(!live->promotion_candidate.active);
+	CHECK_LIVE(!sockaddrcmp(&live->address, &local));
+
+done:
+	timeout_del(&mesh->loop, &live->promotion_timer);
+	memset(&live->promotion_candidate, 0, sizeof live->promotion_candidate);
+	restore_live(mesh, live, &saved);
+	return ok;
+#undef CHECK_LIVE
+}
+
 bool path_policy_cover_unit(meshlink_handle_t *mesh, node_t *live) {
 	if(!mesh || !live) {
 		return false;
@@ -947,6 +1034,7 @@ bool path_policy_cover_unit(meshlink_handle_t *mesh, node_t *live) {
 	                || !cover_select(mesh)
 	                || !cover_probe(mesh)
 	                || !cover_promote(mesh, live)
+	                || !cover_promotion(mesh, live)
 	                || !cover_udp_cache(mesh, live)
 	                || !cover_transport(mesh)
 	                || !cover_active_route(mesh)

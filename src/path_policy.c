@@ -16,6 +16,7 @@
 #include "graph.h"
 #include "logger.h"
 #include "meshlink_internal.h"
+#include "event.h"
 #include "net.h"
 #include "net_upgrade.h"
 #include "netutl.h"
@@ -863,12 +864,22 @@ bool path_learn_address_cap(meshlink_handle_t *mesh, node_t *n, const sockaddr_t
 
 			recent_store_front(n, i, sa, src, cap);
 			path_log_candidate(mesh, n, sa, n->recent_source[0], n->recent_cap[0], "updated");
+
+			if((n->recent_cap[0] & PATH_CAP_UDP) && path_address_is_local(sa)) {
+				path_consider_promotion(mesh, n, PATH_PROMOTION_DISCOVERY);
+			}
+
 			return true;
 		}
 	}
 
 	recent_store_front(n, -1, sa, src, cap);
 	path_log_candidate(mesh, n, sa, src, cap, "learned");
+
+	if((cap & PATH_CAP_UDP) && path_address_is_local(sa)) {
+		path_consider_promotion(mesh, n, PATH_PROMOTION_DISCOVERY);
+	}
+
 	return true;
 }
 
@@ -1265,6 +1276,8 @@ void path_note_udp_confirmed(meshlink_handle_t *mesh, node_t *n) {
 	if(was != n->udp_tier) {
 		path_log_udp_tier(mesh, n, was, n->udp_tier, "confirmed");
 	}
+
+	path_consider_promotion(mesh, n, PATH_PROMOTION_UDP_CONFIRMED);
 }
 
 static void path_defer_demotion(meshlink_handle_t *mesh, node_t *n, const char *reason) {
@@ -1369,8 +1382,8 @@ bool path_promote_udp_if_better(meshlink_handle_t *mesh, node_t *n, const sockad
 
 	path_tier_t was = n->udp_tier;
 	update_node_udp_from(mesh, n, from, ADDR_SRC_AUTH_DIRECT);
-	path_learn_address_cap(mesh, n, from, ADDR_SRC_AUTH_DIRECT, path_address_is_local(from) ? PATH_CAP_BOTH : PATH_CAP_UDP);
 	n->udp_tier = next;
+	path_learn_address_cap(mesh, n, from, ADDR_SRC_AUTH_DIRECT, path_address_is_local(from) ? PATH_CAP_BOTH : PATH_CAP_UDP);
 	path_log_udp_tier(mesh, n, was, next, "local probe reply");
 	return true;
 }
@@ -1436,15 +1449,63 @@ static bool path_residency_served(meshlink_handle_t *mesh, const node_t *n) {
 	return mesh->loop.now.tv_sec - n->active_route.selected_at.tv_sec >= PATH_ROUTE_MIN_RESIDENCY_SEC;
 }
 
-static void path_candidate_discard(node_t *n) {
+static void promotion_timer_handler(event_loop_t *loop, void *data);
+
+static void path_promotion_timer_stop(meshlink_handle_t *mesh, node_t *n) {
+	if(mesh) {
+		timeout_del(&mesh->loop, &n->promotion_timer);
+	}
+}
+
+static void path_promotion_timer_arm(meshlink_handle_t *mesh, node_t *n, const struct timespec *tv) {
+	struct timespec when = tv ? *tv : (struct timespec) {
+		0, 0
+	};
+
+	if(!n->promotion_timer.cb) {
+		timeout_add(&mesh->loop, &n->promotion_timer, promotion_timer_handler, n, &when);
+	} else {
+		timeout_set(&mesh->loop, &n->promotion_timer, &when);
+	}
+
+	if(mesh->datafromapp.cb) {
+		signal_trigger(&mesh->loop, &mesh->datafromapp);
+	}
+}
+
+static const char *path_promotion_reason_name(path_promotion_reason_t reason) {
+	switch(reason) {
+	case PATH_PROMOTION_DISCOVERY:
+		return "discovery";
+
+	case PATH_PROMOTION_HINT:
+		return "hint";
+
+	case PATH_PROMOTION_COOLDOWN_CLEARED:
+		return "cooldown-cleared";
+
+	case PATH_PROMOTION_UDP_CONFIRMED:
+		return "udp-confirmed";
+
+	case PATH_PROMOTION_TICK:
+		return "tick";
+
+	default:
+		return "unknown";
+	}
+}
+
+static void path_candidate_discard(meshlink_handle_t *mesh, node_t *n) {
+	path_promotion_timer_stop(mesh, n);
 	memset(&n->promotion_candidate, 0, sizeof n->promotion_candidate);
 }
 
 /* End the in-flight attempt but keep what we learned about this endpoint: its
    identity, how often it has let us down, and how long it owes us. */
-static void path_candidate_end_attempt(node_t *n) {
+static void path_candidate_end_attempt(meshlink_handle_t *mesh, node_t *n) {
 	route_candidate_t *c = &n->promotion_candidate;
 
+	path_promotion_timer_stop(mesh, n);
 	c->active = false;
 	c->nonce = 0;
 	c->successful_rounds = 0;
@@ -1452,17 +1513,37 @@ static void path_candidate_end_attempt(node_t *n) {
 	memset(&c->deadline, 0, sizeof c->deadline);
 }
 
+static void promotion_timer_handler(event_loop_t *loop, void *data) {
+	meshlink_handle_t *mesh = loop->data;
+	node_t *n = data;
+	route_candidate_t *c = &n->promotion_candidate;
+
+	if(!c->active || c->successful_rounds >= PATH_PROMOTION_ROUNDS) {
+		path_promotion_timer_stop(mesh, n);
+		return;
+	}
+
+	if(c->deadline.tv_sec && mesh->loop.now.tv_sec >= c->deadline.tv_sec) {
+		path_candidate_timeout(mesh, n, "validation deadline");
+		return;
+	}
+
+	send_candidate_probe(mesh, n);
+	path_promotion_timer_arm(mesh, n, &(struct timespec) {
+		PATH_CANDIDATE_PROBE_INTERVAL_SEC, 0
+	});
+}
+
 /* A fresh discovery or network change is new information, so the endpoint may
    be tried again now. It is not evidence that the earlier failures were wrong,
    so the escalation ladder keeps its position. */
 void path_candidate_clear_cooldown(meshlink_handle_t *mesh, node_t *n) {
-	(void)mesh;
-
 	if(!n) {
 		return;
 	}
 
 	memset(&n->promotion_candidate.cooldown_until, 0, sizeof n->promotion_candidate.cooldown_until);
+	path_consider_promotion(mesh, n, PATH_PROMOTION_COOLDOWN_CLEARED);
 }
 
 /* A long healthy stretch does say the earlier failures are not representative. */
@@ -1483,7 +1564,7 @@ void path_candidate_timeout(meshlink_handle_t *mesh, node_t *n, const char *reas
 		c->failures++;
 	}
 
-	path_candidate_end_attempt(n);
+	path_candidate_end_attempt(mesh, n);
 	c->cooldown_until = mesh->loop.now;
 	c->cooldown_until.tv_sec += cooldown;
 
@@ -1494,33 +1575,29 @@ void path_candidate_timeout(meshlink_handle_t *mesh, node_t *n, const char *reas
 	}
 }
 
-bool path_candidate_probe_target(meshlink_handle_t *mesh, node_t *n, sockaddr_t *out, uint64_t *nonce_out) {
-	if(!mesh || !n || !out || !nonce_out) {
-		return false;
+void path_consider_promotion(meshlink_handle_t *mesh, node_t *n, path_promotion_reason_t reason) {
+	if(!mesh || !n || n->mesh != mesh) {
+		return;
 	}
 
 	route_candidate_t *c = &n->promotion_candidate;
 
-	/* Keep probing the one candidate already under validation, at a bounded rate. */
 	if(c->active) {
-		if(mesh->loop.now.tv_sec < n->candidate_probe_next) {
-			return false;
-		}
-
-		n->candidate_probe_next = mesh->loop.now.tv_sec + PATH_CANDIDATE_PROBE_INTERVAL_SEC;
-		*out = c->endpoint;
-		*nonce_out = c->nonce;
-		return true;
+		return;
 	}
 
 	if(c->cooldown_until.tv_sec && mesh->loop.now.tv_sec < c->cooldown_until.tv_sec) {
-		return false;
+		return;
+	}
+
+	if(!n->status.udp_confirmed || n->udp_tier != PATH_TIER_DIRECT_WAN_UDP) {
+		return;
 	}
 
 	sockaddr_t better;
 
-	if(!path_udp_should_probe_local(mesh, n, &better)) {
-		return false;
+	if(!path_pick_local_udp_candidate(mesh, n, &better)) {
+		return;
 	}
 
 	/* Retrying the endpoint that already failed keeps its place on the
@@ -1536,9 +1613,23 @@ bool path_candidate_probe_target(meshlink_handle_t *mesh, node_t *n, sockaddr_t 
 	c->nonce = path_fresh_nonce();
 	c->deadline = mesh->loop.now;
 	c->deadline.tv_sec += PATH_PROMOTION_DEADLINE_SEC;
-	n->candidate_probe_next = mesh->loop.now.tv_sec + PATH_CANDIDATE_PROBE_INTERVAL_SEC;
 
-	path_log_validation(mesh, n, &better, "candidate-start", "local UDP");
+	path_log_validation(mesh, n, &better, "candidate-start", path_promotion_reason_name(reason));
+	path_promotion_timer_arm(mesh, n, &(struct timespec) {
+		0, 0
+	});
+}
+
+bool path_candidate_probe_target(meshlink_handle_t *mesh, node_t *n, sockaddr_t *out, uint64_t *nonce_out) {
+	if(!mesh || !n || !out || !nonce_out) {
+		return false;
+	}
+
+	route_candidate_t *c = &n->promotion_candidate;
+
+	if(!c->active || !c->nonce) {
+		return false;
+	}
 
 	*out = c->endpoint;
 	*nonce_out = c->nonce;
@@ -1551,7 +1642,7 @@ static void path_candidate_commit(meshlink_handle_t *mesh, node_t *n) {
 	route_candidate_t *c = &n->promotion_candidate;
 	sockaddr_t endpoint = c->endpoint;
 
-	path_candidate_discard(n);
+	path_candidate_discard(mesh, n);
 	path_log_validation(mesh, n, &endpoint, "candidate-promoted", "validated");
 	(void)path_promote_udp_if_better(mesh, n, &endpoint);
 	n->active_route.selected_at = mesh->loop.now;
@@ -1594,8 +1685,14 @@ void path_observe_probe_reply(meshlink_handle_t *mesh, node_t *n, const sockaddr
 
 	if(c->successful_rounds < PATH_PROMOTION_ROUNDS) {
 		path_log_validation(mesh, n, from, "candidate-round", "awaiting next round");
+		path_promotion_timer_arm(mesh, n, &(struct timespec) {
+			0, PATH_PROMOTION_ROUND_GAP_MS * 1000000
+		});
 		return;
 	}
+
+	/* Timer owns rounds and the deadline. Tick owns hold and residency. */
+	path_promotion_timer_stop(mesh, n);
 
 	if(timespec_ms_between(&c->first_success, &mesh->loop.now) < PATH_PROMOTION_HOLD_MS) {
 		return;
@@ -1637,7 +1734,7 @@ bool path_liveness_probe_warranted(meshlink_handle_t *mesh, const node_t *n) {
 	}
 
 	/* Still discovering, validating, or recovering: keep probing. */
-	if(!n->status.udp_confirmed || n->promotion_candidate.active || n->active_route.suspect || n->status.want_udp) {
+	if(!n->status.udp_confirmed || n->active_route.suspect || n->status.want_udp) {
 		return true;
 	}
 
@@ -1675,9 +1772,9 @@ void path_route_tick(meshlink_handle_t *mesh, node_t *n) {
 	route_candidate_t *c = &n->promotion_candidate;
 	bool validated = c->active && c->successful_rounds >= PATH_PROMOTION_ROUNDS;
 
-	/* A candidate that proved itself while the active route was still inside
-	   its residency commits as soon as that residency is served. It is waiting
-	   on us, not on the network, so the validation deadline does not apply. */
+	/* Hold and residency live here, not on promotion_timer. After round 2 the
+	   timer is already stopped; a validated candidate is waiting on us, so the
+	   validation deadline does not apply. */
 	if(validated
 	                && timespec_ms_between(&c->first_success, &mesh->loop.now) >= PATH_PROMOTION_HOLD_MS
 	                && path_residency_served(mesh, n)) {
@@ -1712,6 +1809,10 @@ void path_route_tick(meshlink_handle_t *mesh, node_t *n) {
 	                && mesh->loop.now.tv_sec - n->active_route.selected_at.tv_sec >= PATH_HEALTHY_RESET_SEC) {
 		path_candidate_reset_escalation(n);
 	}
+
+	/* After cooldown expires (or never started) this is the retry that used to
+	   hitchhike on the path-MTU timer. */
+	path_consider_promotion(mesh, n, PATH_PROMOTION_TICK);
 }
 
 const char *data_route_kind_name(data_route_kind_t kind) {

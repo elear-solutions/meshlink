@@ -48,6 +48,7 @@
 #include "netutl.h"
 #include "net_upgrade.h"
 #include "node.h"
+#include "path_policy.h"
 #include "connection.h"
 #include "utils.h"
 #include "xalloc.h"
@@ -336,6 +337,7 @@ static void mdns_io_handler(event_loop_t *loop, void *data, int flags) {
 					n->upgrade_recent_idx = 0;
 				}
 
+				path_consider_promotion(mesh, n, PATH_PROMOTION_DISCOVERY);
 				try_upgrade_probe(mesh, n);
 
 				for list_each(outgoing_t, outgoing, mesh->outgoings) {

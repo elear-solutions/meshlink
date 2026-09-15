@@ -340,6 +340,7 @@ static void devtool_get_reset_node_status(meshlink_handle_t *mesh, meshlink_node
 		status->candidate_active = internal->promotion_candidate.active;
 		status->candidate_rounds = internal->promotion_candidate.successful_rounds;
 		status->candidate_failures = internal->promotion_candidate.failures;
+		status->candidate_nonce = internal->promotion_candidate.active ? internal->promotion_candidate.nonce : 0;
 		status->channel_mtu = internal->utcp ? utcp_get_mtu(internal->utcp) : 0;
 		memset(&status->candidate_endpoint, 0, sizeof status->candidate_endpoint);
 
@@ -718,7 +719,7 @@ void devtool_force_meta(meshlink_handle_t *mesh, meshlink_node_t *node, bool ena
 		n->status.udp_confirmed = false;
 		n->status.want_udp = false;
 		n->udp_tier = PATH_TIER_NONE;
-		n->probe_candidate_pending = false;
+		n->probe_dest_override_active = false;
 		memset(&n->promotion_candidate, 0, sizeof n->promotion_candidate);
 	} else if(n->status.validkey && n->status.reachable && !n->mtutimeout.cb) {
 		n->mtuprobes = 0;
@@ -1251,10 +1252,6 @@ void devtool_age_candidate(meshlink_handle_t *mesh, meshlink_node_t *node, int s
 
 	if(n->promotion_candidate.cooldown_until.tv_sec) {
 		n->promotion_candidate.cooldown_until.tv_sec -= seconds;
-	}
-
-	if(n->candidate_probe_next) {
-		n->candidate_probe_next -= seconds;
 	}
 
 	pthread_mutex_unlock(&mesh->mutex);

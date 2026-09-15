@@ -4162,6 +4162,8 @@ void meshlink_hint_address(meshlink_handle_t *mesh, meshlink_node_t *node, const
 		}
 	}
 
+	path_consider_promotion(mesh, n, PATH_PROMOTION_HINT);
+
 	/* A fresh direct address for a peer we only reach via its canonical address is worth a probe right away. */
 	try_upgrade_probe(mesh, n);
 

@@ -137,10 +137,9 @@ typedef struct node_t {
 	route_candidate_t promotion_candidate;
 	timeout_t promotion_timer;
 	time_t last_application_traffic;        /* Drives demand-only dialling and idle cleanup */
-	time_t candidate_probe_next;            /* Earliest next probe at the candidate endpoint */
 	time_t pmtu_increase_next;              /* Earliest next full-size "is the path bigger now" probe */
-	sockaddr_t probe_candidate_sa;          /* Endpoint one packet of this burst is aimed at */
-	bool probe_candidate_pending;           /* Consumed by the next PKT_PROBE send */
+	sockaddr_t probe_dest_override;          /* Dest for a PKT_PROBE while override is active */
+	bool probe_dest_override_active;        /* Armed around one send_udppacket, then cleared */
 	bool devtool_force_meta;                /* Test-only persistent application-route override */
 
 	// Graph-related member variables

@@ -121,6 +121,7 @@ typedef struct path_target_t {
 #define PATH_PROMOTION_HOLD_MS         1000
 #define PATH_PROMOTION_DEADLINE_SEC      10
 #define PATH_CANDIDATE_PROBE_INTERVAL_SEC 1
+#define PATH_PROMOTION_PROBE_LEN        64
 #define PATH_ROUTE_MIN_RESIDENCY_SEC     30
 #define PATH_PMTU_INCREASE_INTERVAL_SEC 600
 #define PATH_SUSPECT_PROBES               2
@@ -212,14 +213,28 @@ void path_note_udp_demoted_reason(struct meshlink_handle *mesh, struct node_t *n
 
 /* --- promotion of one candidate endpoint, and honest demotion ------------- */
 
-/* Start validating sa if it outranks the active endpoint and is out of
-   cooldown. Returns the endpoint to probe next and the nonce to stamp into it.
-   False means there is nothing to validate right now. */
+/* Why a candidate start was considered. Log-only; does not change policy. */
+typedef enum path_promotion_reason_t {
+	PATH_PROMOTION_DISCOVERY,
+	PATH_PROMOTION_HINT,
+	PATH_PROMOTION_COOLDOWN_CLEARED,
+	PATH_PROMOTION_UDP_CONFIRMED,
+	PATH_PROMOTION_TICK
+} path_promotion_reason_t;
+
+/* Start a local-UDP candidate on promotion_timer when WAN is confirmed, no
+   candidate is in flight, cooldown is idle, and a better local endpoint
+   exists. Does not send; the timer sends 64-byte nonce probes. */
+void path_consider_promotion(struct meshlink_handle *mesh, struct node_t *n, path_promotion_reason_t reason);
+
+/* Query the in-flight candidate endpoint and nonce. Does not start or send.
+   False means nothing is under validation. */
 bool path_candidate_probe_target(struct meshlink_handle *mesh, struct node_t *n, sockaddr_t *out, uint64_t *nonce_out);
 
 /* An authenticated probe reply arrived from `from` carrying `nonce`. Counts a
-   validation round, and commits the candidate once it has proven itself and
-   the active route has served its minimum residency. */
+   validation round. The timer owns the rounds and the 10s deadline; once
+   PATH_PROMOTION_ROUNDS have passed it is stopped and path_route_tick commits
+   after hold and residency. */
 void path_observe_probe_reply(struct meshlink_handle *mesh, struct node_t *n, const sockaddr_t *from, uint64_t nonce);
 
 /* Give up on the candidate and put its endpoint into escalating cooldown. */
