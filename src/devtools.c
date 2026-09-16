@@ -554,6 +554,20 @@ meshlink_node_t *devtool_get_backbone(meshlink_handle_t *mesh) {
 	return node;
 }
 
+void devtool_set_allow_peer_bootstrap(meshlink_handle_t *mesh, bool allow) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	mesh->allow_peer_bootstrap = allow;
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
 bool devtool_node_has_conflict_backbone(meshlink_handle_t *mesh, meshlink_node_t *node) {
 	if(!mesh || !node) {
 		meshlink_errno = MESHLINK_EINVAL;
@@ -749,7 +763,7 @@ void devtool_set_udp_confirmed(meshlink_handle_t *mesh, meshlink_node_t *node, b
 	node_t *n = (node_t *)node;
 	n->status.udp_confirmed = confirmed;
 
-	if(!confirmed && n->status.validkey && n->status.reachable && !n->mtutimeout.cb) {
+	if(!confirmed && !n->devtool_force_meta && n->status.validkey && n->status.reachable && !n->mtutimeout.cb) {
 		send_mtu_probe(mesh, n);
 	}
 

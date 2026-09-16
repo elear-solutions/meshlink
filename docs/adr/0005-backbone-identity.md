@@ -28,10 +28,11 @@ and invitation blobs.
 Do not stamp self in `meshlink_setup()`. Sequence:
 
 1. `open` leaves the identity unset on a new confbase.
-2. `join` requires the inviter host config to be `DEV_CLASS_BACKBONE`
-   and commits that name before return. Invitation v3 carries the name
-   explicitly; v2 infers it from the first host blob. Join rebuilds
-   `current/`, so it clears any identity a prior `start` committed.
+2. `join` requires invitation v3, the inviter host config to be
+   `DEV_CLASS_BACKBONE`, and the v3 identity to match that host. It
+   commits that name before return. Join rebuilds `current/`, so it
+   clears any identity a prior `start` committed. Invitation *creation*
+   and *serving* are finding 4 / ADR 0006.
 3. `start` commits self only if the name is still unset and self is
    `DEV_CLASS_BACKBONE`.
 
@@ -56,7 +57,7 @@ Two or more BACKBONE hosts: do not guess.
 ## Consequences
 
 - Production joins fail (`MESHLINK_EPEER`) if the inviter is not
-  backbone-class. Invite *creation* stays ungated until finding 4.
+  backbone-class. Invitation create/serve gating is ADR 0006.
 - Import does not elect. A second backbone-class host is marked
   `conflict_backbone`; it still participates in the mesh until
   findings 5 and 10 exclude it.

@@ -39,7 +39,9 @@ established by earlier findings.
 - Finding 3 persists backbone identity. Extra backbone-class nodes are
   marked `conflict_backbone`; excluding them from autoconnect and relay
   is an explicit dependency of findings 5 and 10.
-- Findings 4-8 establish topology and connection ownership.
+- Finding 4 gates production invitation create/serve to the unique
+  backbone.
+- Findings 5-8 establish connection ownership.
 - Findings 9-14 complete route correctness and traffic budgets.
 - Findings 15-20 finish interfaces, verification, and cleanup.
 
@@ -214,18 +216,14 @@ from connection or routing decisions here. That is findings 5 and 10.
 ## 4. Enforce backbone-only production bootstrap
 
 **Priority:** P1  
-**Status:** Open
+**Status:** Completed
 
 ### Issue Summary
 
-Join now requires the inviter host to be `DEV_CLASS_BACKBONE` and persists
-that name (finding 3). Invitation *creation* is still ungated: any
-eligible node, including a second backbone-class host, can still issue a
-production invitation. `meshlink_join()` does not require the inviter to
-be the already-stored unique backbone.
-
-A stationary or portable node, or a conflicting extra backbone-class
-node, can still become another node's bootstrap authority.
+Invitation creation and serving were ungated: any eligible node, including
+a second backbone-class host, could issue a production invitation. Join
+only required the inviter host to be `DEV_CLASS_BACKBONE`, so that extra
+node became the joiner's stored identity.
 
 ### Example Real-world scenario failure
 
@@ -236,34 +234,26 @@ so it cannot reliably re-enter the network.
 
 ### Suggested code change to fix
 
-Gate production invitation creation and joining:
+Completed. Production invite/serve uses `connection_policy_can_invite()`.
+Unset identity may invite only as an unambiguous creator (one BACKBONE-class
+node, self not `conflict_backbone`). Join parses the whole invitation before
+mutating `current/`. Tests use `devtool_set_allow_peer_bootstrap()` to plant
+blobs; join stays strict. See [ADR 0006](adr/0006-backbone-only-bootstrap.md).
+
+Preserve these invariants:
 
 ```c
-bool meshlink_inviter_allowed(const meshlink_handle_t *mesh) {
-	return mesh
-	    && mesh->devclass == DEV_CLASS_BACKBONE
-	    && mesh->backbone.node == mesh->self;
+if(!connection_policy_can_invite(mesh)) {
+	meshlink_errno = MESHLINK_ENOTSUP;
+	return NULL;
 }
-```
 
-During join:
-
-```c
-if(inviter_devclass != DEV_CLASS_BACKBONE
-                || !invitation_backbone_identity_valid(invitation)) {
-	meshlink_errno = MESHLINK_EINVAL;
+if(n->devclass != DEV_CLASS_BACKBONE
+                || strcmp(invitation_backbone, n->name)) {
+	meshlink_errno = MESHLINK_EPEER;
 	return false;
 }
 ```
-
-If tests or development workflows require peer-issued invitations, expose that
-as an explicit non-production option rather than weakening the production
-invariant.
-
-Identity persistence through join, close, and reopen is covered by finding 3.
-Finding 4 still needs tests that a non-backbone and a conflicted extra
-backbone-class node cannot create a production invitation, and that join
-refuses an inviter that is not the stored backbone.
 
 ---
 

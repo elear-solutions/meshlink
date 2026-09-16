@@ -124,6 +124,11 @@ static bool commit_invitation(meshlink_handle_t *mesh, connection_t *c, const vo
 }
 
 static bool process_invitation(meshlink_handle_t *mesh, connection_t *c, const void *data) {
+	if(!connection_policy_can_invite(mesh)) {
+		logger(mesh, MESHLINK_ERROR, "Refusing to serve invitation; not the unique backbone");
+		return false;
+	}
+
 	// Recover the filename from the cookie and the key
 	char *fingerprint = ecdsa_get_base64_public_key(mesh->invitation_key);
 	char hash[64];
@@ -237,6 +242,11 @@ bool id_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	/* Check if this is an invitation  */
 
 	if(name[0] == '?') {
+		if(!connection_policy_can_invite(mesh)) {
+			logger(mesh, MESHLINK_ERROR, "Refusing to serve invitation; not the unique backbone");
+			return false;
+		}
+
 		if(!mesh->invitation_key) {
 			logger(mesh, MESHLINK_ERROR, "Got invitation from %s but we don't have an invitation key", c->name);
 			return false;

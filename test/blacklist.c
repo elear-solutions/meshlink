@@ -86,6 +86,12 @@ int main(void) {
 		meshlink_set_default_blacklist(mesh[i], true);
 	}
 
+	// Generate an invitation before extra BACKBONE hosts exist so this node
+	// is an unambiguous creator (ADR 0006).
+	char *invitation = meshlink_invite(mesh[0], NULL, "xyzzy");
+	assert(invitation);
+	free(invitation);
+
 	// The first node knows the two other nodes.
 
 	for(int i = 1; i < 3; i++) {
@@ -112,12 +118,6 @@ int main(void) {
 	assert(!meshlink_get_node_blacklisted(mesh[0], meshlink_get_node(mesh[0], name[1])));
 	assert(meshlink_get_node_blacklisted(mesh[1], meshlink_get_node(mesh[1], name[2])));
 	assert(meshlink_get_node_blacklisted(mesh[2], meshlink_get_node(mesh[2], name[1])));
-
-	// Generate an invitation for a node that is about to be blacklisted
-
-	char *invitation = meshlink_invite(mesh[0], NULL, "xyzzy");
-	assert(invitation);
-	free(invitation);
 
 	// Whitelisting and blacklisting by name should work.
 

@@ -190,6 +190,12 @@ const char *devtool_get_backbone_name(meshlink_handle_t *mesh);
 meshlink_node_t *devtool_get_backbone(meshlink_handle_t *mesh);
 bool devtool_node_has_conflict_backbone(meshlink_handle_t *mesh, meshlink_node_t *node);
 
+/// Allow this instance to create and serve invitations even when it is not the unique backbone.
+/** Production invite/join stay gated. Tests use this only to plant a non-production invitation blob.
+ *  It does not weaken meshlink_join().
+ */
+void devtool_set_allow_peer_bootstrap(meshlink_handle_t *mesh, bool allow);
+
 /// Free the memory allocated by devtool_get_node_status.
 /** This function frees the dynamically allocated strings in a devtool_node_status_t struct.
  *  Call this function when you're done with the status data to prevent memory leaks.
@@ -367,7 +373,8 @@ bool devtool_choose_udp_address(struct meshlink_handle *mesh, struct meshlink_no
 bool devtool_choose_udp_address_advance(struct meshlink_handle *mesh, struct meshlink_node *node, struct sockaddr_storage *addr, int *sock);
 
 /// Pin or clear node_t.status.udp_confirmed for dest-pick tests.
-/** Relay-aware: a change recomputes dependents. Clearing confirmation restarts dest probes.
+/** Relay-aware: a change recomputes dependents. Clearing confirmation restarts dest
+ *  probes unless `devtool_force_meta` is set on the node.
  *
  *  @param mesh       Mesh handle.
  *  @param node       Node to update.

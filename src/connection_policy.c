@@ -27,6 +27,7 @@ void connection_policy_init(meshlink_handle_t *mesh) {
 
 	mesh->backbone.name = NULL;
 	mesh->backbone.node = NULL;
+	mesh->allow_peer_bootstrap = false;
 }
 
 void connection_policy_exit(meshlink_handle_t *mesh) {
@@ -65,11 +66,13 @@ bool connection_policy_persist(meshlink_handle_t *mesh) {
 
 	config_t config = {buf, packmsg_output_size(&out, buf)};
 
-	if(!backbone_config_write(mesh, "current", &config, mesh->config_key)) {
+	const char *subdir = mesh_conf_write_subdir(mesh);
+
+	if(!backbone_config_write(mesh, subdir, &config, mesh->config_key)) {
 		return false;
 	}
 
-	return config_sync(mesh, "current");
+	return config_sync(mesh, subdir);
 }
 
 bool connection_policy_load(meshlink_handle_t *mesh) {
@@ -279,4 +282,66 @@ bool connection_policy_is_backbone(const meshlink_handle_t *mesh, const node_t *
 	}
 
 	return !strcmp(mesh->backbone.name, n->name);
+}
+
+static unsigned connection_policy_backbone_class_count(const meshlink_handle_t *mesh) {
+	unsigned count = 0;
+
+	if(!mesh || !mesh->nodes) {
+		return 0;
+	}
+
+	for splay_each(node_t, n, mesh->nodes) {
+		if(n->devclass == DEV_CLASS_BACKBONE) {
+			count++;
+		}
+	}
+
+	return count;
+}
+
+static bool connection_policy_unambiguous_creator(const meshlink_handle_t *mesh) {
+	return mesh->self->devclass == DEV_CLASS_BACKBONE
+	       && !mesh->self->status.conflict_backbone
+	       && connection_policy_backbone_class_count(mesh) == 1;
+}
+
+bool connection_policy_can_invite(const meshlink_handle_t *mesh) {
+	if(!mesh || !mesh->self) {
+		return false;
+	}
+
+	if(mesh->allow_peer_bootstrap) {
+		return true;
+	}
+
+	if(mesh->self->devclass != DEV_CLASS_BACKBONE) {
+		return false;
+	}
+
+	if(!mesh->backbone.name) {
+		return connection_policy_unambiguous_creator(mesh);
+	}
+
+	return connection_policy_is_backbone(mesh, mesh->self);
+}
+
+bool connection_policy_commit_self_if_creator(meshlink_handle_t *mesh) {
+	if(!mesh || !mesh->self) {
+		return false;
+	}
+
+	if(mesh->backbone.name) {
+		return true;
+	}
+
+	if(mesh->self->devclass != DEV_CLASS_BACKBONE) {
+		return true;
+	}
+
+	if(!connection_policy_unambiguous_creator(mesh)) {
+		return true;
+	}
+
+	return connection_policy_set_backbone(mesh, mesh->self->name);
 }

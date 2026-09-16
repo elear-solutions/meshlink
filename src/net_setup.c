@@ -354,7 +354,7 @@ bool node_write_config(meshlink_handle_t *mesh, node_t *n, bool new_key) {
 
 	config_t config = {buf, packmsg_output_size(&out, buf)};
 
-	if(!config_write(mesh, "current", n->name, &config, mesh->config_key)) {
+	if(!config_write(mesh, mesh_conf_write_subdir(mesh), n->name, &config, mesh->config_key)) {
 		call_error_cb(mesh, MESHLINK_ESTORAGE);
 		return false;
 	}

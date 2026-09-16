@@ -780,7 +780,7 @@ static bool write_main_config_files(meshlink_handle_t *mesh) {
 
 	config_t config = {buf, packmsg_output_size(&out, buf)};
 
-	if(!main_config_write(mesh, "current", &config, mesh->config_key)) {
+	if(!main_config_write(mesh, mesh_conf_write_subdir(mesh), &config, mesh->config_key)) {
 		return false;
 	}
 
@@ -808,183 +808,291 @@ typedef struct {
 	char *join_port;
 } join_state_t;
 
-static bool finalize_join(join_state_t *state, const void *buf, uint16_t len) {
-	meshlink_handle_t *mesh = state->mesh;
+typedef struct {
+	char *name;
+	char *submesh_name;
+	dev_class_t invitee_devclass;
+	char *backbone;
+	node_t **hosts;
+	uint32_t count;
+} invitation_contents_t;
+
+static void invitation_contents_free(invitation_contents_t *inv) {
+	if(!inv) {
+		return;
+	}
+
+	free(inv->name);
+	free(inv->submesh_name);
+	free(inv->backbone);
+
+	if(inv->hosts) {
+		for(uint32_t i = 0; i < inv->count; i++) {
+			if(inv->hosts[i]) {
+				free_node(inv->hosts[i]);
+			}
+		}
+
+		free(inv->hosts);
+	}
+
+	memset(inv, 0, sizeof *inv);
+}
+
+static bool parse_invitation(meshlink_handle_t *mesh, const void *buf, uint16_t len, invitation_contents_t *inv) {
 	packmsg_input_t in = {buf, len};
 	uint32_t version = packmsg_get_uint32(&in);
 
-	if(version != 2 && version != MESHLINK_INVITATION_VERSION) {
+	if(!packmsg_input_ok(&in) || version != MESHLINK_INVITATION_VERSION) {
 		logger(mesh, MESHLINK_ERROR, "Invalid invitation version!\n");
+		meshlink_errno = MESHLINK_EPEER;
 		return false;
 	}
 
-	char *name = packmsg_get_str_dup(&in);
-	char *submesh_name = packmsg_get_str_dup(&in);
-	dev_class_t devclass = packmsg_get_int32(&in);
-	char *invitation_backbone = NULL;
+	inv->name = packmsg_get_str_dup(&in);
+	inv->submesh_name = packmsg_get_str_dup(&in);
+	inv->invitee_devclass = packmsg_get_int32(&in);
+	inv->backbone = packmsg_get_str_dup(&in);
 
-	if(version >= 3) {
-		invitation_backbone = packmsg_get_str_dup(&in);
-
-		if(!invitation_backbone || !check_id(invitation_backbone)) {
-			logger(mesh, MESHLINK_ERROR, "Invalid backbone identity in invitation!\n");
-			free(name);
-			free(submesh_name);
-			free(invitation_backbone);
-			return false;
-		}
+	if(!packmsg_input_ok(&in)
+	                || !inv->name || !check_id(inv->name)
+	                || !inv->submesh_name || (strcmp(inv->submesh_name, CORE_MESH) && !check_id(inv->submesh_name))
+	                || !inv->backbone || !check_id(inv->backbone)) {
+		logger(mesh, MESHLINK_ERROR, "Invalid invitation header!\n");
+		meshlink_errno = MESHLINK_EPEER;
+		return false;
 	}
 
 	uint32_t count = packmsg_get_array(&in);
 
-	if(!name || !check_id(name)) {
-		logger(mesh, MESHLINK_DEBUG, "No valid Name found in invitation!\n");
-		free(name);
-		free(submesh_name);
-		free(invitation_backbone);
-		return false;
-	}
-
-	if(!submesh_name || (strcmp(submesh_name, CORE_MESH) && !check_id(submesh_name))) {
-		logger(mesh, MESHLINK_DEBUG, "No valid Submesh found in invitation!\n");
-		free(name);
-		free(submesh_name);
-		free(invitation_backbone);
-		return false;
-	}
-
-	if(!count) {
+	if(!packmsg_input_ok(&in) || !count) {
 		logger(mesh, MESHLINK_ERROR, "Incomplete invitation file!\n");
-		free(name);
-		free(submesh_name);
-		free(invitation_backbone);
+		meshlink_errno = MESHLINK_EPEER;
 		return false;
 	}
 
-	free(mesh->name);
-	free(mesh->self->name);
-	mesh->name = name;
-	mesh->self->name = xstrdup(name);
-	mesh->self->submesh = strcmp(submesh_name, CORE_MESH) ? lookup_or_create_submesh(mesh, submesh_name) : NULL;
-	free(submesh_name);
-	mesh->self->devclass = devclass == DEV_CLASS_UNKNOWN ? mesh->devclass : devclass;
+	inv->hosts = xzalloc(count * sizeof(node_t *));
 
-	// Initialize configuration directory
-	if(!config_init(mesh, "current")) {
-		goto fail;
-	}
-
-	/* Join rebuilds current/. Drop any identity a prior start committed. */
-	connection_policy_exit(mesh);
-	connection_policy_init(mesh);
-
-	if(!write_main_config_files(mesh)) {
-		goto fail;
-	}
-
-	// Write host config files
 	for(uint32_t i = 0; i < count; i++) {
 		const void *data;
 		uint32_t data_len = packmsg_get_bin_raw(&in, &data);
 
-		if(!data_len) {
+		if(!data || !data_len) {
 			logger(mesh, MESHLINK_ERROR, "Incomplete invitation file!\n");
-			goto fail;
-		}
-
-		packmsg_input_t in2 = {data, data_len};
-		uint32_t version2 = packmsg_get_uint32(&in2);
-		char *name2 = packmsg_get_str_dup(&in2);
-
-		if(!packmsg_input_ok(&in2) || version2 != MESHLINK_CONFIG_VERSION || !check_id(name2)) {
-			free(name2);
-			packmsg_input_invalidate(&in);
-			break;
-		}
-
-		if(!check_id(name2)) {
-			free(name2);
-			break;
-		}
-
-		if(!strcmp(name2, mesh->name)) {
-			logger(mesh, MESHLINK_ERROR, "Secondary chunk would overwrite our own host config file.\n");
-			free(name2);
 			meshlink_errno = MESHLINK_EPEER;
-			goto fail;
+			return false;
 		}
 
 		node_t *n = new_node();
-		n->name = name2;
-
 		config_t config = {data, data_len};
 
-		if(!node_read_from_config(mesh, n, &config)) {
+		if(!node_read_from_config(mesh, n, &config) || !n->name || !check_id(n->name)) {
 			free_node(n);
 			logger(mesh, MESHLINK_ERROR, "Invalid host config file in invitation file!\n");
 			meshlink_errno = MESHLINK_EPEER;
-			goto fail;
+			return false;
+		}
+
+		if(!strcmp(n->name, inv->name)) {
+			logger(mesh, MESHLINK_ERROR, "Secondary chunk would overwrite our own host config file.\n");
+			free_node(n);
+			meshlink_errno = MESHLINK_EPEER;
+			return false;
+		}
+
+		for(uint32_t j = 0; j < inv->count; j++) {
+			if(!strcmp(inv->hosts[j]->name, n->name)) {
+				logger(mesh, MESHLINK_ERROR, "Duplicate host %s in invitation file!\n", n->name);
+				free_node(n);
+				meshlink_errno = MESHLINK_EPEER;
+				return false;
+			}
 		}
 
 		if(i == 0) {
-			/* The first host config file is of the inviter itself. */
 			if(n->devclass != DEV_CLASS_BACKBONE) {
 				logger(mesh, MESHLINK_ERROR, "Invitation inviter %s is not a backbone node\n", n->name);
 				free_node(n);
 				meshlink_errno = MESHLINK_EPEER;
-				goto fail;
+				return false;
 			}
 
-			if(invitation_backbone && strcmp(invitation_backbone, n->name)) {
-				logger(mesh, MESHLINK_ERROR, "Invitation backbone identity %s does not match inviter %s\n", invitation_backbone, n->name);
+			if(strcmp(inv->backbone, n->name)) {
+				logger(mesh, MESHLINK_ERROR, "Invitation backbone identity %s does not match inviter %s\n", inv->backbone, n->name);
 				free_node(n);
 				meshlink_errno = MESHLINK_EPEER;
-				goto fail;
-			}
-
-			if(!connection_policy_set_backbone(mesh, n->name)) {
-				logger(mesh, MESHLINK_ERROR, "Could not persist backbone identity %s\n", n->name);
-				free_node(n);
-				meshlink_errno = MESHLINK_EPEER;
-				goto fail;
-			}
-
-			sockaddr_t sa;
-			socklen_t salen = sizeof(sa);
-
-			if(getpeername(state->sock, &sa.sa, &salen) == 0) {
-				if(n->canonical_address) {
-					/* Seed the hostname canonical cache only when this join
-					   actually used that hostname (ADR 0002). LOCAL-first
-					   invitation URLs must not plant the TCP peer as NLB. */
-					if(path_canonical_is_hostname(n)
-					                && state->join_host && state->join_port
-					                && path_canonical_host_matches(n, state->join_host, state->join_port)) {
-						path_add_canonical_endpoint(n, &sa);
-					}
-
-					path_sanitize_recent(mesh, n);
-				} else {
-					node_add_recent_address_cap(mesh, n, &sa, ADDR_SRC_AUTH_DIRECT, PATH_CAP_BOTH);
-				}
+				return false;
 			}
 		}
 
-		/* Clear the reachability times, since we ourself have never seen these nodes yet */
 		n->last_reachable = 0;
 		n->last_unreachable = 0;
-
-		if(!node_write_config(mesh, n, true)) {
-			free_node(n);
-			goto fail;
-		}
-
-		node_add(mesh, n);
+		inv->hosts[i] = n;
+		inv->count++;
 	}
 
-	/* Ensure the configuration directory metadata is on disk */
-	if(!config_sync(mesh, "current") || (mesh->confbase && !sync_path(mesh->confbase))) {
-		goto fail;
+	if(!packmsg_done(&in)) {
+		logger(mesh, MESHLINK_ERROR, "Invitation has trailing or truncated data!\n");
+		meshlink_errno = MESHLINK_EPEER;
+		return false;
+	}
+
+	return true;
+}
+
+static void seed_join_inviter_address(join_state_t *state, node_t *n) {
+	sockaddr_t sa;
+	socklen_t salen = sizeof(sa);
+
+	if(getpeername(state->sock, &sa.sa, &salen) != 0) {
+		return;
+	}
+
+	if(n->canonical_address) {
+		/* Seed the hostname canonical cache only when this join
+		   actually used that hostname (ADR 0002). LOCAL-first
+		   invitation URLs must not plant the TCP peer as NLB. */
+		if(path_canonical_is_hostname(n)
+		                && state->join_host && state->join_port
+		                && path_canonical_host_matches(n, state->join_host, state->join_port)) {
+			path_add_canonical_endpoint(n, &sa);
+		}
+
+		path_sanitize_recent(state->mesh, n);
+	} else {
+		node_add_recent_address_cap(state->mesh, n, &sa, ADDR_SRC_AUTH_DIRECT, PATH_CAP_BOTH);
+	}
+}
+
+static bool commit_join_invitation(join_state_t *state, invitation_contents_t *inv) {
+	meshlink_handle_t *mesh = state->mesh;
+	char *old_name = mesh->name;
+	char *old_self_name = mesh->self->name;
+	dev_class_t old_devclass = mesh->self->devclass;
+	submesh_t *old_submesh = mesh->self->submesh;
+	char *old_backbone = mesh->backbone.name ? xstrdup(mesh->backbone.name) : NULL;
+	bool saved_bootstrap = mesh->allow_peer_bootstrap;
+	bool swapped = false;
+
+	mesh->name = inv->name;
+	inv->name = NULL;
+	mesh->self->name = xstrdup(mesh->name);
+	mesh->self->submesh = (inv->submesh_name && strcmp(inv->submesh_name, CORE_MESH)) ? lookup_or_create_submesh(mesh, inv->submesh_name) : NULL;
+	mesh->self->devclass = inv->invitee_devclass == DEV_CLASS_UNKNOWN ? mesh->devclass : inv->invitee_devclass;
+
+	seed_join_inviter_address(state, inv->hosts[0]);
+
+	mesh->conf_write_subdir = "new";
+
+	if(mesh->confbase && (!config_destroy(mesh->confbase, "new") || !config_init(mesh, "new"))) {
+		goto rollback;
+	}
+
+	if(!write_main_config_files(mesh)) {
+		goto rollback;
+	}
+
+	for(uint32_t i = 0; i < inv->count; i++) {
+		if(!node_write_config(mesh, inv->hosts[i], true)) {
+			goto rollback;
+		}
+	}
+
+	connection_policy_exit(mesh);
+	connection_policy_init(mesh);
+	mesh->allow_peer_bootstrap = saved_bootstrap;
+
+	if(!connection_policy_set_backbone(mesh, inv->backbone)) {
+		logger(mesh, MESHLINK_ERROR, "Could not persist backbone identity %s\n", inv->backbone);
+		meshlink_errno = MESHLINK_EPEER;
+		goto rollback;
+	}
+
+	if(!connection_policy_backbone_name(mesh) || strcmp(connection_policy_backbone_name(mesh), inv->backbone)) {
+		logger(mesh, MESHLINK_ERROR, "Backbone identity %s was not stored after join\n", inv->backbone);
+		meshlink_errno = MESHLINK_EPEER;
+		goto rollback;
+	}
+
+	if(!config_sync(mesh, mesh_conf_write_subdir(mesh)) || (mesh->confbase && !sync_path(mesh->confbase))) {
+		goto rollback;
+	}
+
+	mesh->conf_write_subdir = NULL;
+
+	if(mesh->confbase) {
+		if(!config_destroy(mesh->confbase, "old") || !config_rename(mesh, "current", "old")) {
+			goto rollback;
+		}
+
+		if(!config_rename(mesh, "new", "current")) {
+			if(!config_rename(mesh, "old", "current")) {
+				logger(mesh, MESHLINK_ERROR, "Failed to restore current/ after a failed join commit\n");
+			}
+
+			goto rollback;
+		}
+
+		if(!config_destroy(mesh->confbase, "old")) {
+			logger(mesh, MESHLINK_ERROR, "Failed to remove leftover old/ after join\n");
+		}
+
+		swapped = true;
+	}
+
+	free(old_name);
+	free(old_self_name);
+	free(old_backbone);
+
+	for(uint32_t i = 0; i < inv->count; i++) {
+		node_add(mesh, inv->hosts[i]);
+		inv->hosts[i] = NULL;
+	}
+
+	return true;
+
+rollback:
+	mesh->conf_write_subdir = NULL;
+
+	if(mesh->confbase && !swapped) {
+		if(!config_destroy(mesh->confbase, "new")) {
+			logger(mesh, MESHLINK_ERROR, "Failed to remove leftover new/ after a failed join\n");
+		}
+	}
+
+	free(mesh->name);
+	free(mesh->self->name);
+	mesh->name = old_name;
+	mesh->self->name = old_self_name;
+	mesh->self->devclass = old_devclass;
+	mesh->self->submesh = old_submesh;
+
+	connection_policy_exit(mesh);
+	connection_policy_init(mesh);
+	mesh->allow_peer_bootstrap = saved_bootstrap;
+
+	if(old_backbone) {
+		(void)connection_policy_set_backbone(mesh, old_backbone);
+		free(old_backbone);
+	}
+
+	return false;
+}
+
+static bool finalize_join(join_state_t *state, const void *buf, uint16_t len) {
+	meshlink_handle_t *mesh = state->mesh;
+	invitation_contents_t inv = {0};
+
+	if(!parse_invitation(mesh, buf, len, &inv)) {
+		invitation_contents_free(&inv);
+		return false;
+	}
+
+	bool ok = commit_join_invitation(state, &inv);
+	invitation_contents_free(&inv);
+
+	if(!ok) {
+		return false;
 	}
 
 	if(!mesh->inviter_commits_first) {
@@ -995,11 +1103,7 @@ static bool finalize_join(join_state_t *state, const void *buf, uint16_t len) {
 
 	logger(mesh, MESHLINK_DEBUG, "Configuration stored in: %s\n", mesh->confbase);
 
-	free(invitation_backbone);
 	return true;
-fail:
-	free(invitation_backbone);
-	return false;
 }
 
 static bool invitation_send(void *handle, uint8_t type, const void *data, size_t len) {
@@ -2031,17 +2135,15 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 		return false;
 	}
 
+	if(!connection_policy_commit_self_if_creator(mesh)) {
+		logger(mesh, MESHLINK_ERROR, "Could not persist backbone identity\n");
+		meshlink_errno = MESHLINK_ESTORAGE;
+		pthread_mutex_unlock(&mesh->mutex);
+		return false;
+	}
+
 	init_outgoings(mesh);
 	init_adns(mesh);
-
-	if(!connection_policy_backbone_name(mesh) && mesh->self->devclass == DEV_CLASS_BACKBONE) {
-		if(!connection_policy_set_backbone(mesh, mesh->self->name)) {
-			logger(mesh, MESHLINK_ERROR, "Could not persist backbone identity\n");
-			meshlink_errno = MESHLINK_ESTORAGE;
-			pthread_mutex_unlock(&mesh->mutex);
-			return false;
-		}
-	}
 
 	for splay_each(node_t, n, mesh->nodes) {
 		path_request_canonical_resolve(mesh, n);
@@ -3374,6 +3476,20 @@ char *meshlink_invite_ex(meshlink_handle_t *mesh, meshlink_submesh_t *submesh, c
 		return NULL;
 	}
 
+	if(!connection_policy_can_invite(mesh)) {
+		logger(mesh, MESHLINK_ERROR, "Only the unique backbone may create invitations\n");
+		meshlink_errno = MESHLINK_ENOTSUP;
+		pthread_mutex_unlock(&mesh->mutex);
+		return NULL;
+	}
+
+	if(!connection_policy_commit_self_if_creator(mesh)) {
+		logger(mesh, MESHLINK_ERROR, "Could not persist backbone identity\n");
+		meshlink_errno = MESHLINK_ESTORAGE;
+		pthread_mutex_unlock(&mesh->mutex);
+		return NULL;
+	}
+
 	// Get the local address
 	char *address = get_my_hostname(mesh, flags);
 
@@ -3432,7 +3548,10 @@ char *meshlink_invite_ex(meshlink_handle_t *mesh, meshlink_submesh_t *submesh, c
 	packmsg_add_str(&inv, name);
 	packmsg_add_str(&inv, s ? s->name : CORE_MESH);
 	packmsg_add_int32(&inv, DEV_CLASS_UNKNOWN); /* TODO: allow this to be set by inviter? */
-	packmsg_add_str(&inv, mesh->self->name);
+	{
+		const char *backbone = connection_policy_backbone_name(mesh);
+		packmsg_add_str(&inv, backbone ? backbone : mesh->self->name);
+	}
 
 	/* TODO: Add several host config files to bootstrap connections.
 	 * Note: make sure we only add config files of nodes that are in the core mesh or the same submesh,

@@ -184,6 +184,7 @@ struct meshlink_handle {
 
 	bool default_blacklist;
 	bool inviter_commits_first;
+	bool allow_peer_bootstrap;        /* tests only: permit non-backbone invite create/serve */
 
 	// Configuration
 	char *confbase;
@@ -192,6 +193,7 @@ struct meshlink_handle {
 	char *external_address_url;
 	struct list_t *invitation_addresses;
 	meshlink_storage_policy_t storage_policy;
+	const char *conf_write_subdir;    /* NULL means "current"; join commit writes "new" */
 
 	// Thread management
 	pthread_t thread;
@@ -227,6 +229,10 @@ struct meshlink_handle {
 	signal_t adns_signal;
 	uint32_t canonical_resolve_seq;       /* Monotonic cookie; 0 is never assigned */
 };
+
+static inline const char *mesh_conf_write_subdir(const struct meshlink_handle *mesh) {
+	return (mesh && mesh->conf_write_subdir) ? mesh->conf_write_subdir : "current";
+}
 
 /// A handle for a MeshLink node.
 struct meshlink_node {
