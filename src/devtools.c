@@ -386,7 +386,8 @@ static void devtool_get_reset_node_status(meshlink_handle_t *mesh, meshlink_node
 			memcpy(&status->canonical_resolved[status->canonical_resolved_count++], &internal->canonical_extra[i - 1], sizeof status->canonical_resolved[0]);
 		}
 
-		status->active_meta_tier = (int)path_select_hop_tier(internal, true);
+		path_tier_t hop_tier = path_select_hop_tier(internal, true);
+		status->active_meta_tier = (int)hop_tier;
 		status->upgrade_ineligible_reason = path_upgrade_ineligible_reason(mesh, internal);
 		status->validkey = internal->status.validkey;
 		status->waitingforkey = internal->status.waitingforkey;
@@ -823,7 +824,12 @@ bool devtool_plant_recent_address(meshlink_handle_t *mesh, meshlink_node_t *node
 	}
 
 	path_plant_recent(n, &sa);
-	(void)node_write_config(mesh, n, false);
+
+	if(!node_write_config(mesh, n, false)) {
+		pthread_mutex_unlock(&mesh->mutex);
+		return false;
+	}
+
 	pthread_mutex_unlock(&mesh->mutex);
 	return true;
 }

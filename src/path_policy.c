@@ -12,6 +12,7 @@
 
 #include "adns.h"
 #include "connection.h"
+#include "crypto.h"
 #include "edge.h"
 #include "graph.h"
 #include "logger.h"

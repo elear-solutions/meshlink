@@ -56,10 +56,10 @@ static void create_peers(peer_config_t *peers, int npeers, const char *prefix) {
 		assert(asprintf(&peers[i].netns_name, "%s%d", prefix, i) > 0);
 		char *command = NULL;
 		assert(asprintf(&command,
-		                "/bin/ip netns delete %1$s 2>/dev/null || true;"
-		                "/bin/ip netns add %1$s;"
-		                "/bin/ip netns exec %1$s ip link set dev lo up;",
-		                peers[i].netns_name));
+		                "/bin/ip netns delete %s 2>/dev/null || true;"
+		                "/bin/ip netns add %s;"
+		                "/bin/ip netns exec %s ip link set dev lo up;",
+		                peers[i].netns_name, peers[i].netns_name, peers[i].netns_name));
 		assert(command);
 		assert(system(command) == 0);
 		free(command);
@@ -95,9 +95,9 @@ static void setup_lan_topology(peer_config_t *peers, int npeers) {
 	{
 		char *command = NULL;
 		assert(asprintf(&command,
-		                "/bin/ip netns exec %1$s /bin/ip link add eth0 type bridge;"
-		                "/bin/ip netns exec %1$s /bin/ip link set eth0 up;",
-		                peers[0].netns_name));
+		                "/bin/ip netns exec %s /bin/ip link add eth0 type bridge;"
+		                "/bin/ip netns exec %s /bin/ip link set eth0 up;",
+		                peers[0].netns_name, peers[0].netns_name));
 		assert(command);
 		assert(system(command) == 0);
 	}
@@ -106,10 +106,12 @@ static void setup_lan_topology(peer_config_t *peers, int npeers) {
 	for(int i = 1; i < npeers; i++) {
 		char *command = NULL;
 		assert(asprintf(&command,
-		                "/bin/ip netns exec %1$s /bin/ip link add eth0 type veth peer eth%3$d netns %2$s;"
-		                "/bin/ip netns exec %1$s /bin/ip link set dev eth0 up;"
-		                "/bin/ip netns exec %2$s /bin/ip link set dev eth%3$d master eth0 up;",
-		                peers[i].netns_name, peers[0].netns_name, i));
+		                "/bin/ip netns exec %s /bin/ip link add eth0 type veth peer eth%d netns %s;"
+		                "/bin/ip netns exec %s /bin/ip link set dev eth0 up;"
+		                "/bin/ip netns exec %s /bin/ip link set dev eth%d master eth0 up;",
+		                peers[i].netns_name, i, peers[0].netns_name,
+		                peers[i].netns_name,
+		                peers[0].netns_name, i));
 		assert(command);
 		assert(system(command) == 0);
 		free(command);
@@ -127,14 +129,20 @@ static void setup_indirect_topology(peer_config_t *peers, int npeers) {
 	for(int i = 1; i < npeers; i++) {
 		char *command = NULL;
 		assert(asprintf(&command,
-		                "/bin/ip netns exec %1$s /bin/ip link add eth0 type veth peer eth%3$d netns %2$s;"
-		                "/bin/ip netns exec %1$s ip addr flush dev eth0;"
-		                "/bin/ip netns exec %1$s ip addr add 192.168.%3$d.2/24 dev eth0;"
-		                "/bin/ip netns exec %1$s /bin/ip link set dev eth0 up;"
-		                "/bin/ip netns exec %2$s ip addr flush dev eth%3$d;"
-		                "/bin/ip netns exec %2$s ip addr add 192.168.%3$d.1/24 dev eth%3$d;"
-		                "/bin/ip netns exec %2$s /bin/ip link set dev eth%3$d up;",
-		                peers[i].netns_name, peers[0].netns_name, i));
+		                "/bin/ip netns exec %s /bin/ip link add eth0 type veth peer eth%d netns %s;"
+		                "/bin/ip netns exec %s ip addr flush dev eth0;"
+		                "/bin/ip netns exec %s ip addr add 192.168.%d.2/24 dev eth0;"
+		                "/bin/ip netns exec %s /bin/ip link set dev eth0 up;"
+		                "/bin/ip netns exec %s ip addr flush dev eth%d;"
+		                "/bin/ip netns exec %s ip addr add 192.168.%d.1/24 dev eth%d;"
+		                "/bin/ip netns exec %s /bin/ip link set dev eth%d up;",
+		                peers[i].netns_name, i, peers[0].netns_name,
+		                peers[i].netns_name,
+		                peers[i].netns_name, i,
+		                peers[i].netns_name,
+		                peers[0].netns_name, i,
+		                peers[0].netns_name, i, i,
+		                peers[0].netns_name, i));
 		assert(command);
 		assert(system(command) == 0);
 		free(command);
@@ -145,9 +153,9 @@ static void setup_indirect_topology(peer_config_t *peers, int npeers) {
 void change_peer_ip(peer_config_t *peer) {
 	char *command = NULL;
 	assert(asprintf(&command,
-	                "/bin/ip netns exec %1$s ip addr flush dev eth0;"
-	                "/bin/ip netns exec %1$s ip addr add 203.0.113.%2$d/24 dev eth0;",
-	                peer->netns_name, ip));
+	                "/bin/ip netns exec %s ip addr flush dev eth0;"
+	                "/bin/ip netns exec %s ip addr add 203.0.113.%d/24 dev eth0;",
+	                peer->netns_name, peer->netns_name, ip));
 	ip++;
 	assert(command);
 	assert(system(command) == 0);
@@ -215,9 +223,9 @@ void set_peers_tcponly(peer_config_t *peers, int npeers) {
 	for(int i = 0; i < npeers; i++) {
 		char *command = NULL;
 		assert(asprintf(&command,
-		                "/bin/ip netns exec %1$s iptables -A INPUT -p udp -j DROP;"
-		                "/bin/ip netns exec %1$s iptables -A OUTPUT -p udp -j DROP;",
-		                peers[i].netns_name));
+		                "/bin/ip netns exec %s iptables -A INPUT -p udp -j DROP;"
+		                "/bin/ip netns exec %s iptables -A OUTPUT -p udp -j DROP;",
+		                peers[i].netns_name, peers[i].netns_name));
 		assert(command);
 		assert(system(command) == 0);
 		free(command);

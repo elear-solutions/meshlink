@@ -531,9 +531,12 @@ bool relay_handle_record(meshlink_handle_t *mesh, node_t *from, const void *data
 		if(origin == from) {
 			uint8_t copy[inner_len];
 			memcpy(copy, inner, inner_len);
-			(void)sptps_receive_relay_inner(&origin->sptps, copy, inner_len);
-		} else {
-			(void)sptps_receive_relay_inner(&origin->sptps, inner, inner_len);
+
+			if(!sptps_receive_relay_inner(&origin->sptps, copy, inner_len)) {
+				return true;
+			}
+		} else if(!sptps_receive_relay_inner(&origin->sptps, inner, inner_len)) {
+			return true;
 		}
 
 		return true;

@@ -312,7 +312,7 @@ static void relay_cover_sanity(meshlink_handle_t *mesh, node_t *from, node_t *de
 }
 
 static void relay_cover_null_devtools(meshlink_handle_t *mesh, node_t *from, node_t *dest, node_t *hop, relay_cover_ctx_t *ctx) {
-	uint32_t math = 0;
+	(void)hop;
 	(void)relay_devtool_has_report(NULL, "a", "b");
 	(void)relay_devtool_have_reported(NULL, "a", "b");
 	(void)relay_devtool_report_count(NULL);
@@ -329,7 +329,7 @@ static void relay_cover_null_devtools(meshlink_handle_t *mesh, node_t *from, nod
 }
 
 static void relay_cover_report_table(meshlink_handle_t *mesh, node_t *from, node_t *dest, node_t *hop, relay_cover_ctx_t *ctx) {
-	uint32_t math = 0;
+	(void)hop;
 	ctx->saved_reports = mesh->relay_reports;
 	mesh->relay_reports = NULL;
 	relay_expire_idle(mesh);
@@ -357,7 +357,6 @@ static void relay_cover_report_table(meshlink_handle_t *mesh, node_t *from, node
 }
 
 static void relay_cover_handle_record(meshlink_handle_t *mesh, node_t *from, node_t *dest, node_t *hop, relay_cover_ctx_t *ctx) {
-	uint32_t math = 0;
 	(void)relay_handle_record(mesh, from, ctx->inner, 1);
 
 	uint8_t badid[64];
@@ -421,7 +420,6 @@ static void relay_cover_handle_record(meshlink_handle_t *mesh, node_t *from, nod
 }
 
 static void relay_cover_maybe_report(meshlink_handle_t *mesh, node_t *from, node_t *dest, node_t *hop, relay_cover_ctx_t *ctx) {
-	uint32_t math = 0;
 	relay_maybe_report(mesh, from->name, NULL, false);
 	dest->nexthop = hop;
 	relay_maybe_report(mesh, from->name, dest, false);
@@ -472,7 +470,6 @@ static void relay_cover_maybe_report(meshlink_handle_t *mesh, node_t *from, node
 }
 
 static void relay_cover_req_mtu(meshlink_handle_t *mesh, node_t *from, node_t *dest, node_t *hop, relay_cover_ctx_t *ctx) {
-	uint32_t math = 0;
 	(void)relay_handle_req_relay_mtu(mesh, from->connection, "bad", from);
 	(void)relay_handle_req_relay_mtu(mesh, from->connection, "0 a b 4 !!! 1", from);
 	(void)relay_handle_req_relay_mtu(mesh, from->connection, "0 a b 4 nosuchnode 100", from);
@@ -650,6 +647,7 @@ static void relay_cover_report_null(meshlink_handle_t *mesh, node_t *from, node_
 }
 
 static void relay_cover_meta_inject(meshlink_handle_t *mesh, node_t *from, node_t *dest, node_t *hop, relay_cover_ctx_t *ctx) {
+	(void)from;
 	char huge_self[510];
 	char long_a[256];
 	char long_b[256];
@@ -705,7 +703,7 @@ static void relay_cover_meta_inject(meshlink_handle_t *mesh, node_t *from, node_
 }
 
 static void relay_cover_inject_alias(meshlink_handle_t *mesh, node_t *from, node_t *dest, node_t *hop, relay_cover_ctx_t *ctx) {
-	uint32_t math = 0;
+	(void)hop;
 	dest->sptps.outstate = false;
 	(void)relay_inject_inner(mesh, dest, 0);
 	(void)relay_devtool_send_meta_sptps(mesh, dest, 0, ctx->inner, sizeof(ctx->inner));
@@ -730,7 +728,6 @@ static void relay_cover_inject_alias(meshlink_handle_t *mesh, node_t *from, node
 }
 
 static void relay_cover_restore(meshlink_handle_t *mesh, node_t *from, node_t *dest, node_t *hop, relay_cover_ctx_t *ctx) {
-	uint32_t math = 0;
 	(void)mesh;
 	dest->nexthop = ctx->saved_nh;
 	dest->prev_nexthop = ctx->saved_prev;

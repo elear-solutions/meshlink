@@ -49,6 +49,11 @@ static void set_v6(sockaddr_t *sa, const char *ip, uint16_t port) {
 	inet_pton(AF_INET6, ip, &sa->in6.sin6_addr);
 }
 
+/* Coverage nodes are stack-local and never free these pointers. */
+static char *scratch(const char *s) {
+	return (char *)(uintptr_t)s;
+}
+
 static bool cover_names(meshlink_handle_t *mesh) {
 	CHECK(!strcmp(address_source_name(ADDR_SRC_AUTH_DIRECT), "auth-direct"));
 	CHECK(!strcmp(address_source_name(ADDR_SRC_DISCOVERY), "discovery"));
@@ -153,23 +158,23 @@ static bool cover_canonical(meshlink_handle_t *mesh) {
 
 	node_t n;
 	memset(&n, 0, sizeof n);
-	n.name = "cover";
+	n.name = scratch("cover");
 	path_refresh_canonical_endpoint(&n);
 	CHECK(n.canonical_sa.sa.sa_family == AF_UNSPEC);
 
-	n.canonical_address = "noport";
+	n.canonical_address = scratch("noport");
 	path_refresh_canonical_endpoint(&n);
 	CHECK(n.canonical_sa.sa.sa_family == AF_UNSPEC);
 
-	n.canonical_address = "203.0.113.9 ";
+	n.canonical_address = scratch("203.0.113.9 ");
 	path_refresh_canonical_endpoint(&n);
 	CHECK(n.canonical_sa.sa.sa_family == AF_UNSPEC);
 
-	n.canonical_address = "nlb.example 443";
+	n.canonical_address = scratch("nlb.example 443");
 	path_refresh_canonical_endpoint(&n);
 	CHECK(n.canonical_sa.sa.sa_family == AF_UNSPEC);
 
-	n.canonical_address = "203.0.113.9 9";
+	n.canonical_address = scratch("203.0.113.9 9");
 	path_refresh_canonical_endpoint(&n);
 	CHECK(n.canonical_sa.sa.sa_family == AF_INET);
 
@@ -180,7 +185,7 @@ static bool cover_canonical(meshlink_handle_t *mesh) {
 	path_set_canonical_sockaddr(&n, &sa);
 	CHECK(!sockaddrcmp(&n.canonical_sa, &sa));
 
-	n.canonical_address = "198.51.100.7 9";
+	n.canonical_address = scratch("198.51.100.7 9");
 	CHECK(!path_address_matches_canonical(NULL, &sa));
 	CHECK(!path_address_matches_canonical(&n, NULL));
 	sockaddr_t bad;
@@ -194,14 +199,14 @@ static bool cover_canonical(meshlink_handle_t *mesh) {
 	CHECK(!path_address_matches_canonical(&n, &sa));
 
 	memset(&n.canonical_sa, 0, sizeof n.canonical_sa);
-	n.canonical_address = "198.51.100.7 9";
+	n.canonical_address = scratch("198.51.100.7 9");
 	set_v4(&sa, "198.51.100.7", 9);
 	CHECK(path_address_matches_canonical(&n, &sa));
 
-	n.canonical_address = "198.51.100.8 9";
+	n.canonical_address = scratch("198.51.100.8 9");
 	CHECK(!path_address_matches_canonical(&n, &sa));
 
-	n.canonical_address = "198.51.100.7 9";
+	n.canonical_address = scratch("198.51.100.7 9");
 	path_refresh_canonical_endpoint(&n);
 	sockaddr_t hybrid;
 	set_v4(&hybrid, "198.51.100.7", 23349);
@@ -266,7 +271,7 @@ static bool cover_canonical(meshlink_handle_t *mesh) {
 
 	node_t assign;
 	memset(&assign, 0, sizeof assign);
-	assign.name = "cover-assign";
+	assign.name = scratch("cover-assign");
 	assign.canonical_address = xstrdup("nlb.example 443");
 	set_v4(&sa, "198.51.100.9", 443);
 	path_set_canonical_sockaddr(&assign, &sa);
@@ -286,8 +291,8 @@ static bool cover_canonical(meshlink_handle_t *mesh) {
 static bool cover_learn_sanitize(meshlink_handle_t *mesh) {
 	node_t n;
 	memset(&n, 0, sizeof n);
-	n.name = "cover";
-	n.canonical_address = "198.51.100.1 9";
+	n.name = scratch("cover");
+	n.canonical_address = scratch("198.51.100.1 9");
 	path_refresh_canonical_endpoint(&n);
 
 	sockaddr_t local, wan, wan2, nlb, extra[MAX_RECENT];
@@ -355,8 +360,8 @@ static bool cover_sanitize(meshlink_handle_t *mesh) {
 	sockaddr_t local, wan, wan2, nlb, unspec;
 
 	memset(&n, 0, sizeof n);
-	n.name = "cover";
-	n.canonical_address = "198.51.100.1 9";
+	n.name = scratch("cover");
+	n.canonical_address = scratch("198.51.100.1 9");
 	path_refresh_canonical_endpoint(&n);
 	set_v4(&local, "192.168.1.10", 1000);
 	set_v4(&wan, "203.0.113.10", 2000);
@@ -431,7 +436,7 @@ static bool cover_sanitize(meshlink_handle_t *mesh) {
 	CHECK(!path_sanitize_recent(NULL, NULL));
 	CHECK(!path_sanitize_recent(mesh, &n));
 
-	n.canonical_address = "nlb.example 443";
+	n.canonical_address = scratch("nlb.example 443");
 	path_refresh_canonical_endpoint(&n);
 	CHECK(!path_sanitize_recent(mesh, &n));
 
@@ -457,8 +462,8 @@ static bool cover_select(meshlink_handle_t *mesh) {
 	memset(&hop, 0, sizeof hop);
 	memset(&dest, 0, sizeof dest);
 	memset(&conn, 0, sizeof conn);
-	hop.name = "hop";
-	dest.name = "dest";
+	hop.name = scratch("hop");
+	dest.name = scratch("dest");
 
 	CHECK(path_select_hop_tier(NULL, false) == PATH_TIER_NONE);
 	CHECK(path_select_destination_tier(NULL, false) == PATH_TIER_NONE);
@@ -484,7 +489,7 @@ static bool cover_select(meshlink_handle_t *mesh) {
 	conn.status.via_canonical = false;
 	conn.status.meta_dial_tier = META_DIAL_DIRECT;
 	set_v4(&conn.address, "198.51.100.1", 9);
-	hop.canonical_address = "198.51.100.1 9";
+	hop.canonical_address = scratch("198.51.100.1 9");
 	path_refresh_canonical_endpoint(&hop);
 	CHECK(path_meta_is_canonical(&hop, &conn));
 	CHECK(!path_meta_is_canonical(NULL, NULL));
@@ -525,7 +530,7 @@ static bool cover_select(meshlink_handle_t *mesh) {
 	set_v4(&local, "10.0.0.2", 1);
 	set_v4(&wan, "203.0.113.2", 2);
 	set_v4(&nlb, "198.51.100.1", 9);
-	dest.canonical_address = "198.51.100.1 9";
+	dest.canonical_address = scratch("198.51.100.1 9");
 	path_refresh_canonical_endpoint(&dest);
 	path_clear_recent(&dest);
 	dest.recent[0] = nlb;
@@ -555,7 +560,7 @@ static bool cover_probe(meshlink_handle_t *mesh) {
 	sockaddr_t out, local, wan, nlb, unixish, relayed;
 
 	memset(&dummy, 0, sizeof dummy);
-	dummy.name = "probe";
+	dummy.name = scratch("probe");
 	path_note_udp_confirmed(mesh, NULL);
 	path_log_transition(NULL, &dummy, PATH_TIER_NONE, PATH_TIER_META_DIRECT, "x");
 	path_log_transition(mesh, NULL, PATH_TIER_NONE, PATH_TIER_META_DIRECT, "x");
@@ -573,7 +578,7 @@ static bool cover_probe(meshlink_handle_t *mesh) {
 
 	dummy.status.udp_confirmed = true;
 	dummy.udp_tier = PATH_TIER_DIRECT_WAN_UDP;
-	dummy.canonical_address = "198.51.100.1 9";
+	dummy.canonical_address = scratch("198.51.100.1 9");
 	path_refresh_canonical_endpoint(&dummy);
 	dummy.recent[0] = nlb;
 	dummy.recent_source[0] = ADDR_SRC_UNKNOWN;
@@ -717,7 +722,7 @@ static bool cover_promote(meshlink_handle_t *mesh, node_t *live) {
 	CHECK_LIVE(!path_promote_udp_if_better(mesh, live, NULL));
 	CHECK_LIVE(!path_promote_udp_if_better(mesh, live, &live->address));
 
-	live->canonical_address = "198.51.100.1 9";
+	live->canonical_address = scratch("198.51.100.1 9");
 	path_refresh_canonical_endpoint(live);
 	CHECK_LIVE(!path_promote_udp_if_better(mesh, live, &nlb));
 
@@ -807,7 +812,7 @@ static bool cover_transport(meshlink_handle_t *mesh) {
 	sockaddr_t r1, r2, r3, tcp, nlb;
 
 	memset(&n, 0, sizeof n);
-	n.name = "transport";
+	n.name = scratch("transport");
 	set_v4(&r1, "203.0.113.10", 60300);
 	set_v4(&r2, "203.0.113.10", 51803);
 	set_v4(&r3, "203.0.113.10", 31182);
@@ -830,14 +835,14 @@ static bool cover_transport(meshlink_handle_t *mesh) {
 	CHECK(n.recent_cap[0] == PATH_CAP_BOTH);
 
 	path_clear_recent(&n);
-	n.canonical_address = "nlb.example 443";
+	n.canonical_address = scratch("nlb.example 443");
 	n.canonical_sa_count = 0;
 	n.canonical_resolve_backoff = 0;
 	CHECK(path_learn_address_cap(mesh, &n, &r1, ADDR_SRC_UDP_REFLEXIVE, PATH_CAP_BOTH));
 	CHECK(path_is_meta_candidate(&n, &r1, ADDR_SRC_UDP_REFLEXIVE, PATH_CAP_BOTH));
 
 	path_clear_recent(&n);
-	n.canonical_address = "nlb.example 443";
+	n.canonical_address = scratch("nlb.example 443");
 	path_refresh_canonical_endpoint(&n);
 	CHECK(path_learn_address(mesh, &n, &r1, ADDR_SRC_HINT));
 	CHECK(!path_is_direct_candidate(&n, &r1, ADDR_SRC_HINT));
@@ -859,7 +864,7 @@ static bool cover_active_route(meshlink_handle_t *mesh) {
 
 	memset(&dest, 0, sizeof dest);
 	memset(&conn, 0, sizeof conn);
-	dest.name = "dest";
+	dest.name = scratch("dest");
 	dest.status.reachable = true;
 	dest.status.udp_confirmed = true;
 	dest.status.validkey = true;
@@ -906,7 +911,7 @@ static bool cover_active_route(meshlink_handle_t *mesh) {
 	connection_t hopconn;
 	memset(&hop, 0, sizeof hop);
 	memset(&hopconn, 0, sizeof hopconn);
-	hop.name = "hop";
+	hop.name = scratch("hop");
 	hop.status.udp_confirmed = true;
 	hop.status.validkey = true;
 	hopconn.status.active = true;

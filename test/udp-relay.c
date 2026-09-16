@@ -751,8 +751,10 @@ static void test_long_names(meshlink_handle_t **mesh) {
 	assert(devtool_set_minmtu(longa, meshlink_get_node(longa, "foo"), MTU));
 	assert(meshlink_channel_get_mss(longa, ch_long) == long_floor);
 	assert(meshlink_channel_get_mss(mesh[2], ch_short) == short_floor);
-	(void)meshlink_channel_send(longa, ch_long, "Hello", 5);
-	(void)meshlink_send(longa, meshlink_get_node(longa, long_b), "Hello", 5);
+	ssize_t ch_sent = meshlink_channel_send(longa, ch_long, "Hello", 5);
+	bool pkt_sent = meshlink_send(longa, meshlink_get_node(longa, long_b), "Hello", 5);
+	(void)ch_sent;
+	(void)pkt_sent;
 
 	/* Losing and regaining direct UDP is the event that used to repacketize. */
 	devtool_set_udp_confirmed(longa, meshlink_get_node(longa, long_b), false);
@@ -790,7 +792,8 @@ static void test_reachability_flip_mss(meshlink_handle_t **mesh) {
 	assert(wait_sync_flag(&foo_down, 20));
 	assert(meshlink_channel_get_mss(mesh[2], ch) == floor_mss);
 	/* Attempt a send so dest META is used; hop is down so do not require delivery. */
-	(void)meshlink_channel_send(mesh[2], ch, "Hello", 5);
+	ssize_t leftover_sent = meshlink_channel_send(mesh[2], ch, "Hello", 5);
+	(void)leftover_sent;
 	assert(!check_sync_flag(&leftover_udp));
 
 	meshlink_channel_abort(mesh[2], ch);

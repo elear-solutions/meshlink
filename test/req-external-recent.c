@@ -221,7 +221,8 @@ static void test_own_external_not_added(void) {
 static bool poke_and_saw_empty_reject(meshlink_handle_t *a, meshlink_node_t *a_b,
 		meshlink_handle_t *b, meshlink_node_t *b_a, size_t mark) {
 	forget_addresses(a, a_b);
-	meshlink_send(b, b_a, "ping", 4);
+	bool poked = meshlink_send(b, b_a, "ping", 4);
+	(void)poked;
 	return log_count_from(mark, "a: Not remembering forwarded REQ_EXTERNAL address of b: no proven address to rank it behind") >= 1;
 }
 
