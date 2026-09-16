@@ -99,27 +99,6 @@ static bool wait_external_known(meshlink_handle_t *mesh, meshlink_node_t *node, 
 	return false;
 }
 
-/* Poll until mesh has finished PMTU discovery towards node (mtuprobes >= 31, the
-   pinginterval sleep), or timeout seconds pass. Until then every probe reply may
-   flip udp_confirmed and every ANS_KEY may rewrite n->address underneath a test
-   that pins them; afterwards the next burst is pinginterval (60 s) away. */
-static bool wait_pmtu_settled(meshlink_handle_t *mesh, meshlink_node_t *node, int timeout) {
-	for(int i = 0; i < timeout * 10; i++) {
-		devtool_node_status_t st;
-		devtool_get_node_status(mesh, node, &st);
-		bool settled = st.mtuprobes >= 31;
-		devtool_free_node_status(&st);
-
-		if(settled) {
-			return true;
-		}
-
-		usleep(100000);
-	}
-
-	return false;
-}
-
 static void status_cb(meshlink_handle_t *mesh, meshlink_node_t *node, bool reachable) {
 	(void)mesh;
 
@@ -445,14 +424,13 @@ int main(void) {
 	assert(inet_pton(AF_INET6, "fd00::1", &ula.sin6_addr) == 1);
 
 	/* Both meshes stay live for the graph_may_seed_udp() checks below, which need
-	   bar reachable. Let PMTU discovery finish on both sides first: until then a
-	   late probe reply re-confirms UDP and the reflexive ANS_KEY it triggers
-	   rewrites n->address, undoing the state pinned here. */
+	   bar reachable. Park UDP probes so a late reply cannot re-confirm UDP or
+	   rewrite n->address under the dests pinned here. Waiting for organic PMTU
+	   to reach mtuprobes >= 31 is load-sensitive under qemu. */
 	meshlink_node_t *bar_view_of_foo3 = meshlink_get_node(mesh_bar, "foo");
 	assert(bar_view_of_foo3);
-	assert(wait_pmtu_settled(mesh_foo, peer, 60));
-	assert(wait_pmtu_settled(mesh_bar, bar_view_of_foo3, 60));
-	sleep(1);
+	devtool_force_meta(mesh_foo, peer, true);
+	devtool_force_meta(mesh_bar, bar_view_of_foo3, true);
 
 	/* Stationary nodes never resolve their own public IP; pin one that differs
 	   from the peer's so the REQ_EXTERNAL dest is provably on another NAT and

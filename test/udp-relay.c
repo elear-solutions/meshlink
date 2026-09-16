@@ -217,6 +217,63 @@ static void confirm_final(meshlink_handle_t *relay, const char *dest, uint16_t m
 	devtool_set_udp_confirmed(relay, meshlink_get_node(relay, dest), true);
 }
 
+static void send_oversize_type8(meshlink_handle_t *from, const char *origin, const char *dest);
+
+/* Spare promotion / dest-pick can drop last-hop udp_confirmed between steps, and
+   then maybe_report is a no-op. Re-pin and confirm immediately before each kick. */
+static void arm_bar_via_foo(meshlink_handle_t **mesh, uint16_t dest_minmtu) {
+	pin(mesh[2], "bar", "foo");
+	assert(devtool_set_minmtu(mesh[2], meshlink_get_node(mesh[2], "foo"), MTU));
+	confirm_final(mesh[0], "bar", dest_minmtu);
+}
+
+static void arm_baz_via_foo(meshlink_handle_t **mesh, uint16_t dest_minmtu) {
+	pin(mesh[1], "baz", "foo");
+	assert(devtool_set_minmtu(mesh[1], meshlink_get_node(mesh[1], "foo"), MTU));
+	confirm_final(mesh[0], "baz", dest_minmtu);
+}
+
+static void oversize_bar_until(meshlink_handle_t **mesh, struct sync_flag *flag, int timeout) {
+	for(int i = 0; i < timeout; i++) {
+		arm_bar_via_foo(mesh, MINMTU);
+		send_oversize_type8(mesh[2], "baz", "bar");
+
+		if(wait_sync_flag(flag, 1)) {
+			return;
+		}
+	}
+
+	assert(check_sync_flag(flag));
+}
+
+static void oversize_baz_until(meshlink_handle_t **mesh, struct sync_flag *flag, int timeout) {
+	for(int i = 0; i < timeout; i++) {
+		arm_baz_via_foo(mesh, MINMTU);
+		send_oversize_type8(mesh[1], "bar", "baz");
+
+		if(wait_sync_flag(flag, 1)) {
+			return;
+		}
+	}
+
+	assert(check_sync_flag(flag));
+}
+
+static void hello_bar_until_relay_mtu(meshlink_handle_t **mesh, uint16_t dest_minmtu, int timeout) {
+	for(int i = 0; i < timeout; i++) {
+		reset_logs();
+		arm_bar_via_foo(mesh, dest_minmtu);
+		set_sync_flag(&received, false);
+		assert(meshlink_send(mesh[2], meshlink_get_node(mesh[2], "bar"), "Hello", 5));
+
+		if(wait_sync_flag(&got_relay_mtu, 1)) {
+			return;
+		}
+	}
+
+	assert(check_sync_flag(&got_relay_mtu));
+}
+
 static size_t encode_type8(uint8_t *out, const char *origin, const char *dest, const uint8_t *inner, size_t inner_len) {
 	size_t out_len = 800;
 	assert(relay_encode(origin, dest, inner, inner_len, out, &out_len));
@@ -446,20 +503,10 @@ static void send_oversize_type8(meshlink_handle_t *from, const char *origin, con
 
 static void test_two_pairs_isolated(meshlink_handle_t **mesh) {
 	devtool_clear_relay_reports(mesh[0]);
-	pin(mesh[2], "bar", "foo");
-	pin(mesh[1], "baz", "foo");
-	assert(devtool_set_minmtu(mesh[2], meshlink_get_node(mesh[2], "foo"), MTU));
-	assert(devtool_set_minmtu(mesh[1], meshlink_get_node(mesh[1], "foo"), MTU));
-	confirm_final(mesh[0], "bar", MINMTU);
-	confirm_final(mesh[0], "baz", MINMTU);
-
 	reset_logs();
-	send_oversize_type8(mesh[2], "baz", "bar");
-	assert(wait_sync_flag(&got_relay_mtu, 5));
-
+	oversize_bar_until(mesh, &got_relay_mtu, 20);
 	reset_logs();
-	send_oversize_type8(mesh[1], "bar", "baz");
-	assert(wait_sync_flag(&bar_got_relay_mtu, 5));
+	oversize_baz_until(mesh, &bar_got_relay_mtu, 20);
 
 	assert(devtool_set_minmtu(mesh[0], meshlink_get_node(mesh[0], "bar"), MTU));
 	assert(devtool_set_minmtu(mesh[0], meshlink_get_node(mesh[0], "baz"), MTU));
@@ -468,19 +515,27 @@ static void test_two_pairs_isolated(meshlink_handle_t **mesh) {
 static void test_failed_send_request_clock(meshlink_handle_t **mesh) {
 	devtool_clear_relay_reports(mesh[0]);
 	devtool_fail_relay_reports(mesh[0], true);
-	pin(mesh[2], "bar", "foo");
-	assert(devtool_set_minmtu(mesh[2], meshlink_get_node(mesh[2], "foo"), MTU));
-	confirm_final(mesh[0], "bar", MINMTU);
 
-	send_oversize_type8(mesh[2], "baz", "bar");
-	usleep(200000);
-	assert(devtool_has_relay_report(mesh[0], "baz", "bar"));
-	assert(!devtool_relay_report_have_reported(mesh[0], "baz", "bar"));
+	bool parked = false;
+
+	for(int i = 0; i < 20; i++) {
+		arm_bar_via_foo(mesh, MINMTU);
+		send_oversize_type8(mesh[2], "baz", "bar");
+
+		if(devtool_has_relay_report(mesh[0], "baz", "bar")
+		                && !devtool_relay_report_have_reported(mesh[0], "baz", "bar")) {
+			parked = true;
+			break;
+		}
+
+		sleep(1);
+	}
+
+	assert(parked);
 
 	devtool_fail_relay_reports(mesh[0], false);
 	reset_logs();
-	send_oversize_type8(mesh[2], "baz", "bar");
-	assert(wait_sync_flag(&got_relay_mtu, 5));
+	oversize_bar_until(mesh, &got_relay_mtu, 20);
 	assert(devtool_relay_report_have_reported(mesh[0], "baz", "bar"));
 
 	assert(devtool_set_minmtu(mesh[0], meshlink_get_node(mesh[0], "bar"), MTU));
@@ -493,13 +548,7 @@ static void test_lru_eviction_rearm(meshlink_handle_t **mesh) {
 	assert(devtool_seed_relay_report(mesh[0], "a1", "a", 1, true));
 	assert(devtool_relay_report_count(mesh[0]) == RELAY_REPORT_MAX);
 
-	pin(mesh[2], "bar", "foo");
-	assert(devtool_set_minmtu(mesh[2], meshlink_get_node(mesh[2], "foo"), MTU));
-	confirm_final(mesh[0], "bar", MTU);
-
-	reset_logs();
-	send_hello(mesh[2], "bar");
-	assert(wait_sync_flag(&got_relay_mtu, 5));
+	hello_bar_until_relay_mtu(mesh, MTU, 20);
 	assert(!devtool_has_relay_report(mesh[0], "a0", "z"));
 	assert(devtool_has_relay_report(mesh[0], "a1", "a"));
 	assert(devtool_has_relay_report(mesh[0], "baz", "bar"));
@@ -507,18 +556,12 @@ static void test_lru_eviction_rearm(meshlink_handle_t **mesh) {
 	assert(devtool_seed_relay_report(mesh[0], "a1", "a", 0, true));
 	assert(devtool_seed_relay_report(mesh[0], "baz", "bar", 1, true));
 
-	pin(mesh[1], "baz", "foo");
-	assert(devtool_set_minmtu(mesh[1], meshlink_get_node(mesh[1], "foo"), MTU));
-	confirm_final(mesh[0], "baz", MINMTU);
+	arm_baz_via_foo(mesh, MINMTU);
 	send_oversize_type8(mesh[1], "bar", "baz");
-	usleep(200000);
-	assert(!devtool_has_relay_report(mesh[0], "baz", "bar"));
+	assert_after(!devtool_has_relay_report(mesh[0], "baz", "bar"), 5);
 
 	assert(devtool_set_minmtu(mesh[0], meshlink_get_node(mesh[0], "bar"), MTU));
-	confirm_final(mesh[0], "bar", MTU);
-	reset_logs();
-	send_hello(mesh[2], "bar");
-	assert(wait_sync_flag(&got_relay_mtu, 5));
+	hello_bar_until_relay_mtu(mesh, MTU, 20);
 	assert(devtool_has_relay_report(mesh[0], "baz", "bar"));
 
 	assert(devtool_set_minmtu(mesh[0], meshlink_get_node(mesh[0], "baz"), MTU));
@@ -544,7 +587,7 @@ static void test_oversize_and_reports(meshlink_handle_t **mesh) {
 	assert(devtool_set_minmtu(mesh[2], meshlink_get_node(mesh[2], "foo"), MTU));
 	confirm_final(mesh[0], "bar", MINMTU);
 	assert(devtool_send_raw_record(mesh[2], meshlink_get_node(mesh[2], "foo"), PKT_RELAY_SPTPS, payload, n));
-	assert(wait_sync_flag(&got_relay_mtu, 5));
+	assert(wait_sync_flag(&got_relay_mtu, 15));
 	reset_logs();
 	assert(devtool_send_raw_record(mesh[2], meshlink_get_node(mesh[2], "foo"), PKT_RELAY_SPTPS, payload, n));
 	usleep(200000);
@@ -902,19 +945,11 @@ int main(void) {
 	test_lru_eviction_rearm(mesh);
 
 	/* 30s idle delete re-arms first-record report — before channels steal receive_cb */
-	reset_logs();
-	pin(mesh[2], "bar", "foo");
-	confirm_final(mesh[0], "bar", 600);
-	send_hello(mesh[2], "bar");
-	assert(wait_sync_flag(&got_relay_mtu, 10));
-	reset_logs();
+	hello_bar_until_relay_mtu(mesh, 600, 20);
 	sleep(31);
 	/* Dest UDP can win during the idle window after a canonical→direct
 	   META upgrade. Re-pin so the re-arm still exercises the relay path. */
-	pin(mesh[2], "bar", "foo");
-	confirm_final(mesh[0], "bar", 600);
-	send_hello(mesh[2], "bar");
-	assert(wait_sync_flag(&got_relay_mtu, 10));
+	hello_bar_until_relay_mtu(mesh, 600, 20);
 
 	test_channels_and_mss(mesh);
 

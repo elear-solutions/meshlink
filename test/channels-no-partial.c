@@ -12,6 +12,9 @@
 #include "meshlink.h"
 #include "utils.h"
 
+static struct sync_flag writable;
+static size_t writable_len;
+
 static bool accept_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, uint16_t port, const void *data, size_t len) {
 	(void)mesh;
 	(void)channel;
@@ -22,10 +25,18 @@ static bool accept_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, uint
 	return true;
 }
 
+static void poll_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, size_t len) {
+	(void)mesh;
+	(void)channel;
+	writable_len = len;
+	set_sync_flag(&writable, true);
+}
+
 int main(int argc, char *argv[]) {
 	(void)argc;
 	(void)argv;
 
+	init_sync_flag(&writable);
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
 
 	// Start two new meshlink instance.
@@ -44,6 +55,10 @@ int main(int argc, char *argv[]) {
 
 	meshlink_channel_t *channel = meshlink_channel_open_ex(mesh_a, b, 1, NULL, NULL, 0, MESHLINK_CHANNEL_TCP | MESHLINK_CHANNEL_NO_PARTIAL);
 	assert(channel);
+	meshlink_set_channel_poll_cb(mesh_a, channel, poll_cb);
+	assert(wait_sync_flag(&writable, 20));
+	assert(writable_len != 0);
+	meshlink_set_channel_poll_cb(mesh_a, channel, NULL);
 
 	// Stop a to ensure we get deterministic behaviour for the channel send queue.
 
@@ -71,6 +86,11 @@ int main(int argc, char *argv[]) {
 	assert(meshlink_start(mesh_a));
 
 	assert_after(!meshlink_channel_get_sendq(mesh_a, channel), 30);
+	reset_sync_flag(&writable);
+	meshlink_set_channel_poll_cb(mesh_a, channel, poll_cb);
+	assert(wait_sync_flag(&writable, 20));
+	assert(writable_len != 0);
+	meshlink_set_channel_poll_cb(mesh_a, channel, NULL);
 	assert(meshlink_channel_send(mesh_a, channel, buf, 512) == 512);
 
 	// Check that we can change the NO_PARTIAL flag
