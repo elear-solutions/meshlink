@@ -13,6 +13,7 @@
 /invite-join
 /sign-verify
 /trio
+/connection-policy
 /*.[0123456789]
 /*.in
 /*.out*

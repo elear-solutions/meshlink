@@ -108,6 +108,7 @@ test/udp-relay
 test/relay-coverage
 test/join-canonical-nlb
 test/backbone-identity
+test/connection-policy
 test/transport-recent
 test/mtu-probe-log
 test/port-range

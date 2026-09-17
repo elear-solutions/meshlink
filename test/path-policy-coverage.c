@@ -149,7 +149,15 @@ static void confirm_v4(meshlink_handle_t *mesh, const char *name, const char *ip
 
 static void send_hello(meshlink_handle_t *from, const char *dest) {
 	set_sync_flag(&received, false);
-	assert(meshlink_send(from, meshlink_get_node(from, dest), "Hello", 5));
+
+	for(int i = 0; i < 15; i++) {
+		assert(meshlink_send(from, meshlink_get_node(from, dest), "Hello", 5));
+
+		if(wait_sync_flag(&received, 1)) {
+			return;
+		}
+	}
+
 	assert(wait_sync_flag(&received, 10));
 }
 
@@ -211,8 +219,8 @@ static void test_live_transitions(meshlink_handle_t **mesh) {
 	assert(addr_is(&chosen, "203.0.113.10", 9));
 	printf("U4 WAN stays while local is unvalidated\n");
 
-	/* U5 / U3: validated local replaces WAN via the production promote path */
-	assert(devtool_promote_udp_if_better(mesh[2], meshlink_get_node(mesh[2], "bar"), (struct sockaddr *)&local));
+	/* U5 / U3: validated local replaces WAN. */
+	assert(devtool_confirm_udp_from(mesh[2], meshlink_get_node(mesh[2], "bar"), (struct sockaddr *)&local, TIER_LOCAL));
 	assert(dest_tier(mesh[2], "bar", false) == TIER_LOCAL);
 	assert(devtool_choose_udp_address(mesh[2], meshlink_get_node(mesh[2], "bar"), &chosen, &sock));
 	assert(addr_is(&chosen, "127.0.0.1", meshlink_get_port(mesh[1])));
@@ -368,31 +376,19 @@ int main(void) {
 
 	const char *name[3] = {"foo", "bar", "baz"};
 	meshlink_handle_t *mesh[3];
-	char *data[3];
 
 	for(int i = 0; i < 3; i++) {
 		char *path = NULL;
 		assert(asprintf(&path, "path_policy_conf.%d", i) != -1 && path);
 		assert(meshlink_destroy(path));
-		mesh[i] = meshlink_open(path, name[i], "path-policy", DEV_CLASS_BACKBONE);
+		mesh[i] = meshlink_open(path, name[i], "path-policy", i ? DEV_CLASS_STATIONARY : DEV_CLASS_BACKBONE);
 		assert(mesh[i]);
 		free(path);
-		assert(meshlink_set_canonical_address(mesh[i], meshlink_get_self(mesh[i]), "localhost", "9"));
-		data[i] = meshlink_export(mesh[i]);
-		assert(data[i]);
+		assert(meshlink_set_canonical_address(mesh[i], meshlink_get_self(mesh[i]), "localhost", NULL));
 	}
 
-	for(int i = 0; i < 3; i++) {
-		for(int j = 0; j < 3; j++) {
-			if(i != j) {
-				assert(meshlink_import(mesh[i], data[j]));
-			}
-		}
-	}
-
-	for(int i = 0; i < 3; i++) {
-		free(data[i]);
-	}
+	join_meshlink_peer(mesh[0], mesh[1]);
+	join_meshlink_peer(mesh[0], mesh[2]);
 
 	meshlink_set_log_cb(mesh[0], MESHLINK_DEBUG, any_log);
 	meshlink_set_log_cb(mesh[1], MESHLINK_DEBUG, any_log);
@@ -408,8 +404,7 @@ int main(void) {
 	assert(wait_sync_flag(&bar_learned, 10));
 	assert(wait_sync_flag(&baz_learned, 10));
 	assert_after(mtu_fixed(mesh[2], "foo") && mtu_fixed(mesh[0], "baz")
-	             && mtu_fixed(mesh[0], "bar") && mtu_fixed(mesh[1], "foo")
-	             && mtu_fixed(mesh[1], "baz") && mtu_fixed(mesh[2], "bar"), 25);
+	             && mtu_fixed(mesh[0], "bar") && mtu_fixed(mesh[1], "foo"), 25);
 
 	send_hello(mesh[2], "bar");
 

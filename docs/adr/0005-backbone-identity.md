@@ -12,7 +12,8 @@ new identity whenever graph data contains a second such node. META
 recovery and relay then disagree on the re-entry node.
 
 Finding 3 owns that identity. It does not own invitation-creation
-gating, autoconnect pools, or relay hop selection.
+gating or relay hop selection. Finding 5 owns META pool skip of
+`conflict_backbone`.
 
 ## Decision
 
@@ -46,9 +47,9 @@ It is set when:
 - the stored identity resolves to a node whose class is not
   `DEV_CLASS_BACKBONE`.
 
-Finding 3 does not exclude those nodes from autoconnect, graph routing,
-gossip, or relay. Findings 5 and 10 must skip `conflict_backbone` nodes
-when choosing META pools and the relay hop.
+Finding 3 does not exclude those nodes from graph routing,
+gossip, or relay. Finding 5 skips `conflict_backbone` nodes when
+choosing META pools. Finding 10 must skip them as the relay hop.
 
 Missing sidecar on an existing confbase migrates only when the answer is
 unambiguous: self-only BACKBONE, or exactly one other BACKBONE host.
@@ -59,10 +60,11 @@ Two or more BACKBONE hosts: do not guess.
 - Production joins fail (`MESHLINK_EPEER`) if the inviter is not
   backbone-class. Invitation create/serve gating is ADR 0006.
 - Import does not elect. A second backbone-class host is marked
-  `conflict_backbone`; it still participates in the mesh until
-  findings 5 and 10 exclude it.
+  `conflict_backbone`; finding 5 already skips it for META pools, and
+  finding 10 still owns relay-hop skip.
 - Forgetting the backbone node drops the pointer; reopen still knows
   the name.
 - Ephemeral / `STORAGE_DISABLED` keep the name in memory only.
-- Autoconnect and `path_active_send_target()` are unchanged in this
-  finding.
+- Autoconnect is gone. Backbone META is a reserved
+  `BACKBONE_REQUIRED` intent in `connection_policy` (ADR 0007); LAN fill
+  is finding 7.

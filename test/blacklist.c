@@ -66,46 +66,36 @@ int main(void) {
 
 	const char *name[3] = {"foo", "bar", "baz"};
 	meshlink_handle_t *mesh[3];
-	char *data[3];
 
 	for(int i = 0; i < 3; i++) {
 		char *path = NULL;
 		assert(asprintf(&path, "blacklist_conf.%d", i) != -1 && path);
 
 		assert(meshlink_destroy(path));
-		mesh[i] = meshlink_open(path, name[i], "blacklist", DEV_CLASS_BACKBONE);
+		mesh[i] = meshlink_open(path, name[i], "blacklist", i ? DEV_CLASS_STATIONARY : DEV_CLASS_BACKBONE);
 		assert(mesh[i]);
 		free(path);
 
 		assert(meshlink_set_canonical_address(mesh[i], meshlink_get_self(mesh[i]), "localhost", NULL));
-
-		data[i] = meshlink_export(mesh[i]);
-		assert(data[i]);
+		meshlink_enable_discovery(mesh[i], false);
 
 		// Enable default blacklist on all nodes.
 		meshlink_set_default_blacklist(mesh[i], true);
 	}
 
-	// Generate an invitation before extra BACKBONE hosts exist so this node
+	// Generate an invitation before extra hosts exist so this node
 	// is an unambiguous creator (ADR 0006).
 	char *invitation = meshlink_invite(mesh[0], NULL, "xyzzy");
 	assert(invitation);
 	free(invitation);
 
-	// The first node knows the two other nodes.
+	join_meshlink_peer(mesh[0], mesh[1]);
+	join_meshlink_peer(mesh[0], mesh[2]);
 
-	for(int i = 1; i < 3; i++) {
-		assert(meshlink_import(mesh[i], data[0]));
-		assert(meshlink_import(mesh[0], data[i]));
-
-		assert(meshlink_get_node(mesh[i], name[0]));
-		assert(meshlink_get_node(mesh[0], name[i]));
-
-	}
-
-	for(int i = 0; i < 3; i++) {
-		free(data[i]);
-	}
+	assert(meshlink_get_node(mesh[1], name[0]));
+	assert(meshlink_get_node(mesh[2], name[0]));
+	assert(meshlink_get_node(mesh[0], name[1]));
+	assert(meshlink_get_node(mesh[0], name[2]));
 
 	// Second and third node should not know each other yet.
 
@@ -210,7 +200,7 @@ int main(void) {
 	assert(!meshlink_get_node_blacklisted(mesh[1], baz));
 	assert(!meshlink_get_node_blacklisted(mesh[2], bar));
 
-	// They should connect to each other
+	// They should become graph-reachable through the backbone, without a direct META.
 
 	assert(wait_sync_flag(&baz_connected, 15));
 

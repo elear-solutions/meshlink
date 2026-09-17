@@ -1,5 +1,5 @@
 /*
-    connection_policy.c -- unique backbone identity
+    connection_policy.c -- unique backbone identity and META connection pools
     Copyright (C) 2026 Elear Solutions
 
     This program is free software; you can redistribute it and/or modify
@@ -11,9 +11,12 @@
 #include "system.h"
 
 #include "conf.h"
+#include "connection.h"
 #include "connection_policy.h"
+#include "event.h"
 #include "logger.h"
 #include "meshlink_internal.h"
+#include "net.h"
 #include "node.h"
 #include "packmsg.h"
 #include "protocol.h"
@@ -251,6 +254,7 @@ void connection_policy_on_node_added(meshlink_handle_t *mesh, node_t *n) {
 	}
 
 	(void)connection_policy_validate_topology(mesh);
+	connection_policy_tick(mesh);
 }
 
 void connection_policy_on_node_deleted(meshlink_handle_t *mesh, node_t *n) {
@@ -261,11 +265,14 @@ void connection_policy_on_node_deleted(meshlink_handle_t *mesh, node_t *n) {
 	if(mesh->backbone.node == n) {
 		mesh->backbone.node = NULL;
 	}
+
+	connection_policy_tick(mesh);
 }
 
 void connection_policy_on_devclass(meshlink_handle_t *mesh, node_t *n) {
 	(void)n;
 	(void)connection_policy_validate_topology(mesh);
+	connection_policy_tick(mesh);
 }
 
 const char *connection_policy_backbone_name(const meshlink_handle_t *mesh) {
@@ -344,4 +351,222 @@ bool connection_policy_commit_self_if_creator(meshlink_handle_t *mesh) {
 	}
 
 	return connection_policy_set_backbone(mesh, mesh->self->name);
+}
+
+static bool connection_still_listed(meshlink_handle_t *mesh, const connection_t *c) {
+	if(!mesh || !mesh->connections || !c) {
+		return false;
+	}
+
+	for list_each(connection_t, cand, mesh->connections) {
+		if(cand == c) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static void close_retired_socket(meshlink_handle_t *mesh, connection_t *c) {
+	if(!c || !connection_still_listed(mesh, c)) {
+		return;
+	}
+
+	/* The IO handler still owns this object. SHUT_RDWR makes it unusable;
+	   handle_meta_io frees it when receive_meta fails. */
+	if(c == mesh->protocol_connection) {
+		shutdown(c->socket, SHUT_RDWR);
+		return;
+	}
+
+	terminate_connection(mesh, c, c->status.active);
+}
+
+static void drop_outgoing(meshlink_handle_t *mesh, outgoing_t *outgoing) {
+	connection_t **victims = NULL;
+	unsigned nv = 0;
+	unsigned i;
+	connection_t *pending;
+
+	if(!mesh || !outgoing) {
+		return;
+	}
+
+	mesh->retiring_outgoing = true;
+
+	pending = outgoing->pending;
+	outgoing_detach_startup(mesh, outgoing);
+
+	if(pending) {
+		close_retired_socket(mesh, pending);
+	}
+
+	if(mesh->connections && mesh->connections->count) {
+		victims = xzalloc(mesh->connections->count * sizeof(*victims));
+
+		for list_each(connection_t, c, mesh->connections) {
+			if(c->outgoing == outgoing && c != pending) {
+				victims[nv++] = c;
+			}
+		}
+	}
+
+	for(i = 0; i < nv; i++) {
+		victims[i]->outgoing = NULL;
+	}
+
+	if(mesh->outgoings) {
+		list_delete(mesh->outgoings, outgoing);
+	}
+
+	for(i = 0; i < nv; i++) {
+		close_retired_socket(mesh, victims[i]);
+	}
+
+	free(victims);
+	mesh->retiring_outgoing = false;
+}
+
+static outgoing_t *find_outgoing_for_purpose(meshlink_handle_t *mesh, meta_connection_purpose_t purpose) {
+	if(!mesh->outgoings) {
+		return NULL;
+	}
+
+	for list_each(outgoing_t, outgoing, mesh->outgoings) {
+		if(outgoing->purpose == purpose) {
+			return outgoing;
+		}
+	}
+
+	return NULL;
+}
+
+static outgoing_t *find_outgoing_for_node(meshlink_handle_t *mesh, const node_t *n) {
+	if(!mesh->outgoings || !n) {
+		return NULL;
+	}
+
+	for list_each(outgoing_t, outgoing, mesh->outgoings) {
+		if(outgoing->node == n) {
+			return outgoing;
+		}
+	}
+
+	return NULL;
+}
+
+static bool backbone_target_ok(const node_t *bb) {
+	return bb
+	       && !bb->status.conflict_backbone
+	       && !bb->status.blacklisted
+	       && bb->devclass == DEV_CLASS_BACKBONE;
+}
+
+static void ensure_backbone_outgoing(meshlink_handle_t *mesh, node_t *bb) {
+	outgoing_t *existing = find_outgoing_for_node(mesh, bb);
+
+	if(existing) {
+		existing->purpose = META_PURPOSE_BACKBONE_REQUIRED;
+		return;
+	}
+
+	outgoing_t *outgoing = xzalloc(sizeof(outgoing_t));
+	outgoing->node = bb;
+	outgoing->purpose = META_PURPOSE_BACKBONE_REQUIRED;
+	list_insert_tail(mesh->outgoings, outgoing);
+	setup_outgoing_connection(mesh, outgoing);
+}
+
+void connection_policy_tick(meshlink_handle_t *mesh) {
+	if(!mesh || !mesh->self || !mesh->outgoings || mesh->retiring_outgoing) {
+		return;
+	}
+
+	/* Any BACKBONE-class node, including a conflicted extra, initiates nothing. */
+	if(mesh->self->devclass == DEV_CLASS_BACKBONE || connection_policy_is_backbone(mesh, mesh->self)) {
+		for list_each(outgoing_t, outgoing, mesh->outgoings) {
+			drop_outgoing(mesh, outgoing);
+		}
+
+		return;
+	}
+
+	/* Finding 7 fills LAN. Finding 5 keeps only BACKBONE_REQUIRED. */
+	for list_each(outgoing_t, outgoing, mesh->outgoings) {
+		if(outgoing->purpose != META_PURPOSE_BACKBONE_REQUIRED) {
+			drop_outgoing(mesh, outgoing);
+		}
+	}
+
+	node_t *bb = connection_policy_backbone(mesh);
+
+	if(!backbone_target_ok(bb)) {
+		for list_each(outgoing_t, outgoing, mesh->outgoings) {
+			if(outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED) {
+				drop_outgoing(mesh, outgoing);
+			}
+		}
+
+		return;
+	}
+
+	for list_each(outgoing_t, outgoing, mesh->outgoings) {
+		if(outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED && outgoing->node != bb) {
+			drop_outgoing(mesh, outgoing);
+		}
+	}
+
+	if(!node_read_public_key(mesh, bb)) {
+		if(bb->status.reachable) {
+			send_req_key(mesh, bb);
+		}
+
+		return;
+	}
+
+	if(!find_outgoing_for_purpose(mesh, META_PURPOSE_BACKBONE_REQUIRED)) {
+		ensure_backbone_outgoing(mesh, bb);
+	}
+}
+
+void connection_policy_on_discovery(meshlink_handle_t *mesh, node_t *node,
+                                    const sockaddr_t *address, address_source_t source) {
+	(void)address;
+	(void)source;
+
+	if(!mesh || !node) {
+		return;
+	}
+
+	node->last_connect_try = 0;
+
+	if(mesh->outgoings) {
+		for list_each(outgoing_t, outgoing, mesh->outgoings) {
+			if(outgoing->node != node) {
+				continue;
+			}
+
+			outgoing->timeout = 0;
+
+			if(outgoing->ev.cb) {
+				timeout_set(&mesh->loop, &outgoing->ev, &(struct timespec) {
+					0, 0
+				});
+			}
+		}
+	}
+
+	connection_policy_tick(mesh);
+}
+
+void connection_policy_on_connection_closed(meshlink_handle_t *mesh, node_t *node,
+                meta_connection_purpose_t purpose) {
+	(void)node;
+	(void)purpose;
+
+	if(!mesh || mesh->retiring_outgoing) {
+		return;
+	}
+
+	connection_policy_tick(mesh);
 }

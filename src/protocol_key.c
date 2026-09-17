@@ -20,6 +20,7 @@
 #include "system.h"
 
 #include "connection.h"
+#include "connection_policy.h"
 #include "logger.h"
 #include "meshlink_internal.h"
 #include "net.h"
@@ -170,6 +171,7 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 				logger(mesh, MESHLINK_INFO, "Learned ECDSA public key from %s", from->name);
 				from->status.dirty = true;
 				from->last_connect_try = 0;
+				connection_policy_tick(mesh);
 
 				if(!node_write_config(mesh, from, true)) {
 					// ignore
@@ -198,6 +200,7 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 		logger(mesh, MESHLINK_INFO, "Learned ECDSA public key from %s", from->name);
 		from->status.dirty = true;
 		from->last_connect_try = 0;
+		connection_policy_tick(mesh);
 
 		if(!node_write_config(mesh, from, true)) {
 			// ignore

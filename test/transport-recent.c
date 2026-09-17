@@ -35,14 +35,14 @@ static void test_udp_only_not_tcp_dialled(void) {
 	assert(meshlink_destroy("transport_recent_conf.2"));
 
 	meshlink_handle_t *a = meshlink_open("transport_recent_conf.1", "a", "transport-recent", DEV_CLASS_PORTABLE);
-	meshlink_handle_t *b = meshlink_open("transport_recent_conf.2", "b", "transport-recent", DEV_CLASS_STATIONARY);
+	meshlink_handle_t *b = meshlink_open("transport_recent_conf.2", "b", "transport-recent", DEV_CLASS_BACKBONE);
 	assert(a && b);
 	meshlink_enable_discovery(a, false);
 	meshlink_enable_discovery(b, false);
 
 	int b_port = meshlink_get_port(b);
 	assert(b_port > 0);
-	exchange_meshlink_pair(a, b);
+	join_meshlink_peer(b, a);
 
 	meshlink_node_t *node_b = meshlink_get_node(a, "b");
 	assert(node_b);

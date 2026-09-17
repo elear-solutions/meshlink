@@ -22,7 +22,7 @@ int main(void) {
 	assert(meshlink_destroy("storage-policy_conf.2"));
 
 	mesh1 = meshlink_open("storage-policy_conf.1", "foo", "storage-policy", DEV_CLASS_BACKBONE);
-	mesh2 = meshlink_open("storage-policy_conf.2", "bar", "storage-policy", DEV_CLASS_BACKBONE);
+	mesh2 = meshlink_open("storage-policy_conf.2", "bar", "storage-policy", DEV_CLASS_STATIONARY);
 	assert(mesh1);
 	assert(mesh2);
 	meshlink_enable_discovery(mesh1, false);
@@ -46,14 +46,14 @@ int main(void) {
 	assert(meshlink_get_node(mesh1, "bar"));
 	assert(meshlink_get_node(mesh2, "foo"));
 
-	start_meshlink_pair(mesh1, mesh2);
+	// STORAGE_DISABLED cannot join, so there is no META. Import is in-memory only.
 
 	// Close the instances and reopen them.
 
 	close_meshlink_pair(mesh1, mesh2);
 
 	mesh1 = meshlink_open("storage-policy_conf.1", "foo", "storage-policy", DEV_CLASS_BACKBONE);
-	mesh2 = meshlink_open("storage-policy_conf.2", "bar", "storage-policy", DEV_CLASS_BACKBONE);
+	mesh2 = meshlink_open("storage-policy_conf.2", "bar", "storage-policy", DEV_CLASS_STATIONARY);
 	assert(mesh1);
 	assert(mesh2);
 	meshlink_enable_discovery(mesh1, false);
@@ -79,7 +79,7 @@ int main(void) {
 	close_meshlink_pair(mesh1, mesh2);
 
 	mesh1 = meshlink_open("storage-policy_conf.1", "foo", "storage-policy", DEV_CLASS_BACKBONE);
-	mesh2 = meshlink_open("storage-policy_conf.2", "bar", "storage-policy", DEV_CLASS_BACKBONE);
+	mesh2 = meshlink_open("storage-policy_conf.2", "bar", "storage-policy", DEV_CLASS_STATIONARY);
 	assert(mesh1);
 	assert(mesh2);
 	meshlink_enable_discovery(mesh1, false);
@@ -112,7 +112,7 @@ int main(void) {
 	close_meshlink_pair(mesh1, mesh2);
 
 	mesh1 = meshlink_open("storage-policy_conf.1", "foo", "storage-policy", DEV_CLASS_BACKBONE);
-	mesh2 = meshlink_open("storage-policy_conf.2", "bar", "storage-policy", DEV_CLASS_BACKBONE);
+	mesh2 = meshlink_open("storage-policy_conf.2", "bar", "storage-policy", DEV_CLASS_STATIONARY);
 	assert(mesh1);
 	assert(mesh2);
 	meshlink_enable_discovery(mesh1, false);
@@ -138,7 +138,7 @@ int main(void) {
 	close_meshlink_pair(mesh1, mesh2);
 
 	mesh1 = meshlink_open("storage-policy_conf.1", "foo", "storage-policy", DEV_CLASS_BACKBONE);
-	mesh2 = meshlink_open("storage-policy_conf.2", "bar", "storage-policy", DEV_CLASS_BACKBONE);
+	mesh2 = meshlink_open("storage-policy_conf.2", "bar", "storage-policy", DEV_CLASS_STATIONARY);
 	assert(mesh1);
 	assert(mesh2);
 	meshlink_enable_discovery(mesh1, false);
@@ -156,7 +156,7 @@ int main(void) {
 	assert(meshlink_destroy("storage-policy_conf.2"));
 
 	mesh1 = meshlink_open("storage-policy_conf.1", "foo", "storage-policy", DEV_CLASS_BACKBONE);
-	mesh2 = meshlink_open("storage-policy_conf.2", "bar", "storage-policy", DEV_CLASS_BACKBONE);
+	mesh2 = meshlink_open("storage-policy_conf.2", "bar", "storage-policy", DEV_CLASS_STATIONARY);
 	assert(mesh1);
 	assert(mesh2);
 	meshlink_enable_discovery(mesh1, false);
@@ -191,7 +191,7 @@ int main(void) {
 	close_meshlink_pair(mesh1, mesh2);
 
 	mesh1 = meshlink_open("storage-policy_conf.1", "foo", "storage-policy", DEV_CLASS_BACKBONE);
-	mesh2 = meshlink_open("storage-policy_conf.2", "bar", "storage-policy", DEV_CLASS_BACKBONE);
+	mesh2 = meshlink_open("storage-policy_conf.2", "bar", "storage-policy", DEV_CLASS_STATIONARY);
 	assert(mesh1);
 	assert(mesh2);
 	meshlink_enable_discovery(mesh1, false);

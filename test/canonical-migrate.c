@@ -428,7 +428,7 @@ static void open_relayed_pair_via(struct pair *p, const char *prefix, bool b_ext
 	assert(meshlink_destroy(p->conf_b));
 
 	p->a = meshlink_open(p->conf_a, "a", prefix, DEV_CLASS_PORTABLE);
-	p->b = meshlink_open(p->conf_b, "b", prefix, DEV_CLASS_STATIONARY);
+	p->b = meshlink_open(p->conf_b, "b", prefix, DEV_CLASS_BACKBONE);
 	assert(p->a && p->b);
 
 	meshlink_enable_discovery(p->a, false);
@@ -444,7 +444,7 @@ static void open_relayed_pair_via(struct pair *p, const char *prefix, bool b_ext
 		devtool_set_external_ip_address(p->b, meshlink_get_self(p->b), "127.0.0.1");
 	}
 
-	exchange_meshlink_pair(p->a, p->b);
+	join_meshlink_peer(p->b, p->a);
 
 	p->a_b = meshlink_get_node(p->a, "b");
 	p->b_a = meshlink_get_node(p->b, "a");
@@ -693,37 +693,31 @@ static void test_black_hole_backoff(void) {
 /* --- T7 --------------------------------------------------------------------- */
 
 static void test_both_sides_migrate(void) {
-	printf("\n=== T7: both sides reach each other via relays and migrate ===\n");
+	printf("\n=== T7: camera reaches backbone via relay and migrates ===\n");
 
 	assert(meshlink_destroy("canonical_migrate_t7_conf.1"));
 	assert(meshlink_destroy("canonical_migrate_t7_conf.2"));
 
-	/* Both STATIONARY: each autoconnects to the other. */
-	meshlink_handle_t *a = meshlink_open("canonical_migrate_t7_conf.1", "a", "canonical_migrate_t7", DEV_CLASS_STATIONARY);
-	meshlink_handle_t *b = meshlink_open("canonical_migrate_t7_conf.2", "b", "canonical_migrate_t7", DEV_CLASS_STATIONARY);
+	meshlink_handle_t *a = meshlink_open("canonical_migrate_t7_conf.1", "a", "canonical_migrate_t7", DEV_CLASS_PORTABLE);
+	meshlink_handle_t *b = meshlink_open("canonical_migrate_t7_conf.2", "b", "canonical_migrate_t7", DEV_CLASS_BACKBONE);
 	assert(a && b);
 	meshlink_enable_discovery(a, false);
 	meshlink_enable_discovery(b, false);
 
-	int a_port = meshlink_get_port(a);
 	int b_port = meshlink_get_port(b);
-	assert(a_port > 0 && b_port > 0);
+	assert(b_port > 0);
 
-	int relay_a_port = 0, relay_b_port = 0;
-	tcp_relay_t *relay_a = start_tcp_relay("127.0.0.1", &relay_a_port, "127.0.0.1", a_port);
+	int relay_b_port = 0;
 	tcp_relay_t *relay_b = start_tcp_relay("127.0.0.1", &relay_b_port, "127.0.0.1", b_port);
-	set_canonical_address(a, "127.0.0.1", relay_a_port);
 	set_canonical_address(b, "127.0.0.1", relay_b_port);
-	devtool_set_external_ip_address(a, meshlink_get_self(a), "127.0.0.1");
 	devtool_set_external_ip_address(b, meshlink_get_self(b), "127.0.0.1");
 
-	exchange_meshlink_pair(a, b);
+	join_meshlink_peer(b, a);
 
 	meshlink_node_t *a_b = meshlink_get_node(a, "b");
 	meshlink_node_t *b_a = meshlink_get_node(b, "a");
 	assert(a_b && b_a);
 	forget_addresses(a, a_b);
-	forget_addresses(b, b_a);
 
 	reset_probe_events();
 	reset_meta_counts();
@@ -733,11 +727,9 @@ static void test_both_sides_migrate(void) {
 
 	size_t mark = log_mark();
 	assert(meshlink_start(a));
-	assert(meshlink_start(b));
 	assert(wait_sync_flag(&peer_reachable, 15));
 	devtool_free_node_status(&status_at_reachable);
 
-	/* Whichever side kept its outgoing canonical connection migrates it. */
 	assert(wait_sync_flag(&probe_succeeded, 30));
 	sleep(3);
 
@@ -757,20 +749,20 @@ static void test_both_sides_migrate(void) {
 	assert(meta_net_count("a", "b") == 1);
 	assert(meta_net_count("b", "a") == 1);
 	assert(log_find(mark, "Two outgoing connections to the same node!") < 0);
-	assert(tcp_relay_accept_count(relay_a) + tcp_relay_accept_count(relay_b) >= 1);
+	assert(tcp_relay_accept_count(relay_b) >= 1);
+	assert(devtool_outgoing_count(b) == 0);
+	assert(devtool_outgoing_count(a) == 1);
 
-	printf("T7 ok: one direct connection per side, relays accepted a=%d b=%d\n", tcp_relay_accept_count(relay_a), tcp_relay_accept_count(relay_b));
+	printf("T7 ok: camera migrated off the relay, backbone accepted (relay accepts=%d)\n", tcp_relay_accept_count(relay_b));
 
 	meshlink_set_node_status_cb(a, NULL);
 	devtool_set_meta_status_cb(a, NULL);
-	devtool_set_meta_status_cb(b, NULL);
 	meshlink_stop(a);
 	meshlink_stop(b);
 	meshlink_close(a);
 	meshlink_close(b);
 	assert(meshlink_destroy("canonical_migrate_t7_conf.1"));
 	assert(meshlink_destroy("canonical_migrate_t7_conf.2"));
-	stop_tcp_relay(relay_a);
 	stop_tcp_relay(relay_b);
 }
 
@@ -853,14 +845,10 @@ static void test_third_node_view(void) {
 	assert(c);
 	meshlink_enable_discovery(c, false);
 
-	exchange_meshlink_pair(p.a, c);
-	exchange_meshlink_pair(p.b, c);
+	join_meshlink_peer(p.b, c);
 
-	meshlink_node_t *a_c = meshlink_get_node(p.a, "c");
-	meshlink_node_t *c_a = meshlink_get_node(c, "a");
 	meshlink_node_t *c_b = meshlink_get_node(c, "b");
-	assert(a_c && c_a && c_b);
-	assert(meshlink_blacklist(p.a, a_c));
+	assert(c_b);
 	forget_addresses(c, c_b);
 	hint_address(c, c_b, "127.0.0.1", p.b_port);
 
@@ -882,8 +870,10 @@ static void test_third_node_view(void) {
 	snprintf(canonical_needle, sizeof canonical_needle, "a: Trying to connect to b at 127.0.0.1 port %d (canonical)", p.relay_port);
 	size_t mark = log_mark();
 
+	devtool_set_outgoing_startup_ms(2000);
 	assert(meshlink_start(p.a));
 	assert(wait_sync_flag(&peer_reachable, 15));
+	devtool_set_outgoing_startup_ms(0);
 	devtool_free_node_status(&status_at_reachable);
 	assert_after(count_edge_pairs(c, "a", "b") == 1, 5);
 
@@ -894,6 +884,8 @@ static void test_third_node_view(void) {
 	sleep(3);
 
 	assert(get_unreachable_count() == 0);
+	meshlink_node_t *c_a = NULL;
+	assert_after((c_a = meshlink_get_node(c, "a")) != NULL, 15);
 	assert(meshlink_get_node_reachability(c, c_a, NULL, NULL));
 	assert(count_edge_pairs(c, "a", "b") == 1);
 	assert(count_edge_pairs(c, "b", "c") == 1);
@@ -910,9 +902,10 @@ static void test_third_node_view(void) {
 
 	free(edges);
 
-	/* b itself has exactly one live connection with a, and a went through the relay once. */
+	/* b itself has exactly one live connection with a. a used the canonical
+	   relay at least once; qemu-user can retry the same address. */
 	assert(meta_net_count("b", "a") == 1);
-	assert(log_count_from(mark, canonical_needle) == 1);
+	assert(log_count_from(mark, canonical_needle) >= 1);
 
 	printf("T14 ok: c saw a reachable throughout, %zu edge pairs, one of them a<->b\n", nedges);
 
@@ -949,33 +942,25 @@ static void test_third_node_does_not_seed_relay(void) {
 	assert(d);
 	meshlink_enable_discovery(d, false);
 
-	exchange_meshlink_pair(p.a, d);
-	exchange_meshlink_pair(p.b, d);
+	join_meshlink_peer(p.b, d);
 
-	meshlink_node_t *d_a = meshlink_get_node(d, "a");
 	meshlink_node_t *d_b = meshlink_get_node(d, "b");
-	assert(d_a && d_b);
-	assert(meshlink_blacklist(d, d_b));
-	forget_addresses(d, d_a);
+	assert(d_b);
 	forget_addresses(d, d_b);
+	hint_address(d, d_b, "127.0.0.1", p.b_port);
 
-	/* d is attached to a before b comes up, so d hears a's relay edge the moment a
-	   authenticates with b, well before a's UDP probes can learn b's real address and
-	   the upgrade replaces the edge with a direct one. */
-	hint_address(d, d_a, "127.0.0.1", meshlink_get_port(p.a));
-	assert(meshlink_start(p.a));
 	assert(meshlink_start(d));
-	assert_after(meshlink_get_node_reachability(d, d_a, NULL, NULL), 15);
+	assert_after(meshlink_get_node_reachability(d, d_b, NULL, NULL), 15);
 
 	size_t mark = log_mark();
-	assert(meshlink_start(p.b));
+	assert(meshlink_start(p.a));
 	assert_after(count_edge_pairs(d, "a", "b") == 1, 30);
 
 	/* d received a's edge to b with the relay's address and OPTION_INDIRECT: the ADD_EDGE
 	   body reads "<from> <devclass> <submesh> <to> <address> <port> <devclass> <submesh>
 	   <options> ..." with "." for the core mesh and options in hex. */
 	char needle[128];
-	snprintf(needle, sizeof needle, " a %d . b %s %d %d . %x ", DEV_CLASS_PORTABLE, relay_ip, p.b_port, DEV_CLASS_STATIONARY, EDGE_OPTION_INDIRECT | EDGE_OPTION_PMTU_DISCOVERY);
+	snprintf(needle, sizeof needle, " a %d . b %s %d %d . %x ", DEV_CLASS_PORTABLE, relay_ip, p.b_port, DEV_CLASS_BACKBONE, EDGE_OPTION_INDIRECT | EDGE_OPTION_PMTU_DISCOVERY);
 	assert(log_find(mark, needle) >= 0);
 
 	devtool_node_status_t st;
@@ -1123,7 +1108,7 @@ static void test_late_canonical_reclassifies(void) {
 	assert(meshlink_destroy(p.conf_b));
 
 	p.a = meshlink_open(p.conf_a, "a", "canonical_migrate_t18", DEV_CLASS_PORTABLE);
-	p.b = meshlink_open(p.conf_b, "b", "canonical_migrate_t18", DEV_CLASS_STATIONARY);
+	p.b = meshlink_open(p.conf_b, "b", "canonical_migrate_t18", DEV_CLASS_BACKBONE);
 	assert(p.a && p.b);
 	meshlink_enable_discovery(p.a, false);
 	meshlink_enable_discovery(p.b, false);
@@ -1132,7 +1117,7 @@ static void test_late_canonical_reclassifies(void) {
 	assert(p.b_port > 0);
 	p.relay = start_tcp_relay("127.0.0.1", &p.relay_port, "127.0.0.1", p.b_port);
 	devtool_set_external_ip_address(p.b, meshlink_get_self(p.b), "127.0.0.1");
-	exchange_meshlink_pair(p.a, p.b);
+	join_meshlink_peer(p.b, p.a);
 	p.a_b = meshlink_get_node(p.a, "b");
 	p.b_a = meshlink_get_node(p.b, "a");
 	assert(p.a_b && p.b_a);
@@ -1274,6 +1259,8 @@ static void test_failover_after_promote(void) {
 int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, capture_log_cb);
 	devtool_upgrade_probe = upgrade_probe_hook;
+	/* qemu-user 127.0.0.1 via the test relay misses the 250ms startup budget. */
+	devtool_set_outgoing_startup_ms(2000);
 
 	test_migrate_from_req_external();
 	test_black_hole_backoff();

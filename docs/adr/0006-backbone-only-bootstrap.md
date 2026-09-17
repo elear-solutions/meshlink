@@ -59,5 +59,5 @@ join fails the identity match.
   cannot invite.
 - Leftover invitation files on a non-backbone node are not served.
 - v2 invitation blobs are rejected.
-- Autoconnect pools and relay hop selection are unchanged (findings 5 and
-  10).
+- Autoconnect pools are replaced by purpose-owned intents (ADR 0007).
+  Relay hop selection is unchanged (finding 10).

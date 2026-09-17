@@ -23,8 +23,12 @@ extern bool check_sync_flag(struct sync_flag *s);
 extern bool wait_sync_flag(struct sync_flag *s, int seconds);
 
 /// Create a pair of meshlink instances that are already joined together.
+/// `a` is the unique backbone; `b` is a stationary peer that joins through `a`.
 extern void open_meshlink_pair(meshlink_handle_t **a, meshlink_handle_t **b, const char *prefix);
 extern void open_meshlink_pair_ephemeral(meshlink_handle_t **a, meshlink_handle_t **b, const char *prefix);
+
+/// Start `backbone` if needed, invite `peer` by name, and join. Leaves `backbone` running.
+extern void join_meshlink_peer(meshlink_handle_t *backbone, meshlink_handle_t *peer);
 
 /// Start a pair of meshlink instances and wait for them to connect together.
 extern void start_meshlink_pair(meshlink_handle_t *a, meshlink_handle_t *b);

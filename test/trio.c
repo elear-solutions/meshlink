@@ -76,32 +76,25 @@ int main(void) {
 
 	const char *name[3] = {"foo", "bar", "baz"};
 	meshlink_handle_t *mesh[3];
-	char *data[3];
 
 	for(int i = 0; i < 3; i++) {
 		char *path = NULL;
 		assert(asprintf(&path, "trio_conf.%d", i) != -1 && path);
 
 		assert(meshlink_destroy(path));
-		mesh[i] = meshlink_open(path, name[i], "trio", DEV_CLASS_BACKBONE);
+		mesh[i] = meshlink_open(path, name[i], "trio", i ? DEV_CLASS_STATIONARY : DEV_CLASS_BACKBONE);
 		assert(mesh[i]);
 		free(path);
 
 		assert(meshlink_set_canonical_address(mesh[i], meshlink_get_self(mesh[i]), "localhost", NULL));
-
-		data[i] = meshlink_export(mesh[i]);
-		assert(data[i]);
+		meshlink_enable_discovery(mesh[i], false);
 	}
 
-	// first node knows the two other nodes
+	join_meshlink_peer(mesh[0], mesh[1]);
+	join_meshlink_peer(mesh[0], mesh[2]);
 
-	for(int i = 1; i < 3; i++) {
-		assert(meshlink_import(mesh[i], data[0]));
-		assert(meshlink_import(mesh[0], data[i]));
-
-		assert(meshlink_get_node(mesh[i], name[0]));
-		assert(meshlink_get_node(mesh[0], name[i]));
-	}
+	assert(meshlink_get_node(mesh[1], name[0]));
+	assert(meshlink_get_node(mesh[2], name[0]));
 
 	// second and third node should not know each other yet
 
@@ -114,7 +107,6 @@ int main(void) {
 	meshlink_set_node_status_cb(mesh[2], baz_status_cb);
 
 	for(int i = 0; i < 3; i++) {
-		free(data[i]);
 		assert(meshlink_start(mesh[i]));
 	}
 
@@ -137,12 +129,14 @@ int main(void) {
 
 	assert(wait_sync_flag(&received, 15));
 
-	// Check that the second and third node have autoconnected to each other
+	// Star: bar and baz each have a META to foo, not to each other.
 
-	devtool_edge_t *edges = NULL;
-	size_t nedges = 0;
-	assert_after((edges = devtool_get_all_edges(mesh[1], edges, &nedges), nedges == 3), 15);
-	free(edges);
+	assert(count_edge_pairs(mesh[1], "foo", "bar") == 1);
+	assert(count_edge_pairs(mesh[1], "foo", "baz") == 1);
+	assert(count_edge_pairs(mesh[1], "bar", "baz") == 0);
+	assert(devtool_outgoing_count(mesh[0]) == 0);
+	assert(devtool_outgoing_count(mesh[1]) == 1);
+	assert(devtool_outgoing_count(mesh[2]) == 1);
 
 	// Dest has no UDP, nexthop does: binary type-8 relay, Hello arrives, no leftover #108 ASCII logs.
 	set_sync_flag(&received, false);
@@ -194,55 +188,12 @@ int main(void) {
 	assert(!check_sync_flag(&saw_type8_relay));
 	assert(!check_sync_flag(&leftover_ascii_type8));
 
-	// Stop the first node
-
-	meshlink_stop(mesh[0]);
-	sleep(1);
-
-	// Communication should still be possible
-
-	set_sync_flag(&received, false);
-
-	for(int i = 0; i < 15; i++) {
-		assert(meshlink_send(mesh[2], meshlink_get_node(mesh[2], name[1]), "Hello", 5));
-
-		if(wait_sync_flag(&received, 1)) {
-			break;
-		}
-	}
-
-	assert(wait_sync_flag(&received, 15));
-
-	// Stop the other nodes
-
-	for(int i = 1; i < 3; i++) {
-		meshlink_stop(mesh[i]);
-	}
-
-	sleep(1);
-
-	// Start just the other two nodes
-
-	for(int i = 1; i < 3; i++) {
-		assert(meshlink_start(mesh[i]));
-	}
-
 	assert(meshlink_get_node(mesh[1], name[2]));
 	assert(meshlink_get_node(mesh[2], name[1]));
 
-	// Communication should still be possible
-
-	set_sync_flag(&received, false);
-
-	for(int i = 0; i < 15; i++) {
-		assert(meshlink_send(mesh[2], meshlink_get_node(mesh[2], name[1]), "Hello", 5));
-
-		if(wait_sync_flag(&received, 1)) {
-			break;
-		}
+	for(int i = 0; i < 3; i++) {
+		meshlink_stop(mesh[i]);
 	}
-
-	assert(wait_sync_flag(&received, 1));
 
 	// Clean up.
 

@@ -48,6 +48,7 @@ TESTS = \
 	relay-coverage \
 	path-policy-coverage \
 	backbone-identity \
+	connection-policy \
 	path-stability \
 	transport-recent \
 	utcp-benchmark \
@@ -118,6 +119,7 @@ check_PROGRAMS = \
 	relay-coverage \
 	path-policy-coverage \
 	backbone-identity \
+	connection-policy \
 	path-stability \
 	transport-recent
 
@@ -277,6 +279,9 @@ path_policy_coverage_LDADD = $(top_builddir)/src/libmeshlink.la
 
 backbone_identity_SOURCES = backbone-identity.c utils.c utils.h
 backbone_identity_LDADD = $(top_builddir)/src/libmeshlink.la
+
+connection_policy_SOURCES = connection-policy.c utils.c utils.h
+connection_policy_LDADD = $(top_builddir)/src/libmeshlink.la
 
 path_stability_SOURCES = path-stability.c utils.c utils.h
 path_stability_LDADD = $(top_builddir)/src/libmeshlink.la

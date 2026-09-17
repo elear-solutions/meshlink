@@ -1181,7 +1181,7 @@ path_tier_t path_select_destination_tier(const node_t *dest, bool meta_in) {
 		return PATH_TIER_NONE;
 	}
 
-	if(!meta_in && hop_udp_ready(dest)) {
+	if(!meta_in && !dest->status.forced_relay && hop_udp_ready(dest)) {
 		return dest->udp_tier == PATH_TIER_DIRECT_LOCAL_UDP ? PATH_TIER_DIRECT_LOCAL_UDP : PATH_TIER_DIRECT_WAN_UDP;
 	}
 
@@ -1879,7 +1879,7 @@ bool path_active_send_target(meshlink_handle_t *mesh, node_t *n, path_target_t *
 	   and needs no hop. Local versus WAN is an attribute of the same mechanism.
 	   A suspect endpoint steps aside only while something else is already live;
 	   with no fallback it keeps carrying data and is probed instead. */
-	bool direct_udp_ready = !n->devtool_force_meta && hop_udp_ready(n);
+	bool direct_udp_ready = !n->devtool_force_meta && !n->status.forced_relay && hop_udp_ready(n);
 	bool stepping_aside = direct_udp_ready && n->active_route.suspect && path_has_live_fallback(mesh, n);
 
 	if(direct_udp_ready && !stepping_aside) {

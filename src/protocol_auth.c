@@ -56,9 +56,26 @@ static void transfer_outgoing(meshlink_handle_t *mesh, connection_t *from, conne
 	}
 
 	if(to->outgoing) {
-		logger(mesh, MESHLINK_WARNING, "Two outgoing connections to the same node!");
-		list_delete(mesh->outgoings, from->outgoing);
+		outgoing_t *keep;
+		outgoing_t *drop;
+
+		if(meta_purpose_is_persistent(from->outgoing->purpose) && !meta_purpose_is_persistent(to->outgoing->purpose)) {
+			keep = from->outgoing;
+			drop = to->outgoing;
+			to->outgoing = keep;
+			to->outgoing_generation = from->outgoing_generation;
+		} else {
+			keep = to->outgoing;
+			drop = from->outgoing;
+		}
+
 		from->outgoing = NULL;
+
+		if(drop && drop != keep) {
+			logger(mesh, MESHLINK_WARNING, "Two outgoing connections to the same node!");
+			list_delete(mesh->outgoings, drop);
+		}
+
 		return;
 	}
 
@@ -516,6 +533,11 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	n->status.dirty = true;
 	n->status.tiny = c->flags & PROTOCOL_TINY;
 	connection_policy_on_devclass(mesh, n);
+
+	if(n->status.conflict_backbone) {
+		logger(mesh, MESHLINK_WARNING, "Refusing META connection with conflicted backbone node %s", n->name);
+		return false;
+	}
 
 	install_node_connection(mesh, n, c);
 

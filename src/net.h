@@ -58,6 +58,7 @@ typedef enum packet_type_t {
 } packet_type_t;
 
 #include "conf.h"
+#include "connection_policy.h"
 #include "list.h"
 
 /* TCP connect plus Meshlink authentication budget for the one startup direct attempt. */
@@ -87,6 +88,7 @@ typedef struct outgoing_t {
 	sockaddr_t skip_sa;             /* last failed startup candidate; skipped on the next pick */
 	bool startup_waiting_dns;       /* deadline expired but canonical DNS is still in flight */
 	uint8_t direct_tries;           /* no-canonical leftover directs; capped to avoid a refuse loop */
+	meta_connection_purpose_t purpose; /* persistence is meta_purpose_is_persistent(purpose) */
 } outgoing_t;
 
 /* Yes, very strange placement indeed, but otherwise the typedefs get all tangled up */

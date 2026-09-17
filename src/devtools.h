@@ -190,6 +190,27 @@ const char *devtool_get_backbone_name(meshlink_handle_t *mesh);
 meshlink_node_t *devtool_get_backbone(meshlink_handle_t *mesh);
 bool devtool_node_has_conflict_backbone(meshlink_handle_t *mesh, meshlink_node_t *node);
 
+/// Number of entries in mesh->outgoings (logical META intents).
+unsigned devtool_outgoing_count(meshlink_handle_t *mesh);
+
+/// Purpose of the BACKBONE_REQUIRED outgoing, or -1 if none.
+/** Values match meta_connection_purpose_t: NONE=0, BACKBONE_REQUIRED=1,
+ *  LAN_RESILIENCE=2, HANDOVER_SPARE=3.
+ */
+int devtool_backbone_intent_purpose(meshlink_handle_t *mesh);
+
+/// Name of the BACKBONE_REQUIRED target, or NULL if none.
+const char *devtool_backbone_intent_name(meshlink_handle_t *mesh);
+
+/// True when this instance is allowed to initiate META (not a BACKBONE-class node).
+bool devtool_self_initiates_meta(meshlink_handle_t *mesh);
+
+/// Overwrite a node's device class and re-run topology + META-pool policy.
+/** Tests only. Does not persist. Used to reclassify a live stored backbone as
+ *  wrong-class/conflicted and assert the reserved intent and its sockets die.
+ */
+void devtool_set_node_devclass(meshlink_handle_t *mesh, meshlink_node_t *node, int devclass);
+
 /// Allow this instance to create and serve invitations even when it is not the unique backbone.
 /** Production invite/join stay gated. Tests use this only to plant a non-production invitation blob.
  *  It does not weaken meshlink_join().

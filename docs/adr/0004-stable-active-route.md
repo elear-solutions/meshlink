@@ -103,6 +103,11 @@ interval. Relay forwarding does not accelerate probing.
   recovery is immediate only when a fallback connection is already up.
 - A peer has one META connection, except during the bounded ADR 0003
   handover window.
+- Generic `min_connects`/`max_connects` autoconnect is gone. META
+  intents are purpose-owned (ADR 0007): the unique backbone initiates
+  nothing; every other node owns one persistent `BACKBONE_REQUIRED`
+  intent. Demand-only local META stays until finding 7 fills the
+  reserved LAN pool.
 - A direct local META connection is opened only when traffic needs it and
   is closed again when it is idle and a fallback exists.
 - Per-address UDP and META health matrices, planned-route generations,

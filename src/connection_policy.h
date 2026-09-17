@@ -2,7 +2,7 @@
 #define MESHLINK_CONNECTION_POLICY_H
 
 /*
-    connection_policy.h -- unique backbone identity
+    connection_policy.h -- unique backbone identity and META connection pools
     Copyright (C) 2026 Elear Solutions
 
     This program is free software; you can redistribute it and/or modify
@@ -13,8 +13,23 @@
 
 #include <stdbool.h>
 
+#include "path_policy.h"
+
 struct meshlink_handle;
 struct node_t;
+
+typedef enum meta_connection_purpose_t {
+	META_PURPOSE_NONE = 0,
+	META_PURPOSE_BACKBONE_REQUIRED,
+	META_PURPOSE_LAN_RESILIENCE,
+	META_PURPOSE_HANDOVER_SPARE,
+} meta_connection_purpose_t;
+
+#define META_LAN_RESILIENCE_MAX 3
+
+static inline bool meta_purpose_is_persistent(meta_connection_purpose_t purpose) {
+	return purpose == META_PURPOSE_BACKBONE_REQUIRED;
+}
 
 void connection_policy_init(struct meshlink_handle *mesh);
 void connection_policy_exit(struct meshlink_handle *mesh);
@@ -26,6 +41,11 @@ void connection_policy_migrate(struct meshlink_handle *mesh);
 void connection_policy_on_node_added(struct meshlink_handle *mesh, struct node_t *n);
 void connection_policy_on_node_deleted(struct meshlink_handle *mesh, struct node_t *n);
 void connection_policy_on_devclass(struct meshlink_handle *mesh, struct node_t *n);
+void connection_policy_tick(struct meshlink_handle *mesh);
+void connection_policy_on_discovery(struct meshlink_handle *mesh, struct node_t *node,
+                                    const sockaddr_t *address, address_source_t source);
+void connection_policy_on_connection_closed(struct meshlink_handle *mesh, struct node_t *node,
+                meta_connection_purpose_t purpose);
 const char *connection_policy_backbone_name(const struct meshlink_handle *mesh);
 struct node_t *connection_policy_backbone(struct meshlink_handle *mesh);
 bool connection_policy_is_backbone(const struct meshlink_handle *mesh, const struct node_t *n);

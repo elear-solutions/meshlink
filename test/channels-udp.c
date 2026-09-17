@@ -99,6 +99,7 @@ int main(void) {
 	meshlink_handle_t *server = meshlink_open("channels_udp_conf.0", "server", "channels-udp", DEV_CLASS_BACKBONE);
 	assert(server);
 	meshlink_enable_discovery(server, false);
+	assert(meshlink_set_canonical_address(server, meshlink_get_self(server), "localhost", NULL));
 	server->priv = channels;
 	meshlink_set_channel_accept_cb(server, accept_cb);
 	assert(meshlink_start(server));
@@ -112,7 +113,8 @@ int main(void) {
 		assert(clients[i].mesh);
 		clients[i].mesh->priv = &clients[i];
 		meshlink_enable_discovery(clients[i].mesh, false);
-		link_meshlink_pair(server, clients[i].mesh);
+		assert(meshlink_set_canonical_address(clients[i].mesh, meshlink_get_self(clients[i].mesh), "localhost", NULL));
+		join_meshlink_peer(server, clients[i].mesh);
 		meshlink_set_node_status_cb(clients[i].mesh, status_cb);
 		assert(meshlink_start(clients[i].mesh));
 	}

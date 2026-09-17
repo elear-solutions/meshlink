@@ -86,8 +86,6 @@ typedef struct {
 	int pingtimeout;
 	int fast_retry_period;
 	int maxtimeout;
-	unsigned int min_connects;
-	unsigned int max_connects;
 	int edge_weight;
 } dev_class_traits_t;
 
@@ -130,6 +128,8 @@ struct meshlink_handle {
 	struct list_t *connections;
 	struct list_t *outgoings;
 	struct list_t *submeshes;
+	bool retiring_outgoing;                 /* drop_outgoing is in progress; skip recursive tick/retry */
+	struct connection_t *protocol_connection; /* META socket whose IO handler is on the stack */
 
 	// Meta-connection-related members
 	struct splay_tree_t *past_request_tree;

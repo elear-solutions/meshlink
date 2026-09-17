@@ -584,6 +584,104 @@ bool devtool_node_has_conflict_backbone(meshlink_handle_t *mesh, meshlink_node_t
 	return conflict;
 }
 
+unsigned devtool_outgoing_count(meshlink_handle_t *mesh) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return 0;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	unsigned count = mesh->outgoings ? mesh->outgoings->count : 0;
+	pthread_mutex_unlock(&mesh->mutex);
+	return count;
+}
+
+int devtool_backbone_intent_purpose(meshlink_handle_t *mesh) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return -1;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	int purpose = -1;
+
+	if(mesh->outgoings) {
+		for list_each(outgoing_t, outgoing, mesh->outgoings) {
+			if(outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED) {
+				purpose = (int)outgoing->purpose;
+				break;
+			}
+		}
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return purpose;
+}
+
+const char *devtool_backbone_intent_name(meshlink_handle_t *mesh) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return NULL;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	const char *name = NULL;
+
+	if(mesh->outgoings) {
+		for list_each(outgoing_t, outgoing, mesh->outgoings) {
+			if(outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED && outgoing->node) {
+				name = outgoing->node->name;
+				break;
+			}
+		}
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return name;
+}
+
+bool devtool_self_initiates_meta(meshlink_handle_t *mesh) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	bool initiates = mesh->self && mesh->self->devclass != DEV_CLASS_BACKBONE
+	                 && !connection_policy_is_backbone(mesh, mesh->self);
+	pthread_mutex_unlock(&mesh->mutex);
+	return initiates;
+}
+
+void devtool_set_node_devclass(meshlink_handle_t *mesh, meshlink_node_t *node, int devclass) {
+	if(!mesh || !node || devclass < 0 || devclass >= DEV_CLASS_COUNT) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	node_t *n = (node_t *)node;
+	n->devclass = (dev_class_t)devclass;
+	n->status.dirty = true;
+	connection_policy_on_devclass(mesh, n);
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
 void devtool_free_node_status(devtool_node_status_t *status) {
 	if(!status) {
 		return;
@@ -764,7 +862,9 @@ void devtool_set_udp_confirmed(meshlink_handle_t *mesh, meshlink_node_t *node, b
 	node_t *n = (node_t *)node;
 	n->status.udp_confirmed = confirmed;
 
-	if(!confirmed && !n->devtool_force_meta && n->status.validkey && n->status.reachable && !n->mtutimeout.cb) {
+	if(confirmed) {
+		n->status.forced_relay = false;
+	} else if(!n->devtool_force_meta && n->status.validkey && n->status.reachable && !n->mtutimeout.cb) {
 		send_mtu_probe(mesh, n);
 	}
 
@@ -863,6 +963,7 @@ bool devtool_confirm_udp_from(meshlink_handle_t *mesh, meshlink_node_t *node, co
 
 	update_node_udp(mesh, n, &sa);
 	n->status.udp_confirmed = true;
+	n->status.forced_relay = false;
 	n->udp_tier = (path_tier_t)tier;
 	n->udp_local_probe_next = 0;
 	pthread_mutex_unlock(&mesh->mutex);

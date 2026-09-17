@@ -166,6 +166,8 @@ static void handle_meta_io(event_loop_t *loop, void *data, int flags) {
 	meshlink_handle_t *mesh = loop->data;
 	connection_t *c = data;
 
+	mesh->protocol_connection = c;
+
 	if(c->status.connecting) {
 		c->status.connecting = false;
 
@@ -178,17 +180,21 @@ static void handle_meta_io(event_loop_t *loop, void *data, int flags) {
 		} else {
 			logger(mesh, MESHLINK_ERROR, "Error while connecting to %s: %s", c->name, sockstrerror(result));
 			terminate_connection(mesh, c, false);
+			mesh->protocol_connection = NULL;
 			return;
 		}
 	}
 
 	if((flags & IO_WRITE) && !handle_meta_write(mesh, c)) {
+		mesh->protocol_connection = NULL;
 		return;
 	}
 
 	if(flags & IO_READ) {
 		handle_meta_connection_data(mesh, c);
 	}
+
+	mesh->protocol_connection = NULL;
 }
 
 /* Find edges pointing to this node, and use them to build a list of unique, known addresses.
@@ -661,7 +667,12 @@ begin:
 			/* We are waiting for a callback from the ADNS thread */
 		} else if(outgoing->state == OUTGOING_NO_KNOWN_ADDRESSES) {
 			logger(mesh, MESHLINK_ERROR, "No known addresses for %s", outgoing->node->name);
-			list_delete(mesh->outgoings, outgoing);
+
+			if(meta_purpose_is_persistent(outgoing->purpose)) {
+				retry_outgoing(mesh, outgoing);
+			} else {
+				list_delete(mesh->outgoings, outgoing);
+			}
 		} else {
 			logger(mesh, MESHLINK_ERROR, "Could not set up a meta connection to %s", outgoing->node->name);
 			retry_outgoing(mesh, outgoing);

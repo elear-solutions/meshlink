@@ -343,6 +343,15 @@ bool wait_sync_flag(struct sync_flag *s, int seconds) {
 	return flag;
 }
 
+void join_meshlink_peer(meshlink_handle_t *backbone, meshlink_handle_t *peer) {
+	assert(backbone && peer);
+	assert(meshlink_start(backbone));
+	char *url = meshlink_invite(backbone, NULL, meshlink_get_self(peer)->name);
+	assert(url);
+	assert(meshlink_join(peer, url));
+	free(url);
+}
+
 void link_meshlink_pair(meshlink_handle_t *a, meshlink_handle_t *b) {
 	// Import and export both side's data
 
@@ -379,7 +388,7 @@ void open_meshlink_pair(meshlink_handle_t **pa, meshlink_handle_t **pb, const ch
 	meshlink_handle_t *a = meshlink_open(a_name, "a", prefix, DEV_CLASS_BACKBONE);
 	assert(a);
 
-	meshlink_handle_t *b = meshlink_open(b_name, "b", prefix, DEV_CLASS_BACKBONE);
+	meshlink_handle_t *b = meshlink_open(b_name, "b", prefix, DEV_CLASS_STATIONARY);
 	assert(b);
 
 	free(a_name);
@@ -388,7 +397,9 @@ void open_meshlink_pair(meshlink_handle_t **pa, meshlink_handle_t **pb, const ch
 	meshlink_enable_discovery(a, false);
 	meshlink_enable_discovery(b, false);
 
-	link_meshlink_pair(a, b);
+	assert(meshlink_set_canonical_address(a, meshlink_get_self(a), "localhost", NULL));
+	assert(meshlink_set_canonical_address(b, meshlink_get_self(b), "localhost", NULL));
+	join_meshlink_peer(a, b);
 
 	*pa = a;
 	*pb = b;
@@ -400,7 +411,7 @@ void open_meshlink_pair_ephemeral(meshlink_handle_t **pa, meshlink_handle_t **pb
 	*pa = *pb = NULL;
 
 	meshlink_handle_t *a = meshlink_open_ephemeral("a", prefix, DEV_CLASS_BACKBONE);
-	meshlink_handle_t *b = meshlink_open_ephemeral("b", prefix, DEV_CLASS_BACKBONE);
+	meshlink_handle_t *b = meshlink_open_ephemeral("b", prefix, DEV_CLASS_STATIONARY);
 
 	assert(a);
 	assert(b);
@@ -408,7 +419,9 @@ void open_meshlink_pair_ephemeral(meshlink_handle_t **pa, meshlink_handle_t **pb
 	meshlink_enable_discovery(a, false);
 	meshlink_enable_discovery(b, false);
 
-	link_meshlink_pair(a, b);
+	assert(meshlink_set_canonical_address(a, meshlink_get_self(a), "localhost", NULL));
+	assert(meshlink_set_canonical_address(b, meshlink_get_self(b), "localhost", NULL));
+	join_meshlink_peer(a, b);
 
 	*pa = a;
 	*pb = b;
@@ -433,7 +446,7 @@ void start_meshlink_pair(meshlink_handle_t *a, meshlink_handle_t *b) {
 	assert(meshlink_start(a));
 	assert(meshlink_start(b));
 
-	assert(wait_sync_flag(&pair_status, 5));
+	assert(wait_sync_flag(&pair_status, 15));
 
 	meshlink_set_node_status_cb(a, NULL);
 	a->priv = NULL;

@@ -37,11 +37,12 @@ established by earlier findings.
 
 - Findings 1-2 are completed foundations.
 - Finding 3 persists backbone identity. Extra backbone-class nodes are
-  marked `conflict_backbone`; excluding them from autoconnect and relay
-  is an explicit dependency of findings 5 and 10.
+  marked `conflict_backbone`. Finding 5 skips them in META pools;
+  finding 10 still owns relay-hop skip.
 - Finding 4 gates production invitation create/serve to the unique
   backbone.
-- Findings 5-8 establish connection ownership.
+- Finding 5 replaced generic autoconnect with purpose-owned pools in
+  `connection_policy`. Findings 6-8 extend that ownership.
 - Findings 9-14 complete route correctness and traffic budgets.
 - Findings 15-20 finish interfaces, verification, and cleanup.
 
@@ -203,13 +204,15 @@ Bootstrap:
    `DEV_CLASS_BACKBONE`.
 4. Extra `DEV_CLASS_BACKBONE` nodes, and a stored name whose class is not
    `DEV_CLASS_BACKBONE`, set `conflict_backbone`. Detection only — they
-   still participate in autoconnect, graph, gossip, and relay.
+   still participate in graph, gossip, and relay. Finding 5 skips them
+   in META pools.
 5. Missing sidecar on an existing confbase migrates only when unambiguous:
    self-only BACKBONE, or exactly one other BACKBONE host. Two or more:
    do not guess.
 
 Still open under the original item 4: do not exclude `conflict_backbone`
-from connection or routing decisions here. That is findings 5 and 10.
+from routing decisions here. META-pool skip is finding 5; relay-hop skip
+is finding 10.
 
 ---
 
@@ -260,7 +263,7 @@ if(n->devclass != DEV_CLASS_BACKBONE
 ## 5. Replace generic autoconnect with purpose-owned connection pools
 
 **Priority:** P1  
-**Status:** Open
+**Status:** Completed
 
 **Depends on:** finding 3 `conflict_backbone` (skip conflicted nodes when
 filling META pools; they are detected, not yet excluded).
@@ -345,6 +348,10 @@ deleted or reduced to an adapter that calls the new module.
 **Priority:** P1  
 **Status:** Open
 
+Finding 5 owns the persistent `BACKBONE_REQUIRED` intent in
+`src/connection_policy.c`. This finding owns the telescopic retry ladder
+and keep-alive on that same intent.
+
 ### Issue Summary
 
 Direct-before-canonical address ordering and canonical-to-direct make-before-
@@ -402,6 +409,10 @@ two steady-state sockets.
 
 **Priority:** P1  
 **Status:** Open
+
+Finding 5 reserved `META_PURPOSE_LAN_RESILIENCE` and
+`META_LAN_RESILIENCE_MAX` on `src/connection_policy.c` and left LAN fill
+empty. This finding owns selection, admission, and the inbound cap.
 
 ### Issue Summary
 

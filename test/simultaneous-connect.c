@@ -45,13 +45,15 @@ static void run_pair(void) {
 	assert(meshlink_destroy("simultaneous-connect_conf.2"));
 
 	a = meshlink_open("simultaneous-connect_conf.1", smaller_name, "simultaneous-connect", DEV_CLASS_BACKBONE);
-	b = meshlink_open("simultaneous-connect_conf.2", larger_name, "simultaneous-connect", DEV_CLASS_BACKBONE);
+	b = meshlink_open("simultaneous-connect_conf.2", larger_name, "simultaneous-connect", DEV_CLASS_STATIONARY);
 	assert(a);
 	assert(b);
 
 	meshlink_enable_discovery(a, false);
 	meshlink_enable_discovery(b, false);
-	link_meshlink_pair(a, b);
+	assert(meshlink_set_canonical_address(a, meshlink_get_self(a), "localhost", NULL));
+	assert(meshlink_set_canonical_address(b, meshlink_get_self(b), "localhost", NULL));
+	join_meshlink_peer(a, b);
 
 	start_meshlink_pair(a, b);
 
@@ -71,9 +73,9 @@ static void run_pair(void) {
 int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, collision_log_cb);
 
-	/* Several start/stop cycles: pair must come up inside start_meshlink_pair's 5s
-	   budget (the old last-ACK-wins flake). When a duplicate is dropped, the kept
-	   initiator must be the lexicographically smaller name. */
+	/* Camera→backbone: backbone never dual-dials. Pair must still come up.
+	   Camera↔camera simultaneous connect is finding 7. If a leftover collision
+	   log appears, the kept initiator is still the lexicographically smaller name. */
 	for(int i = 0; i < 5; i++) {
 		run_pair();
 	}

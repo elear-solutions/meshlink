@@ -161,7 +161,7 @@ static void test_fixed_channel_size(void) {
 	assert(meshlink_destroy("path_stability_t1_conf.2"));
 
 	meshlink_handle_t *a = meshlink_open("path_stability_t1_conf.1", "aaa", "path-stability-1", DEV_CLASS_BACKBONE);
-	meshlink_handle_t *b = meshlink_open("path_stability_t1_conf.2", "bbb", "path-stability-1", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *b = meshlink_open("path_stability_t1_conf.2", "bbb", "path-stability-1", DEV_CLASS_STATIONARY);
 	assert(a && b);
 	meshlink_enable_discovery(a, false);
 	meshlink_enable_discovery(b, false);
@@ -169,7 +169,7 @@ static void test_fixed_channel_size(void) {
 	init_sync_flag(&accepted);
 	init_sync_flag(&received);
 	meshlink_set_channel_accept_cb(b, accept_cb);
-	link_meshlink_pair(a, b);
+	join_meshlink_peer(a, b);
 	assert(meshlink_start(a));
 	assert(meshlink_start(b));
 
@@ -263,7 +263,7 @@ static void test_mss_under_route_churn(void) {
 	assert(meshlink_destroy("path_stability_t2_conf.2"));
 
 	meshlink_handle_t *a = meshlink_open("path_stability_t2_conf.1", "aaa", "path-stability-2", DEV_CLASS_BACKBONE);
-	meshlink_handle_t *b = meshlink_open("path_stability_t2_conf.2", "bbb", "path-stability-2", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *b = meshlink_open("path_stability_t2_conf.2", "bbb", "path-stability-2", DEV_CLASS_STATIONARY);
 	assert(a && b);
 	meshlink_enable_discovery(a, false);
 	meshlink_enable_discovery(b, false);
@@ -271,7 +271,7 @@ static void test_mss_under_route_churn(void) {
 	init_sync_flag(&accepted);
 	init_sync_flag(&received);
 	meshlink_set_channel_accept_cb(b, accept_cb);
-	link_meshlink_pair(a, b);
+	join_meshlink_peer(a, b);
 	assert(meshlink_start(a));
 	assert(meshlink_start(b));
 
@@ -322,7 +322,7 @@ static void test_promotion_is_slow(void) {
 	assert(meshlink_destroy("path_stability_t3_conf.2"));
 
 	meshlink_handle_t *a = meshlink_open("path_stability_t3_conf.1", "aaa", "path-stability-3", DEV_CLASS_BACKBONE);
-	meshlink_handle_t *b = meshlink_open("path_stability_t3_conf.2", "bbb", "path-stability-3", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *b = meshlink_open("path_stability_t3_conf.2", "bbb", "path-stability-3", DEV_CLASS_STATIONARY);
 	assert(a && b);
 	meshlink_enable_discovery(a, false);
 	meshlink_enable_discovery(b, false);
@@ -330,7 +330,7 @@ static void test_promotion_is_slow(void) {
 	init_sync_flag(&accepted);
 	init_sync_flag(&received);
 	meshlink_set_channel_accept_cb(b, accept_cb);
-	link_meshlink_pair(a, b);
+	join_meshlink_peer(a, b);
 	assert(meshlink_start(a));
 	assert(meshlink_start(b));
 
@@ -432,11 +432,11 @@ static void test_candidate_cooldown(void) {
 	assert(meshlink_destroy("path_stability_t4_conf.2"));
 
 	meshlink_handle_t *a = meshlink_open("path_stability_t4_conf.1", "aaa", "path-stability-4", DEV_CLASS_BACKBONE);
-	meshlink_handle_t *b = meshlink_open("path_stability_t4_conf.2", "bbb", "path-stability-4", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *b = meshlink_open("path_stability_t4_conf.2", "bbb", "path-stability-4", DEV_CLASS_STATIONARY);
 	assert(a && b);
 	meshlink_enable_discovery(a, false);
 	meshlink_enable_discovery(b, false);
-	link_meshlink_pair(a, b);
+	join_meshlink_peer(a, b);
 	assert(meshlink_start(a));
 	assert(meshlink_start(b));
 
@@ -505,11 +505,11 @@ static void test_suspect_before_demote(void) {
 	assert(meshlink_destroy("path_stability_t5_conf.2"));
 
 	meshlink_handle_t *a = meshlink_open("path_stability_t5_conf.1", "aaa", "path-stability-5", DEV_CLASS_BACKBONE);
-	meshlink_handle_t *b = meshlink_open("path_stability_t5_conf.2", "bbb", "path-stability-5", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *b = meshlink_open("path_stability_t5_conf.2", "bbb", "path-stability-5", DEV_CLASS_STATIONARY);
 	assert(a && b);
 	meshlink_enable_discovery(a, false);
 	meshlink_enable_discovery(b, false);
-	link_meshlink_pair(a, b);
+	join_meshlink_peer(a, b);
 	assert(meshlink_start(a));
 	assert(meshlink_start(b));
 
@@ -571,7 +571,7 @@ static void test_idle_peer_is_not_probed(void) {
 	assert(meshlink_destroy("path_stability_t6_conf.2"));
 
 	meshlink_handle_t *a = meshlink_open("path_stability_t6_conf.1", "aaa", "path-stability-6", DEV_CLASS_BACKBONE);
-	meshlink_handle_t *b = meshlink_open("path_stability_t6_conf.2", "bbb", "path-stability-6", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *b = meshlink_open("path_stability_t6_conf.2", "bbb", "path-stability-6", DEV_CLASS_STATIONARY);
 	assert(a && b);
 	meshlink_enable_discovery(a, false);
 	meshlink_enable_discovery(b, false);
@@ -579,7 +579,7 @@ static void test_idle_peer_is_not_probed(void) {
 	init_sync_flag(&accepted);
 	init_sync_flag(&received);
 	meshlink_set_channel_accept_cb(b, accept_cb);
-	link_meshlink_pair(a, b);
+	join_meshlink_peer(a, b);
 	assert(meshlink_start(a));
 	assert(meshlink_start(b));
 
@@ -617,7 +617,7 @@ static void test_recorded_route(void) {
 	assert(meshlink_destroy("path_stability_t7_conf.2"));
 
 	meshlink_handle_t *a = meshlink_open("path_stability_t7_conf.1", "aaa", "path-stability-7", DEV_CLASS_BACKBONE);
-	meshlink_handle_t *b = meshlink_open("path_stability_t7_conf.2", "bbb", "path-stability-7", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *b = meshlink_open("path_stability_t7_conf.2", "bbb", "path-stability-7", DEV_CLASS_STATIONARY);
 	assert(a && b);
 	meshlink_enable_discovery(a, false);
 	meshlink_enable_discovery(b, false);
@@ -625,7 +625,7 @@ static void test_recorded_route(void) {
 	init_sync_flag(&accepted);
 	init_sync_flag(&received);
 	meshlink_set_channel_accept_cb(b, accept_cb);
-	link_meshlink_pair(a, b);
+	join_meshlink_peer(a, b);
 	assert(meshlink_start(a));
 	assert(meshlink_start(b));
 
@@ -665,11 +665,11 @@ static void test_fallback_keeps_suspect(void) {
 	assert(meshlink_destroy("path_stability_t8_conf.2"));
 
 	meshlink_handle_t *a = meshlink_open("path_stability_t8_conf.1", "aaa", "path-stability-8", DEV_CLASS_BACKBONE);
-	meshlink_handle_t *b = meshlink_open("path_stability_t8_conf.2", "bbb", "path-stability-8", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *b = meshlink_open("path_stability_t8_conf.2", "bbb", "path-stability-8", DEV_CLASS_STATIONARY);
 	assert(a && b);
 	meshlink_enable_discovery(a, false);
 	meshlink_enable_discovery(b, false);
-	link_meshlink_pair(a, b);
+	join_meshlink_peer(a, b);
 	assert(meshlink_start(a));
 	assert(meshlink_start(b));
 
@@ -736,7 +736,7 @@ static void test_parked_pmtu_promotes_local(void) {
 	assert(meshlink_destroy("path_stability_t9_conf.2"));
 
 	meshlink_handle_t *a = meshlink_open("path_stability_t9_conf.1", "aaa", "path-stability-9", DEV_CLASS_BACKBONE);
-	meshlink_handle_t *b = meshlink_open("path_stability_t9_conf.2", "bbb", "path-stability-9", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *b = meshlink_open("path_stability_t9_conf.2", "bbb", "path-stability-9", DEV_CLASS_STATIONARY);
 	assert(a && b);
 	meshlink_enable_discovery(a, false);
 	meshlink_enable_discovery(b, false);
@@ -744,7 +744,7 @@ static void test_parked_pmtu_promotes_local(void) {
 	init_sync_flag(&accepted);
 	init_sync_flag(&received);
 	meshlink_set_channel_accept_cb(b, accept_cb);
-	link_meshlink_pair(a, b);
+	join_meshlink_peer(a, b);
 	assert(meshlink_start(a));
 	assert(meshlink_start(b));
 

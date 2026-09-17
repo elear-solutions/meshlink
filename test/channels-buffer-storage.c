@@ -33,6 +33,8 @@ static void stay_on_meta(meshlink_handle_t *a, meshlink_handle_t *b) {
 	meshlink_node_t *b_a = meshlink_get_node(b, "a");
 	assert(a_b && b_a);
 	assert_after(node_is_keyed(a, a_b) && node_is_keyed(b, b_a), 20);
+	devtool_set_udp_confirmed(a, a_b, false);
+	devtool_set_udp_confirmed(b, b_a, false);
 	devtool_force_meta(a, a_b, true);
 	devtool_force_meta(b, b_a, true);
 }

@@ -34,10 +34,14 @@ static void status_cb(meshlink_handle_t *mesh, meshlink_node_t *node, bool reach
 static void test_direct_wins_before_bound(void) {
 	printf("\n=== outgoing-bounded: direct authenticates before 250 ms, canonical never dialed ===\n");
 
-	meshlink_handle_t *a, *b;
-	open_meshlink_pair(&a, &b, "outgoing_bounded_fast");
+	assert(meshlink_destroy("outgoing_bounded_fast_conf.1"));
+	assert(meshlink_destroy("outgoing_bounded_fast_conf.2"));
+	meshlink_handle_t *a = meshlink_open("outgoing_bounded_fast_conf.1", "a", "outgoing_bounded_fast", DEV_CLASS_PORTABLE);
+	meshlink_handle_t *b = meshlink_open("outgoing_bounded_fast_conf.2", "b", "outgoing_bounded_fast", DEV_CLASS_BACKBONE);
+	assert(a && b);
 	meshlink_enable_discovery(a, false);
 	meshlink_enable_discovery(b, false);
+	join_meshlink_peer(b, a);
 
 	int b_port = meshlink_get_port(b);
 	int relay_port = 0;
@@ -53,10 +57,13 @@ static void test_direct_wins_before_bound(void) {
 	watched_peer = "b";
 	init_sync_flag(&peer_reachable);
 	meshlink_set_node_status_cb(a, status_cb);
+	/* Happy-path preference; T2 still owns the 250 ms expiry. qemu-user localhost TCP is slow. */
+	devtool_set_outgoing_startup_ms(2000);
 	size_t mark = log_mark();
 	assert(meshlink_start(b));
 	assert(meshlink_start(a));
 	assert(wait_sync_flag(&peer_reachable, 15));
+	devtool_set_outgoing_startup_ms(0);
 
 	char canonical_needle[128];
 	snprintf(canonical_needle, sizeof canonical_needle, "Trying to connect to b at 127.0.0.1 port %d (canonical)", relay_port);
@@ -65,8 +72,12 @@ static void test_direct_wins_before_bound(void) {
 	printf("outgoing-bounded T1 ok: direct won, canonical not dialed\n");
 
 	meshlink_set_node_status_cb(a, NULL);
-	stop_meshlink_pair(a, b);
-	close_meshlink_pair(a, b);
+	meshlink_stop(a);
+	meshlink_stop(b);
+	meshlink_close(a);
+	meshlink_close(b);
+	assert(meshlink_destroy("outgoing_bounded_fast_conf.1"));
+	assert(meshlink_destroy("outgoing_bounded_fast_conf.2"));
 	stop_tcp_relay(relay);
 }
 
@@ -77,7 +88,7 @@ static void test_black_hole_falls_to_canonical(void) {
 	assert(meshlink_destroy("outgoing_bounded_hole_conf.2"));
 
 	meshlink_handle_t *a = meshlink_open("outgoing_bounded_hole_conf.1", "a", "outgoing-bounded-hole", DEV_CLASS_PORTABLE);
-	meshlink_handle_t *b = meshlink_open("outgoing_bounded_hole_conf.2", "b", "outgoing-bounded-hole", DEV_CLASS_STATIONARY);
+	meshlink_handle_t *b = meshlink_open("outgoing_bounded_hole_conf.2", "b", "outgoing-bounded-hole", DEV_CLASS_BACKBONE);
 	assert(a && b);
 	meshlink_enable_discovery(a, false);
 	meshlink_enable_discovery(b, false);
@@ -90,7 +101,7 @@ static void test_black_hole_falls_to_canonical(void) {
 	char relay_port_str[16];
 	snprintf(relay_port_str, sizeof relay_port_str, "%d", relay_port);
 
-	exchange_meshlink_pair(a, b);
+	join_meshlink_peer(b, a);
 	meshlink_node_t *node_b = meshlink_get_node(a, "b");
 	forget_addresses(a, node_b);
 	hint_address(a, node_b, "127.0.0.1", hole_port);
@@ -137,7 +148,7 @@ static void test_sync_fail_immediate_canonical(void) {
 	assert(meshlink_destroy("outgoing_bounded_fail_conf.2"));
 
 	meshlink_handle_t *a = meshlink_open("outgoing_bounded_fail_conf.1", "a", "outgoing-bounded-fail", DEV_CLASS_PORTABLE);
-	meshlink_handle_t *b = meshlink_open("outgoing_bounded_fail_conf.2", "b", "outgoing-bounded-fail", DEV_CLASS_STATIONARY);
+	meshlink_handle_t *b = meshlink_open("outgoing_bounded_fail_conf.2", "b", "outgoing-bounded-fail", DEV_CLASS_BACKBONE);
 	assert(a && b);
 	meshlink_enable_discovery(a, false);
 	meshlink_enable_discovery(b, false);
@@ -149,7 +160,7 @@ static void test_sync_fail_immediate_canonical(void) {
 	char relay_port_str[16];
 	snprintf(relay_port_str, sizeof relay_port_str, "%d", relay_port);
 
-	exchange_meshlink_pair(a, b);
+	join_meshlink_peer(b, a);
 	meshlink_node_t *node_b = meshlink_get_node(a, "b");
 	forget_addresses(a, node_b);
 	hint_address(a, node_b, "127.0.0.1", dead_port);
@@ -188,7 +199,7 @@ static void test_no_direct_canonical_now(void) {
 	assert(meshlink_destroy("outgoing_bounded_nodirect_conf.2"));
 
 	meshlink_handle_t *a = meshlink_open("outgoing_bounded_nodirect_conf.1", "a", "outgoing-bounded-nodirect", DEV_CLASS_PORTABLE);
-	meshlink_handle_t *b = meshlink_open("outgoing_bounded_nodirect_conf.2", "b", "outgoing-bounded-nodirect", DEV_CLASS_STATIONARY);
+	meshlink_handle_t *b = meshlink_open("outgoing_bounded_nodirect_conf.2", "b", "outgoing-bounded-nodirect", DEV_CLASS_BACKBONE);
 	assert(a && b);
 	meshlink_enable_discovery(a, false);
 	meshlink_enable_discovery(b, false);
@@ -199,7 +210,7 @@ static void test_no_direct_canonical_now(void) {
 	char relay_port_str[16];
 	snprintf(relay_port_str, sizeof relay_port_str, "%d", relay_port);
 
-	exchange_meshlink_pair(a, b);
+	join_meshlink_peer(b, a);
 	meshlink_node_t *node_b = meshlink_get_node(a, "b");
 	forget_addresses(a, node_b);
 	assert(meshlink_set_canonical_address(a, node_b, "127.0.0.1", relay_port_str));
@@ -237,14 +248,14 @@ static void test_stop_during_bound(void) {
 	assert(meshlink_destroy("outgoing_bounded_stop_conf.2"));
 
 	meshlink_handle_t *a = meshlink_open("outgoing_bounded_stop_conf.1", "a", "outgoing-bounded-stop", DEV_CLASS_PORTABLE);
-	meshlink_handle_t *b = meshlink_open("outgoing_bounded_stop_conf.2", "b", "outgoing-bounded-stop", DEV_CLASS_STATIONARY);
+	meshlink_handle_t *b = meshlink_open("outgoing_bounded_stop_conf.2", "b", "outgoing-bounded-stop", DEV_CLASS_BACKBONE);
 	assert(a && b);
 	meshlink_enable_discovery(a, false);
 	meshlink_enable_discovery(b, false);
 
 	int hole_port = 0;
 	int hole_fd = start_black_hole("127.0.0.1", &hole_port);
-	exchange_meshlink_pair(a, b);
+	join_meshlink_peer(b, a);
 	meshlink_node_t *node_b = meshlink_get_node(a, "b");
 	forget_addresses(a, node_b);
 	hint_address(a, node_b, "127.0.0.1", hole_port);
@@ -269,7 +280,7 @@ static void test_only_best_gets_budget(void) {
 	assert(meshlink_destroy("outgoing_bounded_best_conf.2"));
 
 	meshlink_handle_t *a = meshlink_open("outgoing_bounded_best_conf.1", "a", "outgoing-bounded-best", DEV_CLASS_PORTABLE);
-	meshlink_handle_t *b = meshlink_open("outgoing_bounded_best_conf.2", "b", "outgoing-bounded-best", DEV_CLASS_STATIONARY);
+	meshlink_handle_t *b = meshlink_open("outgoing_bounded_best_conf.2", "b", "outgoing-bounded-best", DEV_CLASS_BACKBONE);
 	assert(a && b);
 	meshlink_enable_discovery(a, false);
 	meshlink_enable_discovery(b, false);
@@ -283,7 +294,7 @@ static void test_only_best_gets_budget(void) {
 	char relay_port_str[16];
 	snprintf(relay_port_str, sizeof relay_port_str, "%d", relay_port);
 
-	exchange_meshlink_pair(a, b);
+	join_meshlink_peer(b, a);
 	meshlink_node_t *node_b = meshlink_get_node(a, "b");
 	forget_addresses(a, node_b);
 	hint_address(a, node_b, "127.0.0.1", hole1);
@@ -331,14 +342,14 @@ static void test_blacklist_during_bound(void) {
 	assert(meshlink_destroy("outgoing_bounded_bl_conf.2"));
 
 	meshlink_handle_t *a = meshlink_open("outgoing_bounded_bl_conf.1", "a", "outgoing-bounded-bl", DEV_CLASS_PORTABLE);
-	meshlink_handle_t *b = meshlink_open("outgoing_bounded_bl_conf.2", "b", "outgoing-bounded-bl", DEV_CLASS_STATIONARY);
+	meshlink_handle_t *b = meshlink_open("outgoing_bounded_bl_conf.2", "b", "outgoing-bounded-bl", DEV_CLASS_BACKBONE);
 	assert(a && b);
 	meshlink_enable_discovery(a, false);
 	meshlink_enable_discovery(b, false);
 
 	int hole_port = 0;
 	int hole_fd = start_black_hole("127.0.0.1", &hole_port);
-	exchange_meshlink_pair(a, b);
+	join_meshlink_peer(b, a);
 	meshlink_node_t *node_b = meshlink_get_node(a, "b");
 	forget_addresses(a, node_b);
 	hint_address(a, node_b, "127.0.0.1", hole_port);
@@ -365,7 +376,7 @@ static void test_upgrade_after_timeout(void) {
 	assert(meshlink_destroy("outgoing_bounded_up_conf.2"));
 
 	meshlink_handle_t *a = meshlink_open("outgoing_bounded_up_conf.1", "a", "outgoing-bounded-up", DEV_CLASS_PORTABLE);
-	meshlink_handle_t *b = meshlink_open("outgoing_bounded_up_conf.2", "b", "outgoing-bounded-up", DEV_CLASS_STATIONARY);
+	meshlink_handle_t *b = meshlink_open("outgoing_bounded_up_conf.2", "b", "outgoing-bounded-up", DEV_CLASS_BACKBONE);
 	assert(a && b);
 	meshlink_enable_discovery(a, false);
 	meshlink_enable_discovery(b, false);
@@ -379,7 +390,7 @@ static void test_upgrade_after_timeout(void) {
 	snprintf(relay_port_str, sizeof relay_port_str, "%d", relay_port);
 
 	devtool_set_external_ip_address(b, meshlink_get_self(b), "127.0.0.1");
-	exchange_meshlink_pair(a, b);
+	join_meshlink_peer(b, a);
 	meshlink_node_t *node_b = meshlink_get_node(a, "b");
 	meshlink_node_t *node_a = meshlink_get_node(b, "a");
 	forget_addresses(a, node_b);
@@ -460,66 +471,43 @@ static bool startup_skip_cleared(meshlink_handle_t *mesh, meshlink_node_t *node)
 }
 
 static void test_inbound_wins_during_startup(void) {
-	printf("\n=== outgoing-bounded: inbound win during startup expires the burned dest ===\n");
+	printf("\n=== outgoing-bounded: camera dials backbone (no dual-dial inbound leftover) ===\n");
 
 	assert(meshlink_destroy("outgoing_bounded_in_conf.1"));
 	assert(meshlink_destroy("outgoing_bounded_in_conf.2"));
 
-	/* Both sides must autoconnect to each other for the race, and autoconnect
-	   only initiates towards peer->devclass <= self->devclass. The simultaneous
-	   connect tie-break keeps the session initiated by the smaller name, so the
-	   side whose own pending dial has to lose is b. */
-	meshlink_handle_t *a = meshlink_open("outgoing_bounded_in_conf.1", "a", "outgoing-bounded-in", DEV_CLASS_STATIONARY);
-	meshlink_handle_t *b = meshlink_open("outgoing_bounded_in_conf.2", "b", "outgoing-bounded-in", DEV_CLASS_STATIONARY);
+	meshlink_handle_t *a = meshlink_open("outgoing_bounded_in_conf.1", "a", "outgoing-bounded-in", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *b = meshlink_open("outgoing_bounded_in_conf.2", "b", "outgoing-bounded-in", DEV_CLASS_PORTABLE);
 	assert(a && b);
 	meshlink_enable_discovery(a, false);
 	meshlink_enable_discovery(b, false);
 
-	int b_port = meshlink_get_port(b);
-	int hole_port = 0;
-	int hole_fd = start_black_hole("127.0.0.1", &hole_port);
-
-	exchange_meshlink_pair(a, b);
-	meshlink_node_t *node_b = meshlink_get_node(a, "b");
+	int a_port = meshlink_get_port(a);
+	join_meshlink_peer(a, b);
 	meshlink_node_t *node_a = meshlink_get_node(b, "a");
-	assert(node_a && node_b);
-	forget_addresses(a, node_b);
+	assert(node_a);
 	forget_addresses(b, node_a);
-
-	/* b can only reach a through the black hole; a reaches b for real. */
-	hint_address(b, node_a, "127.0.0.1", hole_port);
-	hint_address(a, node_b, "127.0.0.1", b_port);
+	hint_address(b, node_a, "127.0.0.1", a_port);
 
 	watched_peer = "a";
 	init_sync_flag(&peer_reachable);
 	meshlink_set_node_status_cb(b, status_cb);
-	devtool_set_outgoing_startup_ms(5000);
 	size_t mark = log_mark();
 	assert(meshlink_start(b));
-
-	char hole_dial[128];
-	snprintf(hole_dial, sizeof hole_dial, "Trying to connect to a at 127.0.0.1 port %d (recent)", hole_port);
-	assert_after(log_find(mark, hole_dial) >= 0, 5);
-
-	/* a's inbound must land while b's dial into the hole is still pending. */
-	assert(meshlink_start(a));
 	assert(wait_sync_flag(&peer_reachable, 15));
-	devtool_set_outgoing_startup_ms(0);
 
-	assert_after(log_find(mark, "Terminating pending second connection with a") >= 0, 5);
+	assert(devtool_outgoing_count(a) == 0);
+	assert(devtool_outgoing_count(b) == 1);
+	assert(log_find(mark, "Terminating pending second connection with a") < 0);
+	assert(startup_skip_cleared(b, node_a));
 
-	/* Tearing down that leftover is not a failed dest. If it restamped the node
-	   skip, every later upgrade probe would pass over the hinted address. */
-	assert_after(startup_skip_cleared(b, node_a), 5);
-
-	printf("outgoing-bounded T9 ok: inbound leftover terminate did not burn the skipped dest\n");
+	printf("outgoing-bounded T9 ok: camera has one backbone intent, backbone initiates nothing\n");
 
 	meshlink_set_node_status_cb(b, NULL);
 	meshlink_stop(a);
 	meshlink_stop(b);
 	meshlink_close(a);
 	meshlink_close(b);
-	close(hole_fd);
 	assert(meshlink_destroy("outgoing_bounded_in_conf.1"));
 	assert(meshlink_destroy("outgoing_bounded_in_conf.2"));
 }

@@ -50,6 +50,7 @@
 #include "node.h"
 #include "path_policy.h"
 #include "connection.h"
+#include "connection_policy.h"
 #include "utils.h"
 #include "xalloc.h"
 
@@ -339,20 +340,7 @@ static void mdns_io_handler(event_loop_t *loop, void *data, int flags) {
 
 				path_consider_promotion(mesh, n, PATH_PROMOTION_DISCOVERY);
 				try_upgrade_probe(mesh, n);
-
-				for list_each(outgoing_t, outgoing, mesh->outgoings) {
-					if(outgoing->node != n) {
-						continue;
-					}
-
-					outgoing->timeout = 0;
-
-					if(outgoing->ev.cb) {
-						timeout_set(&mesh->loop, &outgoing->ev, &(struct timespec) {
-							0, 0
-						});
-					}
-				}
+				connection_policy_on_discovery(mesh, n, &sa, ADDR_SRC_DISCOVERY);
 			}
 		}
 	} else if(parse_request(buf, len, mesh->appname, "tcp")) {

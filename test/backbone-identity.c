@@ -490,7 +490,8 @@ static void test_ephemeral_backbone(void) {
 static void test_two_backbone_invite_join(void) {
 	/* A BACKBONE invitee may still join. The extra backbone-class node is
 	   marked conflict_backbone, not blacklisted, and cannot create invitations.
-	   Findings 5 and 10 exclude it from autoconnect and relay. */
+	   Finding 5 skips it in META pools (no outgoing on either side). Finding 10
+	   still owns relay-hop skip. */
 	assert(meshlink_destroy("backbone_identity_t8_conf.1"));
 	assert(meshlink_destroy("backbone_identity_t8_conf.2"));
 
@@ -512,6 +513,11 @@ static void test_two_backbone_invite_join(void) {
 	assert(!strcmp(devtool_get_backbone_name(b), "aaa"));
 	assert(devtool_node_has_conflict_backbone(b, meshlink_get_self(b)));
 	assert(!meshlink_get_node_blacklisted(b, meshlink_get_self(b)));
+	sleep(2);
+	assert(devtool_outgoing_count(a) == 0);
+	assert(devtool_outgoing_count(b) == 0);
+	assert(!devtool_backbone_intent_name(a));
+	assert(!devtool_backbone_intent_name(b));
 	meshlink_errno = MESHLINK_OK;
 	assert(!meshlink_invite(b, NULL, "ccc"));
 	assert(meshlink_errno == MESHLINK_ENOTSUP);

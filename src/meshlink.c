@@ -1685,10 +1685,10 @@ void meshlink_open_params_free(meshlink_open_params_t *params) {
 
 /// Device class traits
 static const dev_class_traits_t default_class_traits[DEV_CLASS_COUNT] = {
-	{ .pingtimeout = 5, .pinginterval = 60, .maxtimeout = 900, .min_connects = 3, .max_connects = 10000, .edge_weight = 1 }, // DEV_CLASS_BACKBONE
-	{ .pingtimeout = 5, .pinginterval = 60, .maxtimeout = 900, .min_connects = 3, .max_connects = 100, .edge_weight = 3 },   // DEV_CLASS_STATIONARY
-	{ .pingtimeout = 5, .pinginterval = 60, .maxtimeout = 900, .min_connects = 3, .max_connects = 3, .edge_weight = 6 },     // DEV_CLASS_PORTABLE
-	{ .pingtimeout = 5, .pinginterval = 60, .maxtimeout = 900, .min_connects = 1, .max_connects = 1, .edge_weight = 9 },     // DEV_CLASS_UNKNOWN
+	{ .pingtimeout = 5, .pinginterval = 60, .maxtimeout = 900, .edge_weight = 1 }, // DEV_CLASS_BACKBONE
+	{ .pingtimeout = 5, .pinginterval = 60, .maxtimeout = 900, .edge_weight = 3 }, // DEV_CLASS_STATIONARY
+	{ .pingtimeout = 5, .pinginterval = 60, .maxtimeout = 900, .edge_weight = 6 }, // DEV_CLASS_PORTABLE
+	{ .pingtimeout = 5, .pinginterval = 60, .maxtimeout = 900, .edge_weight = 9 }, // DEV_CLASS_UNKNOWN
 };
 
 meshlink_handle_t *meshlink_open(const char *confbase, const char *name, const char *appname, dev_class_t devclass) {
@@ -2144,6 +2144,7 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 
 	init_outgoings(mesh);
 	init_adns(mesh);
+	connection_policy_tick(mesh);
 
 	for splay_each(node_t, n, mesh->nodes) {
 		path_request_canonical_resolve(mesh, n);
@@ -4133,6 +4134,8 @@ static bool blacklist(meshlink_handle_t *mesh, node_t *n) {
 	/* Remove any outstanding invitations */
 	invitation_purge_node(mesh, n->name);
 
+	connection_policy_tick(mesh);
+
 	return node_write_config(mesh, n, true) && config_sync(mesh, "current");
 }
 
@@ -4208,6 +4211,8 @@ static bool whitelist(meshlink_handle_t *mesh, node_t *n) {
 		n->last_reachable = time(NULL);
 		update_node_status(mesh, n);
 	}
+
+	connection_policy_tick(mesh);
 
 	return node_write_config(mesh, n, true) && config_sync(mesh, "current");
 }
