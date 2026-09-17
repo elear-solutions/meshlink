@@ -323,6 +323,8 @@ static void devtool_get_reset_node_status(meshlink_handle_t *mesh, meshlink_node
 		status->meta_connected = c && c->status.active;
 		status->meta_via_canonical = c && c->status.via_canonical;
 		status->meta_is_outgoing = c && c->outgoing;
+		status->meta_activated_at = c ? c->activated_at : 0;
+		status->meta_last_key_renewal = c ? c->last_key_renewal : 0;
 
 		if(c) {
 			memcpy(&status->meta_address, &c->address, sizeof status->meta_address);
@@ -515,6 +517,10 @@ void devtool_force_sptps_renewal(meshlink_handle_t *mesh, meshlink_node_t *node)
 		return;
 	}
 
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
 	node_t *n = (node_t *)node;
 	connection_t *c = n->connection;
 
@@ -523,6 +529,8 @@ void devtool_force_sptps_renewal(meshlink_handle_t *mesh, meshlink_node_t *node)
 	if(c) {
 		c->last_key_renewal = -3600;
 	}
+
+	pthread_mutex_unlock(&mesh->mutex);
 }
 
 const char *devtool_get_backbone_name(meshlink_handle_t *mesh) {
@@ -647,6 +655,31 @@ const char *devtool_backbone_intent_name(meshlink_handle_t *mesh) {
 
 	pthread_mutex_unlock(&mesh->mutex);
 	return name;
+}
+
+int devtool_backbone_intent_retry_step(meshlink_handle_t *mesh) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return -1;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	int step = -1;
+
+	if(mesh->outgoings) {
+		for list_each(outgoing_t, outgoing, mesh->outgoings) {
+			if(outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED) {
+				step = (int)outgoing->retry_step;
+				break;
+			}
+		}
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return step;
 }
 
 bool devtool_self_initiates_meta(meshlink_handle_t *mesh) {

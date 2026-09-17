@@ -15,6 +15,7 @@ devtool_fill_mcast_ff02_1
 devtool_fill_port_mismatch
 devtool_fill_relay_reports
 devtool_force_relay_path
+devtool_force_sptps_renewal
 devtool_free_node_status
 devtool_get_all_edges
 devtool_get_all_submeshes
@@ -25,6 +26,7 @@ devtool_node_has_conflict_backbone
 devtool_outgoing_count
 devtool_backbone_intent_purpose
 devtool_backbone_intent_name
+devtool_backbone_intent_retry_step
 devtool_self_initiates_meta
 devtool_set_node_devclass
 devtool_set_allow_peer_bootstrap

@@ -89,6 +89,7 @@ typedef struct outgoing_t {
 	bool startup_waiting_dns;       /* deadline expired but canonical DNS is still in flight */
 	uint8_t direct_tries;           /* no-canonical leftover directs; capped to avoid a refuse loop */
 	meta_connection_purpose_t purpose; /* persistence is meta_purpose_is_persistent(purpose) */
+	unsigned retry_step;            /* BACKBONE_REQUIRED ladder index; not cleared by reset_outgoing() */
 } outgoing_t;
 
 /* Yes, very strange placement indeed, but otherwise the typedefs get all tangled up */
@@ -102,6 +103,7 @@ void init_outgoings(struct meshlink_handle *mesh);
 void exit_outgoings(struct meshlink_handle *mesh);
 
 void retry_outgoing(struct meshlink_handle *mesh, outgoing_t *);
+void outgoing_arm_retry(struct meshlink_handle *mesh, outgoing_t *outgoing, int delay_sec);
 void handle_incoming_vpn_data(struct event_loop_t *loop, void *, int);
 void finish_connecting(struct meshlink_handle *mesh, struct connection_t *);
 bool connect_meta_socket(struct meshlink_handle *mesh, struct connection_t *) __attribute__((__warn_unused_result__));

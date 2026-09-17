@@ -235,12 +235,154 @@ static void test_reclassified_backbone_closes_sockets(void) {
 	destroy_conf("connection_policy_t5_conf.2");
 }
 
+static bool node_via_canonical(meshlink_handle_t *mesh, const char *name) {
+	meshlink_node_t *node = meshlink_get_node(mesh, name);
+	devtool_node_status_t st;
+	bool via;
+
+	assert(node);
+	memset(&st, 0, sizeof st);
+	devtool_get_node_status(mesh, node, &st);
+	via = st.meta_connected && st.meta_via_canonical;
+	devtool_free_node_status(&st);
+	return via;
+}
+
+static void test_intent_survives_failed_epoch(void) {
+	destroy_conf("connection_policy_t6_conf.1");
+	destroy_conf("connection_policy_t6_conf.2");
+
+	meshlink_handle_t *bb = meshlink_open("connection_policy_t6_conf.1", "aaa", "connection-policy", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *cam = meshlink_open("connection_policy_t6_conf.2", "bbb", "connection-policy", DEV_CLASS_PORTABLE);
+	assert(bb && cam);
+	meshlink_enable_discovery(bb, false);
+	meshlink_enable_discovery(cam, false);
+
+	join_meshlink_peer(bb, cam);
+	meshlink_node_t *node = meshlink_get_node(cam, "aaa");
+	assert(node);
+	forget_addresses(cam, node);
+	hint_address(cam, node, "127.0.0.1", find_closed_port("127.0.0.1"));
+
+	meshlink_stop(bb);
+	size_t mark = log_mark();
+	assert(meshlink_start(cam));
+	assert_after(devtool_outgoing_count(cam) == 1, 5);
+	assert_after(devtool_backbone_intent_retry_step(cam) >= 1, 5);
+	assert(devtool_backbone_intent_purpose(cam) == 1);
+	assert(!strcmp(devtool_backbone_intent_name(cam), "aaa"));
+	assert(log_find(mark, "Trying to re-establish outgoing connection in ") >= 0);
+
+	meshlink_close(bb);
+	meshlink_close(cam);
+	destroy_conf("connection_policy_t6_conf.1");
+	destroy_conf("connection_policy_t6_conf.2");
+}
+
+static void test_dead_direct_then_canonical(void) {
+	destroy_conf("connection_policy_t7_conf.1");
+	destroy_conf("connection_policy_t7_conf.2");
+
+	meshlink_handle_t *bb = meshlink_open("connection_policy_t7_conf.1", "aaa", "connection-policy", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *cam = meshlink_open("connection_policy_t7_conf.2", "bbb", "connection-policy", DEV_CLASS_PORTABLE);
+	assert(bb && cam);
+	meshlink_enable_discovery(bb, false);
+	meshlink_enable_discovery(cam, false);
+
+	int bb_port = meshlink_get_port(bb);
+	int dead_port = find_closed_port("127.0.0.1");
+	int relay_port = 0;
+	tcp_relay_t *relay = start_tcp_relay("127.0.0.1", &relay_port, "127.0.0.1", bb_port);
+	char relay_port_str[16];
+	snprintf(relay_port_str, sizeof relay_port_str, "%d", relay_port);
+
+	join_meshlink_peer(bb, cam);
+	meshlink_node_t *node = meshlink_get_node(cam, "aaa");
+	assert(node);
+	forget_addresses(cam, node);
+	hint_address(cam, node, "127.0.0.1", dead_port);
+	assert(meshlink_set_canonical_address(cam, node, "127.0.0.1", relay_port_str));
+
+	init_sync_flag(&peer_up);
+	meshlink_set_node_status_cb(cam, reachable_cb);
+	size_t mark = log_mark();
+	assert(meshlink_start(cam));
+	assert(wait_sync_flag(&peer_up, 15));
+	assert(devtool_outgoing_count(cam) == 1);
+	assert(devtool_backbone_intent_retry_step(cam) == 0);
+
+	char recent_needle[128], canonical_needle[128];
+	snprintf(recent_needle, sizeof recent_needle, "Trying to connect to aaa at 127.0.0.1 port %d (recent)", dead_port);
+	snprintf(canonical_needle, sizeof canonical_needle, "Trying to connect to aaa at 127.0.0.1 port %d (canonical)", relay_port);
+	long recent_at = log_find(mark, recent_needle);
+	long canonical_at = log_find(mark, canonical_needle);
+	assert(recent_at >= 0);
+	assert(canonical_at >= 0);
+	assert(recent_at < canonical_at);
+
+	meshlink_set_node_status_cb(cam, NULL);
+	meshlink_close(bb);
+	meshlink_close(cam);
+	stop_tcp_relay(relay);
+	destroy_conf("connection_policy_t7_conf.1");
+	destroy_conf("connection_policy_t7_conf.2");
+}
+
+static void test_canonical_hint_keeps_one_intent(void) {
+	destroy_conf("connection_policy_t8_conf.1");
+	destroy_conf("connection_policy_t8_conf.2");
+
+	meshlink_handle_t *bb = meshlink_open("connection_policy_t8_conf.1", "aaa", "connection-policy", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *cam = meshlink_open("connection_policy_t8_conf.2", "bbb", "connection-policy", DEV_CLASS_PORTABLE);
+	assert(bb && cam);
+	/* Drop findmyip so REQ_EXTERNAL does not advertise a WAN dest Docker cannot hairpin. */
+	devtool_set_external_ip_address(bb, meshlink_get_self(bb), NULL);
+	meshlink_enable_discovery(bb, false);
+	meshlink_enable_discovery(cam, false);
+
+	int bb_port = meshlink_get_port(bb);
+	int relay_port = 0;
+	tcp_relay_t *relay = start_tcp_relay("127.0.0.1", &relay_port, "127.0.0.1", bb_port);
+	char relay_port_str[16];
+	snprintf(relay_port_str, sizeof relay_port_str, "%d", relay_port);
+
+	join_meshlink_peer(bb, cam);
+	meshlink_node_t *node = meshlink_get_node(cam, "aaa");
+	assert(node);
+	forget_addresses(cam, node);
+	assert(meshlink_set_canonical_address(cam, node, "127.0.0.1", relay_port_str));
+
+	init_sync_flag(&peer_up);
+	meshlink_set_node_status_cb(cam, reachable_cb);
+	assert(meshlink_start(cam));
+	assert(wait_sync_flag(&peer_up, 15));
+	assert_after(node_via_canonical(cam, "aaa"), 5);
+	assert(devtool_outgoing_count(cam) == 1);
+
+	hint_address(cam, node, "127.0.0.1", bb_port);
+	assert_after(node_meta_connected(cam, "aaa") && !node_via_canonical(cam, "aaa"), 15);
+	assert(devtool_outgoing_count(cam) == 1);
+	assert(devtool_backbone_intent_purpose(cam) == 1);
+	assert(devtool_backbone_intent_retry_step(cam) == 0);
+
+	meshlink_set_node_status_cb(cam, NULL);
+	meshlink_close(bb);
+	meshlink_close(cam);
+	stop_tcp_relay(relay);
+	destroy_conf("connection_policy_t8_conf.1");
+	destroy_conf("connection_policy_t8_conf.2");
+}
+
 int main(void) {
-	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
+	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, capture_log_cb);
 	test_backbone_initiates_nothing();
 	test_local_peers_do_not_steal_backbone_slot();
 	test_conflict_backbone_excluded_from_pools();
 	test_blacklist_drops_backbone_intent();
 	test_reclassified_backbone_closes_sockets();
+	test_intent_survives_failed_epoch();
+	test_dead_direct_then_canonical();
+	test_canonical_hint_keeps_one_intent();
+	free_captured_log();
 	return 0;
 }

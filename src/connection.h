@@ -73,6 +73,7 @@ typedef struct connection_t {
 	int allow_request;              /* defined if there's only one request possible */
 	time_t last_ping_time;          /* last time we saw some activity from the other end or pinged them */
 	time_t last_key_renewal;        /* last time we renewed the SPTPS key */
+	time_t activated_at;            /* first time this META socket became active; never restamped on key renewal */
 
 	struct outgoing_t *outgoing;    /* used to keep track of outgoing connections */
 	uint32_t outgoing_generation;   /* outgoing_t.generation when this socket was opened */

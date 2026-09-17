@@ -139,6 +139,10 @@ void timeout_add(event_loop_t *loop, timeout_t *timeout, timeout_cb_t cb, void *
 	timeout_set(loop, timeout, tv);
 }
 
+void event_loop_stamp_now(event_loop_t *loop) {
+	clock_gettime(EVENT_CLOCK, &loop->now);
+}
+
 void timeout_set(event_loop_t *loop, timeout_t *timeout, struct timespec *tv) {
 	assert(timeout->cb);
 

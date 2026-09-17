@@ -133,6 +133,8 @@ struct devtool_node_status {
 	struct sockaddr_storage meta_address; /// Remote address of the meta connection (AF_UNSPEC if none)
 	bool meta_via_canonical;              /// True if the meta connection went via a relay (we dialled canonical/indirect-edge, or the peer reached us that way)
 	bool meta_is_outgoing;                /// True if we initiated the meta connection and own its outgoing_t
+	time_t meta_activated_at;             /// connection_t.activated_at (0 if no META)
+	time_t meta_last_key_renewal;         /// connection_t.last_key_renewal (0 if no META)
 	bool upgrade_probe_active;            /// True if a direct-upgrade probe is in flight
 	int upgrade_backoff;                  /// Current probe backoff in seconds (0 = none)
 
@@ -201,6 +203,9 @@ int devtool_backbone_intent_purpose(meshlink_handle_t *mesh);
 
 /// Name of the BACKBONE_REQUIRED target, or NULL if none.
 const char *devtool_backbone_intent_name(meshlink_handle_t *mesh);
+
+/// Ladder index of the BACKBONE_REQUIRED outgoing, or -1 if none.
+int devtool_backbone_intent_retry_step(meshlink_handle_t *mesh);
 
 /// True when this instance is allowed to initiate META (not a BACKBONE-class node).
 bool devtool_self_initiates_meta(meshlink_handle_t *mesh);

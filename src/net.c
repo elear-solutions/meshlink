@@ -91,9 +91,11 @@ void add_connection_edge(meshlink_handle_t *mesh, connection_t *c) {
   - Check if we need to retry making an outgoing connection
 */
 void terminate_connection(meshlink_handle_t *mesh, connection_t *c, bool report) {
-	/* last_key_renewal is set when the connection activates (and again on every hourly
-	   key renewal, so a drop right after one of those costs one extra backoff step). */
-	bool flapped = c->status.active && !c->status.drain_only && mesh->loop.now.tv_sec - c->last_key_renewal < min_connection_lifetime;
+	/* last_key_renewal is restamped hourly; do not use it for backbone
+	   stability. Non-backbone flap detection still uses it. */
+	bool was_active = c->status.active && !c->status.drain_only;
+	bool flapped = was_active && mesh->loop.now.tv_sec - c->last_key_renewal < min_connection_lifetime;
+	time_t activated_at = c->activated_at;
 
 	timeout_del(&mesh->loop, &c->drain_ev);
 
@@ -157,13 +159,23 @@ void terminate_connection(meshlink_handle_t *mesh, connection_t *c, bool report)
 	connection_del(mesh, c);
 
 	/* Check if this was our outgoing connection. ack_h() reset the address walk when it
-	   activated, so either path starts over at recent[]; a connection that flapped goes
-	   through retry_outgoing()'s backoff first instead of reconnecting straight away.
-	   BACKBONE_REQUIRED outgoings stay on the list (meta_purpose_is_persistent).
-	   Retiring an intent must not redial it. */
+	   activated, so either path starts over at recent[]. A refused/timeout startup
+	   socket continues the epoch (direct then canonical). An authenticated
+	   BACKBONE_REQUIRED drop always waits on the telescopic ladder, and only
+	   a session that lived BACKBONE_STABLE_RESET_SEC clears retry_step first.
+	   Other outgoings that flapped go through retry_outgoing(); a stable drop
+	   of a non-persistent intent redials immediately. BACKBONE_REQUIRED
+	   outgoings stay on the list (meta_purpose_is_persistent). Retiring an
+	   intent must not redial it. */
 
 	if(outgoing && !mesh->retiring_outgoing) {
-		if(flapped) {
+		if(outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED && was_active) {
+			if(activated_at && mesh->loop.now.tv_sec - activated_at >= BACKBONE_STABLE_RESET_SEC) {
+				connection_policy_reset_backbone_retry(outgoing);
+			}
+
+			retry_outgoing(mesh, outgoing);
+		} else if(flapped) {
 			retry_outgoing(mesh, outgoing);
 		} else {
 			do_outgoing_connection(mesh, outgoing);
@@ -327,7 +339,11 @@ void handle_meta_connection_data(meshlink_handle_t *mesh, connection_t *c) {
 void retry(meshlink_handle_t *mesh) {
 	/* Reset the reconnection timers for all outgoing connections */
 	for list_each(outgoing_t, outgoing, mesh->outgoings) {
-		outgoing->timeout = 0;
+		if(outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED) {
+			connection_policy_reset_backbone_retry(outgoing);
+		} else {
+			outgoing->timeout = 0;
+		}
 
 		/* Arm the retry before dialling: do_outgoing_connection() can run out
 		   of addresses and delete this entry, and free_outgoing() takes the
@@ -403,6 +419,7 @@ void retry(meshlink_handle_t *mesh) {
   this is where it all happens...
 */
 void main_loop(meshlink_handle_t *mesh) {
+	event_loop_stamp_now(&mesh->loop);
 	timeout_add(&mesh->loop, &mesh->pingtimer, timeout_handler, &mesh->pingtimer, &(struct timespec) {
 		1, prng(mesh, TIMER_FUDGE)
 	});

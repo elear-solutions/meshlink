@@ -171,6 +171,13 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 				logger(mesh, MESHLINK_INFO, "Learned ECDSA public key from %s", from->name);
 				from->status.dirty = true;
 				from->last_connect_try = 0;
+
+				for list_each(outgoing_t, outgoing, mesh->outgoings) {
+					if(outgoing->node == from && outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED) {
+						connection_policy_reset_backbone_retry(outgoing);
+					}
+				}
+
 				connection_policy_tick(mesh);
 
 				if(!node_write_config(mesh, from, true)) {
@@ -200,6 +207,13 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 		logger(mesh, MESHLINK_INFO, "Learned ECDSA public key from %s", from->name);
 		from->status.dirty = true;
 		from->last_connect_try = 0;
+
+		for list_each(outgoing_t, outgoing, mesh->outgoings) {
+			if(outgoing->node == from && outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED) {
+				connection_policy_reset_backbone_retry(outgoing);
+			}
+		}
+
 		connection_policy_tick(mesh);
 
 		if(!node_write_config(mesh, from, true)) {

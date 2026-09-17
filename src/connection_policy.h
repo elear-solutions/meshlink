@@ -17,6 +17,8 @@
 
 struct meshlink_handle;
 struct node_t;
+struct connection_t;
+struct outgoing_t;
 
 typedef enum meta_connection_purpose_t {
 	META_PURPOSE_NONE = 0,
@@ -26,6 +28,9 @@ typedef enum meta_connection_purpose_t {
 } meta_connection_purpose_t;
 
 #define META_LAN_RESILIENCE_MAX 3
+
+/* Authenticated backbone META must live this long before a drop resets retry_step. */
+#define BACKBONE_STABLE_RESET_SEC 5
 
 static inline bool meta_purpose_is_persistent(meta_connection_purpose_t purpose) {
 	return purpose == META_PURPOSE_BACKBONE_REQUIRED;
@@ -46,6 +51,9 @@ void connection_policy_on_discovery(struct meshlink_handle *mesh, struct node_t 
                                     const sockaddr_t *address, address_source_t source);
 void connection_policy_on_connection_closed(struct meshlink_handle *mesh, struct node_t *node,
                 meta_connection_purpose_t purpose);
+void connection_policy_schedule_backbone_retry(struct meshlink_handle *mesh, struct outgoing_t *outgoing);
+void connection_policy_reset_backbone_retry(struct outgoing_t *outgoing);
+void connection_policy_bind_connection(struct meshlink_handle *mesh, struct connection_t *c);
 const char *connection_policy_backbone_name(const struct meshlink_handle *mesh);
 struct node_t *connection_policy_backbone(struct meshlink_handle *mesh);
 bool connection_policy_is_backbone(const struct meshlink_handle *mesh, const struct node_t *n);

@@ -86,6 +86,10 @@ int main(void) {
 		assert(mesh[i]);
 		free(path);
 
+		if(!i) {
+			devtool_set_external_ip_address(mesh[i], meshlink_get_self(mesh[i]), "127.0.0.1");
+		}
+
 		assert(meshlink_set_canonical_address(mesh[i], meshlink_get_self(mesh[i]), "localhost", NULL));
 		meshlink_enable_discovery(mesh[i], false);
 	}

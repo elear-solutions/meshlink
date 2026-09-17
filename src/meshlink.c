@@ -2144,6 +2144,7 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 
 	init_outgoings(mesh);
 	init_adns(mesh);
+	event_loop_stamp_now(&mesh->loop);
 	connection_policy_tick(mesh);
 
 	for splay_each(node_t, n, mesh->nodes) {
@@ -4368,10 +4369,11 @@ void meshlink_hint_address(meshlink_handle_t *mesh, meshlink_node_t *node, const
 
 	/* A fresh direct address for a peer we only reach via its canonical address is worth a probe right away. */
 	try_upgrade_probe(mesh, n);
+	connection_policy_on_discovery(mesh, n, (const sockaddr_t *)addr, ADDR_SRC_HINT);
 
 	/* We are on the caller's thread; the loop thread is parked in pselect() with a copy of the
-	   fd set, so wake it up to watch the probe socket instead of waiting for the next timer. */
-	if(n->upgrade_probe) {
+	   fd set, so wake it up to watch the probe socket or a zeroed retry timer. */
+	if(n->upgrade_probe || mesh->threadstarted) {
 		signal_trigger(&mesh->loop, &mesh->datafromapp);
 	}
 

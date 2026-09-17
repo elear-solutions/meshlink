@@ -42,7 +42,9 @@ established by earlier findings.
 - Finding 4 gates production invitation create/serve to the unique
   backbone.
 - Finding 5 replaced generic autoconnect with purpose-owned pools in
-  `connection_policy`. Findings 6-8 extend that ownership.
+  `connection_policy`. Finding 6 added the telescopic retry ladder on
+  the same `BACKBONE_REQUIRED` intent. Findings 7-8 extend that
+  ownership.
 - Findings 9-14 complete route correctness and traffic budgets.
 - Findings 15-20 finish interfaces, verification, and cleanup.
 
@@ -346,7 +348,7 @@ deleted or reduced to an adapter that calls the new module.
 ## 6. Make the backbone META intent durable with direct-first canonical fallback
 
 **Priority:** P1  
-**Status:** Open
+**Status:** Completed
 
 Finding 5 owns the persistent `BACKBONE_REQUIRED` intent in
 `src/connection_policy.c`. This finding owns the telescopic retry ladder

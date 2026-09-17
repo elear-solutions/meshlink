@@ -462,11 +462,92 @@ static bool backbone_target_ok(const node_t *bb) {
 	       && bb->devclass == DEV_CLASS_BACKBONE;
 }
 
-static void ensure_backbone_outgoing(meshlink_handle_t *mesh, node_t *bb) {
+static const unsigned backbone_retry_seconds[] = {
+	1, 2, 5, 10, 30, 60, 300, 900
+};
+
+void connection_policy_reset_backbone_retry(outgoing_t *outgoing) {
+	if(!outgoing) {
+		return;
+	}
+
+	outgoing->retry_step = 0;
+	outgoing->timeout = 0;
+}
+
+static int backbone_retry_delay(meshlink_handle_t *mesh, unsigned step) {
+	size_t n = sizeof backbone_retry_seconds / sizeof backbone_retry_seconds[0];
+	int base = (int)backbone_retry_seconds[step >= n ? n - 1 : step];
+	int span = base / 5;
+	int delay;
+
+	if(span < 1) {
+		span = 1;
+	}
+
+	delay = base - span + (int)prng(mesh, (uint64_t)(2 * span + 1));
+
+	if(delay < 1) {
+		delay = 1;
+	}
+
+	return delay;
+}
+
+void connection_policy_schedule_backbone_retry(meshlink_handle_t *mesh, outgoing_t *outgoing) {
+	size_t n = sizeof backbone_retry_seconds / sizeof backbone_retry_seconds[0];
+	int delay;
+
+	if(!mesh || !outgoing) {
+		return;
+	}
+
+	delay = backbone_retry_delay(mesh, outgoing->retry_step);
+
+	if(outgoing->retry_step + 1 < n) {
+		outgoing->retry_step++;
+	}
+
+	outgoing_arm_retry(mesh, outgoing, delay);
+	logger(mesh, MESHLINK_INFO, "Trying to re-establish outgoing connection in %d seconds", delay);
+}
+
+void connection_policy_bind_connection(meshlink_handle_t *mesh, connection_t *c) {
+	outgoing_t *intent;
+
+	if(!mesh || !c || !c->node || !connection_policy_is_backbone(mesh, c->node)) {
+		return;
+	}
+
+	intent = find_outgoing_for_purpose(mesh, META_PURPOSE_BACKBONE_REQUIRED);
+
+	if(!intent || intent->node != c->node) {
+		return;
+	}
+
+	if(c->outgoing && c->outgoing != intent) {
+		return;
+	}
+
+	c->outgoing = intent;
+}
+
+static bool backbone_outgoing_in_flight(const outgoing_t *outgoing) {
+	return outgoing->pending
+	       || outgoing->ev.cb
+	       || (outgoing->node && outgoing->node->connection && outgoing->node->connection->status.active);
+}
+
+static void ensure_backbone_outgoing(meshlink_handle_t *mesh, node_t *bb, bool may_dial) {
 	outgoing_t *existing = find_outgoing_for_node(mesh, bb);
 
 	if(existing) {
 		existing->purpose = META_PURPOSE_BACKBONE_REQUIRED;
+
+		if(may_dial && !backbone_outgoing_in_flight(existing)) {
+			setup_outgoing_connection(mesh, existing);
+		}
+
 		return;
 	}
 
@@ -474,7 +555,10 @@ static void ensure_backbone_outgoing(meshlink_handle_t *mesh, node_t *bb) {
 	outgoing->node = bb;
 	outgoing->purpose = META_PURPOSE_BACKBONE_REQUIRED;
 	list_insert_tail(mesh->outgoings, outgoing);
-	setup_outgoing_connection(mesh, outgoing);
+
+	if(may_dial) {
+		setup_outgoing_connection(mesh, outgoing);
+	}
 }
 
 void connection_policy_tick(meshlink_handle_t *mesh) {
@@ -521,12 +605,11 @@ void connection_policy_tick(meshlink_handle_t *mesh) {
 			send_req_key(mesh, bb);
 		}
 
+		ensure_backbone_outgoing(mesh, bb, false);
 		return;
 	}
 
-	if(!find_outgoing_for_purpose(mesh, META_PURPOSE_BACKBONE_REQUIRED)) {
-		ensure_backbone_outgoing(mesh, bb);
-	}
+	ensure_backbone_outgoing(mesh, bb, true);
 }
 
 void connection_policy_on_discovery(meshlink_handle_t *mesh, node_t *node,
@@ -540,15 +623,24 @@ void connection_policy_on_discovery(meshlink_handle_t *mesh, node_t *node,
 
 	node->last_connect_try = 0;
 
+	if(connection_policy_is_backbone(mesh, node)
+	                && node->connection && node->connection->status.active) {
+		return;
+	}
+
 	if(mesh->outgoings) {
 		for list_each(outgoing_t, outgoing, mesh->outgoings) {
 			if(outgoing->node != node) {
 				continue;
 			}
 
-			outgoing->timeout = 0;
+			if(outgoing->purpose != META_PURPOSE_BACKBONE_REQUIRED) {
+				outgoing->timeout = 0;
+			}
 
-			if(outgoing->ev.cb) {
+			/* Wake a scheduled retry. Keep retry_step. Do not abort a
+			   pending connect or invent a second dial. */
+			if(outgoing->ev.cb && !outgoing->pending) {
 				timeout_set(&mesh->loop, &outgoing->ev, &(struct timespec) {
 					0, 0
 				});

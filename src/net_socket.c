@@ -90,7 +90,19 @@ static void retry_outgoing_handler(event_loop_t *loop, void *data) {
 	setup_outgoing_connection(mesh, outgoing);
 }
 
+void outgoing_arm_retry(meshlink_handle_t *mesh, outgoing_t *outgoing, int delay_sec) {
+	outgoing->timeout = delay_sec;
+	timeout_add(&mesh->loop, &outgoing->ev, retry_outgoing_handler, outgoing, &(struct timespec) {
+		delay_sec, prng(mesh, TIMER_FUDGE)
+	});
+}
+
 void retry_outgoing(meshlink_handle_t *mesh, outgoing_t *outgoing) {
+	if(outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED) {
+		connection_policy_schedule_backbone_retry(mesh, outgoing);
+		return;
+	}
+
 	if(!mesh->reachable && mesh->loop.now.tv_sec < mesh->last_unreachable + mesh->dev_class_traits[outgoing->node->devclass].fast_retry_period) {
 		outgoing->timeout = 1;
 	} else {
@@ -103,10 +115,7 @@ void retry_outgoing(meshlink_handle_t *mesh, outgoing_t *outgoing) {
 		outgoing->timeout = maxtimeout;
 	}
 
-	timeout_add(&mesh->loop, &outgoing->ev, retry_outgoing_handler, outgoing, &(struct timespec) {
-		outgoing->timeout, prng(mesh, TIMER_FUDGE)
-	});
-
+	outgoing_arm_retry(mesh, outgoing, outgoing->timeout);
 	logger(mesh, MESHLINK_INFO, "Trying to re-establish outgoing connection in %d seconds", outgoing->timeout);
 }
 
@@ -268,6 +277,15 @@ static bool outgoing_has_canonical(const outgoing_t *outgoing) {
 	return outgoing->node && outgoing->node->canonical_address;
 }
 
+/* After canonical is exhausted: LAN intents may try graph-indirect hops; backbone does not. */
+static void outgoing_advance_past_canonical(outgoing_t *outgoing) {
+	if(outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED) {
+		outgoing->state = OUTGOING_END;
+	} else {
+		outgoing->state = OUTGOING_KNOWN_INDIRECT;
+	}
+}
+
 /* The startup budget applies only when a canonical NLB exists to fall back to. */
 static bool outgoing_is_startup_direct(const outgoing_t *outgoing) {
 	return outgoing_has_canonical(outgoing) && (outgoing->state == OUTGOING_RECENT || outgoing->state == OUTGOING_KNOWN);
@@ -419,7 +437,7 @@ void outgoing_on_canonical_resolved(meshlink_handle_t *mesh, node_t *n, struct a
 				outgoing->ai_is_getaddrinfo = false;
 				outgoing->state = OUTGOING_CANONICAL;
 			} else {
-				outgoing->state = OUTGOING_KNOWN_INDIRECT;
+				outgoing_advance_past_canonical(outgoing);
 			}
 
 			do_outgoing_connection(mesh, outgoing);
@@ -465,12 +483,14 @@ void outgoing_on_canonical_resolved(meshlink_handle_t *mesh, node_t *n, struct a
 		}
 
 		if(err) {
-			logger(mesh, MESHLINK_WARNING, "Canonical resolve for %s failed: %s; trying indirect addresses", n->name, strerror(err));
+			logger(mesh, MESHLINK_WARNING, "Canonical resolve for %s failed: %s%s", n->name, strerror(err),
+			       outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED ? "" : "; trying indirect addresses");
 		} else {
-			logger(mesh, MESHLINK_WARNING, "Canonical resolve for %s failed; trying indirect addresses", n->name);
+			logger(mesh, MESHLINK_WARNING, "Canonical resolve for %s failed%s", n->name,
+			       outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED ? "" : "; trying indirect addresses");
 		}
 
-		outgoing->state = OUTGOING_KNOWN_INDIRECT;
+		outgoing_advance_past_canonical(outgoing);
 		do_outgoing_connection(mesh, outgoing);
 		free(host);
 		free(serv);
@@ -532,7 +552,8 @@ static const char *outgoing_address_source(const outgoing_t *outgoing) {
 	}
 }
 
-/* One best direct (recent[], then a known edge), then CANONICAL, then KNOWN_INDIRECT. */
+/* One best direct (recent[], then a known edge), then CANONICAL, then KNOWN_INDIRECT
+   (skipped for BACKBONE_REQUIRED). */
 static bool get_next_outgoing_address(meshlink_handle_t *mesh, outgoing_t *outgoing) {
 	bool start = false;
 
@@ -593,7 +614,7 @@ static bool get_next_outgoing_address(meshlink_handle_t *mesh, outgoing_t *outgo
 			}
 
 			if(n->canonical_resolve_next && mesh->loop.now.tv_sec < n->canonical_resolve_next) {
-				outgoing->state = OUTGOING_KNOWN_INDIRECT;
+				outgoing_advance_past_canonical(outgoing);
 			} else {
 				path_request_canonical_resolve(mesh, n);
 
@@ -601,7 +622,7 @@ static bool get_next_outgoing_address(meshlink_handle_t *mesh, outgoing_t *outgo
 					return false;
 				}
 
-				outgoing->state = OUTGOING_KNOWN_INDIRECT;
+				outgoing_advance_past_canonical(outgoing);
 			}
 		} else if(n->canonical_address) {
 			path_refresh_canonical_endpoint(n);
@@ -613,10 +634,10 @@ static bool get_next_outgoing_address(meshlink_handle_t *mesh, outgoing_t *outgo
 				outgoing->state = OUTGOING_CANONICAL;
 			} else {
 				logger(mesh, MESHLINK_ERROR, "Canonical address for %s is missing port number", n->name);
-				outgoing->state = OUTGOING_KNOWN_INDIRECT;
+				outgoing_advance_past_canonical(outgoing);
 			}
 		} else {
-			outgoing->state = OUTGOING_KNOWN_INDIRECT;
+			outgoing_advance_past_canonical(outgoing);
 		}
 	}
 
@@ -632,7 +653,7 @@ static bool get_next_outgoing_address(meshlink_handle_t *mesh, outgoing_t *outgo
 		}
 
 		free_outgoing_addresses(outgoing);
-		outgoing->state = OUTGOING_KNOWN_INDIRECT;
+		outgoing_advance_past_canonical(outgoing);
 	}
 
 	if(outgoing->state == OUTGOING_KNOWN_INDIRECT) {
@@ -777,6 +798,7 @@ bool connect_meta_socket(meshlink_handle_t *mesh, connection_t *c) {
 
 	c->status.connecting = true;
 	c->status.initiator = true;
+	event_loop_stamp_now(&mesh->loop);
 	c->last_ping_time = mesh->loop.now.tv_sec;
 
 	connection_add(mesh, c);

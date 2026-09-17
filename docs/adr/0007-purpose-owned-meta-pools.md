@@ -54,10 +54,40 @@ upgrade probes stay in `net_upgrade.c` and are not a second outgoing.
   intent. No known addresses retries; it does not delete a persistent
   intent.
 - Incoming backbone META inherits that durable intent
-  (`setup_outgoing_connection` attaches it; `transfer_outgoing` prefers
-  the persistent purpose).
+  (`connection_policy_bind_connection` on ACK; `setup_outgoing_connection`
+  attaches it; `transfer_outgoing` prefers the persistent purpose).
 - `conflict_backbone` nodes are refused at ACK and skipped when
   selecting a pool target.
+
+`BACKBONE_REQUIRED` has its own reconnect ladder, owned by
+`connection_policy_schedule_backbone_retry()`:
+
+```c
+static const unsigned backbone_retry_seconds[] = {
+	1, 2, 5, 10, 30, 60, 300, 900
+};
+```
+
+Delays are jittered ±20% and clamped to at least one second.
+`outgoing_t.retry_step` is the ladder index. `reset_outgoing()` does not
+clear it. ACK does not clear it. An authenticated drop resets the step
+only if that META socket stayed active for `BACKBONE_STABLE_RESET_SEC`
+(direct or canonical). Hourly key renewal restamps `last_key_renewal`
+and must not restamp `activated_at`. A refused or timed-out startup
+socket continues the current epoch (direct then canonical) and only
+then waits. Duplicate discovery/hint wakes a scheduled retry and must
+not clear `retry_step`.
+
+Each reconnect epoch keeps ADR 0003 startup: one best trusted direct
+for 250 ms, then canonical. `BACKBONE_REQUIRED` does not walk
+`OUTGOING_KNOWN_INDIRECT`. Leftover trusted directs are make-before-break
+upgrade probes (`net_upgrade.c`), not a second outgoing. Discovery or a
+hint while canonical META is already up does not zero the retry timer.
+While a retry is armed, a duplicate discovery announcement fires the
+timer immediately and leaves `retry_step` alone.
+
+The intent is created before the peer key is known and is kept when no
+endpoint is usable. Blacklist and `conflict_backbone` still drop it.
 
 Retiring an intent closes its sockets. `drop_outgoing()`:
 
@@ -76,5 +106,5 @@ Retiring an intent closes its sockets. `drop_outgoing()`:
   reserved intent and its live META.
 - ADR 0004's route ranking is unchanged. ADR 0005 still owns identity
   and the conflict bit. ADR 0006 still owns who may invite.
-- Finding 6 (retry ladder) and finding 10 (relay-hop skip of
-  `conflict_backbone`) are separate.
+- Finding 6 (retry ladder) is implemented on this same intent. Finding 10
+  (relay-hop skip of `conflict_backbone`) remains separate.
