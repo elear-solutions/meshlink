@@ -277,9 +277,11 @@ static bool outgoing_has_canonical(const outgoing_t *outgoing) {
 	return outgoing->node && outgoing->node->canonical_address;
 }
 
-/* After canonical is exhausted: LAN intents may try graph-indirect hops; backbone does not. */
+/* After canonical is exhausted: leftover generic outgoings may try graph-indirect hops;
+   backbone and LAN-resilience intents do not. */
 static void outgoing_advance_past_canonical(outgoing_t *outgoing) {
-	if(outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED) {
+	if(outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED
+	                || outgoing->purpose == META_PURPOSE_LAN_RESILIENCE) {
 		outgoing->state = OUTGOING_END;
 	} else {
 		outgoing->state = OUTGOING_KNOWN_INDIRECT;
@@ -288,6 +290,10 @@ static void outgoing_advance_past_canonical(outgoing_t *outgoing) {
 
 /* The startup budget applies only when a canonical NLB exists to fall back to. */
 static bool outgoing_is_startup_direct(const outgoing_t *outgoing) {
+	if(outgoing->purpose == META_PURPOSE_LAN_RESILIENCE) {
+		return false;
+	}
+
 	return outgoing_has_canonical(outgoing) && (outgoing->state == OUTGOING_RECENT || outgoing->state == OUTGOING_KNOWN);
 }
 
@@ -553,9 +559,37 @@ static const char *outgoing_address_source(const outgoing_t *outgoing) {
 }
 
 /* One best direct (recent[], then a known edge), then CANONICAL, then KNOWN_INDIRECT
-   (skipped for BACKBONE_REQUIRED). */
+   (skipped for BACKBONE_REQUIRED and LAN_RESILIENCE). */
 static bool get_next_outgoing_address(meshlink_handle_t *mesh, outgoing_t *outgoing) {
 	bool start = false;
+
+	if(outgoing->purpose == META_PURPOSE_LAN_RESILIENCE) {
+		sockaddr_t sa;
+		address_source_t src = ADDR_SRC_UNKNOWN;
+		const sockaddr_t *skip = outgoing->skip_sa.sa.sa_family ? &outgoing->skip_sa : NULL;
+
+		if(outgoing->state != OUTGOING_START && outgoing->state != OUTGOING_RECENT
+		                && outgoing->state != OUTGOING_KNOWN) {
+			outgoing->state = OUTGOING_END;
+			return false;
+		}
+
+		start = (outgoing->state == OUTGOING_START);
+
+		if(outgoing->direct_tries >= OUTGOING_MAX_DIRECT_TRIES
+		                || !path_best_local_meta(outgoing->node, skip, &sa, &src)) {
+			outgoing->state = start ? OUTGOING_NO_KNOWN_ADDRESSES : OUTGOING_END;
+			return false;
+		}
+
+		outgoing->direct_tries++;
+		outgoing->ai = sockaddr_to_stream_addrinfo(&sa);
+		outgoing->aip = outgoing->ai;
+		outgoing->ai_is_getaddrinfo = false;
+		outgoing->state = OUTGOING_RECENT;
+		path_copy_sockaddr(&outgoing->startup_sa, &sa);
+		return outgoing->ai != NULL;
+	}
 
 	if((outgoing->state == OUTGOING_RECENT || outgoing->state == OUTGOING_KNOWN) && !outgoing_has_canonical(outgoing)) {
 		if(outgoing->startup_sa.sa.sa_family) {
@@ -721,7 +755,17 @@ begin:
 	}
 
 	if(!connect_meta_socket(mesh, c)) {
+		sockaddr_t failed = c->address;
 		free_connection(c);
+
+		if(outgoing->purpose == META_PURPOSE_LAN_RESILIENCE) {
+			outgoing_note_failed_dest(outgoing, &failed);
+			free_outgoing_addresses(outgoing);
+			outgoing->state = OUTGOING_END;
+			logger(mesh, MESHLINK_ERROR, "Could not set up a meta connection to %s", outgoing->node->name);
+			retry_outgoing(mesh, outgoing);
+			return;
+		}
 
 		if(outgoing_is_startup_direct(outgoing)) {
 			timeout_del(&mesh->loop, &outgoing->startup_ev);
@@ -822,6 +866,10 @@ void reset_outgoing(outgoing_t *outgoing) {
 }
 
 void setup_outgoing_connection(meshlink_handle_t *mesh, outgoing_t *outgoing) {
+	if(outgoing->pending) {
+		return;
+	}
+
 	timeout_del(&mesh->loop, &outgoing->ev);
 	outgoing_abort_startup(mesh, outgoing);
 

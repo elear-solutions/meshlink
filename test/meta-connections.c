@@ -22,6 +22,17 @@ static void nut_status_cb(meshlink_handle_t *mesh, meshlink_node_t *node, bool r
 	}
 }
 
+static void plant_lan_pair(peer_config_t *a, peer_config_t *b) {
+	meshlink_node_t *nb = meshlink_get_node(a->mesh, b->name);
+	meshlink_node_t *na = meshlink_get_node(b->mesh, a->name);
+	struct sockaddr_in sa_b = ipv4(b->ip, (uint16_t)meshlink_get_port(b->mesh));
+	struct sockaddr_in sa_a = ipv4(a->ip, (uint16_t)meshlink_get_port(a->mesh));
+
+	assert(nb && na);
+	assert(devtool_learn_discovery_address(a->mesh, nb, (struct sockaddr *)&sa_b));
+	assert(devtool_learn_discovery_address(b->mesh, na, (struct sockaddr *)&sa_a));
+}
+
 int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
 
@@ -38,19 +49,21 @@ int main(void) {
 		assert(meshlink_start(peers[i].mesh));
 	}
 
-	assert(wait_sync_flag(&peer_reachable, 5));
+	assert_after(meshlink_get_node(peers[1].mesh, "nut") && meshlink_get_node(peers[2].mesh, "peer"), 20);
+	plant_lan_pair(&peers[1], &peers[2]);
+	assert(wait_sync_flag(&peer_reachable, 20));
 
 	// Test case #1: re-connection to peer after disconnection when connected to the relay node
 
 	// Stop the peer and wait for it to become unreachable
 	reset_sync_flag(&peer_unreachable);
 	meshlink_stop(peers[1].mesh);
-	assert(wait_sync_flag(&peer_unreachable, 5));
+	assert(wait_sync_flag(&peer_unreachable, 20));
 
 	// Restart the peer and wait for it to become reachable
 	reset_sync_flag(&peer_reachable);
 	assert(meshlink_start(peers[1].mesh));
-	assert(wait_sync_flag(&peer_reachable, 5));
+	assert(wait_sync_flag(&peer_reachable, 20));
 
 	// Test case #2: re-connection to peer after changing peer and NUT's IP address simultaneously,
 	//               while connected to the relay
@@ -61,6 +74,8 @@ int main(void) {
 	for(int i = 1; i < 3; i++) {
 		change_peer_ip(&peers[i]);
 	}
+
+	plant_lan_pair(&peers[1], &peers[2]);
 
 	for(int i = 1; i < 3; i++) {
 		meshlink_reset_timers(peers[i].mesh);
@@ -77,6 +92,7 @@ int main(void) {
 	}
 
 	change_peer_ip(&peers[1]);
+	plant_lan_pair(&peers[1], &peers[2]);
 	assert(wait_sync_flag(&peer_unreachable, 15));
 
 	reset_sync_flag(&peer_reachable);

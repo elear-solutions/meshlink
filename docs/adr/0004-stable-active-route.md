@@ -106,9 +106,8 @@ interval. Relay forwarding does not accelerate probing.
 - Generic `min_connects`/`max_connects` autoconnect is gone. META
   intents are purpose-owned (ADR 0007): the unique backbone initiates
   nothing; every other node owns one persistent `BACKBONE_REQUIRED`
-  intent. Demand-only local META stays until finding 7 fills the
-  reserved LAN pool.
-- A direct local META connection is opened only when traffic needs it and
-  is closed again when it is idle and a fallback exists.
+  intent and a bounded LAN-resilience overlay of at most three
+  authenticated local META adjacencies. Direct peer UDP punching stays
+  channel-demand-driven (finding 9).
 - Per-address UDP and META health matrices, planned-route generations,
   and route-driven UTCP resizing are removed.

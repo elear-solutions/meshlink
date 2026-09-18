@@ -108,6 +108,54 @@ static int address_compare(const void *va, const void *vb) {
 	return sockaddrcmp_noport(&a->address, &b->address);
 }
 
+static void discovery_fnv1a(uint64_t *h, const void *p, size_t n) {
+	const uint8_t *b = p;
+
+	while(n--) {
+		*h ^= *b++;
+		*h *= 1099511628211ULL;
+	}
+}
+
+static uint64_t discovery_address_set_fingerprint(const meshlink_handle_t *mesh) {
+	uint64_t h = 1469598103934665603ULL;
+	int i;
+
+	discovery_fnv1a(&h, &mesh->discovery.iface_count, sizeof mesh->discovery.iface_count);
+
+	for(i = 0; i < mesh->discovery.iface_count; i++) {
+		discovery_fnv1a(&h, &mesh->discovery.ifaces[i], sizeof mesh->discovery.ifaces[i]);
+	}
+
+	discovery_fnv1a(&h, &mesh->discovery.address_count, sizeof mesh->discovery.address_count);
+
+	for(i = 0; i < mesh->discovery.address_count; i++) {
+		const discovery_address_t *a = &mesh->discovery.addresses[i];
+		discovery_fnv1a(&h, &a->index, sizeof a->index);
+		discovery_fnv1a(&h, &a->up, sizeof a->up);
+		discovery_fnv1a(&h, &a->address, sizeof a->address);
+	}
+
+	return h;
+}
+
+static void discovery_commit_address_set(meshlink_handle_t *mesh) {
+	uint64_t fp = discovery_address_set_fingerprint(mesh);
+	bool first;
+
+	if(fp == mesh->discovery.addr_set_fingerprint) {
+		return;
+	}
+
+	first = !mesh->discovery.addr_set_initialized;
+	mesh->discovery.addr_set_fingerprint = fp;
+	mesh->discovery.addr_set_initialized = true;
+
+	if(!first) {
+		connection_policy_advance_network_epoch(mesh);
+	}
+}
+
 static void send_mdns_packet_ipv4(meshlink_handle_t *mesh, int fd, int index, const sockaddr_t *src, const sockaddr_t *dest, void *data, size_t len) {
 #ifdef IP_MULTICAST_IF
 	struct ip_mreqn mreq = {
@@ -541,8 +589,7 @@ void scan_ifaddrs(meshlink_handle_t *mesh) {
 		}
 
 		if(!found) {
-			(void)addr_del;
-			memmove(p, p + 1, (mesh->discovery.addresses + --mesh->discovery.address_count - p) * sizeof(*p));
+			addr_del(mesh, p);
 		} else {
 			i++;
 		}
@@ -588,6 +635,7 @@ void scan_ifaddrs(meshlink_handle_t *mesh) {
 	}
 
 	freeifaddrs(ifa);
+	discovery_commit_address_set(mesh);
 #else
 	(void)mesh;
 #endif
@@ -696,6 +744,16 @@ static void netlink_parse(meshlink_handle_t *mesh, const void *data, size_t len)
 		case RTM_NEWADDR:
 		case RTM_DELADDR:
 			netlink_parse_addr(mesh, nlm);
+			break;
+
+		case NLMSG_DONE:
+			if(nlm->nlmsg_seq == 1) {
+				netlink_getaddr(mesh->discovery.pfroute_io.fd);
+			} else if(nlm->nlmsg_seq == 2) {
+				mesh->discovery.addr_dump_complete = true;
+			}
+
+			break;
 		}
 
 		ptr += nlm->nlmsg_len;
@@ -734,6 +792,8 @@ static void netlink_io_handler(event_loop_t *loop, void *data, int flags) {
 			if(msg.nlm.nlmsg_seq == 1) {
 				// We just got the result of GETLINK, now send GETADDR.
 				netlink_getaddr(mesh->discovery.pfroute_io.fd);
+			} else if(msg.nlm.nlmsg_seq == 2) {
+				mesh->discovery.addr_dump_complete = true;
 			}
 		} else {
 			netlink_parse(mesh, &msg, result);
@@ -743,6 +803,10 @@ static void netlink_io_handler(event_loop_t *loop, void *data, int flags) {
 				handle_network_change(mesh, true);
 			}
 		}
+	}
+
+	if(mesh->discovery.addr_dump_complete) {
+		discovery_commit_address_set(mesh);
 	}
 }
 #elif defined(__APPLE__)
@@ -902,6 +966,8 @@ static void pfroute_io_handler(event_loop_t *loop, void *data, int flags) {
 			break;
 		}
 	}
+
+	discovery_commit_address_set(mesh);
 }
 #endif
 
@@ -1023,6 +1089,9 @@ void discovery_stop(meshlink_handle_t *mesh) {
 	mesh->discovery.addresses = NULL;
 	mesh->discovery.iface_count = 0;
 	mesh->discovery.address_count = 0;
+	mesh->discovery.addr_set_fingerprint = 0;
+	mesh->discovery.addr_set_initialized = false;
+	mesh->discovery.addr_dump_complete = false;
 
 #if defined(__APPLE__)
 

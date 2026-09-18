@@ -29,6 +29,7 @@
 #include "connection_policy.h"
 #include "path_policy.h"
 #include "path_policy_devtool.h"
+#include "protocol.h"
 #include "relay.h"
 #include "relay_devtool.h"
 #include "sptps.h"
@@ -696,6 +697,108 @@ bool devtool_self_initiates_meta(meshlink_handle_t *mesh) {
 	                 && !connection_policy_is_backbone(mesh, mesh->self);
 	pthread_mutex_unlock(&mesh->mutex);
 	return initiates;
+}
+
+bool devtool_learn_discovery_address(meshlink_handle_t *mesh, meshlink_node_t *node,
+                                     const struct sockaddr *addr) {
+	sockaddr_t sa;
+
+	if(!mesh || !node || !addr) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	path_copy_sockaddr(&sa, (const sockaddr_t *)addr);
+
+	if(sa.sa.sa_family == AF_UNSPEC) {
+		pthread_mutex_unlock(&mesh->mutex);
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	path_learn_address_cap(mesh, (node_t *)node, &sa, ADDR_SRC_DISCOVERY, PATH_CAP_BOTH);
+	connection_policy_on_discovery(mesh, (node_t *)node, &sa, ADDR_SRC_DISCOVERY);
+	pthread_mutex_unlock(&mesh->mutex);
+	return true;
+}
+
+unsigned devtool_lan_intent_count(meshlink_handle_t *mesh) {
+	unsigned count = 0;
+
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return 0;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	if(mesh->outgoings) {
+		for list_each(outgoing_t, outgoing, mesh->outgoings) {
+			if(outgoing->purpose == META_PURPOSE_LAN_RESILIENCE) {
+				count++;
+			}
+		}
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return count;
+}
+
+unsigned devtool_local_adjacency_count(meshlink_handle_t *mesh) {
+	unsigned count = 0;
+
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return 0;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	if(mesh->nodes) {
+		for splay_each(node_t, n, mesh->nodes) {
+			if(n != mesh->self && connection_policy_is_local_adjacency(mesh, n)) {
+				count++;
+			}
+		}
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return count;
+}
+
+bool devtool_try_ack_replace(meshlink_handle_t *mesh, meshlink_node_t *node,
+                             const struct sockaddr *from, int announced_devclass) {
+	connection_t fake;
+	node_t *n;
+	bool ok;
+
+	if(!mesh || !node || !from || announced_devclass < 0 || announced_devclass >= DEV_CLASS_COUNT) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	n = (node_t *)node;
+	memset(&fake, 0, sizeof fake);
+	fake.name = n->name;
+	fake.mesh = mesh;
+	path_copy_sockaddr(&fake.address, (const sockaddr_t *)from);
+
+	ok = ack_replace_if_admitted(mesh, &fake, announced_devclass, false);
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return ok;
 }
 
 void devtool_set_node_devclass(meshlink_handle_t *mesh, meshlink_node_t *node, int devclass) {

@@ -5337,6 +5337,8 @@ void meshlink_hint_network_change(struct meshlink_handle *mesh) {
 		abort();
 	}
 
+	connection_policy_advance_network_epoch(mesh);
+
 	if(mesh->discovery.enabled) {
 		scan_ifaddrs(mesh);
 	}

@@ -16,7 +16,7 @@
 #define SMALL_SIZE 512
 #define SMALL_COUNT 2500
 #define LARGE_SIZE 131072
-#define LARGE_ATTEMPTS 3
+#define LARGE_ATTEMPTS 10
 
 static struct sync_flag accept_flag;
 
@@ -138,8 +138,22 @@ int main(void) {
 	char large_data[LARGE_SIZE] = "";
 
 	for(int attempt = 0; attempt < LARGE_ATTEMPTS; attempt++) {
+		bool all_large = true;
+
 		for(int i = 0; i < 3; i++) {
 			assert(meshlink_channel_send(server, channels[i], large_data, sizeof(large_data)) == sizeof(large_data));
+		}
+
+		nanosleep(&(struct timespec) {
+			0, 200000000L
+		}, NULL);
+
+		for(int i = 0; i < 3; i++) {
+			all_large = all_large && clients[i].got_large_packet;
+		}
+
+		if(all_large) {
+			break;
 		}
 	}
 

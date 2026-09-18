@@ -1044,6 +1044,52 @@ bool path_best_direct_meta(const node_t *n, const sockaddr_t *skip, sockaddr_t *
 	return false;
 }
 
+static bool path_best_local_meta_from(const node_t *n, const sockaddr_t *skip, sockaddr_t *out, address_source_t *src_out, address_source_t want) {
+	for(int i = 0; i < MAX_RECENT && n->recent[i].sa.sa_family; i++) {
+		address_source_t src = n->recent_source[i];
+
+		if(src != want) {
+			continue;
+		}
+
+		if(!path_address_is_local(&n->recent[i])) {
+			continue;
+		}
+
+		if(!path_is_meta_candidate(n, &n->recent[i], src, n->recent_cap[i])) {
+			continue;
+		}
+
+		if(skip && !sockaddrcmp(&n->recent[i], skip)) {
+			continue;
+		}
+
+		path_copy_sockaddr(out, &n->recent[i]);
+
+		if(src_out) {
+			*src_out = src;
+		}
+
+		return true;
+	}
+
+	return false;
+}
+
+bool path_best_local_meta(const node_t *n, const sockaddr_t *skip, sockaddr_t *out, address_source_t *src_out) {
+	if(!n || !out) {
+		return false;
+	}
+
+	/* Prefer DISCOVERY (listen port) over AUTH_DIRECT (often an inbound
+	   ephemeral). Tick/setup must not redial a closed source port. */
+	if(path_best_local_meta_from(n, skip, out, src_out, ADDR_SRC_DISCOVERY)) {
+		return true;
+	}
+
+	return path_best_local_meta_from(n, skip, out, src_out, ADDR_SRC_AUTH_DIRECT);
+}
+
 bool path_best_startup_meta(const node_t *n, const sockaddr_t *skip, sockaddr_t *out, address_source_t *src_out) {
 	if(path_best_direct_meta(n, skip, out, src_out)) {
 		return true;

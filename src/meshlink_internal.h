@@ -129,6 +129,8 @@ struct meshlink_handle {
 	struct list_t *outgoings;
 	struct list_t *submeshes;
 	bool retiring_outgoing;                 /* drop_outgoing is in progress; skip recursive tick/retry */
+	bool connection_policy_busy;            /* tick is on the stack; skip nested fill/setup */
+	bool lan_epoch_retiring;                /* epoch advance is closing LAN sockets; no AUTH_DIRECT grace */
 	struct connection_t *protocol_connection; /* META socket whose IO handler is on the stack */
 
 	// Meta-connection-related members
@@ -175,6 +177,7 @@ struct meshlink_handle {
 
 	dev_class_t devclass;
 	backbone_identity_t backbone;
+	uint64_t lan_network_epoch;           /* Bumped on interface/network change; 0 is never current */
 
 	int invitation_timeout;
 
@@ -210,6 +213,9 @@ struct meshlink_handle {
 		int address_count;
 		io_t sockets[2];
 		time_t last_update;
+		uint64_t addr_set_fingerprint; /* FNV-1a of ifaces + addresses; 0 until first commit */
+		bool addr_set_initialized;
+		bool addr_dump_complete;       /* Linux: GETADDR dump finished; later batches may advance epoch */
 #ifdef __APPLE__
 		pthread_t thread;
 		void *runloop;

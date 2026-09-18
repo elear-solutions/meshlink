@@ -190,6 +190,8 @@ void path_plant_recent(struct node_t *n, const sockaddr_t *sa);
 bool path_sanitize_recent(struct meshlink_handle *mesh, struct node_t *n);
 
 bool path_best_direct_meta(const struct node_t *n, const sockaddr_t *skip, sockaddr_t *out, address_source_t *src_out);
+/* Local META pick: DISCOVERY or AUTH_DIRECT, path_address_is_local, META-capable. No EDGE_DIRECT. */
+bool path_best_local_meta(const struct node_t *n, const sockaddr_t *skip, sockaddr_t *out, address_source_t *src_out);
 /* One startup META pick: best recent[] candidate, else a direct known edge. */
 bool path_best_startup_meta(const struct node_t *n, const sockaddr_t *skip, sockaddr_t *out, address_source_t *src_out);
 bool path_has_direct_meta_candidate(const struct node_t *n, const sockaddr_t *skip);

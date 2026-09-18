@@ -31,6 +31,7 @@ void connection_policy_init(meshlink_handle_t *mesh) {
 	mesh->backbone.name = NULL;
 	mesh->backbone.node = NULL;
 	mesh->allow_peer_bootstrap = false;
+	mesh->lan_network_epoch = 1;
 }
 
 void connection_policy_exit(meshlink_handle_t *mesh) {
@@ -462,6 +463,404 @@ static bool backbone_target_ok(const node_t *bb) {
 	       && bb->devclass == DEV_CLASS_BACKBONE;
 }
 
+bool connection_policy_lan_device_class(int devclass) {
+	return devclass == DEV_CLASS_STATIONARY || devclass == DEV_CLASS_PORTABLE;
+}
+
+static bool local_candidate_with_class(const node_t *node,
+                                       const sockaddr_t *address,
+                                       address_source_t source,
+                                       path_cap_t capability,
+                                       int devclass) {
+	if(!node || !address) {
+		return false;
+	}
+
+	if(node->status.blacklisted || node->status.conflict_backbone) {
+		return false;
+	}
+
+	if(!connection_policy_lan_device_class(devclass)) {
+		return false;
+	}
+
+	return path_address_is_local(address)
+	       && (capability & PATH_CAP_META)
+	       && (source == ADDR_SRC_DISCOVERY || source == ADDR_SRC_AUTH_DIRECT);
+}
+
+bool connection_policy_local_candidate(const node_t *node,
+                                       const sockaddr_t *address,
+                                       address_source_t source,
+                                       path_cap_t capability) {
+	if(!node) {
+		return false;
+	}
+
+	return local_candidate_with_class(node, address, source, capability, node->devclass);
+}
+
+static bool connection_looks_like_lan_meta(const meshlink_handle_t *mesh, const connection_t *c) {
+	if(!mesh || !c || !c->status.active || c->status.drain_only || c->status.upgrade_probe) {
+		return false;
+	}
+
+	if(!c->node || c->node == mesh->self) {
+		return false;
+	}
+
+	if(connection_policy_is_backbone(mesh, c->node)
+	                || !connection_policy_lan_device_class(c->node->devclass)) {
+		return false;
+	}
+
+	return path_address_is_local(&c->address);
+}
+
+static bool connection_is_local_adjacency(const meshlink_handle_t *mesh, const connection_t *c) {
+	if(!connection_looks_like_lan_meta(mesh, c)) {
+		return false;
+	}
+
+	return c->node->lan_admitted_epoch == mesh->lan_network_epoch;
+}
+
+bool connection_policy_is_local_adjacency(const meshlink_handle_t *mesh, const node_t *n) {
+	if(!mesh || !n || !n->connection) {
+		return false;
+	}
+
+	return connection_is_local_adjacency(mesh, n->connection);
+}
+
+static bool node_has_local_source(const node_t *n, address_source_t want) {
+	int i;
+
+	if(!n) {
+		return false;
+	}
+
+	for(i = 0; i < MAX_RECENT && n->recent[i].sa.sa_family; i++) {
+		if(n->recent_source[i] != want) {
+			continue;
+		}
+
+		if(connection_policy_local_candidate(n, &n->recent[i], n->recent_source[i], n->recent_cap[i])) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static bool node_has_current_discovery(const meshlink_handle_t *mesh, const node_t *n) {
+	if(!mesh || !n || !n->lan_presence.last_discovered_at) {
+		return false;
+	}
+
+	return n->lan_presence.network_epoch == mesh->lan_network_epoch;
+}
+
+static bool node_has_auth_direct_grace(const meshlink_handle_t *mesh, const node_t *n) {
+	if(!mesh || !n || !n->lan_auth_direct_until) {
+		return false;
+	}
+
+	if(mesh->loop.now.tv_sec >= n->lan_auth_direct_until) {
+		return false;
+	}
+
+	return node_has_local_source(n, ADDR_SRC_AUTH_DIRECT);
+}
+
+static bool node_is_lan_eligible(const meshlink_handle_t *mesh, const node_t *n, const sockaddr_t *extra_addr, int extra_devclass) {
+	int devclass;
+
+	if(!mesh || !n || !n->name) {
+		return false;
+	}
+
+	if(n->status.blacklisted || n->status.conflict_backbone) {
+		return false;
+	}
+
+	if(connection_policy_is_backbone(mesh, n)) {
+		return false;
+	}
+
+	if(n == mesh->self) {
+		return connection_policy_lan_device_class(n->devclass);
+	}
+
+	devclass = extra_devclass >= 0 ? extra_devclass : (int)n->devclass;
+
+	if(!connection_policy_lan_device_class(devclass)) {
+		return false;
+	}
+
+	if(connection_policy_is_local_adjacency(mesh, n)) {
+		return true;
+	}
+
+	(void)extra_addr;
+
+	if(node_has_current_discovery(mesh, n)) {
+		return true;
+	}
+
+	return node_has_auth_direct_grace(mesh, n);
+}
+
+static int cmp_node_name(const void *a, const void *b) {
+	const node_t *na = *(const node_t *const *)a;
+	const node_t *nb = *(const node_t *const *)b;
+
+	return strcmp(na->name, nb->name);
+}
+
+static unsigned lan_pick_desired(node_t *self, node_t **names, unsigned n, node_t **desired) {
+	unsigned nd = 0;
+	unsigned i, pred, succ, j;
+
+	if(!self || !names || !desired || n < 2) {
+		return 0;
+	}
+
+	for(i = 0; i < n; i++) {
+		if(names[i] == self) {
+			break;
+		}
+	}
+
+	if(i >= n) {
+		return 0;
+	}
+
+	succ = (i + 1) % n;
+	desired[nd++] = names[succ];
+
+	pred = succ;
+
+	if(n >= 3) {
+		pred = (i + n - 1) % n;
+
+		if(names[pred] != names[succ]) {
+			desired[nd++] = names[pred];
+		}
+	}
+
+	if(n >= 4 && nd < META_LAN_RESILIENCE_MAX) {
+		if(n % 2 == 0) {
+			j = (i + n / 2) % n;
+		} else if(i < n - 1) {
+			j = (i + (n - 1) / 2) % (n - 1);
+		} else {
+			j = i;
+		}
+
+		if(j != i && j != succ && j != pred) {
+			desired[nd++] = names[j];
+		}
+	}
+
+	return nd;
+}
+
+static bool node_in_desired(node_t **desired, unsigned nd, const node_t *n) {
+	unsigned i;
+
+	for(i = 0; i < nd; i++) {
+		if(desired[i] == n) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static unsigned lan_desired_peers(meshlink_handle_t *mesh, node_t *extra, const sockaddr_t *extra_addr, int extra_devclass, node_t **desired) {
+	node_t **cand;
+	unsigned nc = 0;
+	unsigned nd = 0;
+	unsigned max;
+
+	if(!mesh || !mesh->self || !mesh->nodes || !desired) {
+		return 0;
+	}
+
+	max = mesh->nodes->count;
+
+	if(!max) {
+		return 0;
+	}
+
+	cand = xzalloc(max * sizeof(*cand));
+
+	for splay_each(node_t, n, mesh->nodes) {
+		const sockaddr_t *ea = extra == n ? extra_addr : NULL;
+		int dc = extra == n ? extra_devclass : -1;
+
+		if(node_is_lan_eligible(mesh, n, ea, dc)) {
+			cand[nc++] = n;
+		}
+	}
+
+	if(nc >= 2) {
+		qsort(cand, nc, sizeof(*cand), cmp_node_name);
+		nd = lan_pick_desired(mesh->self, cand, nc, desired);
+	}
+
+	free(cand);
+	return nd;
+}
+
+static unsigned local_adjacency_count(const meshlink_handle_t *mesh) {
+	unsigned count = 0;
+
+	if(!mesh || !mesh->nodes) {
+		return 0;
+	}
+
+	for splay_each(node_t, n, mesh->nodes) {
+		if(n != mesh->self && connection_policy_is_local_adjacency(mesh, n)) {
+			count++;
+		}
+	}
+
+	return count;
+}
+
+static node_t *least_preferred_extra(meshlink_handle_t *mesh, node_t **desired, unsigned nd) {
+	node_t *worst = NULL;
+
+	if(!mesh || !mesh->nodes) {
+		return NULL;
+	}
+
+	for splay_each(node_t, n, mesh->nodes) {
+		if(n == mesh->self || !connection_policy_is_local_adjacency(mesh, n)) {
+			continue;
+		}
+
+		if(node_in_desired(desired, nd, n)) {
+			continue;
+		}
+
+		if(!worst || strcmp(n->name, worst->name) > 0) {
+			worst = n;
+		}
+	}
+
+	return worst;
+}
+
+static bool node_has_meta_socket(const meshlink_handle_t *mesh, const node_t *n) {
+	if(!n) {
+		return false;
+	}
+
+	if(n->connection) {
+		return true;
+	}
+
+	if(!mesh || !mesh->connections || !n->name) {
+		return false;
+	}
+
+	for list_each(connection_t, c, mesh->connections) {
+		if(c->status.drain_only) {
+			continue;
+		}
+
+		if(c->node == n) {
+			return true;
+		}
+
+		if(c->name && !strcmp(c->name, n->name)) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static void retire_local_adjacency(meshlink_handle_t *mesh, node_t *n) {
+	outgoing_t *o;
+	connection_t *c;
+
+	if(!mesh || !n) {
+		return;
+	}
+
+	o = find_outgoing_for_node(mesh, n);
+
+	if(o && o->purpose != META_PURPOSE_BACKBONE_REQUIRED) {
+		drop_outgoing(mesh, o);
+		return;
+	}
+
+	c = n->connection;
+
+	if(!c) {
+		return;
+	}
+
+	mesh->retiring_outgoing = true;
+	close_retired_socket(mesh, c);
+	mesh->retiring_outgoing = false;
+}
+
+static void retire_lan_overlay(meshlink_handle_t *mesh) {
+	outgoing_t **intents = NULL;
+	unsigned ni = 0;
+	unsigned i;
+	node_t **nodes = NULL;
+	unsigned nn = 0;
+
+	if(!mesh) {
+		return;
+	}
+
+	if(mesh->outgoings && mesh->outgoings->count) {
+		intents = xzalloc(mesh->outgoings->count * sizeof(*intents));
+
+		for list_each(outgoing_t, outgoing, mesh->outgoings) {
+			if(outgoing->purpose == META_PURPOSE_LAN_RESILIENCE) {
+				intents[ni++] = outgoing;
+			}
+		}
+
+		for(i = 0; i < ni; i++) {
+			drop_outgoing(mesh, intents[i]);
+		}
+
+		free(intents);
+	}
+
+	if(!mesh->nodes || !mesh->nodes->count) {
+		return;
+	}
+
+	nodes = xzalloc(mesh->nodes->count * sizeof(*nodes));
+
+	for splay_each(node_t, n, mesh->nodes) {
+		if(n == mesh->self || !n->connection) {
+			continue;
+		}
+
+		if(connection_looks_like_lan_meta(mesh, n->connection)) {
+			nodes[nn++] = n;
+		}
+	}
+
+	for(i = 0; i < nn; i++) {
+		nodes[i]->lan_admitted_epoch = 0;
+		retire_local_adjacency(mesh, nodes[i]);
+	}
+
+	free(nodes);
+}
+
 static const unsigned backbone_retry_seconds[] = {
 	1, 2, 5, 10, 30, 60, 300, 900
 };
@@ -515,13 +914,28 @@ void connection_policy_schedule_backbone_retry(meshlink_handle_t *mesh, outgoing
 void connection_policy_bind_connection(meshlink_handle_t *mesh, connection_t *c) {
 	outgoing_t *intent;
 
-	if(!mesh || !c || !c->node || !connection_policy_is_backbone(mesh, c->node)) {
+	if(!mesh || !c || !c->node) {
 		return;
 	}
 
-	intent = find_outgoing_for_purpose(mesh, META_PURPOSE_BACKBONE_REQUIRED);
+	if(connection_policy_is_backbone(mesh, c->node)) {
+		intent = find_outgoing_for_purpose(mesh, META_PURPOSE_BACKBONE_REQUIRED);
 
-	if(!intent || intent->node != c->node) {
+		if(!intent || intent->node != c->node) {
+			return;
+		}
+
+		if(c->outgoing && c->outgoing != intent) {
+			return;
+		}
+
+		c->outgoing = intent;
+		return;
+	}
+
+	intent = find_outgoing_for_node(mesh, c->node);
+
+	if(!intent || intent->purpose != META_PURPOSE_LAN_RESILIENCE) {
 		return;
 	}
 
@@ -561,10 +975,238 @@ static void ensure_backbone_outgoing(meshlink_handle_t *mesh, node_t *bb, bool m
 	}
 }
 
-void connection_policy_tick(meshlink_handle_t *mesh) {
-	if(!mesh || !mesh->self || !mesh->outgoings || mesh->retiring_outgoing) {
+static bool lan_outgoing_in_flight(meshlink_handle_t *mesh, const outgoing_t *outgoing) {
+	return outgoing->pending
+	       || outgoing->ev.cb
+	       || node_has_meta_socket(mesh, outgoing->node);
+}
+
+static void ensure_lan_outgoing(meshlink_handle_t *mesh, node_t *peer, bool may_dial) {
+	outgoing_t *existing = find_outgoing_for_node(mesh, peer);
+
+	if(existing) {
+		if(existing->purpose == META_PURPOSE_BACKBONE_REQUIRED) {
+			return;
+		}
+
+		existing->purpose = META_PURPOSE_LAN_RESILIENCE;
+
+		/* Never setup() an existing LAN intent from tick: abort_startup
+		   nulls pending and c->outgoing before terminate, nested tick then
+		   sees !in_flight and SYN-floods. Redial only via the retry timer. */
+		if(may_dial && !lan_outgoing_in_flight(mesh, existing)) {
+			int delay = existing->timeout > 0 ? existing->timeout : 1;
+
+			outgoing_arm_retry(mesh, existing, delay);
+		}
+
 		return;
 	}
+
+	outgoing_t *outgoing = xzalloc(sizeof(outgoing_t));
+	outgoing->node = peer;
+	outgoing->purpose = META_PURPOSE_LAN_RESILIENCE;
+	list_insert_tail(mesh->outgoings, outgoing);
+
+	if(may_dial && !node_has_meta_socket(mesh, peer)) {
+		setup_outgoing_connection(mesh, outgoing);
+	}
+}
+
+static void fill_lan_overlay(meshlink_handle_t *mesh) {
+	node_t *desired[META_LAN_RESILIENCE_MAX];
+	unsigned nd;
+	unsigned i;
+
+	if(!mesh->nodes) {
+		return;
+	}
+
+	for list_each(outgoing_t, outgoing, mesh->outgoings) {
+		if(outgoing->purpose != META_PURPOSE_BACKBONE_REQUIRED
+		                && outgoing->purpose != META_PURPOSE_LAN_RESILIENCE) {
+			drop_outgoing(mesh, outgoing);
+		}
+	}
+
+	nd = lan_desired_peers(mesh, NULL, NULL, -1, desired);
+
+	for list_each(outgoing_t, outgoing, mesh->outgoings) {
+		if(outgoing->purpose != META_PURPOSE_LAN_RESILIENCE) {
+			continue;
+		}
+
+		if(!node_in_desired(desired, nd, outgoing->node)) {
+			drop_outgoing(mesh, outgoing);
+		}
+	}
+
+	while(local_adjacency_count(mesh) > META_LAN_RESILIENCE_MAX) {
+		node_t *extra = least_preferred_extra(mesh, desired, nd);
+
+		if(!extra) {
+			break;
+		}
+
+		retire_local_adjacency(mesh, extra);
+	}
+
+	for(i = 0; i < nd; i++) {
+		node_t *peer = desired[i];
+		sockaddr_t sa;
+		bool may_dial;
+
+		if(strcmp(mesh->self->name, peer->name) >= 0) {
+			continue;
+		}
+
+		if(!node_read_public_key(mesh, peer)) {
+			if(peer->status.reachable) {
+				send_req_key(mesh, peer);
+			}
+
+			ensure_lan_outgoing(mesh, peer, false);
+			continue;
+		}
+
+		may_dial = path_best_local_meta(peer, NULL, &sa, NULL)
+		           || connection_policy_is_local_adjacency(mesh, peer)
+		           || node_has_meta_socket(mesh, peer);
+		ensure_lan_outgoing(mesh, peer, may_dial);
+	}
+}
+
+static bool node_would_conflict_backbone(const meshlink_handle_t *mesh, const node_t *n, int announced) {
+	bool named;
+	bool extra;
+	bool wrong_class;
+
+	if(!mesh || !n) {
+		return false;
+	}
+
+	named = mesh->backbone.name && n->name && !strcmp(n->name, mesh->backbone.name);
+	extra = announced == DEV_CLASS_BACKBONE && !named
+	        && (mesh->backbone.name || connection_policy_backbone_class_count(mesh) >= 2);
+	wrong_class = named && announced != DEV_CLASS_BACKBONE;
+	return extra || wrong_class;
+}
+
+static bool admit_incoming_eval(meshlink_handle_t *mesh, connection_t *c, node_t *n, int announced_devclass, bool apply_side_effects) {
+	node_t *desired[META_LAN_RESILIENCE_MAX];
+	unsigned nd;
+	bool desired_peer;
+	unsigned degree;
+
+	if(mesh->self->devclass == DEV_CLASS_BACKBONE || connection_policy_is_backbone(mesh, mesh->self)) {
+		return true;
+	}
+
+	if(connection_policy_is_backbone(mesh, n)) {
+		return true;
+	}
+
+	if(c->status.upgrade_probe) {
+		return true;
+	}
+
+	if(!connection_policy_lan_device_class(mesh->self->devclass)) {
+		return false;
+	}
+
+	if(!local_candidate_with_class(n, &c->address, ADDR_SRC_AUTH_DIRECT, PATH_CAP_BOTH, announced_devclass)) {
+		return false;
+	}
+
+	if(!node_is_lan_eligible(mesh, n, NULL, announced_devclass)) {
+		return false;
+	}
+
+	nd = lan_desired_peers(mesh, n, &c->address, announced_devclass, desired);
+	desired_peer = node_in_desired(desired, nd, n);
+	degree = local_adjacency_count(mesh);
+
+	if(connection_policy_is_local_adjacency(mesh, n)) {
+		if(apply_side_effects) {
+			n->lan_admitted_epoch = mesh->lan_network_epoch;
+		}
+
+		return true;
+	}
+
+	if(desired_peer || degree < META_LAN_RESILIENCE_MAX) {
+		if(desired_peer && degree >= META_LAN_RESILIENCE_MAX) {
+			node_t *extra;
+
+			if(!apply_side_effects) {
+				return true;
+			}
+
+			extra = least_preferred_extra(mesh, desired, nd);
+
+			if(!extra) {
+				return false;
+			}
+
+			retire_local_adjacency(mesh, extra);
+		}
+
+		if(apply_side_effects) {
+			n->lan_admitted_epoch = mesh->lan_network_epoch;
+		}
+
+		return true;
+	}
+
+	return false;
+}
+
+bool connection_policy_may_accept_incoming(meshlink_handle_t *mesh, connection_t *c, int announced_devclass) {
+	node_t *n;
+
+	if(!mesh || !c || !mesh->self) {
+		return false;
+	}
+
+	n = c->node ? c->node : (c->name ? lookup_node(mesh, c->name) : NULL);
+
+	if(!n) {
+		return false;
+	}
+
+	if(node_would_conflict_backbone(mesh, n, announced_devclass)) {
+		return false;
+	}
+
+	return admit_incoming_eval(mesh, c, n, announced_devclass, false);
+}
+
+bool connection_policy_admit_incoming(meshlink_handle_t *mesh, connection_t *c, int announced_devclass) {
+	node_t *n;
+
+	if(!mesh || !c || !mesh->self) {
+		return false;
+	}
+
+	n = c->node ? c->node : (c->name ? lookup_node(mesh, c->name) : NULL);
+
+	if(!n) {
+		return false;
+	}
+
+	if(node_would_conflict_backbone(mesh, n, announced_devclass)) {
+		return false;
+	}
+
+	return admit_incoming_eval(mesh, c, n, announced_devclass, true);
+}
+
+void connection_policy_tick(meshlink_handle_t *mesh) {
+	if(!mesh || !mesh->self || !mesh->outgoings || mesh->retiring_outgoing || mesh->connection_policy_busy || mesh->lan_epoch_retiring) {
+		return;
+	}
+
+	mesh->connection_policy_busy = true;
 
 	/* Any BACKBONE-class node, including a conflicted extra, initiates nothing. */
 	if(mesh->self->devclass == DEV_CLASS_BACKBONE || connection_policy_is_backbone(mesh, mesh->self)) {
@@ -572,14 +1214,7 @@ void connection_policy_tick(meshlink_handle_t *mesh) {
 			drop_outgoing(mesh, outgoing);
 		}
 
-		return;
-	}
-
-	/* Finding 7 fills LAN. Finding 5 keeps only BACKBONE_REQUIRED. */
-	for list_each(outgoing_t, outgoing, mesh->outgoings) {
-		if(outgoing->purpose != META_PURPOSE_BACKBONE_REQUIRED) {
-			drop_outgoing(mesh, outgoing);
-		}
+		goto done;
 	}
 
 	node_t *bb = connection_policy_backbone(mesh);
@@ -590,35 +1225,58 @@ void connection_policy_tick(meshlink_handle_t *mesh) {
 				drop_outgoing(mesh, outgoing);
 			}
 		}
+	} else {
+		for list_each(outgoing_t, outgoing, mesh->outgoings) {
+			if(outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED && outgoing->node != bb) {
+				drop_outgoing(mesh, outgoing);
+			}
+		}
 
-		return;
-	}
+		if(!node_read_public_key(mesh, bb)) {
+			if(bb->status.reachable) {
+				send_req_key(mesh, bb);
+			}
 
-	for list_each(outgoing_t, outgoing, mesh->outgoings) {
-		if(outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED && outgoing->node != bb) {
-			drop_outgoing(mesh, outgoing);
+			ensure_backbone_outgoing(mesh, bb, false);
+		} else {
+			ensure_backbone_outgoing(mesh, bb, true);
 		}
 	}
 
-	if(!node_read_public_key(mesh, bb)) {
-		if(bb->status.reachable) {
-			send_req_key(mesh, bb);
+	if(connection_policy_lan_device_class(mesh->self->devclass)) {
+		fill_lan_overlay(mesh);
+	} else {
+		for list_each(outgoing_t, outgoing, mesh->outgoings) {
+			if(outgoing->purpose == META_PURPOSE_LAN_RESILIENCE) {
+				drop_outgoing(mesh, outgoing);
+			}
 		}
-
-		ensure_backbone_outgoing(mesh, bb, false);
-		return;
 	}
 
-	ensure_backbone_outgoing(mesh, bb, true);
+done:
+	mesh->connection_policy_busy = false;
 }
 
 void connection_policy_on_discovery(meshlink_handle_t *mesh, node_t *node,
                                     const sockaddr_t *address, address_source_t source) {
-	(void)address;
-	(void)source;
-
 	if(!mesh || !node) {
 		return;
+	}
+
+	if(source == ADDR_SRC_DISCOVERY && address && path_address_is_local(address)) {
+		time_t now = mesh->loop.now.tv_sec;
+
+		if(now <= 0) {
+			event_loop_stamp_now(&mesh->loop);
+			now = mesh->loop.now.tv_sec;
+		}
+
+		if(now <= 0) {
+			now = 1;
+		}
+
+		node->lan_presence.network_epoch = mesh->lan_network_epoch;
+		node->lan_presence.last_discovered_at = now;
 	}
 
 	node->last_connect_try = 0;
@@ -634,12 +1292,16 @@ void connection_policy_on_discovery(meshlink_handle_t *mesh, node_t *node,
 				continue;
 			}
 
+			if(outgoing->purpose == META_PURPOSE_LAN_RESILIENCE) {
+				continue;
+			}
+
 			if(outgoing->purpose != META_PURPOSE_BACKBONE_REQUIRED) {
 				outgoing->timeout = 0;
 			}
 
 			/* Wake a scheduled retry. Keep retry_step. Do not abort a
-			   pending connect or invent a second dial. */
+			   pending connect or invent a second dial. LAN keeps its backoff. */
 			if(outgoing->ev.cb && !outgoing->pending) {
 				timeout_set(&mesh->loop, &outgoing->ev, &(struct timespec) {
 					0, 0
@@ -651,12 +1313,44 @@ void connection_policy_on_discovery(meshlink_handle_t *mesh, node_t *node,
 	connection_policy_tick(mesh);
 }
 
+void connection_policy_advance_network_epoch(meshlink_handle_t *mesh) {
+	if(!mesh) {
+		return;
+	}
+
+	mesh->lan_epoch_retiring = true;
+	mesh->lan_network_epoch++;
+
+	if(!mesh->lan_network_epoch) {
+		mesh->lan_network_epoch = 1;
+	}
+
+	if(mesh->nodes) {
+		for splay_each(node_t, n, mesh->nodes) {
+			n->lan_auth_direct_until = 0;
+			n->lan_admitted_epoch = 0;
+		}
+	}
+
+	retire_lan_overlay(mesh);
+	mesh->lan_epoch_retiring = false;
+	connection_policy_tick(mesh);
+}
+
+void connection_policy_note_lan_drop(meshlink_handle_t *mesh, node_t *n) {
+	if(!mesh || !n || mesh->lan_epoch_retiring) {
+		return;
+	}
+
+	n->lan_auth_direct_until = mesh->loop.now.tv_sec + LAN_AUTH_DIRECT_GRACE_SEC;
+}
+
 void connection_policy_on_connection_closed(meshlink_handle_t *mesh, node_t *node,
                 meta_connection_purpose_t purpose) {
 	(void)node;
 	(void)purpose;
 
-	if(!mesh || mesh->retiring_outgoing) {
+	if(!mesh || mesh->retiring_outgoing || mesh->lan_epoch_retiring) {
 		return;
 	}
 

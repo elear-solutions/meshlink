@@ -8,6 +8,7 @@ typedef struct peer_config {
 	char *netns_name;
 	int netns;
 	meshlink_handle_t *mesh;
+	char ip[32];
 } peer_config_t;
 
 extern void change_peer_ip(peer_config_t *peer);

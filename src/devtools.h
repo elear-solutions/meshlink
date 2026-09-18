@@ -222,6 +222,23 @@ void devtool_set_node_devclass(meshlink_handle_t *mesh, meshlink_node_t *node, i
  */
 void devtool_set_allow_peer_bootstrap(meshlink_handle_t *mesh, bool allow);
 
+/// Plant a local DISCOVERY address and run connection-policy discovery (LAN overlay tests).
+bool devtool_learn_discovery_address(meshlink_handle_t *mesh, meshlink_node_t *node,
+                                     const struct sockaddr *addr);
+
+/// Number of LAN_RESILIENCE outgoings.
+unsigned devtool_lan_intent_count(meshlink_handle_t *mesh);
+
+/// Number of authenticated local META adjacencies (in+out, unique peers, excluding backbone).
+unsigned devtool_local_adjacency_count(meshlink_handle_t *mesh);
+
+/// Run ack_h's admit-then-replace sequence for a synthetic socket to node.
+/** Does not mutate node state when the candidate is refused. Used to prove a
+ *  rejected WAN duplicate cannot disturb an existing local adjacency.
+ */
+bool devtool_try_ack_replace(meshlink_handle_t *mesh, meshlink_node_t *node,
+                             const struct sockaddr *from, int announced_devclass);
+
 /// Free the memory allocated by devtool_get_node_status.
 /** This function frees the dynamically allocated strings in a devtool_node_status_t struct.
  *  Call this function when you're done with the status data to prevent memory leaks.

@@ -36,13 +36,14 @@ typedef enum meta_connection_purpose_t {
 } meta_connection_purpose_t;
 
 static inline bool meta_purpose_is_persistent(meta_connection_purpose_t purpose) {
-	return purpose == META_PURPOSE_BACKBONE_REQUIRED;
+	return purpose == META_PURPOSE_BACKBONE_REQUIRED
+	       || purpose == META_PURPOSE_LAN_RESILIENCE;
 }
 ```
 
-`META_PURPOSE_NONE` is the unset value. Finding 5 does not create LAN or
-handover intents. Finding 7 fills the reserved LAN pool. ADR 0003
-upgrade probes stay in `net_upgrade.c` and are not a second outgoing.
+`META_PURPOSE_NONE` is the unset value. Finding 7 filled the LAN
+resilience pool. ADR 0003 upgrade probes stay in `net_upgrade.c` and
+are not a second outgoing.
 
 `connection_policy_tick()` is the only balancer:
 
@@ -56,6 +57,28 @@ upgrade probes stay in `net_upgrade.c` and are not a second outgoing.
 - Incoming backbone META inherits that durable intent
   (`connection_policy_bind_connection` on ACK; `setup_outgoing_connection`
   attaches it; `transfer_outgoing` prefers the persistent purpose).
+- Stationary and portable nodes also keep a bounded LAN overlay: at most
+  `META_LAN_RESILIENCE_MAX` (3) authenticated local META adjacencies,
+  selected as a name-sorted ring plus one involution chord. Only the
+  lexicographically smaller name dials. Incoming sockets count toward
+  the cap. Candidates require a local DISCOVERY or AUTH_DIRECT META
+  address; HINT, EDGE, and canonical never qualify. Overlay membership
+  is `DEV_CLASS_STATIONARY` or `DEV_CLASS_PORTABLE` only, including
+  self eligibility and the announced class on incoming ACK.
+- A node is LAN-eligible only with a live local adjacency admitted in the
+  current `lan_network_epoch`, current-epoch DISCOVERY (no wall-clock
+  lease), or a short `LAN_AUTH_DIRECT_GRACE_SEC` after a local drop on
+  the same epoch. Persisted `recent[]` DISCOVERY/AUTH_DIRECT is not
+  presence. Epoch advance retires every `LAN_RESILIENCE` intent and
+  remaining local META socket and does not grant AUTH_DIRECT grace.
+  Overlay rebuild waits for fresh DISCOVERY in the new epoch.
+  `meshlink_hint_network_change` always advances the epoch. Interface
+  up/down and address add/del are batched: the epoch advances once when
+  the effective local address set changes.
+- Incoming ACK runs a side-effect-free admission check with the
+  announced device class before `replace_existing_connection()`. A
+  refused WAN/non-local duplicate cannot close an existing local
+  adjacency.
 - `conflict_backbone` nodes are refused at ACK and skipped when
   selecting a pool target.
 
@@ -100,11 +123,13 @@ Retiring an intent closes its sockets. `drop_outgoing()`:
 
 ## Consequences
 
-- Production topology after finding 5 is a star. Camera-to-camera META
-  waits for finding 7.
+- Production topology is a star plus a bounded local overlay. Cameras
+  keep one `BACKBONE_REQUIRED` intent and at most three local META
+  adjacencies so the LAN remains connected if the backbone is gone.
 - A stored backbone that is reclassified or conflicted drops both the
   reserved intent and its live META.
 - ADR 0004's route ranking is unchanged. ADR 0005 still owns identity
   and the conflict bit. ADR 0006 still owns who may invite.
-- Finding 6 (retry ladder) is implemented on this same intent. Finding 10
-  (relay-hop skip of `conflict_backbone`) remains separate.
+- Finding 6 (retry ladder) is implemented on the backbone intent.
+  LAN uses the generic outgoing retry. Finding 10 (relay-hop skip of
+  `conflict_backbone`) remains separate.

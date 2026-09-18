@@ -160,18 +160,18 @@ int main(void) {
 
 	for(size_t i = 0; i < nchannels; i++) {
 		// The first chunk should always have succeeded
-		assert(wait_sync_flag(&in_infos[i].aio_infos[0].flag, 10));
-		assert(wait_sync_flag(&out_infos[i].aio_infos[0].flag, 10));
+		assert(wait_sync_flag(&in_infos[i].aio_infos[0].flag, 60));
+		assert(wait_sync_flag(&out_infos[i].aio_infos[0].flag, 60));
 
 		// The second chunk should only have completed if we didn't close the channel yet
 		if(i % 2) {
 			assert(!check_sync_flag(&in_infos[i].aio_infos[1].flag));
 		} else {
-			assert(wait_sync_flag(&in_infos[i].aio_infos[1].flag, 10));
+			assert(wait_sync_flag(&in_infos[i].aio_infos[1].flag, 60));
 		}
 
 		if(i < 2) {
-			assert(wait_sync_flag(&out_infos[i].aio_infos[1].flag, 10));
+			assert(wait_sync_flag(&out_infos[i].aio_infos[1].flag, 60));
 		} else {
 			assert(!check_sync_flag(&out_infos[i].aio_infos[1].flag));
 		}

@@ -32,8 +32,12 @@ typedef enum meta_connection_purpose_t {
 /* Authenticated backbone META must live this long before a drop resets retry_step. */
 #define BACKBONE_STABLE_RESET_SEC 5
 
+/* After a local META drop on the same network, AUTH_DIRECT recent[] may redial only this long. */
+#define LAN_AUTH_DIRECT_GRACE_SEC 15
+
 static inline bool meta_purpose_is_persistent(meta_connection_purpose_t purpose) {
-	return purpose == META_PURPOSE_BACKBONE_REQUIRED;
+	return purpose == META_PURPOSE_BACKBONE_REQUIRED
+	       || purpose == META_PURPOSE_LAN_RESILIENCE;
 }
 
 void connection_policy_init(struct meshlink_handle *mesh);
@@ -54,6 +58,16 @@ void connection_policy_on_connection_closed(struct meshlink_handle *mesh, struct
 void connection_policy_schedule_backbone_retry(struct meshlink_handle *mesh, struct outgoing_t *outgoing);
 void connection_policy_reset_backbone_retry(struct outgoing_t *outgoing);
 void connection_policy_bind_connection(struct meshlink_handle *mesh, struct connection_t *c);
+bool connection_policy_lan_device_class(int devclass);
+bool connection_policy_local_candidate(const struct node_t *node,
+                                       const sockaddr_t *address,
+                                       address_source_t source,
+                                       path_cap_t capability);
+bool connection_policy_may_accept_incoming(struct meshlink_handle *mesh, struct connection_t *c, int announced_devclass);
+bool connection_policy_admit_incoming(struct meshlink_handle *mesh, struct connection_t *c, int announced_devclass);
+void connection_policy_advance_network_epoch(struct meshlink_handle *mesh);
+void connection_policy_note_lan_drop(struct meshlink_handle *mesh, struct node_t *n);
+bool connection_policy_is_local_adjacency(const struct meshlink_handle *mesh, const struct node_t *n);
 const char *connection_policy_backbone_name(const struct meshlink_handle *mesh);
 struct node_t *connection_policy_backbone(struct meshlink_handle *mesh);
 bool connection_policy_is_backbone(const struct meshlink_handle *mesh, const struct node_t *n);

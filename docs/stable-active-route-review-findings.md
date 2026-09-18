@@ -410,7 +410,7 @@ two steady-state sockets.
 ## 7. Implement a bounded deterministic local META resilience overlay
 
 **Priority:** P1  
-**Status:** Open
+**Status:** Completed
 
 Finding 5 reserved `META_PURPOSE_LAN_RESILIENCE` and
 `META_LAN_RESILIENCE_MAX` on `src/connection_policy.c` and left LAN fill
@@ -447,7 +447,8 @@ bool connection_policy_local_candidate(const node_t *node,
                                        const sockaddr_t *address,
                                        address_source_t source,
                                        path_cap_t capability) {
-	return node->devclass != DEV_CLASS_BACKBONE
+	return (node->devclass == DEV_CLASS_STATIONARY
+	        || node->devclass == DEV_CLASS_PORTABLE)
 	    && path_address_is_local(address)
 	    && (capability & PATH_CAP_META)
 	    && (source == ADDR_SRC_DISCOVERY

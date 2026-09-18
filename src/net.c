@@ -108,6 +108,10 @@ void terminate_connection(meshlink_handle_t *mesh, connection_t *c, bool report)
 	upgrade_connection_closing(mesh, c);
 
 	if(c->node && c->node->connection == c) {
+		if(was_active && connection_policy_is_local_adjacency(mesh, c->node)) {
+			connection_policy_note_lan_drop(mesh, c->node);
+		}
+
 		if(c->status.active && mesh->meta_status_cb) {
 			mesh->meta_status_cb(mesh, (meshlink_node_t *)c->node, false);
 		}
@@ -163,10 +167,11 @@ void terminate_connection(meshlink_handle_t *mesh, connection_t *c, bool report)
 	   socket continues the epoch (direct then canonical). An authenticated
 	   BACKBONE_REQUIRED drop always waits on the telescopic ladder, and only
 	   a session that lived BACKBONE_STABLE_RESET_SEC clears retry_step first.
-	   Other outgoings that flapped go through retry_outgoing(); a stable drop
-	   of a non-persistent intent redials immediately. BACKBONE_REQUIRED
-	   outgoings stay on the list (meta_purpose_is_persistent). Retiring an
-	   intent must not redial it. */
+	   LAN_RESILIENCE always waits on the generic retry; immediate redial plus
+	   tick resetting skip_sa busy-loops. Other outgoings that flapped go through
+	   retry_outgoing(); a stable drop of a non-persistent intent redials
+	   immediately. Persistent outgoings stay on the list
+	   (meta_purpose_is_persistent). Retiring an intent must not redial it. */
 
 	if(outgoing && !mesh->retiring_outgoing) {
 		if(outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED && was_active) {
@@ -174,6 +179,8 @@ void terminate_connection(meshlink_handle_t *mesh, connection_t *c, bool report)
 				connection_policy_reset_backbone_retry(outgoing);
 			}
 
+			retry_outgoing(mesh, outgoing);
+		} else if(outgoing->purpose == META_PURPOSE_LAN_RESILIENCE) {
 			retry_outgoing(mesh, outgoing);
 		} else if(flapped) {
 			retry_outgoing(mesh, outgoing);

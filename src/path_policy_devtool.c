@@ -550,8 +550,35 @@ static bool cover_select(meshlink_handle_t *mesh) {
 	CHECK(!sockaddrcmp(&out, &local));
 	CHECK(src == ADDR_SRC_HINT);
 	CHECK(path_has_direct_meta_candidate(&dest, NULL));
+	CHECK(!path_best_local_meta(&dest, NULL, &out, &src));
 	skip = local;
 	CHECK(!path_has_direct_meta_candidate(&dest, &skip));
+	CHECK(!path_best_local_meta(NULL, NULL, &out, NULL));
+	CHECK(!path_best_local_meta(&dest, NULL, NULL, NULL));
+	path_clear_recent(&dest);
+	CHECK(path_learn_address(mesh, &dest, &local, ADDR_SRC_DISCOVERY));
+	CHECK(path_best_local_meta(&dest, NULL, &out, &src));
+	CHECK(!sockaddrcmp(&out, &local));
+	CHECK(src == ADDR_SRC_DISCOVERY);
+	CHECK(!path_best_local_meta(&dest, &skip, &out, &src));
+	path_clear_recent(&dest);
+	CHECK(path_learn_address(mesh, &dest, &local, ADDR_SRC_AUTH_DIRECT));
+	CHECK(path_best_local_meta(&dest, NULL, &out, &src));
+	CHECK(src == ADDR_SRC_AUTH_DIRECT);
+	path_clear_recent(&dest);
+	CHECK(path_learn_address(mesh, &dest, &wan, ADDR_SRC_AUTH_DIRECT));
+	CHECK(!path_best_local_meta(&dest, NULL, &out, &src));
+	CHECK(path_best_direct_meta(&dest, NULL, &out, &src));
+	path_clear_recent(&dest);
+	CHECK(path_learn_address(mesh, &dest, &local, ADDR_SRC_DISCOVERY));
+	{
+		sockaddr_t ephemeral;
+		set_v4(&ephemeral, "10.0.0.2", 99);
+		CHECK(path_learn_address(mesh, &dest, &ephemeral, ADDR_SRC_AUTH_DIRECT));
+		CHECK(path_best_local_meta(&dest, NULL, &out, &src));
+		CHECK(src == ADDR_SRC_DISCOVERY);
+		CHECK(!sockaddrcmp(&out, &local));
+	}
 	return true;
 }
 

@@ -439,6 +439,29 @@ static void replace_existing_connection(meshlink_handle_t *mesh, node_t *n, conn
 	}
 }
 
+bool ack_replace_if_admitted(meshlink_handle_t *mesh, connection_t *c, int announced_devclass, bool drain_old) {
+	node_t *n = c->node ? c->node : (c->name ? lookup_node(mesh, c->name) : NULL);
+
+	if(!n) {
+		return false;
+	}
+
+	/* Side-effect-free: a WAN/non-local duplicate must not close the existing adjacency. */
+	if(!connection_policy_may_accept_incoming(mesh, c, announced_devclass)) {
+		return false;
+	}
+
+	if(n->connection && n->connection != c) {
+		if(drain_old) {
+			n->connection->status.drain_only = true;
+		}
+
+		replace_existing_connection(mesh, n, c, drain_old);
+	}
+
+	return true;
+}
+
 bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	assert(request);
 	assert(*request);
@@ -514,12 +537,9 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		return send_ack(mesh, c);
 	}
 
-	if(n->connection && n->connection != c) {
-		if(drain_old && old) {
-			old->status.drain_only = true;
-		}
-
-		replace_existing_connection(mesh, n, c, drain_old);
+	if(!ack_replace_if_admitted(mesh, c, devclass, drain_old)) {
+		logger(mesh, MESHLINK_INFO, "Refusing excess or non-local META from %s", c->name);
+		return false;
 	}
 
 	/* A probe that got this far replaces the canonical connection it was opened next to. */
@@ -536,6 +556,11 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 
 	if(n->status.conflict_backbone) {
 		logger(mesh, MESHLINK_WARNING, "Refusing META connection with conflicted backbone node %s", n->name);
+		return false;
+	}
+
+	if(!connection_policy_admit_incoming(mesh, c, devclass)) {
+		logger(mesh, MESHLINK_INFO, "Refusing excess or non-local META from %s", c->name);
 		return false;
 	}
 

@@ -50,6 +50,11 @@ typedef struct node_status_t {
    in the public header; devtools.c static-asserts the two agree. */
 #define MAX_RECENT 5
 
+typedef struct lan_presence_t {
+	uint64_t network_epoch;
+	time_t last_discovered_at;
+} lan_presence_t;
+
 
 typedef struct node_t {
 	// Public member variables
@@ -117,6 +122,10 @@ typedef struct node_t {
 	sockaddr_t recent[MAX_RECENT];          /* Recently seen addresses */
 	address_source_t recent_source[MAX_RECENT]; /* Provenance aligned with recent[] */
 	path_cap_t recent_cap[MAX_RECENT];      /* Transport eligibility aligned with recent[] */
+
+	lan_presence_t lan_presence;            /* Runtime only; not persisted */
+	time_t lan_auth_direct_until;           /* AUTH_DIRECT reconnect grace; 0 if none */
+	uint64_t lan_admitted_epoch;            /* lan_network_epoch when this LAN META was admitted */
 	sockaddr_t catta_address;               /* Latest address seen by Catta */
 	sockaddr_t canonical_sa;                /* First resolved canonical endpoint, AF_UNSPEC if unknown */
 	sockaddr_t canonical_extra[MAX_CANONICAL_SA - 1]; /* Additional resolved canonical endpoints */

@@ -152,11 +152,13 @@ static void setup_indirect_topology(peer_config_t *peers, int npeers) {
 /// Give a peer a unique IP address
 void change_peer_ip(peer_config_t *peer) {
 	char *command = NULL;
+
+	snprintf(peer->ip, sizeof peer->ip, "10.0.113.%d", ip);
+	ip++;
 	assert(asprintf(&command,
 	                "/bin/ip netns exec %s ip addr flush dev eth0;"
-	                "/bin/ip netns exec %s ip addr add 203.0.113.%d/24 dev eth0;",
-	                peer->netns_name, peer->netns_name, ip));
-	ip++;
+	                "/bin/ip netns exec %s ip addr add %s/24 dev eth0;",
+	                peer->netns_name, peer->netns_name, peer->ip));
 	assert(command);
 	assert(system(command) == 0);
 	free(command);
@@ -220,15 +222,25 @@ peer_config_t *setup_relay_peer_nut_indirect(const char *prefix) {
 
 /// Make all nodes only be able to communicate via TCP
 void set_peers_tcponly(peer_config_t *peers, int npeers) {
+	const char *ipt = (access("/usr/sbin/iptables-legacy", X_OK) == 0) ? "/usr/sbin/iptables-legacy" : "iptables";
+
 	for(int i = 0; i < npeers; i++) {
 		char *command = NULL;
+		int rc;
+
 		assert(asprintf(&command,
-		                "/bin/ip netns exec %s iptables -A INPUT -p udp -j DROP;"
-		                "/bin/ip netns exec %s iptables -A OUTPUT -p udp -j DROP;",
-		                peers[i].netns_name, peers[i].netns_name));
+		                "/bin/ip netns exec %s %s -A INPUT -p udp -j DROP;"
+		                "/bin/ip netns exec %s %s -A OUTPUT -p udp -j DROP;",
+		                peers[i].netns_name, ipt,
+		                peers[i].netns_name, ipt));
 		assert(command);
-		assert(system(command) == 0);
+		rc = system(command);
 		free(command);
+
+		if(rc != 0) {
+			fprintf(stderr, "SKIP: iptables UDP drop not supported in this environment\n");
+			exit(77);
+		}
 	}
 }
 
