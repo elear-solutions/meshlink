@@ -49,6 +49,7 @@ TESTS = \
 	path-policy-coverage \
 	backbone-identity \
 	connection-policy \
+	backbone-udp \
 	path-stability \
 	transport-recent \
 	utcp-benchmark \
@@ -120,6 +121,7 @@ check_PROGRAMS = \
 	path-policy-coverage \
 	backbone-identity \
 	connection-policy \
+	backbone-udp \
 	path-stability \
 	transport-recent
 
@@ -282,6 +284,9 @@ backbone_identity_LDADD = $(top_builddir)/src/libmeshlink.la
 
 connection_policy_SOURCES = connection-policy.c utils.c utils.h
 connection_policy_LDADD = $(top_builddir)/src/libmeshlink.la
+
+backbone_udp_SOURCES = backbone-udp.c utils.c utils.h
+backbone_udp_LDADD = $(top_builddir)/src/libmeshlink.la
 
 path_stability_SOURCES = path-stability.c utils.c utils.h
 path_stability_LDADD = $(top_builddir)/src/libmeshlink.la

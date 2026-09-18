@@ -635,7 +635,13 @@ bool ans_key_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 			update_node_udp_from(mesh, from, &sa, ADDR_SRC_UDP_REFLEXIVE);
 		}
 
-		send_mtu_probe(mesh, from);
+		/* Finding 9 gates peer punching. The backbone UDP mapping is started
+		   here instead of send_mtu_probe(); PMTU starts after confirm. */
+		if(connection_policy_backbone_udp_required(mesh, from)) {
+			path_backbone_udp_start(mesh, from);
+		} else {
+			send_mtu_probe(mesh, from);
+		}
 	}
 
 	return true;

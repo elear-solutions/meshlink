@@ -930,6 +930,7 @@ static void test_unknown_class_not_lan_eligible(void) {
 	assert(devtool_local_adjacency_count(unk) == 0);
 	assert(devtool_backbone_intent_purpose(cam) == 1);
 	assert(devtool_backbone_intent_purpose(unk) == 1);
+	assert(!devtool_backbone_udp_timer_armed(unk));
 
 	meshlink_close(bb);
 	meshlink_close(cam);

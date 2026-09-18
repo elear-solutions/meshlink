@@ -71,6 +71,7 @@ bool connection_policy_is_local_adjacency(const struct meshlink_handle *mesh, co
 const char *connection_policy_backbone_name(const struct meshlink_handle *mesh);
 struct node_t *connection_policy_backbone(struct meshlink_handle *mesh);
 bool connection_policy_is_backbone(const struct meshlink_handle *mesh, const struct node_t *n);
+bool connection_policy_backbone_udp_required(const struct meshlink_handle *mesh, const struct node_t *n);
 bool connection_policy_validate_topology(struct meshlink_handle *mesh);
 bool connection_policy_can_invite(const struct meshlink_handle *mesh);
 bool connection_policy_commit_self_if_creator(struct meshlink_handle *mesh);

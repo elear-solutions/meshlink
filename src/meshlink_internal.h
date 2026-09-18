@@ -30,6 +30,7 @@
 #include "hash.h"
 #include "meshlink.h"
 #include "meshlink_queue.h"
+#include "path_policy.h"
 #include "sockaddr.h"
 #include "sptps.h"
 #include "xoshiro.h"
@@ -79,6 +80,20 @@ typedef struct backbone_identity_t {
 	char *name;
 	struct node_t *node;
 } backbone_identity_t;
+
+/// Required UDP relay mapping to the stored backbone. One per mesh; cameras originate.
+typedef struct backbone_udp_path_t {
+	struct node_t *node;
+	sockaddr_t endpoint;
+	address_source_t source;
+	bool confirmed;
+	sockaddr_t failed_endpoint;
+	uint8_t unanswered;
+	uint8_t establish_step;               /* Telescopic no-dest / exhausted-dest delay */
+	uint64_t liveness_nonce;
+	struct timespec last_authenticated_reply;
+	timeout_t timer;
+} backbone_udp_path_t;
 
 /// Device class traits
 typedef struct {
@@ -177,6 +192,8 @@ struct meshlink_handle {
 
 	dev_class_t devclass;
 	backbone_identity_t backbone;
+	backbone_udp_path_t backbone_udp;
+	int backbone_udp_keepalive_sec;       /* Default PATH_BACKBONE_UDP_KEEPALIVE_SEC; tests may shorten */
 	uint64_t lan_network_epoch;           /* Bumped on interface/network change; 0 is never current */
 
 	int invitation_timeout;

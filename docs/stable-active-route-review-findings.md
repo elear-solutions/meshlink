@@ -481,7 +481,13 @@ demand-driven.
 ## 8. Maintain authenticated backbone UDP as a warm relay path
 
 **Priority:** P1  
-**Status:** Open
+**Status:** Completed
+
+`connection_policy` starts/stops the required mapping after backbone META+key.
+`path_policy` owns `mesh->backbone_udp`: 64-byte nonce probes, endpoint-scoped
+fail, keepalive default 25s ±20%. Canonical TCP is not a UDP dest. PMTU stays
+on `mtutimeout` after confirm. `path_liveness_probe_warranted` is unchanged.
+The dedicated timer is the scheduler reservation until finding 13.
 
 ### Issue Summary
 
@@ -504,32 +510,31 @@ then falls back to META.
 
 ### Suggested code change to fix
 
-Add explicit backbone UDP state owned by the connection-policy/path-scheduler
-module:
+Completed. Preserve these invariants:
 
 ```c
 typedef struct backbone_udp_path_t {
+	node_t *node;
 	sockaddr_t endpoint;
 	address_source_t source;
 	bool confirmed;
+	sockaddr_t failed_endpoint;
+	uint8_t establish_step;
 	uint64_t liveness_nonce;
-	struct timespec last_authenticated_reply;
-	struct timespec next_keepalive;
+	timeout_t timer;
 } backbone_udp_path_t;
 ```
 
-Rules:
-
-1. Start backbone UDP establishment after backbone META authentication.
-2. Learn the direct UDP endpoint through authenticated control exchange.
-3. Keep it warm with small authenticated liveness probes even with no channels.
-4. Demote only the exact failed endpoint.
-5. Re-establish through direct endpoint discovery; canonical TCP is not a UDP
-   carrier.
-6. Reserve scheduler capacity for this required relay path.
-
-Make the interval configurable and shorter than the supported NAT idle window,
-with jitter to prevent fleet synchronization.
+1. Start after backbone META authentication and node SPTPS.
+2. Probe only direct UDP dests; never canonical / NLB.
+3. Keep warm with 64-byte authenticated nonces even with no channels.
+4. Demote only the exact failed endpoint, then re-pick a direct dest.
+5. Do not use `path_liveness_probe_warranted` / PMTU bursts as the keepalive.
+6. Self-is-backbone originates nothing; it only replies.
+7. Only stationary and portable nodes originate the mapping.
+8. `path_backbone_udp_stop` drops `mtutimeout` and demotes the owned endpoint so `hop_udp_ready` cannot stay true.
+9. No-candidate / exhausted-dest establishment uses a small telescopic backoff, reset when a new direct dest is learned.
+10. Duplicate discovery of an already-stored dest does not reset `establish_step`; only `path_learn_address_cap()` notes a dest when it is newly stored or upgraded.
 
 ---
 

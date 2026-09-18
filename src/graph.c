@@ -184,7 +184,7 @@ static void check_reachability(meshlink_handle_t *mesh) {
 			timeout_del(&mesh->loop, &n->promotion_timer);
 			memset(&n->promotion_candidate, 0, sizeof n->promotion_candidate);
 			n->probe_dest_override_active = false;
-			/* Keep relay_budget; dependents wait for a later probe. */
+			path_backbone_udp_reset(mesh, n);
 		}
 
 		if(n->status.visited != n->status.reachable) {
@@ -220,6 +220,7 @@ static void check_reachability(meshlink_handle_t *mesh) {
 			timeout_del(&mesh->loop, &n->promotion_timer);
 			memset(&n->promotion_candidate, 0, sizeof n->promotion_candidate);
 			n->probe_dest_override_active = false;
+			path_backbone_udp_reset(mesh, n);
 
 			if(!n->status.blacklisted) {
 				update_node_status(mesh, n);

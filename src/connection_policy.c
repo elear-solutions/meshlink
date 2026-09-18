@@ -30,6 +30,8 @@ void connection_policy_init(meshlink_handle_t *mesh) {
 
 	mesh->backbone.name = NULL;
 	mesh->backbone.node = NULL;
+	memset(&mesh->backbone_udp, 0, sizeof mesh->backbone_udp);
+	mesh->backbone_udp_keepalive_sec = PATH_BACKBONE_UDP_KEEPALIVE_SEC;
 	mesh->allow_peer_bootstrap = false;
 	mesh->lan_network_epoch = 1;
 }
@@ -39,6 +41,7 @@ void connection_policy_exit(meshlink_handle_t *mesh) {
 		return;
 	}
 
+	path_backbone_udp_stop(mesh);
 	free(mesh->backbone.name);
 	mesh->backbone.name = NULL;
 	mesh->backbone.node = NULL;
@@ -263,6 +266,10 @@ void connection_policy_on_node_deleted(meshlink_handle_t *mesh, node_t *n) {
 		return;
 	}
 
+	if(mesh->backbone_udp.node == n) {
+		path_backbone_udp_stop(mesh);
+	}
+
 	if(mesh->backbone.node == n) {
 		mesh->backbone.node = NULL;
 	}
@@ -290,6 +297,26 @@ bool connection_policy_is_backbone(const meshlink_handle_t *mesh, const node_t *
 	}
 
 	return !strcmp(mesh->backbone.name, n->name);
+}
+
+bool connection_policy_backbone_udp_required(const meshlink_handle_t *mesh, const node_t *n) {
+	if(!mesh || !n || !mesh->self || n == mesh->self) {
+		return false;
+	}
+
+	if(n->status.blacklisted || n->status.conflict_backbone) {
+		return false;
+	}
+
+	if(mesh->self->devclass == DEV_CLASS_BACKBONE || connection_policy_is_backbone(mesh, mesh->self)) {
+		return false;
+	}
+
+	if(!connection_policy_lan_device_class(mesh->self->devclass)) {
+		return false;
+	}
+
+	return n == mesh->backbone.node && connection_policy_is_backbone(mesh, n);
 }
 
 static unsigned connection_policy_backbone_class_count(const meshlink_handle_t *mesh) {
@@ -930,6 +957,11 @@ void connection_policy_bind_connection(meshlink_handle_t *mesh, connection_t *c)
 		}
 
 		c->outgoing = intent;
+
+		if(c->node->status.validkey && connection_policy_backbone_udp_required(mesh, c->node)) {
+			path_backbone_udp_start(mesh, c->node);
+		}
+
 		return;
 	}
 
@@ -1092,6 +1124,29 @@ static bool node_would_conflict_backbone(const meshlink_handle_t *mesh, const no
 	return extra || wrong_class;
 }
 
+static void connection_policy_ensure_backbone_udp(meshlink_handle_t *mesh, node_t *bb) {
+	if(mesh->self->devclass == DEV_CLASS_BACKBONE || connection_policy_is_backbone(mesh, mesh->self)) {
+		path_backbone_udp_stop(mesh);
+		return;
+	}
+
+	if(!bb || !connection_policy_backbone_udp_required(mesh, bb)) {
+		path_backbone_udp_stop(mesh);
+		return;
+	}
+
+	if(bb->status.validkey && bb->connection && bb->connection->status.active) {
+		path_backbone_udp_start(mesh, bb);
+		return;
+	}
+
+	if(mesh->backbone_udp.node == bb && mesh->backbone_udp.confirmed && bb->status.validkey) {
+		return;
+	}
+
+	path_backbone_udp_stop(mesh);
+}
+
 static bool admit_incoming_eval(meshlink_handle_t *mesh, connection_t *c, node_t *n, int announced_devclass, bool apply_side_effects) {
 	node_t *desired[META_LAN_RESILIENCE_MAX];
 	unsigned nd;
@@ -1214,6 +1269,7 @@ void connection_policy_tick(meshlink_handle_t *mesh) {
 			drop_outgoing(mesh, outgoing);
 		}
 
+		connection_policy_ensure_backbone_udp(mesh, NULL);
 		goto done;
 	}
 
@@ -1225,6 +1281,8 @@ void connection_policy_tick(meshlink_handle_t *mesh) {
 				drop_outgoing(mesh, outgoing);
 			}
 		}
+
+		connection_policy_ensure_backbone_udp(mesh, NULL);
 	} else {
 		for list_each(outgoing_t, outgoing, mesh->outgoings) {
 			if(outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED && outgoing->node != bb) {
@@ -1241,6 +1299,8 @@ void connection_policy_tick(meshlink_handle_t *mesh) {
 		} else {
 			ensure_backbone_outgoing(mesh, bb, true);
 		}
+
+		connection_policy_ensure_backbone_udp(mesh, bb);
 	}
 
 	if(connection_policy_lan_device_class(mesh->self->devclass)) {
@@ -1280,6 +1340,10 @@ void connection_policy_on_discovery(meshlink_handle_t *mesh, node_t *node,
 	}
 
 	node->last_connect_try = 0;
+
+	/* Duplicate discovery must not collapse backbone UDP establish_step.
+	   path_learn_address_cap() already notes a dest when it is newly stored
+	   or materially upgraded. */
 
 	if(connection_policy_is_backbone(mesh, node)
 	                && node->connection && node->connection->status.active) {

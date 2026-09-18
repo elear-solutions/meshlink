@@ -171,9 +171,11 @@ static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 	n->status.broadcast = false;
 
 end:
-	timeout_set(&mesh->loop, &n->mtutimeout, &(struct timespec) {
-		timeout, prng(mesh, TIMER_FUDGE)
-	});
+	if(n->mtutimeout.cb) {
+		timeout_set(&mesh->loop, &n->mtutimeout, &(struct timespec) {
+			timeout, prng(mesh, TIMER_FUDGE)
+		});
+	}
 }
 
 void send_mtu_probe(meshlink_handle_t *mesh, node_t *n) {
@@ -216,6 +218,34 @@ void send_candidate_probe(meshlink_handle_t *mesh, node_t *n) {
 	packet.len = PATH_PROMOTION_PROBE_LEN;
 	n->out_meta += packet.len + PROBE_OVERHEAD;
 	send_probe_to(mesh, n, &packet, &n->promotion_candidate.endpoint);
+}
+
+void send_backbone_udp_probe(meshlink_handle_t *mesh) {
+	node_t *n;
+	vpn_packet_t packet;
+
+	if(!mesh || !mesh->backbone_udp.node || !mesh->backbone_udp.liveness_nonce) {
+		return;
+	}
+
+	n = mesh->backbone_udp.node;
+
+	if(!n->status.reachable || !n->status.validkey) {
+		return;
+	}
+
+	if(mesh->backbone_udp.endpoint.sa.sa_family == AF_UNSPEC
+	                || mesh->backbone_udp.endpoint.sa.sa_family == AF_UNKNOWN) {
+		return;
+	}
+
+	memset(&packet, 0, sizeof packet);
+	packet.probe = true;
+	memcpy(packet.data + PROBE_NONCE_OFFSET, &mesh->backbone_udp.liveness_nonce, sizeof mesh->backbone_udp.liveness_nonce);
+	randomize(packet.data + 14, PATH_PROMOTION_PROBE_LEN - 14);
+	packet.len = PATH_PROMOTION_PROBE_LEN;
+	n->out_meta += packet.len + PROBE_OVERHEAD;
+	send_probe_to(mesh, n, &packet, &mesh->backbone_udp.endpoint);
 }
 
 static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet, uint16_t len) {
@@ -261,6 +291,19 @@ static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet
 
 		uint64_t nonce = 0;
 		memcpy(&nonce, packet->data + PROBE_NONCE_OFFSET, sizeof nonce);
+
+		if(n == mesh->backbone_udp.node) {
+			uint64_t want = mesh->backbone_udp.liveness_nonce;
+
+			if(want && nonce == want) {
+				path_backbone_udp_observe_reply(mesh, n, &n->last_udp_from, nonce);
+				return;
+			}
+
+			if(!mesh->backbone_udp.confirmed) {
+				return;
+			}
+		}
 
 		if(!n->status.udp_confirmed) {
 			char *address, *port;
@@ -585,31 +628,6 @@ static bool try_recent(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **sa
 	return false;
 }
 
-static bool try_canonical(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **sa, int *sock, sockaddr_t *sa_buf) {
-	char *host = NULL;
-	const char *port = NULL;
-
-	if(!parse_host_port_field(n->canonical_address, NULL, &host, &port)) {
-		return false;
-	}
-
-	if(!host_port_to_sockaddr(host, port, sa_buf) || !udp_address_bound(sa_buf)
-	                || !path_is_udp_candidate(n, sa_buf, ADDR_SRC_CANONICAL, PATH_CAP_UDP)) {
-		free(host);
-		return false;
-	}
-
-	logger(mesh, MESHLINK_DEBUG, "UDP dest for %s: canonical %s %s", n->name, host, port);
-	free(host);
-
-	if(!select_listen_socket(mesh, sa_buf, sock)) {
-		return false;
-	}
-
-	*sa = sa_buf;
-	return true;
-}
-
 /* LAN dest sources for an unconfirmed peer, one per rotation turn. */
 enum {
 	UDP_LAN_SLOT_RECENT,    /* n->recent[] */
@@ -702,8 +720,6 @@ void choose_udp_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **s
 		                && path_is_udp_candidate(n, &n->address, n->address_source, n->address_cap)) {
 			*sa = &n->address;
 		} else if(lan_slot != UDP_LAN_SLOT_RECENT && try_recent(mesh, n, sa, sock, self_ext, skip)) {
-			return;
-		} else if(try_canonical(mesh, n, sa, sock, sa_buf)) {
 			return;
 		}
 	}

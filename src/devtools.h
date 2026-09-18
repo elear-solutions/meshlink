@@ -593,6 +593,24 @@ void devtool_age_candidate(struct meshlink_handle *mesh, struct meshlink_node *n
 /// True when this peer currently warrants a liveness probe.
 bool devtool_liveness_probe_warranted(struct meshlink_handle *mesh, struct meshlink_node *node);
 
+/// Shorten the backbone UDP keepalive interval for tests. Seconds must be >= 1.
+void devtool_set_backbone_udp_keepalive(struct meshlink_handle *mesh, int seconds);
+
+/// True when this mesh has a confirmed backbone UDP mapping.
+bool devtool_backbone_udp_confirmed(struct meshlink_handle *mesh);
+
+/// True when the backbone UDP keepalive/establish timer is armed.
+bool devtool_backbone_udp_timer_armed(struct meshlink_handle *mesh);
+
+/// Copy the in-flight backbone UDP endpoint. False if none.
+bool devtool_backbone_udp_endpoint(struct meshlink_handle *mesh, struct sockaddr_storage *addr);
+
+/// Copy the last failed backbone UDP endpoint. False if none.
+bool devtool_backbone_udp_failed_endpoint(struct meshlink_handle *mesh, struct sockaddr_storage *addr);
+
+/// Current telescopic establishment backoff step (0 at start / after a new dest).
+unsigned devtool_backbone_udp_establish_step(struct meshlink_handle *mesh);
+
 /// Clear a candidate cooldown, as a fresh discovery or network change does.
 void devtool_candidate_clear_cooldown(struct meshlink_handle *mesh, struct meshlink_node *node);
 

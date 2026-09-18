@@ -121,10 +121,10 @@ extern int count_edge_pairs(meshlink_handle_t *mesh, const char *x, const char *
 
 #define assert_after(cond, timeout)\
 	do {\
-		for(int i = 0; i++ <= timeout;) {\
+		for(int assert_after_s = 0; assert_after_s++ <= (timeout);) {\
 			if(cond)\
 				break;\
-			if(i == timeout)\
+			if(assert_after_s == (timeout))\
 				assert(cond);\
 			sleep(1);\
 		}\

@@ -127,6 +127,11 @@ typedef struct path_target_t {
 #define PATH_SUSPECT_PROBES               2
 #define PATH_SUSPECT_WINDOW_MS         1000
 #define PATH_HEALTHY_RESET_SEC           60
+#define PATH_BACKBONE_UDP_KEEPALIVE_SEC  25
+#define PATH_BACKBONE_UDP_ESTABLISH_SEC   1
+#define PATH_BACKBONE_UDP_ESTABLISH_MISS  3
+#define PATH_BACKBONE_UDP_KEEPALIVE_MISS  2
+#define PATH_BACKBONE_UDP_ESTABLISH_BACKOFF_MAX 30
 #define CANONICAL_RESOLVE_TIMEOUT 2
 #define CANONICAL_RESOLVE_BACKOFF_MIN 5
 #define CANONICAL_RESOLVE_BACKOFF_MAX 600
@@ -212,6 +217,18 @@ void path_schedule_local_udp_probe(struct meshlink_handle *mesh, struct node_t *
 void path_note_udp_confirmed(struct meshlink_handle *mesh, struct node_t *n);
 void path_note_udp_demoted(struct meshlink_handle *mesh, struct node_t *n);
 void path_note_udp_demoted_reason(struct meshlink_handle *mesh, struct node_t *n, const char *reason);
+
+/* Required backbone UDP relay mapping. connection_policy starts/stops it. */
+void path_backbone_udp_start(struct meshlink_handle *mesh, struct node_t *bb);
+void path_backbone_udp_stop(struct meshlink_handle *mesh);
+void path_backbone_udp_reset(struct meshlink_handle *mesh, struct node_t *n);
+void path_backbone_udp_observe_reply(struct meshlink_handle *mesh, struct node_t *n,
+                                     const sockaddr_t *from, uint64_t nonce);
+/* Reset establishment backoff and wake when a viable new direct UDP dest is learned.
+   Call only from learn paths that stored or upgraded the address; duplicate discovery
+   of the same endpoint must not collapse establish_step. */
+void path_backbone_udp_note_direct(struct meshlink_handle *mesh, struct node_t *n,
+                                   const sockaddr_t *sa, address_source_t src, path_cap_t cap);
 
 /* --- promotion of one candidate endpoint, and honest demotion ------------- */
 

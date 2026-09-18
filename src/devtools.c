@@ -996,6 +996,25 @@ void devtool_set_udp_confirmed(meshlink_handle_t *mesh, meshlink_node_t *node, b
 	}
 
 	node_t *n = (node_t *)node;
+
+	if(n == mesh->backbone_udp.node) {
+		if(confirmed) {
+			n->status.udp_confirmed = true;
+			n->status.forced_relay = false;
+			mesh->backbone_udp.confirmed = true;
+
+			if(n->address.sa.sa_family) {
+				path_copy_sockaddr(&mesh->backbone_udp.endpoint, &n->address);
+				mesh->backbone_udp.source = n->address_source;
+			}
+		} else {
+			path_note_udp_demoted_reason(mesh, n, "devtool");
+		}
+
+		pthread_mutex_unlock(&mesh->mutex);
+		return;
+	}
+
 	n->status.udp_confirmed = confirmed;
 
 	if(confirmed) {
@@ -1030,9 +1049,19 @@ void devtool_force_meta(meshlink_handle_t *mesh, meshlink_node_t *node, bool ena
 		n->udp_tier = PATH_TIER_NONE;
 		n->probe_dest_override_active = false;
 		memset(&n->promotion_candidate, 0, sizeof n->promotion_candidate);
+
+		if(n == mesh->backbone_udp.node) {
+			mesh->backbone_udp.confirmed = false;
+			mesh->backbone_udp.liveness_nonce = 0;
+		}
 	} else if(n->status.validkey && n->status.reachable && !n->mtutimeout.cb) {
 		n->mtuprobes = 0;
-		send_mtu_probe(mesh, n);
+
+		if(n == mesh->backbone_udp.node || connection_policy_backbone_udp_required(mesh, n)) {
+			path_backbone_udp_start(mesh, n);
+		} else {
+			send_mtu_probe(mesh, n);
+		}
 	}
 
 	pthread_mutex_unlock(&mesh->mutex);
@@ -1102,6 +1131,13 @@ bool devtool_confirm_udp_from(meshlink_handle_t *mesh, meshlink_node_t *node, co
 	n->status.forced_relay = false;
 	n->udp_tier = (path_tier_t)tier;
 	n->udp_local_probe_next = 0;
+
+	if(n == mesh->backbone_udp.node) {
+		mesh->backbone_udp.confirmed = true;
+		path_copy_sockaddr(&mesh->backbone_udp.endpoint, &sa);
+		mesh->backbone_udp.source = n->address_source;
+	}
+
 	pthread_mutex_unlock(&mesh->mutex);
 	return true;
 }
@@ -1599,6 +1635,114 @@ bool devtool_liveness_probe_warranted(meshlink_handle_t *mesh, meshlink_node_t *
 	bool warranted = path_liveness_probe_warranted(mesh, (node_t *)node);
 	pthread_mutex_unlock(&mesh->mutex);
 	return warranted;
+}
+
+void devtool_set_backbone_udp_keepalive(meshlink_handle_t *mesh, int seconds) {
+	if(!mesh || seconds < 1) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	mesh->backbone_udp_keepalive_sec = seconds;
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+bool devtool_backbone_udp_confirmed(meshlink_handle_t *mesh) {
+	bool confirmed;
+
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	confirmed = mesh->backbone_udp.confirmed && mesh->backbone_udp.node
+	            && mesh->backbone_udp.node->status.udp_confirmed;
+	pthread_mutex_unlock(&mesh->mutex);
+	return confirmed;
+}
+
+bool devtool_backbone_udp_timer_armed(meshlink_handle_t *mesh) {
+	bool armed;
+
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	armed = mesh->backbone_udp.timer.cb != NULL;
+	pthread_mutex_unlock(&mesh->mutex);
+	return armed;
+}
+
+bool devtool_backbone_udp_endpoint(meshlink_handle_t *mesh, struct sockaddr_storage *addr) {
+	if(!mesh || !addr) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	if(mesh->backbone_udp.endpoint.sa.sa_family == AF_UNSPEC
+	                || mesh->backbone_udp.endpoint.sa.sa_family == AF_UNKNOWN) {
+		pthread_mutex_unlock(&mesh->mutex);
+		return false;
+	}
+
+	path_copy_sockaddr((sockaddr_t *)addr, &mesh->backbone_udp.endpoint);
+	pthread_mutex_unlock(&mesh->mutex);
+	return true;
+}
+
+bool devtool_backbone_udp_failed_endpoint(meshlink_handle_t *mesh, struct sockaddr_storage *addr) {
+	if(!mesh || !addr) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	if(mesh->backbone_udp.failed_endpoint.sa.sa_family == AF_UNSPEC
+	                || mesh->backbone_udp.failed_endpoint.sa.sa_family == AF_UNKNOWN) {
+		pthread_mutex_unlock(&mesh->mutex);
+		return false;
+	}
+
+	path_copy_sockaddr((sockaddr_t *)addr, &mesh->backbone_udp.failed_endpoint);
+	pthread_mutex_unlock(&mesh->mutex);
+	return true;
+}
+
+unsigned devtool_backbone_udp_establish_step(meshlink_handle_t *mesh) {
+	unsigned step;
+
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return 0;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	step = mesh->backbone_udp.establish_step;
+	pthread_mutex_unlock(&mesh->mutex);
+	return step;
 }
 
 bool devtool_relay_cover_unit(meshlink_handle_t *mesh, meshlink_node_t *from, meshlink_node_t *dest, meshlink_node_t *hop) {
