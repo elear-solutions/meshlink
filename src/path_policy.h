@@ -80,18 +80,24 @@ typedef struct data_route_t {
 	data_route_kind_t kind;
 	relay_carrier_t relay_carrier;
 	struct node_t *first_hop;               /* NULL unless kind is RELAY */
+	sockaddr_t udp_endpoint;                /* exact UDP dest; unset for META */
+	address_source_t endpoint_source;
 	bool local;
 	bool suspect;                           /* probing after a retransmit, still carrying */
 	struct timespec selected_at;            /* start of the minimum residency */
 	struct timespec suspect_at;             /* when the retransmission raised suspicion */
+	struct timespec healthy_since;          /* finding 11 owns reset math; zeroed on commit */
 } data_route_t;
 
 /* The one higher-ranked endpoint being validated, if any. */
 typedef struct route_candidate_t {
 	bool active;
 	data_route_kind_t kind;
+	relay_carrier_t relay_carrier;
+	struct node_t *first_hop;
 	sockaddr_t endpoint;
 	address_source_t source;
+	bool local;
 	uint64_t nonce;
 	uint8_t successful_rounds;
 	uint8_t failures;                       /* drives the cooldown ladder */
@@ -105,6 +111,8 @@ typedef struct path_target_t {
 	data_route_kind_t kind;
 	relay_carrier_t relay_carrier;
 	struct node_t *first_hop;
+	sockaddr_t udp_endpoint;
+	address_source_t endpoint_source;
 	bool local;
 	bool temporary_fallback;                /* live fallback while the preferred route is still suspect */
 } path_target_t;
@@ -249,10 +257,23 @@ typedef enum path_promotion_reason_t {
 	PATH_PROMOTION_TICK
 } path_promotion_reason_t;
 
+/* Elective better-carrier promotion. Already-validated classes wait hold +
+   residency; they do not probe. n NULL walks demanded destinations. */
+typedef enum path_route_promotion_t {
+	PATH_PROMOTION_DIRECT_UDP = 0,
+	PATH_PROMOTION_BACKBONE_UDP,
+	PATH_PROMOTION_LOCAL_META,
+	PATH_PROMOTION_META_DIRECT
+} path_route_promotion_t;
+
 /* Start a local-UDP candidate on promotion_timer when WAN is confirmed, no
    candidate is in flight, cooldown is idle, and a better local endpoint
    exists. Does not send; the timer sends 64-byte nonce probes. */
 void path_consider_promotion(struct meshlink_handle *mesh, struct node_t *n, path_promotion_reason_t reason);
+
+/* Start at most one better-carrier candidate. Already-validated (backbone UDP,
+   local META, backbone META-direct, dest UDP) wait hold and residency. */
+void path_consider_route_promotion(struct meshlink_handle *mesh, struct node_t *n, path_route_promotion_t which);
 
 /* Query the in-flight candidate endpoint and nonce. Does not start or send.
    False means nothing is under validation. */
@@ -319,6 +340,18 @@ void path_note_selected_route(struct meshlink_handle *mesh, struct node_t *n, co
 /* Resolve where this destination's next application record goes. False means
    there is nothing usable and the caller should drop. Requires mesh->mutex. */
 bool path_active_send_target(struct meshlink_handle *mesh, struct node_t *n, path_target_t *out);
+
+/* Copy the recorded route if it is still instantiable. Suspect plus a live
+   fallback fills temporary_fallback without committing. Unusable recorded
+   identity selects and commits a fallback. Requires mesh->mutex. */
+bool path_resolve_active_route(struct meshlink_handle *mesh, struct node_t *n, path_target_t *out);
+
+/* Rank currently live carriers in product order. First route, exact hard
+   failure, and suspect demotion. Requires mesh->mutex. */
+bool path_select_fallback(struct meshlink_handle *mesh, struct node_t *n, path_target_t *out);
+
+/* Commit a validated promotion candidate as the active DIRECT_UDP route. */
+void path_commit_candidate(struct meshlink_handle *mesh, struct node_t *n);
 
 /* Record the route the send path just used, so residency and logs agree with
    what actually happened. Requires mesh->mutex. */

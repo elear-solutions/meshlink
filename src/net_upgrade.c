@@ -150,6 +150,8 @@ void upgrade_probe_succeeded(meshlink_handle_t *mesh, connection_t *c) {
 	path_log_validation(mesh, n, &c->address, "probe-succeeded", "direct META");
 	path_log_meta(mesh, n, &c->address, "migrated canonical -> direct");
 
+	path_consider_route_promotion(mesh, NULL, PATH_PROMOTION_META_DIRECT);
+
 	devtool_upgrade_probe(mesh, (meshlink_node_t *)n, DEVTOOL_UPGRADE_PROBE_SUCCEEDED);
 }
 

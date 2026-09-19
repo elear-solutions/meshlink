@@ -151,6 +151,8 @@ typedef struct node_t {
 	time_t pmtu_increase_next;              /* Earliest next full-size "is the path bigger now" probe */
 	sockaddr_t probe_dest_override;          /* Dest for a PKT_PROBE while override is active */
 	bool probe_dest_override_active;        /* Armed around one send_udppacket, then cleared */
+	sockaddr_t app_udp_override;            /* Committed application UDP dest for one send */
+	bool app_udp_override_active;           /* Armed around one application/type-8 UDP send */
 	bool devtool_force_meta;                /* Test-only persistent application-route override */
 
 	// Graph-related member variables

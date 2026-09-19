@@ -81,8 +81,9 @@ static void node_clear_inbound_prev_nexthop(meshlink_handle_t *mesh, node_t *dyi
 	}
 }
 
-/* A recorded route names its first hop, and a send in progress may have queued
-   this node for a deferred demotion. Both outlive the node unless cleared. */
+/* A recorded route names its first hop, a waiting candidate may pin the same
+   node, and a send in progress may have queued it for deferred demotion. All
+   three outlive the node unless cleared. */
 static void node_clear_route_references(meshlink_handle_t *mesh, node_t *dying) {
 	if(!mesh || !dying) {
 		return;
@@ -91,9 +92,12 @@ static void node_clear_route_references(meshlink_handle_t *mesh, node_t *dying) 
 	if(mesh->nodes) {
 		for splay_each(node_t, n, mesh->nodes) {
 			if(n->active_route.first_hop == dying) {
-				n->active_route.first_hop = NULL;
-				n->active_route.kind = DATA_ROUTE_NONE;
-				n->active_route.relay_carrier = RELAY_CARRIER_NONE;
+				memset(&n->active_route, 0, sizeof n->active_route);
+			}
+
+			if(n->promotion_candidate.first_hop == dying) {
+				timeout_del(&mesh->loop, &n->promotion_timer);
+				memset(&n->promotion_candidate, 0, sizeof n->promotion_candidate);
 			}
 		}
 	}

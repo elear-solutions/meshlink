@@ -954,6 +954,15 @@ bool devtool_graph_may_seed_udp(meshlink_handle_t *mesh, meshlink_node_t *node, 
 	return ok;
 }
 
+/* Test pins and planted UDP proofs are commit points: rank once and record. */
+static void commit_ranked_route(meshlink_handle_t *mesh, node_t *n) {
+	path_target_t target;
+
+	if(path_select_fallback(mesh, n, &target)) {
+		path_record_active_route(mesh, n, &target);
+	}
+}
+
 bool devtool_force_relay_path(meshlink_handle_t *mesh, meshlink_node_t *dest, meshlink_node_t *nexthop) {
 	if(!mesh || !dest || !nexthop) {
 		meshlink_errno = MESHLINK_EINVAL;
@@ -981,6 +990,7 @@ bool devtool_force_relay_path(meshlink_handle_t *mesh, meshlink_node_t *dest, me
 	timeout_del(&mesh->loop, &d->mtutimeout);
 	d->mtuprobes = 0;
 	d->relay_budget = 0;
+	commit_ranked_route(mesh, d);
 	pthread_mutex_unlock(&mesh->mutex);
 	return true;
 }
@@ -1007,6 +1017,8 @@ void devtool_set_udp_confirmed(meshlink_handle_t *mesh, meshlink_node_t *node, b
 				path_copy_sockaddr(&mesh->backbone_udp.endpoint, &n->address);
 				mesh->backbone_udp.source = n->address_source;
 			}
+
+			commit_ranked_route(mesh, n);
 		} else {
 			path_note_udp_demoted_reason(mesh, n, "devtool");
 		}
@@ -1019,6 +1031,9 @@ void devtool_set_udp_confirmed(meshlink_handle_t *mesh, meshlink_node_t *node, b
 
 	if(confirmed) {
 		n->status.forced_relay = false;
+		commit_ranked_route(mesh, n);
+	} else if(n->active_route.kind == DATA_ROUTE_DIRECT_UDP) {
+		commit_ranked_route(mesh, n);
 	} else if(!n->devtool_force_meta && n->status.validkey && n->status.reachable && !n->mtutimeout.cb
 	                && path_peer_udp_punching_allowed(mesh, n)) {
 		send_mtu_probe(mesh, n);
@@ -1065,6 +1080,7 @@ void devtool_force_meta(meshlink_handle_t *mesh, meshlink_node_t *node, bool ena
 		}
 	}
 
+	commit_ranked_route(mesh, n);
 	pthread_mutex_unlock(&mesh->mutex);
 }
 
@@ -1139,6 +1155,7 @@ bool devtool_confirm_udp_from(meshlink_handle_t *mesh, meshlink_node_t *node, co
 		mesh->backbone_udp.source = n->address_source;
 	}
 
+	commit_ranked_route(mesh, n);
 	pthread_mutex_unlock(&mesh->mutex);
 	return true;
 }

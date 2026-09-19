@@ -54,6 +54,10 @@ static char *scratch(const char *s) {
 	return (char *)(uintptr_t)s;
 }
 
+static bool timespec_neq(const struct timespec *a, const struct timespec *b) {
+	return a->tv_sec != b->tv_sec || a->tv_nsec != b->tv_nsec;
+}
+
 static bool cover_names(meshlink_handle_t *mesh) {
 	CHECK(!strcmp(address_source_name(ADDR_SRC_AUTH_DIRECT), "auth-direct"));
 	CHECK(!strcmp(address_source_name(ADDR_SRC_DISCOVERY), "discovery"));
@@ -888,15 +892,28 @@ static bool cover_active_route(meshlink_handle_t *mesh) {
 	node_t dest;
 	connection_t conn;
 	path_target_t target;
+	node_t hop;
+	connection_t hopconn;
+	node_t *saved_bb;
+	backbone_udp_path_t saved_udp;
+	struct timespec selected_at;
+	sockaddr_t local_ep;
+	bool ok;
 
 	memset(&dest, 0, sizeof dest);
 	memset(&conn, 0, sizeof conn);
 	dest.name = scratch("dest");
+	dest.mesh = mesh;
+	dest.devclass = DEV_CLASS_STATIONARY;
+	dest.lan_admitted_epoch = mesh->lan_network_epoch;
 	dest.status.reachable = true;
 	dest.status.udp_confirmed = true;
 	dest.status.validkey = true;
 	dest.udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+	set_v4(&dest.address, "203.0.113.12", 9);
+	dest.address_source = ADDR_SRC_UDP_REFLEXIVE;
 	conn.status.active = true;
+	conn.node = &dest;
 	set_v4(&conn.address, "10.0.0.1", 1);
 	dest.connection = &conn;
 
@@ -919,9 +936,31 @@ static bool cover_active_route(meshlink_handle_t *mesh) {
 	CHECK(path_active_send_target(mesh, &dest, &target));
 	CHECK(target.kind == DATA_ROUTE_DIRECT_UDP);
 	CHECK(!target.temporary_fallback);
+	CHECK(!sockaddrcmp(&target.udp_endpoint, &dest.address));
 	path_record_active_route(mesh, &dest, &target);
 	CHECK(dest.active_route.kind == DATA_ROUTE_DIRECT_UDP);
 	CHECK(!dest.active_route.suspect);
+
+	memset(&hop, 0, sizeof hop);
+	memset(&hopconn, 0, sizeof hopconn);
+	hop.name = scratch("camera-hop");
+	hop.status.udp_confirmed = true;
+	hop.status.validkey = true;
+	hop.status.reachable = true;
+	set_v4(&hop.address, "10.1.2.3", 9);
+	hopconn.status.active = true;
+	hopconn.node = &hop;
+	hop.connection = &hopconn;
+	dest.nexthop = &hop;
+
+	CHECK(path_active_send_target(mesh, &dest, &target));
+	CHECK(target.kind == DATA_ROUTE_DIRECT_UDP);
+	CHECK(!target.temporary_fallback);
+
+	hop.status.udp_confirmed = false;
+	CHECK(path_active_send_target(mesh, &dest, &target));
+	CHECK(target.kind == DATA_ROUTE_DIRECT_UDP);
+	hop.status.udp_confirmed = true;
 
 	path_note_route_suspect(mesh, &dest, "reliable retransmit");
 	CHECK(dest.active_route.suspect);
@@ -929,25 +968,7 @@ static bool cover_active_route(meshlink_handle_t *mesh) {
 
 	CHECK(path_active_send_target(mesh, &dest, &target));
 	CHECK(target.kind == DATA_ROUTE_DIRECT_LOCAL_META);
-	CHECK(target.temporary_fallback);
-	path_record_active_route(mesh, &dest, &target);
-	CHECK(dest.active_route.kind == DATA_ROUTE_DIRECT_UDP);
-	CHECK(dest.active_route.suspect);
-
-	node_t hop;
-	connection_t hopconn;
-	memset(&hop, 0, sizeof hop);
-	memset(&hopconn, 0, sizeof hopconn);
-	hop.name = scratch("hop");
-	hop.status.udp_confirmed = true;
-	hop.status.validkey = true;
-	hopconn.status.active = true;
-	hop.connection = &hopconn;
-	dest.nexthop = &hop;
-
-	CHECK(path_active_send_target(mesh, &dest, &target));
-	CHECK(target.kind == DATA_ROUTE_RELAY);
-	CHECK(target.relay_carrier == RELAY_CARRIER_UDP);
+	CHECK(target.local);
 	CHECK(target.temporary_fallback);
 	path_record_active_route(mesh, &dest, &target);
 	CHECK(dest.active_route.kind == DATA_ROUTE_DIRECT_UDP);
@@ -958,12 +979,452 @@ static bool cover_active_route(meshlink_handle_t *mesh) {
 	path_route_tick(mesh, &dest);
 	CHECK(!dest.active_route.suspect);
 	CHECK(!dest.status.udp_confirmed);
-	CHECK(dest.active_route.kind == DATA_ROUTE_RELAY);
+	CHECK(dest.active_route.kind == DATA_ROUTE_DIRECT_LOCAL_META);
+
+	memset(&dest.active_route, 0, sizeof dest.active_route);
+	dest.status.udp_confirmed = false;
+	dest.udp_tier = PATH_TIER_NONE;
+	dest.connection = NULL;
+	dest.lan_admitted_epoch = 0;
+	dest.nexthop = &hop;
+	CHECK(path_active_send_target(mesh, &dest, &target));
+	CHECK(target.first_hop != &hop);
+
+	saved_bb = mesh->backbone.node;
+	saved_udp = mesh->backbone_udp;
+	ok = true;
+	mesh->backbone.node = &hop;
+	hop.status.conflict_backbone = false;
+	hop.status.udp_confirmed = true;
+	hop.status.validkey = true;
+	set_v4(&hop.address, "203.0.113.80", 9);
+	memset(&mesh->backbone_udp, 0, sizeof mesh->backbone_udp);
+	mesh->backbone_udp.node = &hop;
+	mesh->backbone_udp.confirmed = true;
+	path_copy_sockaddr(&mesh->backbone_udp.endpoint, &hop.address);
+	mesh->backbone_udp.source = ADDR_SRC_AUTH_DIRECT;
+
+	memset(&dest.active_route, 0, sizeof dest.active_route);
+
+	if(!path_active_send_target(mesh, &dest, &target)
+	                || target.kind != DATA_ROUTE_RELAY
+	                || target.relay_carrier != RELAY_CARRIER_UDP
+	                || target.first_hop != &hop) {
+		ok = false;
+	}
+
+	if(ok) {
+		path_record_active_route(mesh, &dest, &target);
+		hop.status.udp_confirmed = false;
+
+		if(!path_active_send_target(mesh, &dest, &target)
+		                || target.kind != DATA_ROUTE_RELAY
+		                || target.relay_carrier != RELAY_CARRIER_UDP) {
+			ok = false;
+		}
+
+		hop.status.udp_confirmed = true;
+		mesh->backbone_udp.confirmed = false;
+
+		if(!path_active_send_target(mesh, &dest, &target)
+		                || (target.kind == DATA_ROUTE_RELAY && target.relay_carrier == RELAY_CARRIER_UDP)) {
+			ok = false;
+		}
+
+		mesh->backbone_udp.confirmed = true;
+	}
+
+	if(ok) {
+		hop.status.conflict_backbone = true;
+		memset(&dest.active_route, 0, sizeof dest.active_route);
+
+		if(!path_active_send_target(mesh, &dest, &target) || target.first_hop == &hop) {
+			ok = false;
+		}
+
+		hop.status.conflict_backbone = false;
+	}
+
+	mesh->backbone.node = saved_bb;
+	mesh->backbone_udp = saved_udp;
+
+	if(!ok) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: backbone relay identity");
+		return false;
+	}
+
+	memset(&dest.active_route, 0, sizeof dest.active_route);
+	dest.status.udp_confirmed = true;
+	dest.status.validkey = true;
+	dest.udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+	set_v4(&dest.address, "203.0.113.12", 9);
+	CHECK(path_active_send_target(mesh, &dest, &target));
+	CHECK(target.kind == DATA_ROUTE_DIRECT_UDP);
+	path_record_active_route(mesh, &dest, &target);
+	dest.active_route.selected_at.tv_sec -= PATH_ROUTE_MIN_RESIDENCY_SEC + 1;
+	selected_at = dest.active_route.selected_at;
+
+	memset(&dest.promotion_candidate, 0, sizeof dest.promotion_candidate);
+	dest.promotion_candidate.active = true;
+	dest.promotion_candidate.kind = DATA_ROUTE_DIRECT_UDP;
+	set_v4(&local_ep, "10.9.8.7", 9);
+	dest.promotion_candidate.endpoint = local_ep;
+	dest.promotion_candidate.source = ADDR_SRC_DISCOVERY;
+	dest.promotion_candidate.nonce = 1;
+	path_commit_candidate(mesh, &dest);
+	CHECK(dest.active_route.kind == DATA_ROUTE_DIRECT_UDP);
+	CHECK(dest.active_route.local);
+	CHECK(!sockaddrcmp(&dest.active_route.udp_endpoint, &local_ep));
+	CHECK(dest.active_route.selected_at.tv_sec != selected_at.tv_sec);
 
 	dest.status.reachable = false;
 	CHECK(!path_active_send_target(mesh, &dest, &target));
 	path_route_tick(mesh, NULL);
 	path_route_tick(NULL, &dest);
+	return true;
+}
+
+static bool cover_route_usability_and_promotion(meshlink_handle_t *mesh) {
+	node_t dest;
+	connection_t conn;
+	node_t hop;
+	connection_t hopconn;
+	path_target_t target;
+	node_t *saved_bb;
+	backbone_udp_path_t saved_udp;
+	struct timespec selected_at;
+	bool validkey;
+
+	memset(&dest, 0, sizeof dest);
+	memset(&conn, 0, sizeof conn);
+	memset(&hop, 0, sizeof hop);
+	memset(&hopconn, 0, sizeof hopconn);
+	dest.name = scratch("dest");
+	dest.mesh = mesh;
+	dest.devclass = DEV_CLASS_STATIONARY;
+	dest.lan_admitted_epoch = mesh->lan_network_epoch;
+	dest.status.reachable = true;
+	dest.status.udp_confirmed = true;
+	dest.status.validkey = true;
+	dest.udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+	set_v4(&dest.address, "203.0.113.12", 9);
+	conn.status.active = true;
+	conn.node = &dest;
+	set_v4(&conn.address, "10.0.0.1", 1);
+	dest.connection = &conn;
+
+	CHECK(path_active_send_target(mesh, &dest, &target));
+	CHECK(target.kind == DATA_ROUTE_DIRECT_UDP);
+	path_record_active_route(mesh, &dest, &target);
+	selected_at = dest.active_route.selected_at;
+	mesh->loop.now.tv_sec += 1;
+	CHECK(path_active_send_target(mesh, &dest, &target));
+	CHECK(target.kind == DATA_ROUTE_DIRECT_UDP);
+	CHECK(dest.active_route.selected_at.tv_sec == selected_at.tv_sec);
+	CHECK(dest.active_route.selected_at.tv_nsec == selected_at.tv_nsec);
+
+	dest.status.udp_confirmed = false;
+	mesh->loop.now.tv_sec += 1;
+	CHECK(path_active_send_target(mesh, &dest, &target));
+	CHECK(target.kind != DATA_ROUTE_DIRECT_UDP);
+	CHECK(dest.active_route.kind != DATA_ROUTE_DIRECT_UDP);
+	CHECK(timespec_neq(&dest.active_route.selected_at, &selected_at));
+
+	hop.name = scratch("bb");
+	hop.status.reachable = true;
+	hop.status.validkey = true;
+	hop.status.udp_confirmed = true;
+	set_v4(&hop.address, "203.0.113.80", 9);
+	hopconn.status.active = true;
+	hopconn.node = &hop;
+	set_v4(&hopconn.address, "203.0.113.80", 9);
+	hop.connection = &hopconn;
+	path_mark_meta_dial(&hopconn, true);
+
+	saved_bb = mesh->backbone.node;
+	saved_udp = mesh->backbone_udp;
+	mesh->backbone.node = &hop;
+	memset(&mesh->backbone_udp, 0, sizeof mesh->backbone_udp);
+	mesh->backbone_udp.node = &hop;
+
+	memset(&dest.active_route, 0, sizeof dest.active_route);
+	dest.status.udp_confirmed = false;
+	dest.udp_tier = PATH_TIER_NONE;
+	dest.connection = NULL;
+	dest.lan_admitted_epoch = 0;
+	CHECK(path_active_send_target(mesh, &dest, &target));
+	CHECK(target.kind == DATA_ROUTE_RELAY);
+	CHECK(target.relay_carrier == RELAY_CARRIER_META_CANONICAL);
+	path_record_active_route(mesh, &dest, &target);
+	selected_at = dest.active_route.selected_at;
+	path_mark_meta_dial(&hopconn, false);
+	mesh->loop.now.tv_sec += 1;
+	CHECK(path_active_send_target(mesh, &dest, &target));
+	CHECK(target.kind == DATA_ROUTE_RELAY);
+	CHECK(target.relay_carrier == RELAY_CARRIER_META_DIRECT);
+	CHECK(dest.active_route.relay_carrier == RELAY_CARRIER_META_DIRECT);
+	CHECK(timespec_neq(&dest.active_route.selected_at, &selected_at));
+	selected_at = dest.active_route.selected_at;
+	path_mark_meta_dial(&hopconn, true);
+	mesh->loop.now.tv_sec += 1;
+	CHECK(path_active_send_target(mesh, &dest, &target));
+	CHECK(target.relay_carrier == RELAY_CARRIER_META_CANONICAL);
+	CHECK(dest.active_route.relay_carrier == RELAY_CARRIER_META_CANONICAL);
+	CHECK(timespec_neq(&dest.active_route.selected_at, &selected_at));
+
+	memset(&dest.promotion_candidate, 0, sizeof dest.promotion_candidate);
+	selected_at = dest.active_route.selected_at;
+	dest.peer_udp.channel_count = 1;
+	memset(&dest.peer_udp.idle_until, 0, sizeof dest.peer_udp.idle_until);
+	mesh->backbone_udp.confirmed = true;
+	path_copy_sockaddr(&mesh->backbone_udp.endpoint, &hop.address);
+	mesh->backbone_udp.source = ADDR_SRC_AUTH_DIRECT;
+	path_consider_route_promotion(mesh, &dest, PATH_PROMOTION_BACKBONE_UDP);
+	CHECK(dest.promotion_candidate.active);
+	CHECK(dest.promotion_candidate.kind == DATA_ROUTE_RELAY);
+	CHECK(dest.promotion_candidate.relay_carrier == RELAY_CARRIER_UDP);
+	mesh->loop.now.tv_sec += 1;
+	CHECK(path_active_send_target(mesh, &dest, &target));
+	CHECK(target.kind == DATA_ROUTE_RELAY);
+	CHECK(target.relay_carrier == RELAY_CARRIER_META_CANONICAL);
+	CHECK(dest.active_route.selected_at.tv_sec == selected_at.tv_sec);
+	CHECK(dest.active_route.selected_at.tv_nsec == selected_at.tv_nsec);
+	dest.active_route.selected_at.tv_sec -= PATH_ROUTE_MIN_RESIDENCY_SEC + 1;
+	selected_at = dest.active_route.selected_at;
+	dest.promotion_candidate.first_success.tv_sec -= 1;
+	path_route_tick(mesh, &dest);
+	CHECK(!dest.promotion_candidate.active);
+	CHECK(dest.active_route.kind == DATA_ROUTE_RELAY);
+	CHECK(dest.active_route.relay_carrier == RELAY_CARRIER_UDP);
+	CHECK(timespec_neq(&dest.active_route.selected_at, &selected_at));
+
+	memset(&dest.promotion_candidate, 0, sizeof dest.promotion_candidate);
+	dest.connection = &conn;
+	dest.lan_admitted_epoch = mesh->lan_network_epoch;
+	validkey = dest.status.validkey;
+	selected_at = dest.active_route.selected_at;
+	path_consider_route_promotion(mesh, &dest, PATH_PROMOTION_LOCAL_META);
+	CHECK(dest.promotion_candidate.active);
+	CHECK(dest.promotion_candidate.kind == DATA_ROUTE_DIRECT_LOCAL_META);
+	mesh->loop.now.tv_sec += 1;
+	CHECK(path_active_send_target(mesh, &dest, &target));
+	CHECK(target.kind == DATA_ROUTE_RELAY);
+	CHECK(target.relay_carrier == RELAY_CARRIER_UDP);
+	CHECK(dest.status.validkey == validkey);
+	CHECK(dest.active_route.selected_at.tv_sec == selected_at.tv_sec);
+	CHECK(dest.active_route.selected_at.tv_nsec == selected_at.tv_nsec);
+	dest.active_route.selected_at.tv_sec -= PATH_ROUTE_MIN_RESIDENCY_SEC + 1;
+	selected_at = dest.active_route.selected_at;
+	dest.promotion_candidate.first_success.tv_sec -= 1;
+	path_route_tick(mesh, &dest);
+	CHECK(!dest.promotion_candidate.active);
+	CHECK(dest.active_route.kind == DATA_ROUTE_DIRECT_LOCAL_META);
+	CHECK(dest.active_route.local);
+	CHECK(dest.status.validkey == validkey);
+	CHECK(timespec_neq(&dest.active_route.selected_at, &selected_at));
+
+	/* A worse candidate must not overwrite a better route that landed during hold. */
+	memset(&dest.promotion_candidate, 0, sizeof dest.promotion_candidate);
+	timeout_del(&mesh->loop, &dest.promotion_timer);
+	dest.status.udp_confirmed = false;
+	dest.udp_tier = PATH_TIER_NONE;
+	dest.connection = &conn;
+	dest.lan_admitted_epoch = mesh->lan_network_epoch;
+	path_mark_meta_dial(&hopconn, true);
+	memset(&target, 0, sizeof target);
+	target.kind = DATA_ROUTE_RELAY;
+	target.relay_carrier = RELAY_CARRIER_META_CANONICAL;
+	target.first_hop = &hop;
+	path_record_active_route(mesh, &dest, &target);
+	CHECK(dest.active_route.kind == DATA_ROUTE_RELAY);
+	CHECK(dest.active_route.relay_carrier == RELAY_CARRIER_META_CANONICAL);
+	path_consider_route_promotion(mesh, &dest, PATH_PROMOTION_LOCAL_META);
+	CHECK(dest.promotion_candidate.active);
+	CHECK(dest.promotion_candidate.kind == DATA_ROUTE_DIRECT_LOCAL_META);
+	dest.status.udp_confirmed = true;
+	dest.status.validkey = true;
+	dest.udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+	set_v4(&dest.address, "203.0.113.12", 9);
+	memset(&target, 0, sizeof target);
+	target.kind = DATA_ROUTE_DIRECT_UDP;
+	path_copy_sockaddr(&target.udp_endpoint, &dest.address);
+	target.endpoint_source = dest.address_source;
+	path_record_active_route(mesh, &dest, &target);
+	CHECK(dest.active_route.kind == DATA_ROUTE_DIRECT_UDP);
+	dest.active_route.selected_at.tv_sec -= PATH_ROUTE_MIN_RESIDENCY_SEC + 1;
+	dest.promotion_candidate.first_success.tv_sec -= 1;
+	path_route_tick(mesh, &dest);
+	CHECK(!dest.promotion_candidate.active);
+	CHECK(dest.active_route.kind == DATA_ROUTE_DIRECT_UDP);
+
+	/* Backbone UDP endpoint change during hold must not commit the new endpoint. */
+	memset(&dest.promotion_candidate, 0, sizeof dest.promotion_candidate);
+	timeout_del(&mesh->loop, &dest.promotion_timer);
+	dest.status.udp_confirmed = false;
+	dest.udp_tier = PATH_TIER_NONE;
+	dest.connection = NULL;
+	dest.lan_admitted_epoch = 0;
+	path_mark_meta_dial(&hopconn, true);
+	memset(&target, 0, sizeof target);
+	target.kind = DATA_ROUTE_RELAY;
+	target.relay_carrier = RELAY_CARRIER_META_CANONICAL;
+	target.first_hop = &hop;
+	path_record_active_route(mesh, &dest, &target);
+	path_copy_sockaddr(&mesh->backbone_udp.endpoint, &hop.address);
+	mesh->backbone_udp.source = ADDR_SRC_AUTH_DIRECT;
+	mesh->backbone_udp.confirmed = true;
+	path_consider_route_promotion(mesh, &dest, PATH_PROMOTION_BACKBONE_UDP);
+	CHECK(dest.promotion_candidate.active);
+	CHECK(dest.promotion_candidate.relay_carrier == RELAY_CARRIER_UDP);
+	CHECK(!sockaddrcmp(&dest.promotion_candidate.endpoint, &hop.address));
+	set_v4(&mesh->backbone_udp.endpoint, "203.0.113.81", 9);
+	mesh->backbone_udp.source = ADDR_SRC_UDP_REFLEXIVE;
+	dest.active_route.selected_at.tv_sec -= PATH_ROUTE_MIN_RESIDENCY_SEC + 1;
+	dest.promotion_candidate.first_success.tv_sec -= 1;
+	path_route_tick(mesh, &dest);
+	CHECK(!dest.promotion_candidate.active);
+	CHECK(dest.active_route.kind == DATA_ROUTE_RELAY);
+	CHECK(dest.active_route.relay_carrier == RELAY_CARRIER_META_CANONICAL);
+	CHECK(sockaddrcmp(&dest.active_route.udp_endpoint, &mesh->backbone_udp.endpoint));
+
+	/* Already-live direct-UDP carrier: demote during hold must not commit the stale endpoint. */
+	memset(&dest.promotion_candidate, 0, sizeof dest.promotion_candidate);
+	timeout_del(&mesh->loop, &dest.promotion_timer);
+	dest.connection = NULL;
+	dest.lan_admitted_epoch = 0;
+	dest.status.udp_confirmed = true;
+	dest.status.validkey = true;
+	dest.udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+	set_v4(&dest.address, "203.0.113.12", 9);
+	memset(&target, 0, sizeof target);
+	target.kind = DATA_ROUTE_RELAY;
+	target.relay_carrier = RELAY_CARRIER_META_CANONICAL;
+	target.first_hop = &hop;
+	path_record_active_route(mesh, &dest, &target);
+	path_consider_route_promotion(mesh, &dest, PATH_PROMOTION_DIRECT_UDP);
+	CHECK(dest.promotion_candidate.active);
+	CHECK(dest.promotion_candidate.kind == DATA_ROUTE_DIRECT_UDP);
+	CHECK(!dest.promotion_candidate.nonce);
+	path_note_udp_demoted_reason(mesh, &dest, "cover");
+	CHECK(!dest.status.udp_confirmed);
+	dest.active_route.selected_at.tv_sec -= PATH_ROUTE_MIN_RESIDENCY_SEC + 1;
+	selected_at = dest.active_route.selected_at;
+	dest.promotion_candidate.first_success.tv_sec -= 1;
+	path_route_tick(mesh, &dest);
+	CHECK(!dest.promotion_candidate.active);
+	CHECK(dest.active_route.kind == DATA_ROUTE_RELAY);
+	CHECK(dest.active_route.relay_carrier == RELAY_CARRIER_META_CANONICAL);
+	CHECK(dest.active_route.selected_at.tv_sec == selected_at.tv_sec);
+	CHECK(dest.active_route.selected_at.tv_nsec == selected_at.tv_nsec);
+
+	mesh->backbone.node = saved_bb;
+	mesh->backbone_udp = saved_udp;
+
+	/* Candidate first_hop deleted during hold: relay-UDP and META-direct. */
+	{
+		node_t *waiter = new_node();
+		node_t *dying = new_node();
+
+		waiter->name = xstrdup("cover-cand-waiter");
+		waiter->devclass = DEV_CLASS_STATIONARY;
+		waiter->status.reachable = true;
+		waiter->status.validkey = true;
+		node_add(mesh, waiter);
+
+		dying->name = xstrdup("cover-dying-hop");
+		dying->devclass = DEV_CLASS_STATIONARY;
+		dying->status.reachable = true;
+		dying->status.validkey = true;
+		node_add(mesh, dying);
+
+		waiter->promotion_candidate.active = true;
+		waiter->promotion_candidate.kind = DATA_ROUTE_RELAY;
+		waiter->promotion_candidate.relay_carrier = RELAY_CARRIER_UDP;
+		waiter->promotion_candidate.first_hop = dying;
+		waiter->active_route.kind = DATA_ROUTE_RELAY;
+		waiter->active_route.relay_carrier = RELAY_CARRIER_META_CANONICAL;
+		waiter->active_route.first_hop = dying;
+		node_del(mesh, dying);
+		dying = NULL;
+		CHECK(!waiter->promotion_candidate.active);
+		CHECK(!waiter->promotion_candidate.first_hop);
+		CHECK(!waiter->promotion_candidate.kind);
+		CHECK(!waiter->active_route.first_hop);
+
+		dying = new_node();
+		dying->name = xstrdup("cover-dying-hop-meta");
+		dying->devclass = DEV_CLASS_STATIONARY;
+		dying->status.reachable = true;
+		dying->status.validkey = true;
+		node_add(mesh, dying);
+
+		timeout_del(&mesh->loop, &waiter->promotion_timer);
+		memset(&waiter->promotion_candidate, 0, sizeof waiter->promotion_candidate);
+		waiter->promotion_candidate.active = true;
+		waiter->promotion_candidate.kind = DATA_ROUTE_RELAY;
+		waiter->promotion_candidate.relay_carrier = RELAY_CARRIER_META_DIRECT;
+		waiter->promotion_candidate.first_hop = dying;
+		waiter->active_route.kind = DATA_ROUTE_RELAY;
+		waiter->active_route.relay_carrier = RELAY_CARRIER_META_CANONICAL;
+		waiter->active_route.first_hop = dying;
+		node_del(mesh, dying);
+		dying = NULL;
+		CHECK(!waiter->promotion_candidate.active);
+		CHECK(!waiter->promotion_candidate.first_hop);
+		CHECK(waiter->promotion_candidate.relay_carrier == RELAY_CARRIER_NONE);
+
+		node_del(mesh, waiter);
+	}
+
+	/* Idle dest with a stale recorded route must not get an elective candidate. */
+	{
+		node_t *idle = new_node();
+
+		idle->name = xstrdup("cover-idle-dest");
+		idle->devclass = DEV_CLASS_STATIONARY;
+		idle->status.reachable = true;
+		idle->status.validkey = true;
+		node_add(mesh, idle);
+
+		memset(&idle->active_route, 0, sizeof idle->active_route);
+		idle->active_route.kind = DATA_ROUTE_RELAY;
+		idle->active_route.relay_carrier = RELAY_CARRIER_META_CANONICAL;
+		idle->active_route.first_hop = saved_bb;
+		idle->active_route.selected_at = mesh->loop.now;
+		memset(&idle->peer_udp, 0, sizeof idle->peer_udp);
+
+		path_consider_route_promotion(mesh, idle, PATH_PROMOTION_BACKBONE_UDP);
+		CHECK(!idle->promotion_candidate.active);
+
+		dest.peer_udp.channel_count = 0;
+		memset(&dest.peer_udp.idle_until, 0, sizeof dest.peer_udp.idle_until);
+		memset(&dest.promotion_candidate, 0, sizeof dest.promotion_candidate);
+		path_consider_route_promotion(mesh, &dest, PATH_PROMOTION_BACKBONE_UDP);
+		CHECK(!dest.promotion_candidate.active);
+
+		node_del(mesh, idle);
+	}
+
+	{
+		node_t *n;
+		const char *leftover[] = {
+			"cover-cand-waiter",
+			"cover-dying-hop",
+			"cover-dying-hop-meta",
+			"cover-idle-dest",
+		};
+
+		for(size_t i = 0; i < sizeof leftover / sizeof leftover[0]; i++) {
+			n = lookup_node(mesh, leftover[i]);
+
+			if(n) {
+				node_del(mesh, n);
+			}
+		}
+	}
+
+	timeout_del(&mesh->loop, &dest.promotion_timer);
+	memset(&dest.promotion_candidate, 0, sizeof dest.promotion_candidate);
 	return true;
 }
 
@@ -1148,7 +1609,9 @@ static bool cover_promotion(meshlink_handle_t *mesh, node_t *live) {
 	path_observe_probe_reply(mesh, live, &local, spent);
 	CHECK_LIVE(live->promotion_candidate.successful_rounds == 1);
 
+	memset(&live->active_route, 0, sizeof live->active_route);
 	live->active_route.kind = DATA_ROUTE_DIRECT_UDP;
+	path_copy_sockaddr(&live->active_route.udp_endpoint, &wan);
 	live->active_route.selected_at = mesh->loop.now;
 	live->promotion_candidate.first_success.tv_sec -= 1;
 	path_observe_probe_reply(mesh, live, &local, nonce);
@@ -1188,6 +1651,7 @@ bool path_policy_cover_unit(meshlink_handle_t *mesh, node_t *live) {
 	                || !cover_udp_cache(mesh, live)
 	                || !cover_transport(mesh)
 	                || !cover_active_route(mesh)
+	                || !cover_route_usability_and_promotion(mesh)
 	                || !cover_preserve(mesh)) {
 		return false;
 	}

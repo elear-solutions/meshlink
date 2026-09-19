@@ -225,7 +225,6 @@ void relay_clear_budget_if_nexthop_changed(meshlink_handle_t *mesh, node_t *dest
 	if(dest->nexthop != dest->prev_nexthop) {
 		dest->relay_budget = 0;
 		dest->prev_nexthop = dest->nexthop;
-		path_note_selected_route(mesh, dest, "nexthop change");
 	} else {
 		dest->prev_nexthop = dest->nexthop;
 	}

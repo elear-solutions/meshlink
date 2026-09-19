@@ -602,7 +602,7 @@ completion. Keep a separate exception for the backbone UDP path from finding 8.
 ## 10. Make the active application route authoritative and pin relay to the backbone
 
 **Priority:** P1  
-**Status:** Open
+**Status:** Completed
 
 **Depends on:** finding 3 `conflict_backbone` (relay hop is
 `connection_policy_backbone()`, never a conflicted extra backbone-class

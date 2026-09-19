@@ -764,9 +764,7 @@ static connection_t *meta_connection_for(node_t *to) {
 	return to->connection;
 }
 
-static bool send_sptps_via_meta(meshlink_handle_t *mesh, node_t *to, const void *data, size_t len) {
-	connection_t *c = meta_connection_for(to);
-
+static bool send_sptps_via_meta_conn(meshlink_handle_t *mesh, node_t *to, connection_t *c, const void *data, size_t len) {
 	if(!c) {
 		logger(mesh, MESHLINK_WARNING, "Unable to forward SPTPS packet to %s via %s", to->name, to->nexthop ? to->nexthop->name : to->name);
 		return false;
@@ -781,6 +779,10 @@ static bool send_sptps_via_meta(meshlink_handle_t *mesh, node_t *to, const void 
 	return relay_meta_req_sptps(mesh, c, mesh->self->name, to->name, data, len);
 }
 
+static bool send_sptps_via_meta(meshlink_handle_t *mesh, node_t *to, const void *data, size_t len) {
+	return send_sptps_via_meta_conn(mesh, to, meta_connection_for(to), data, len);
+}
+
 static bool send_sptps_via_udp(meshlink_handle_t *mesh, node_t *to, const void *data, size_t len) {
 	sockaddr_t sa_buf;
 	const sockaddr_t *sa = NULL;
@@ -788,6 +790,11 @@ static bool send_sptps_via_udp(meshlink_handle_t *mesh, node_t *to, const void *
 
 	if(to->status.broadcast) {
 		choose_broadcast_address(mesh, to, &sa, &sock);
+	} else if(to->app_udp_override_active) {
+		path_copy_sockaddr(&sa_buf, &to->app_udp_override);
+		sa = &sa_buf;
+		sock = to->sock;
+		finish_udp_dest(mesh, &sa, &sock);
 	} else {
 		choose_udp_address(mesh, to, &sa, &sock, &sa_buf);
 	}
@@ -859,37 +866,40 @@ static bool send_relay_outer(meshlink_handle_t *mesh, node_t *hop, const void *d
 
 static bool send_application_record(meshlink_handle_t *mesh, node_t *to, const void *data, size_t len) {
 	path_target_t target;
-
-	path_note_selected_route(mesh, to, "destination route");
+	bool ok;
 
 	if(!path_active_send_target(mesh, to, &target)) {
 		return false;
 	}
 
-	/* A relay hop that offers UDP still needs a name pair that fits a type-8
-	   record. When it does not, this hop carries the record over META instead. */
-	if(target.kind == DATA_ROUTE_RELAY && target.relay_carrier == RELAY_CARRIER_UDP
-	                && relay_names_unusable(mesh->self->name, to->name)) {
-		target.relay_carrier = RELAY_CARRIER_META_DIRECT;
-	}
-
 	path_record_active_route(mesh, to, &target);
 
 	if(target.kind == DATA_ROUTE_DIRECT_UDP) {
-		/* Confirmed UDP does not compare (len-21) against minmtu. */
-		return send_sptps_via_udp(mesh, to, data, len);
+		path_copy_sockaddr(&to->app_udp_override, &target.udp_endpoint);
+		to->app_udp_override_active = true;
+		ok = send_sptps_via_udp(mesh, to, data, len);
+		to->app_udp_override_active = false;
+		return ok;
 	}
 
-	if(target.kind == DATA_ROUTE_RELAY && target.relay_carrier == RELAY_CARRIER_UDP) {
+	if(target.kind == DATA_ROUTE_RELAY && target.relay_carrier == RELAY_CARRIER_UDP && target.first_hop) {
 		uint8_t wrapped[MAXSIZE];
 		size_t wlen = sizeof(wrapped);
 
 		if(relay_encode(mesh->self->name, to->name, data, len, wrapped, &wlen)) {
-			return relay_send_outer_record(mesh, target.first_hop, mesh->self->name, to->name, wrapped, wlen);
+			path_copy_sockaddr(&target.first_hop->app_udp_override, &target.udp_endpoint);
+			target.first_hop->app_udp_override_active = true;
+			ok = relay_send_outer_record(mesh, target.first_hop, mesh->self->name, to->name, wrapped, wlen);
+			target.first_hop->app_udp_override_active = false;
+			return ok;
 		}
 	}
 
-	return send_sptps_via_meta(mesh, to, data, len);
+	if(target.kind == DATA_ROUTE_RELAY && target.first_hop) {
+		return send_sptps_via_meta_conn(mesh, to, target.first_hop->connection, data, len);
+	}
+
+	return send_sptps_via_meta_conn(mesh, to, to->connection, data, len);
 }
 
 bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {

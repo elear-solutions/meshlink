@@ -587,6 +587,14 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 
 	logger(mesh, MESHLINK_INFO, "Connection with %s activated", c->name);
 
+	if(connection_policy_is_local_adjacency(mesh, n)) {
+		path_consider_route_promotion(mesh, n, PATH_PROMOTION_LOCAL_META);
+	}
+
+	if(connection_policy_is_backbone(mesh, n) && !path_meta_is_canonical(n, c)) {
+		path_consider_route_promotion(mesh, NULL, PATH_PROMOTION_META_DIRECT);
+	}
+
 	/* No connection to hold this one behind, so we did not ACK during the handshake. */
 
 	if(deferred_ack && !send_ack(mesh, c)) {
