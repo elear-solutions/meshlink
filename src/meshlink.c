@@ -4392,6 +4392,23 @@ static bool channel_pre_accept(struct utcp *utcp, uint16_t port) {
 	}
 }
 
+static void channel_demand_hold(meshlink_handle_t *mesh, meshlink_channel_t *channel) {
+	if(!channel || channel->demand_held || !channel->node) {
+		return;
+	}
+
+	channel->demand_held = path_channel_acquire(mesh, channel->node);
+}
+
+static void channel_demand_drop(meshlink_handle_t *mesh, meshlink_channel_t *channel) {
+	if(!channel || !channel->demand_held) {
+		return;
+	}
+
+	channel->demand_held = false;
+	path_channel_release(mesh, channel->node);
+}
+
 /* Finish one AIO buffer, return true if the channel is still open. */
 static bool aio_finish_one(meshlink_handle_t *mesh, meshlink_channel_t *channel, meshlink_aio_buffer_t **head) {
 	meshlink_aio_buffer_t *aio = *head;
@@ -4413,6 +4430,7 @@ static bool aio_finish_one(meshlink_handle_t *mesh, meshlink_channel_t *channel,
 		channel->in_callback = false;
 
 		if(!channel->c) {
+			channel_demand_drop(mesh, channel);
 			free(aio);
 			free(channel);
 			return false;
@@ -4532,6 +4550,7 @@ static void channel_accept(struct utcp_connection *utcp_connection, uint16_t por
 	channel->c = utcp_connection;
 
 	if(mesh->channel_accept_cb(mesh, channel, port, NULL, 0)) {
+		channel_demand_hold(mesh, channel);
 		utcp_accept(utcp_connection, channel_recv, channel);
 	} else {
 		free(channel);
@@ -4864,15 +4883,18 @@ meshlink_channel_t *meshlink_channel_open_ex(meshlink_handle_t *mesh, meshlink_n
 		channel->priv = (void *)data;
 	}
 
+	channel_demand_hold(mesh, channel);
 	channel->c = utcp_connect_ex(n->utcp, port, channel_recv, channel, flags);
 
-	pthread_mutex_unlock(&mesh->mutex);
-
 	if(!channel->c) {
+		channel_demand_drop(mesh, channel);
+		pthread_mutex_unlock(&mesh->mutex);
 		meshlink_errno = errno == ENOMEM ? MESHLINK_ENOMEM : MESHLINK_EINTERNAL;
 		free(channel);
 		return NULL;
 	}
+
+	pthread_mutex_unlock(&mesh->mutex);
 
 	return channel;
 }
@@ -4911,6 +4933,8 @@ void meshlink_channel_close(meshlink_handle_t *mesh, meshlink_channel_t *channel
 		abort();
 	}
 
+	channel_demand_drop(mesh, channel);
+
 	if(channel->c) {
 		utcp_close(channel->c);
 		channel->c = NULL;
@@ -4938,6 +4962,8 @@ void meshlink_channel_abort(meshlink_handle_t *mesh, meshlink_channel_t *channel
 	if(pthread_mutex_lock(&mesh->mutex) != 0) {
 		abort();
 	}
+
+	channel_demand_drop(mesh, channel);
 
 	if(channel->c) {
 		utcp_abort(channel->c);

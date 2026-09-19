@@ -541,7 +541,7 @@ typedef struct backbone_udp_path_t {
 ## 9. Gate direct peer UDP punching on channel demand
 
 **Priority:** P1  
-**Status:** Open
+**Status:** Completed
 
 ### Issue Summary
 

@@ -1019,7 +1019,8 @@ void devtool_set_udp_confirmed(meshlink_handle_t *mesh, meshlink_node_t *node, b
 
 	if(confirmed) {
 		n->status.forced_relay = false;
-	} else if(!n->devtool_force_meta && n->status.validkey && n->status.reachable && !n->mtutimeout.cb) {
+	} else if(!n->devtool_force_meta && n->status.validkey && n->status.reachable && !n->mtutimeout.cb
+	                && path_peer_udp_punching_allowed(mesh, n)) {
 		send_mtu_probe(mesh, n);
 	}
 
@@ -1059,7 +1060,7 @@ void devtool_force_meta(meshlink_handle_t *mesh, meshlink_node_t *node, bool ena
 
 		if(n == mesh->backbone_udp.node || connection_policy_backbone_udp_required(mesh, n)) {
 			path_backbone_udp_start(mesh, n);
-		} else {
+		} else if(path_peer_udp_punching_allowed(mesh, n)) {
 			send_mtu_probe(mesh, n);
 		}
 	}

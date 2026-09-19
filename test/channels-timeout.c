@@ -12,6 +12,7 @@
 #include <assert.h>
 
 #include "../src/meshlink.h"
+#include "devtools.h"
 #include "utils.h"
 
 static bool listen_cb(meshlink_handle_t *mesh, meshlink_node_t *node, uint16_t port) {
@@ -147,6 +148,20 @@ static void poll8_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, size_
 	set_sync_flag(&poll8_flag, true);
 }
 
+static bool peer_keyed(meshlink_handle_t *mesh, const char *name) {
+	meshlink_node_t *n = meshlink_get_node(mesh, name);
+
+	if(!n) {
+		return false;
+	}
+
+	devtool_node_status_t st;
+	devtool_get_node_status(mesh, n, &st);
+	bool ok = st.validkey;
+	devtool_free_node_status(&st);
+	return ok;
+}
+
 static void test_per_channel_vs_node_default(void) {
 	reset_timeout_flags();
 
@@ -254,10 +269,13 @@ static void test_sendonly_ack_refresh(void) {
 	assert(wait_sync_flag(&poll7_flag, 10));
 	assert(poll7_len != 0);
 	assert(wait_sync_flag(&accept7_flag, 10));
+	assert_after(peer_keyed(mesh_b, "a"), 20);
 
-	meshlink_set_channel_timeout(mesh_a, ch7, 1);
+	/* Channel is META (backbone→camera does not punch). ACKs often land on the
+	   ~1s meta timeout_handler, so 1s idle-RX races the flush. */
+	meshlink_set_channel_timeout(mesh_a, ch7, 2);
 
-	for(int i = 0; i < 15; i++) {
+	for(int i = 0; i < 20; i++) {
 		assert(meshlink_channel_send(mesh_a, ch7, "frame", 5) == 5);
 		usleep(200000);
 		assert(!check_sync_flag(&a7_closed));
@@ -266,7 +284,7 @@ static void test_sendonly_ack_refresh(void) {
 	assert(wait_sync_flag(&b7_data, 5));
 	assert(!check_sync_flag(&a7_closed));
 
-	assert(wait_sync_flag(&a7_closed, 5));
+	assert(wait_sync_flag(&a7_closed, 8));
 
 	meshlink_channel_close(mesh_a, ch7);
 	close_meshlink_pair(mesh_a, mesh_b);

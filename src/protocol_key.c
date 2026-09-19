@@ -639,7 +639,7 @@ bool ans_key_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		   here instead of send_mtu_probe(); PMTU starts after confirm. */
 		if(connection_policy_backbone_udp_required(mesh, from)) {
 			path_backbone_udp_start(mesh, from);
-		} else {
+		} else if(path_peer_udp_punching_allowed(mesh, from)) {
 			send_mtu_probe(mesh, from);
 		}
 	}

@@ -196,6 +196,7 @@ void node_del(meshlink_handle_t *mesh, node_t *n) {
 	node_clear_route_references(mesh, n);
 	timeout_del(&mesh->loop, &n->mtutimeout);
 	timeout_del(&mesh->loop, &n->promotion_timer);
+	memset(&n->peer_udp, 0, sizeof n->peer_udp);
 
 	for splay_each(edge_t, e, n->edge_tree) {
 		edge_del(mesh, e);

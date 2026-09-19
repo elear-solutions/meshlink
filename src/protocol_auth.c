@@ -651,7 +651,10 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		if(upgrade_should_preserve_node_session(mesh, n, was_upgrade_probe, old_was_canonical)) {
 			send_canonical_address(mesh, n);
 			send_external_ip_address(mesh, n);
-		} else {
+		} else if(connection_policy_backbone_udp_required(mesh, n)) {
+			send_req_key(mesh, n);
+		} else if(path_peer_udp_punching_allowed(mesh, n)
+		                && !n->status.validkey && !n->status.waitingforkey) {
 			send_req_key(mesh, n);
 		}
 	}

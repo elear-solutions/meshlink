@@ -32,6 +32,7 @@
 #include "net_upgrade.h"
 #include "netutl.h"
 #include "node.h"
+#include "path_policy.h"
 #include "protocol.h"
 #include "relay.h"
 #include "sptps.h"
@@ -220,7 +221,9 @@ static void timeout_handler(event_loop_t *loop, void *data) {
 
 		// Also make sure that if outstanding key requests for the UDP counterpart of a connection has timed out, we restart it.
 		if(c->node) {
-			if(c->node->status.waitingforkey && c->node->last_req_key + pingtimeout < mesh->loop.now.tv_sec) {
+			if(c->node->status.waitingforkey && c->node->last_req_key + pingtimeout < mesh->loop.now.tv_sec
+			                && (connection_policy_backbone_udp_required(mesh, c->node)
+			                    || path_peer_udp_punching_allowed(mesh, c->node))) {
 				send_req_key(mesh, c->node);
 			}
 		}

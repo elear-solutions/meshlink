@@ -22,6 +22,7 @@
 #include "net_upgrade.h"
 #include "netutl.h"
 #include "node.h"
+#include "connection_policy.h"
 #include "path_policy.h"
 #include "protocol.h"
 #include "splay_tree.h"
@@ -1695,7 +1696,14 @@ static void path_backbone_udp_timer(event_loop_t *loop, void *data) {
 	p = &mesh->backbone_udp;
 	n = p->node;
 
-	if(!n || !n->status.reachable || !n->status.validkey || n->devtool_force_meta) {
+	if(!n || !n->status.reachable || n->devtool_force_meta) {
+		p->liveness_nonce = 0;
+		path_backbone_udp_arm(mesh, path_backbone_udp_next_establish(mesh), 0);
+		return;
+	}
+
+	if(!n->status.validkey) {
+		path_peer_ensure_udp_key(mesh, n);
 		p->liveness_nonce = 0;
 		path_backbone_udp_arm(mesh, path_backbone_udp_next_establish(mesh), 0);
 		return;
@@ -2036,8 +2044,120 @@ void path_candidate_timeout(meshlink_handle_t *mesh, node_t *n, const char *reas
 	}
 }
 
+static bool path_is_ordinary_peer_pair(const meshlink_handle_t *mesh, const node_t *peer) {
+	return mesh
+	       && mesh->self
+	       && peer
+	       && peer != mesh->self
+	       && connection_policy_lan_device_class(mesh->self->devclass)
+	       && connection_policy_lan_device_class(peer->devclass)
+	       && !connection_policy_is_backbone(mesh, peer);
+}
+
+bool path_peer_udp_demanded(const meshlink_handle_t *mesh, const node_t *peer) {
+	if(!mesh || !peer) {
+		return false;
+	}
+
+	if(peer->peer_udp.channel_count) {
+		return true;
+	}
+
+	if(!peer->peer_udp.idle_until.tv_sec && !peer->peer_udp.idle_until.tv_nsec) {
+		return false;
+	}
+
+	return timespec_ms_between(&mesh->loop.now, &peer->peer_udp.idle_until) > 0;
+}
+
+bool path_peer_udp_punching_allowed(const meshlink_handle_t *mesh, const node_t *n) {
+	return path_is_ordinary_peer_pair(mesh, n) && path_peer_udp_demanded(mesh, n);
+}
+
+void path_peer_ensure_udp_key(meshlink_handle_t *mesh, node_t *peer) {
+	if(!mesh || !peer) {
+		return;
+	}
+
+	if(!peer->status.reachable || peer->status.validkey || peer->status.waitingforkey) {
+		return;
+	}
+
+	if(!connection_policy_backbone_udp_required(mesh, peer)
+	                && !path_peer_udp_punching_allowed(mesh, peer)) {
+		return;
+	}
+
+	send_req_key(mesh, peer);
+}
+
+static void path_peer_udp_stop(meshlink_handle_t *mesh, node_t *n) {
+	if(!mesh || !n) {
+		return;
+	}
+
+	timeout_del(&mesh->loop, &n->mtutimeout);
+	timeout_del(&mesh->loop, &n->promotion_timer);
+	memset(&n->promotion_candidate, 0, sizeof n->promotion_candidate);
+	n->status.want_udp = false;
+	memset(&n->peer_udp.idle_until, 0, sizeof n->peer_udp.idle_until);
+	path_note_udp_demoted_reason(mesh, n, "peer demand idle");
+}
+
+bool path_channel_acquire(meshlink_handle_t *mesh, node_t *peer) {
+	bool first;
+
+	if(!path_is_ordinary_peer_pair(mesh, peer)) {
+		return false;
+	}
+
+	first = !peer->peer_udp.channel_count;
+	peer->peer_udp.channel_count++;
+
+	if(!first) {
+		return true;
+	}
+
+	memset(&peer->peer_udp.idle_until, 0, sizeof peer->peer_udp.idle_until);
+	path_peer_ensure_udp_key(mesh, peer);
+
+	if(!path_peer_udp_punching_allowed(mesh, peer)) {
+		return true;
+	}
+
+	if(peer->status.validkey && !peer->mtutimeout.cb && !peer->devtool_force_meta) {
+		send_mtu_probe(mesh, peer);
+	}
+
+	path_consider_promotion(mesh, peer, PATH_PROMOTION_TICK);
+	return true;
+}
+
+void path_channel_release(meshlink_handle_t *mesh, node_t *peer) {
+	if(!mesh || !peer || !peer->peer_udp.channel_count) {
+		return;
+	}
+
+	peer->peer_udp.channel_count--;
+
+	if(peer->peer_udp.channel_count) {
+		return;
+	}
+
+	if(path_is_ordinary_peer_pair(mesh, peer)) {
+		peer->peer_udp.idle_until = mesh->loop.now;
+		peer->peer_udp.idle_until.tv_sec += PATH_PEER_UDP_GRACE_SEC;
+	} else {
+		path_peer_udp_stop(mesh, peer);
+	}
+}
+
 void path_consider_promotion(meshlink_handle_t *mesh, node_t *n, path_promotion_reason_t reason) {
 	if(!mesh || !n || n->mesh != mesh) {
+		return;
+	}
+
+	if(!path_peer_udp_punching_allowed(mesh, n)) {
 		return;
 	}
 
@@ -2195,21 +2315,7 @@ bool path_has_live_fallback(meshlink_handle_t *mesh, const node_t *n) {
 }
 
 bool path_liveness_probe_warranted(meshlink_handle_t *mesh, const node_t *n) {
-	if(!mesh || !n) {
-		return false;
-	}
-
-	/* Still discovering, validating, or recovering: keep probing. */
-	if(!n->status.udp_confirmed || n->active_route.suspect || n->status.want_udp) {
-		return true;
-	}
-
-	/* Never used by the application: nothing depends on this path being warm. */
-	if(!n->last_application_traffic) {
-		return false;
-	}
-
-	return mesh->loop.now.tv_sec - n->last_application_traffic < PATH_LIVENESS_INTERVAL_SEC;
+	return path_peer_udp_punching_allowed(mesh, n);
 }
 
 static void path_commit_active_route(node_t *n, const path_target_t *target, const struct timespec *now) {
@@ -2233,6 +2339,12 @@ static void path_commit_active_route(node_t *n, const path_target_t *target, con
 void path_route_tick(meshlink_handle_t *mesh, node_t *n) {
 	if(!mesh || !n) {
 		return;
+	}
+
+	if(!n->peer_udp.channel_count
+	                && (n->peer_udp.idle_until.tv_sec || n->peer_udp.idle_until.tv_nsec)
+	                && timespec_ms_between(&n->peer_udp.idle_until, &mesh->loop.now) >= 0) {
+		path_peer_udp_stop(mesh, n);
 	}
 
 	route_candidate_t *c = &n->promotion_candidate;
@@ -2278,6 +2390,7 @@ void path_route_tick(meshlink_handle_t *mesh, node_t *n) {
 
 	/* After cooldown expires (or never started) this is the retry that used to
 	   hitchhike on the path-MTU timer. */
+	path_peer_ensure_udp_key(mesh, n);
 	path_consider_promotion(mesh, n, PATH_PROMOTION_TICK);
 }
 

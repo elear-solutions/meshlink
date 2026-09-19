@@ -132,6 +132,14 @@ typedef struct path_target_t {
 #define PATH_BACKBONE_UDP_ESTABLISH_MISS  3
 #define PATH_BACKBONE_UDP_KEEPALIVE_MISS  2
 #define PATH_BACKBONE_UDP_ESTABLISH_BACKOFF_MAX 30
+#define PATH_PEER_UDP_GRACE_SEC           5
+
+/* Ordinary-peer UDP punching is refcounted from channels. Backbone UDP is not. */
+typedef struct peer_path_demand_t {
+	unsigned channel_count;
+	struct timespec idle_until;             /* {0,0} = no grace */
+} peer_path_demand_t;
+
 #define CANONICAL_RESOLVE_TIMEOUT 2
 #define CANONICAL_RESOLVE_BACKOFF_MIN 5
 #define CANONICAL_RESOLVE_BACKOFF_MAX 600
@@ -273,8 +281,27 @@ void path_note_route_suspect(struct meshlink_handle *mesh, struct node_t *n, con
 /* True when a lower-ranked route is already live and could take over now. */
 bool path_has_live_fallback(struct meshlink_handle *mesh, const struct node_t *n);
 
-/* True when this peer is worth spending a liveness probe on: either it is
-   carrying application traffic, or something about its path is unresolved. */
+/* True when this peer has channel demand (live channels or grace). Does not
+   imply punching: backbone/UNKNOWN/self pairs can hold a count of zero. */
+bool path_peer_udp_demanded(const struct meshlink_handle *mesh, const struct node_t *peer);
+
+/* Direct peer UDP only: both sides LAN-class, neither is the backbone, demand is live. */
+bool path_peer_udp_punching_allowed(const struct meshlink_handle *mesh, const struct node_t *n);
+
+/* REQ_KEY when reachable, no node SPTPS yet, and UDP is required (backbone mapping
+   or ordinary-peer demand). No-op if already waitingforkey. */
+void path_peer_ensure_udp_key(struct meshlink_handle *mesh, struct node_t *peer);
+
+/* First/last channel to an ordinary peer. acquire() is false (no count change)
+   for backbone/UNKNOWN/self. Release always decrements a non-zero count so a
+   later class change cannot leak demand. 0→1 starts key exchange and punching;
+   1→0 keeps the route for PATH_PEER_UDP_GRACE_SEC if the pair is still ordinary,
+   otherwise stops UDP immediately. */
+bool path_channel_acquire(struct meshlink_handle *mesh, struct node_t *peer);
+void path_channel_release(struct meshlink_handle *mesh, struct node_t *peer);
+
+/* True when a demanded ordinary peer is worth a liveness probe: still
+   punching, recovering, or keeping the NAT mapping warm. */
 bool path_liveness_probe_warranted(struct meshlink_handle *mesh, const struct node_t *n);
 
 /* Bracket one synchronous utcp_send(). Demotions seen in between are recorded

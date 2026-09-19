@@ -971,8 +971,121 @@ static bool cover_preserve(meshlink_handle_t *mesh) {
 	return upgrade_preserve_cover_unit(mesh);
 }
 
+static bool cover_demand(meshlink_handle_t *mesh) {
+	node_t dummy;
+
+	memset(&dummy, 0, sizeof dummy);
+	dummy.name = scratch("demand");
+	dummy.mesh = mesh;
+
+	CHECK(!path_peer_udp_demanded(NULL, &dummy));
+	CHECK(!path_peer_udp_demanded(mesh, NULL));
+	CHECK(!path_peer_udp_demanded(mesh, &dummy));
+	CHECK(!path_liveness_probe_warranted(mesh, &dummy));
+	path_peer_ensure_udp_key(NULL, &dummy);
+	path_peer_ensure_udp_key(mesh, NULL);
+	path_peer_ensure_udp_key(mesh, &dummy);
+
+	CHECK(!path_channel_acquire(NULL, &dummy));
+	CHECK(!path_channel_acquire(mesh, NULL));
+	CHECK(!dummy.peer_udp.channel_count);
+
+	/* Backbone, UNKNOWN, and self are not ordinary peer pairs. */
+	dummy.devclass = DEV_CLASS_BACKBONE;
+	CHECK(!path_channel_acquire(mesh, &dummy));
+	CHECK(!dummy.peer_udp.channel_count);
+	CHECK(!path_liveness_probe_warranted(mesh, &dummy));
+	dummy.peer_udp.channel_count = 1;
+	path_channel_release(mesh, &dummy);
+	CHECK(!dummy.peer_udp.channel_count);
+	CHECK(!dummy.peer_udp.idle_until.tv_sec);
+
+	dummy.devclass = DEV_CLASS_UNKNOWN;
+	CHECK(!path_channel_acquire(mesh, &dummy));
+	CHECK(!dummy.peer_udp.channel_count);
+
+	if(mesh->self) {
+		unsigned self_count = mesh->self->peer_udp.channel_count;
+		CHECK(!path_channel_acquire(mesh, mesh->self));
+		CHECK(mesh->self->peer_udp.channel_count == self_count);
+	}
+
+	dummy.devclass = DEV_CLASS_STATIONARY;
+	CHECK(path_channel_acquire(mesh, &dummy));
+	CHECK(dummy.peer_udp.channel_count == 1);
+	CHECK(path_peer_udp_demanded(mesh, &dummy));
+	CHECK(path_liveness_probe_warranted(mesh, &dummy));
+
+	CHECK(path_channel_acquire(mesh, &dummy));
+	CHECK(dummy.peer_udp.channel_count == 2);
+
+	path_channel_release(mesh, &dummy);
+	CHECK(dummy.peer_udp.channel_count == 1);
+	CHECK(!dummy.peer_udp.idle_until.tv_sec);
+	CHECK(path_peer_udp_demanded(mesh, &dummy));
+
+	path_channel_release(NULL, &dummy);
+	path_channel_release(mesh, NULL);
+	CHECK(dummy.peer_udp.channel_count == 1);
+
+	path_channel_release(mesh, &dummy);
+	CHECK(!dummy.peer_udp.channel_count);
+	CHECK(dummy.peer_udp.idle_until.tv_sec == mesh->loop.now.tv_sec + PATH_PEER_UDP_GRACE_SEC);
+	CHECK(path_peer_udp_demanded(mesh, &dummy));
+	CHECK(path_liveness_probe_warranted(mesh, &dummy));
+
+	path_channel_release(mesh, &dummy);
+	CHECK(!dummy.peer_udp.channel_count);
+
+	/* Reclassify after acquire: release still decrements, and does not leave
+	   grace that could reactivate if the class becomes eligible again. */
+	memset(&dummy.peer_udp, 0, sizeof dummy.peer_udp);
+	dummy.devclass = DEV_CLASS_STATIONARY;
+	CHECK(path_channel_acquire(mesh, &dummy));
+	CHECK(dummy.peer_udp.channel_count == 1);
+	dummy.devclass = DEV_CLASS_UNKNOWN;
+	path_channel_release(mesh, &dummy);
+	CHECK(!dummy.peer_udp.channel_count);
+	CHECK(!dummy.peer_udp.idle_until.tv_sec);
+	dummy.devclass = DEV_CLASS_STATIONARY;
+	CHECK(!path_peer_udp_demanded(mesh, &dummy));
+	CHECK(!path_liveness_probe_warranted(mesh, &dummy));
+
+	dummy.devclass = DEV_CLASS_STATIONARY;
+	CHECK(path_channel_acquire(mesh, &dummy));
+	CHECK(dummy.peer_udp.channel_count == 1);
+	dummy.devclass = DEV_CLASS_BACKBONE;
+	path_channel_release(mesh, &dummy);
+	CHECK(!dummy.peer_udp.channel_count);
+	dummy.devclass = DEV_CLASS_STATIONARY;
+	CHECK(!path_peer_udp_demanded(mesh, &dummy));
+	CHECK(!path_liveness_probe_warranted(mesh, &dummy));
+	path_channel_release(mesh, &dummy);
+	CHECK(!dummy.peer_udp.channel_count);
+
+	dummy.peer_udp.idle_until = mesh->loop.now;
+	dummy.peer_udp.idle_until.tv_sec -= 1;
+
+	if(dummy.peer_udp.idle_until.tv_sec < 0) {
+		dummy.peer_udp.idle_until.tv_sec = 0;
+		dummy.peer_udp.idle_until.tv_nsec = 0;
+		CHECK(!path_peer_udp_demanded(mesh, &dummy));
+	} else {
+		CHECK(!path_peer_udp_demanded(mesh, &dummy));
+		path_route_tick(mesh, &dummy);
+		CHECK(!dummy.peer_udp.idle_until.tv_sec);
+		CHECK(!dummy.peer_udp.idle_until.tv_nsec);
+		CHECK(!path_liveness_probe_warranted(mesh, &dummy));
+	}
+
+	timeout_del(&mesh->loop, &dummy.mtutimeout);
+	timeout_del(&mesh->loop, &dummy.promotion_timer);
+	return true;
+}
+
 static bool cover_promotion(meshlink_handle_t *mesh, node_t *live) {
 	live_snapshot_t saved;
+	peer_path_demand_t saved_demand;
 	bool ok = true;
 	sockaddr_t local, wan;
 	uint64_t nonce, spent;
@@ -980,6 +1093,9 @@ static bool cover_promotion(meshlink_handle_t *mesh, node_t *live) {
 	snapshot_live(live, &saved);
 	timeout_del(&mesh->loop, &live->promotion_timer);
 	memset(&live->promotion_candidate, 0, sizeof live->promotion_candidate);
+	saved_demand = live->peer_udp;
+	live->peer_udp.channel_count = 1;
+	memset(&live->peer_udp.idle_until, 0, sizeof live->peer_udp.idle_until);
 
 	set_v4(&local, "10.9.8.7", 4242);
 	set_v4(&wan, "203.0.113.40", 9);
@@ -1048,6 +1164,7 @@ static bool cover_promotion(meshlink_handle_t *mesh, node_t *live) {
 done:
 	timeout_del(&mesh->loop, &live->promotion_timer);
 	memset(&live->promotion_candidate, 0, sizeof live->promotion_candidate);
+	live->peer_udp = saved_demand;
 	restore_live(mesh, live, &saved);
 	return ok;
 #undef CHECK_LIVE
@@ -1065,6 +1182,7 @@ bool path_policy_cover_unit(meshlink_handle_t *mesh, node_t *live) {
 	                || !cover_sanitize(mesh)
 	                || !cover_select(mesh)
 	                || !cover_probe(mesh)
+	                || !cover_demand(mesh)
 	                || !cover_promote(mesh, live)
 	                || !cover_promotion(mesh, live)
 	                || !cover_udp_cache(mesh, live)

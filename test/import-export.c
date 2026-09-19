@@ -26,7 +26,7 @@ static void status_cb(meshlink_handle_t *mesh, meshlink_node_t *node, bool reach
 static void pmtu_cb(meshlink_handle_t *mesh, meshlink_node_t *node, uint16_t pmtu) {
 	(void)mesh;
 
-	if(pmtu && !strcmp(node->name, "bar")) {
+	if(pmtu && !strcmp(node->name, "foo")) {
 		set_sync_flag(&pmtu_flag, true);
 	}
 }
@@ -97,7 +97,7 @@ int main(void) {
 	assert(!meshlink_get_node_reachability(mesh1, bar, &last_reachable, &last_unreachable));
 
 	meshlink_set_node_status_cb(mesh1, status_cb);
-	meshlink_set_node_pmtu_cb(mesh1, pmtu_cb);
+	meshlink_set_node_pmtu_cb(mesh2, pmtu_cb);
 
 	assert(meshlink_start(mesh2));
 

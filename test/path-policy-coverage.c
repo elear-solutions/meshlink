@@ -173,11 +173,11 @@ static void test_einval(void) {
 static void test_live_transitions(meshlink_handle_t **mesh) {
 	printf("=== live upgrade / downgrade matrix ===\n");
 
-	struct sockaddr_in local = {
+	struct sockaddr_in planted_local = {
 		.sin_family = AF_INET,
-		.sin_port = htons((uint16_t)meshlink_get_port(mesh[1])),
+		.sin_port = htons(7777),
 	};
-	assert(inet_pton(AF_INET, "127.0.0.1", &local.sin_addr) == 1);
+	assert(inet_pton(AF_INET, "192.168.77.10", &planted_local.sin_addr) == 1);
 
 	meshlink_node_t *bar = meshlink_get_node(mesh[2], "bar");
 	meshlink_node_t *foo = meshlink_get_node(mesh[2], "foo");
@@ -206,7 +206,7 @@ static void test_live_transitions(meshlink_handle_t **mesh) {
 	printf("M4 dest META-in ignores dest WAN UDP\n");
 
 	/* U4: unvalidated local stays off the dest while WAN is confirmed */
-	meshlink_hint_address(mesh[2], meshlink_get_node(mesh[2], "bar"), (struct sockaddr *)&local);
+	meshlink_hint_address(mesh[2], meshlink_get_node(mesh[2], "bar"), (struct sockaddr *)&planted_local);
 	devtool_node_status_t st;
 	devtool_get_node_status(mesh[2], meshlink_get_node(mesh[2], "bar"), &st);
 	assert(st.udp_tier == TIER_WAN);
@@ -220,10 +220,10 @@ static void test_live_transitions(meshlink_handle_t **mesh) {
 	printf("U4 WAN stays while local is unvalidated\n");
 
 	/* U5 / U3: validated local replaces WAN. */
-	assert(devtool_confirm_udp_from(mesh[2], meshlink_get_node(mesh[2], "bar"), (struct sockaddr *)&local, TIER_LOCAL));
+	assert(devtool_confirm_udp_from(mesh[2], meshlink_get_node(mesh[2], "bar"), (struct sockaddr *)&planted_local, TIER_LOCAL));
 	assert(dest_tier(mesh[2], "bar", false) == TIER_LOCAL);
 	assert(devtool_choose_udp_address(mesh[2], meshlink_get_node(mesh[2], "bar"), &chosen, &sock));
-	assert(addr_is(&chosen, "127.0.0.1", meshlink_get_port(mesh[1])));
+	assert(addr_is(&chosen, "192.168.77.10", 7777));
 	printf("U5 dest LOCAL after probe reply\n");
 
 	/* D3: forced WAN after local */
@@ -247,8 +247,14 @@ static void test_live_transitions(meshlink_handle_t **mesh) {
 	assert(dest_tier(mesh[2], "bar", false) == TIER_WAN);
 	printf("D5 WAN only after re-confirm\n");
 
-	/* Restore a working local dest so later hello still works */
-	assert(devtool_confirm_udp_from(mesh[2], meshlink_get_node(mesh[2], "bar"), (struct sockaddr *)&local, TIER_LOCAL));
+	/* Restore a working dest so the follow-up hello still works. 127.0.0.1 is
+	   canonical-equivalent and is not a promotion candidate, but it is reachable. */
+	struct sockaddr_in reachable = {
+		.sin_family = AF_INET,
+		.sin_port = htons((uint16_t)meshlink_get_port(mesh[1])),
+	};
+	assert(inet_pton(AF_INET, "127.0.0.1", &reachable.sin_addr) == 1);
+	assert(devtool_confirm_udp_from(mesh[2], meshlink_get_node(mesh[2], "bar"), (struct sockaddr *)&reachable, TIER_LOCAL));
 	devtool_set_udp_confirmed(mesh[2], meshlink_get_node(mesh[2], "foo"), true);
 	assert(dest_tier(mesh[2], "bar", false) == TIER_LOCAL);
 	send_hello(mesh[2], "bar");
@@ -403,8 +409,9 @@ int main(void) {
 
 	assert(wait_sync_flag(&bar_learned, 10));
 	assert(wait_sync_flag(&baz_learned, 10));
-	assert_after(mtu_fixed(mesh[2], "foo") && mtu_fixed(mesh[0], "baz")
-	             && mtu_fixed(mesh[0], "bar") && mtu_fixed(mesh[1], "foo"), 25);
+	assert_after(mtu_fixed(mesh[2], "foo") && mtu_fixed(mesh[1], "foo"), 25);
+	assert(!mtu_fixed(mesh[0], "bar"));
+	assert(!mtu_fixed(mesh[0], "baz"));
 
 	send_hello(mesh[2], "bar");
 

@@ -185,6 +185,7 @@ static void check_reachability(meshlink_handle_t *mesh) {
 			memset(&n->promotion_candidate, 0, sizeof n->promotion_candidate);
 			n->probe_dest_override_active = false;
 			path_backbone_udp_reset(mesh, n);
+			path_peer_ensure_udp_key(mesh, n);
 		}
 
 		if(n->status.visited != n->status.reachable) {
@@ -234,6 +235,10 @@ static void check_reachability(meshlink_handle_t *mesh) {
 
 			if(n->utcp) {
 				utcp_offline(n->utcp, !n->status.reachable);
+			}
+
+			if(n->status.reachable) {
+				path_peer_ensure_udp_key(mesh, n);
 			}
 		}
 	}

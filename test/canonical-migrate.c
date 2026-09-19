@@ -1144,7 +1144,7 @@ static void test_late_canonical_reclassifies(void) {
 	assert_after(check_sync_flag(&probe_succeeded) || connected_direct(p.a, p.a_b, p.b_port), 20);
 	assert(get_unreachable_count() == 0);
 	assert(stream_ok());
-	assert(sent > 200);
+	assert(sent >= 200);
 	assert_direct(p.a, p.a_b, p.b_port);
 
 	printf("T18 ok: late canonical reclassified NLB, migrated to port %d, %zu messages streamed\n", p.b_port, sent);

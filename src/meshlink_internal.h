@@ -290,6 +290,7 @@ struct meshlink_channel {
 	bool in_callback;
 
 	struct utcp_connection *c;
+	bool demand_held;
 	meshlink_aio_buffer_t *aio_send;
 	meshlink_aio_buffer_t *aio_receive;
 	meshlink_channel_receive_cb_t receive_cb;

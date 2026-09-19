@@ -1135,6 +1135,8 @@ static void connection_policy_ensure_backbone_udp(meshlink_handle_t *mesh, node_
 		return;
 	}
 
+	path_peer_ensure_udp_key(mesh, bb);
+
 	if(bb->status.validkey && bb->connection && bb->connection->status.active) {
 		path_backbone_udp_start(mesh, bb);
 		return;

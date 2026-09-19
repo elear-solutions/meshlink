@@ -146,7 +146,8 @@ typedef struct node_t {
 	data_route_t active_route;
 	route_candidate_t promotion_candidate;
 	timeout_t promotion_timer;
-	time_t last_application_traffic;        /* Drives demand-only dialling and idle cleanup */
+	peer_path_demand_t peer_udp;            /* Channel refcount + grace for ordinary-peer UDP */
+	time_t last_application_traffic;        /* Last recorded application send; not a demand signal */
 	time_t pmtu_increase_next;              /* Earliest next full-size "is the path bigger now" probe */
 	sockaddr_t probe_dest_override;          /* Dest for a PKT_PROBE while override is active */
 	bool probe_dest_override_active;        /* Armed around one send_udppacket, then cleared */

@@ -88,7 +88,7 @@ static void baz_status_cb(meshlink_handle_t *mesh, meshlink_node_t *node, bool r
 	}
 }
 
-static bool mtu_fixed(meshlink_handle_t *mesh, const char *name) {
+static bool udp_working(meshlink_handle_t *mesh, const char *name) {
 	meshlink_node_t *n = meshlink_get_node(mesh, name);
 
 	if(!n) {
@@ -97,13 +97,36 @@ static bool mtu_fixed(meshlink_handle_t *mesh, const char *name) {
 
 	devtool_node_status_t st;
 	devtool_get_node_status(mesh, n, &st);
-	return st.udp_status == DEVTOOL_UDP_WORKING && st.minmtu && st.mtuprobes >= 30;
+	bool ok = st.udp_status == DEVTOOL_UDP_WORKING;
+	devtool_free_node_status(&st);
+	return ok;
+}
+
+static bool hop_key_ready(meshlink_handle_t *mesh, const char *name) {
+	meshlink_node_t *n = meshlink_get_node(mesh, name);
+
+	if(!n || !meshlink_get_node_reachability(mesh, n, NULL, NULL)) {
+		return false;
+	}
+
+	devtool_node_status_t st;
+	devtool_get_node_status(mesh, n, &st);
+	bool ok = st.validkey;
+	devtool_free_node_status(&st);
+	return ok;
+}
+
+static void wait_hop_udp(meshlink_handle_t *mesh, const char *name) {
+	meshlink_node_t *n = meshlink_get_node(mesh, name);
+
+	assert(n);
+	assert_after(hop_key_ready(mesh, name), 20);
+	devtool_set_udp_confirmed(mesh, n, true);
 }
 
 static void wait_keys(meshlink_handle_t **mesh) {
 	/* Star: cameras have UDP to the backbone, not to each other. */
-	assert_after(mtu_fixed(mesh[2], "foo") && mtu_fixed(mesh[0], "baz")
-	             && mtu_fixed(mesh[0], "bar") && mtu_fixed(mesh[1], "foo"), 25);
+	assert_after(udp_working(mesh[2], "foo") && udp_working(mesh[1], "foo"), 25);
 }
 
 static void send_hello(meshlink_handle_t *from, const char *dest) {
@@ -240,7 +263,7 @@ int main(void) {
 	assert(!check_sync_flag(&leftover_udp));
 
 	assert(meshlink_start(mesh[0]));
-	assert_after(mtu_fixed(mesh[2], "foo"), 25);
+	wait_hop_udp(mesh[2], "foo");
 	assert(devtool_force_relay_path(mesh[2], meshlink_get_node(mesh[2], "bar"), meshlink_get_node(mesh[2], "foo")));
 
 	set_sync_flag(&dest_down, false);
@@ -248,7 +271,7 @@ int main(void) {
 	assert(wait_sync_flag(&dest_down, 20));
 
 	assert(meshlink_start(mesh[1]));
-	assert_after(mtu_fixed(mesh[2], "foo"), 25);
+	wait_hop_udp(mesh[2], "foo");
 
 	meshlink_set_channel_accept_cb(mesh[1], accept_cb);
 	meshlink_channel_t *ch = meshlink_channel_open(mesh[2], meshlink_get_node(mesh[2], "bar"), 1, chan_recv, NULL, 0);

@@ -45,6 +45,7 @@ typedef struct {
 #define PATH_ROUTE_MIN_RESIDENCY_SEC 30
 #define PATH_SUSPECT_WINDOW_MS 1000
 #define PATH_LIVENESS_INTERVAL_SEC 60
+#define PATH_PEER_UDP_GRACE_SEC 5
 
 static struct sync_flag accepted;
 static struct sync_flag received;
@@ -150,6 +151,51 @@ static bool ss_addr_equal(const struct sockaddr_storage *a, const struct sockadd
 	}
 
 	return false;
+}
+
+static void stability_destroy_conf(const char *prefix, int count) {
+	for(int i = 0; i < count; i++) {
+		char path[128];
+		snprintf(path, sizeof path, "%s.%d", prefix, i);
+		assert(meshlink_destroy(path));
+	}
+}
+
+static void stability_open_trio(const char *prefix, const char *app,
+                meshlink_handle_t **bb, meshlink_handle_t **e1, meshlink_handle_t **e2) {
+	const char *names[] = {"foo", "bar", "baz"};
+	const int classes[] = {DEV_CLASS_BACKBONE, DEV_CLASS_STATIONARY, DEV_CLASS_STATIONARY};
+	meshlink_handle_t *m[3];
+
+	stability_destroy_conf(prefix, 3);
+
+	for(int i = 0; i < 3; i++) {
+		char path[128];
+		snprintf(path, sizeof path, "%s.%d", prefix, i);
+		m[i] = meshlink_open(path, names[i], app, classes[i]);
+		assert(m[i]);
+		meshlink_enable_discovery(m[i], false);
+		assert(meshlink_set_canonical_address(m[i], meshlink_get_self(m[i]), "localhost", NULL));
+	}
+
+	join_meshlink_peer(m[0], m[1]);
+	join_meshlink_peer(m[0], m[2]);
+
+	for(int i = 0; i < 3; i++) {
+		assert(meshlink_start(m[i]));
+	}
+
+	*bb = m[0];
+	*e1 = m[1];
+	*e2 = m[2];
+}
+
+static void stability_close_trio(const char *prefix,
+                meshlink_handle_t *bb, meshlink_handle_t *e1, meshlink_handle_t *e2) {
+	meshlink_close(bb);
+	meshlink_close(e1);
+	meshlink_close(e2);
+	stability_destroy_conf(prefix, 3);
 }
 
 /* --- T1: the channel size is decided once, from the names alone ----------- */
@@ -318,26 +364,17 @@ static void test_mss_under_route_churn(void) {
 static void test_promotion_is_slow(void) {
 	printf("\n=== path-stability T3: promotion needs two rounds, a hold and residency ===\n");
 
-	assert(meshlink_destroy("path_stability_t3_conf.1"));
-	assert(meshlink_destroy("path_stability_t3_conf.2"));
-
-	meshlink_handle_t *a = meshlink_open("path_stability_t3_conf.1", "aaa", "path-stability-3", DEV_CLASS_BACKBONE);
-	meshlink_handle_t *b = meshlink_open("path_stability_t3_conf.2", "bbb", "path-stability-3", DEV_CLASS_STATIONARY);
-	assert(a && b);
-	meshlink_enable_discovery(a, false);
-	meshlink_enable_discovery(b, false);
+	meshlink_handle_t *bb, *a, *b;
+	stability_open_trio("path_stability_t3_conf", "path-stability-3", &bb, &a, &b);
 
 	init_sync_flag(&accepted);
 	init_sync_flag(&received);
 	meshlink_set_channel_accept_cb(b, accept_cb);
-	join_meshlink_peer(a, b);
-	assert(meshlink_start(a));
-	assert(meshlink_start(b));
 
-	meshlink_node_t *a_b = meshlink_get_node(a, "bbb");
+	assert_after(meshlink_get_node(a, "baz"), 15);
+	meshlink_node_t *a_b = meshlink_get_node(a, "baz");
 	assert(a_b);
 	assert_after(node_is_reachable(a, a_b), 15);
-	assert_after(node_is_keyed(a, a_b), 20);
 
 	/* Carry real traffic first, so there is an active route with a residency
 	   to serve. Without one, there is nothing worth protecting from churn. */
@@ -416,10 +453,7 @@ static void test_promotion_is_slow(void) {
 	devtool_free_node_status(&st);
 
 	meshlink_channel_abort(a, ch);
-	meshlink_close(a);
-	meshlink_close(b);
-	assert(meshlink_destroy("path_stability_t3_conf.1"));
-	assert(meshlink_destroy("path_stability_t3_conf.2"));
+	stability_close_trio("path_stability_t3_conf", bb, a, b);
 	printf("path-stability T3 ok: promoted only after two rounds and the residency\n");
 }
 
@@ -428,22 +462,24 @@ static void test_promotion_is_slow(void) {
 static void test_candidate_cooldown(void) {
 	printf("\n=== path-stability T4: a silent candidate cools down and escalates ===\n");
 
-	assert(meshlink_destroy("path_stability_t4_conf.1"));
-	assert(meshlink_destroy("path_stability_t4_conf.2"));
+	meshlink_handle_t *bb, *a, *b;
+	stability_open_trio("path_stability_t4_conf", "path-stability-4", &bb, &a, &b);
 
-	meshlink_handle_t *a = meshlink_open("path_stability_t4_conf.1", "aaa", "path-stability-4", DEV_CLASS_BACKBONE);
-	meshlink_handle_t *b = meshlink_open("path_stability_t4_conf.2", "bbb", "path-stability-4", DEV_CLASS_STATIONARY);
-	assert(a && b);
-	meshlink_enable_discovery(a, false);
-	meshlink_enable_discovery(b, false);
-	join_meshlink_peer(a, b);
-	assert(meshlink_start(a));
-	assert(meshlink_start(b));
+	init_sync_flag(&accepted);
+	init_sync_flag(&received);
+	meshlink_set_channel_accept_cb(b, accept_cb);
 
-	meshlink_node_t *a_b = meshlink_get_node(a, "bbb");
+	assert_after(meshlink_get_node(a, "baz"), 15);
+	meshlink_node_t *a_b = meshlink_get_node(a, "baz");
 	assert(a_b);
 	assert_after(node_is_reachable(a, a_b), 15);
-	assert_after(node_is_keyed(a, a_b), 20);
+
+	/* Promotion is demand-gated; keep a channel so punching is allowed. */
+	meshlink_channel_t *ch = meshlink_channel_open(a, a_b, 7, receive_cb, NULL, 0);
+	assert(ch);
+	assert(wait_sync_flag(&accepted, 15));
+	assert(meshlink_channel_send(a, ch, "Hello", 5) == 5);
+	assert(wait_sync_flag(&received, 15));
 
 	struct sockaddr_in wan = v4("203.0.113.10", 9);
 	struct sockaddr_in local = v4("192.168.77.11", 7777);
@@ -489,10 +525,8 @@ static void test_candidate_cooldown(void) {
 	assert(st.candidate_cooldown_remaining > first_cooldown);
 	devtool_free_node_status(&st);
 
-	meshlink_close(a);
-	meshlink_close(b);
-	assert(meshlink_destroy("path_stability_t4_conf.1"));
-	assert(meshlink_destroy("path_stability_t4_conf.2"));
+	meshlink_channel_abort(a, ch);
+	stability_close_trio("path_stability_t4_conf", bb, a, b);
 	printf("path-stability T4 ok: first cooldown %ds, retried only after it was cleared\n", first_cooldown);
 }
 
@@ -562,50 +596,96 @@ static void test_suspect_before_demote(void) {
 	printf("path-stability T5 ok: demoted only after the probe window closed\n");
 }
 
-/* --- T6: an idle peer costs nothing --------------------------------------- */
+/* --- T6: ordinary-peer UDP punching follows channel demand ---------------- */
 
 static void test_idle_peer_is_not_probed(void) {
-	printf("\n=== path-stability T6: an idle peer is not probed ===\n");
+	printf("\n=== path-stability T6: ordinary-peer UDP follows channel demand ===\n");
 
-	assert(meshlink_destroy("path_stability_t6_conf.1"));
-	assert(meshlink_destroy("path_stability_t6_conf.2"));
-
-	meshlink_handle_t *a = meshlink_open("path_stability_t6_conf.1", "aaa", "path-stability-6", DEV_CLASS_BACKBONE);
-	meshlink_handle_t *b = meshlink_open("path_stability_t6_conf.2", "bbb", "path-stability-6", DEV_CLASS_STATIONARY);
-	assert(a && b);
-	meshlink_enable_discovery(a, false);
-	meshlink_enable_discovery(b, false);
+	meshlink_handle_t *bb, *e1, *e2;
+	stability_open_trio("path_stability_t6_conf", "path-stability-6", &bb, &e1, &e2);
 
 	init_sync_flag(&accepted);
 	init_sync_flag(&received);
-	meshlink_set_channel_accept_cb(b, accept_cb);
-	join_meshlink_peer(a, b);
-	assert(meshlink_start(a));
-	assert(meshlink_start(b));
+	meshlink_set_channel_accept_cb(e1, accept_cb);
+	meshlink_set_channel_accept_cb(e2, accept_cb);
 
-	meshlink_node_t *a_b = meshlink_get_node(a, "bbb");
-	assert(a_b);
-	assert_after(node_is_reachable(a, a_b), 15);
-	assert_after(node_is_keyed(a, a_b), 20);
-	assert_after(udp_status_working(a, a_b), 30);
+	assert_after(meshlink_get_node(e1, "baz") && meshlink_get_node(e1, "foo")
+	             && meshlink_get_node(bb, "bar") && meshlink_get_node(e2, "bar"), 15);
 
-	/* Settled and never used by the application. */
-	assert(!devtool_liveness_probe_warranted(a, a_b));
+	meshlink_node_t *bb_e1 = meshlink_get_node(bb, "bar");
+	meshlink_node_t *bb_e2 = meshlink_get_node(bb, "baz");
+	meshlink_node_t *e1_bb = meshlink_get_node(e1, "foo");
+	meshlink_node_t *e1_e2 = meshlink_get_node(e1, "baz");
+	meshlink_node_t *e2_bb = meshlink_get_node(e2, "foo");
+	meshlink_node_t *e2_e1 = meshlink_get_node(e2, "bar");
+	assert(bb_e1 && bb_e2 && e1_bb && e1_e2 && e2_bb && e2_e1);
+	assert_after(node_is_reachable(e1, e1_e2), 15);
+	assert_after(node_is_keyed(e1, e1_bb), 20);
 
-	/* Application traffic makes liveness worth paying for again. */
-	meshlink_channel_t *ch = meshlink_channel_open(a, a_b, 7, receive_cb, NULL, 0);
+	/* Finding 8: cameras keep backbone UDP warm with no channel. */
+	assert_after(udp_status_working(e1, e1_bb), 30);
+	assert_after(udp_status_working(e2, e2_bb), 30);
+	assert(!udp_status_working(bb, bb_e1));
+	assert(!udp_status_working(bb, bb_e2));
+	assert(!devtool_liveness_probe_warranted(bb, bb_e1));
+	assert(!devtool_liveness_probe_warranted(bb, bb_e2));
+
+	/* Backbone → camera rides META; backbone never starts ordinary-peer UDP. */
+	meshlink_channel_t *ch_bb = meshlink_channel_open(bb, bb_e1, 7, receive_cb, NULL, 0);
+	assert(ch_bb);
+	assert(wait_sync_flag(&accepted, 15));
+	assert(meshlink_channel_send(bb, ch_bb, "Hello", 5) == 5);
+	assert(wait_sync_flag(&received, 15));
+	assert(!devtool_liveness_probe_warranted(bb, bb_e1));
+	assert(!udp_status_working(bb, bb_e1));
+
+	/* Edge-to-edge channel starts punching. */
+	reset_sync_flag(&accepted);
+	reset_sync_flag(&received);
+	meshlink_channel_t *ch = meshlink_channel_open(e1, e1_e2, 8, receive_cb, NULL, 0);
 	assert(ch);
 	assert(wait_sync_flag(&accepted, 15));
-	assert(meshlink_channel_send(a, ch, "Hello", 5) == 5);
+	assert(meshlink_channel_send(e1, ch, "Hello", 5) == 5);
 	assert(wait_sync_flag(&received, 15));
-	assert(devtool_liveness_probe_warranted(a, a_b));
+	assert(devtool_liveness_probe_warranted(e1, e1_e2));
+	assert_after(udp_status_working(e1, e1_e2), 30);
+	assert(!devtool_liveness_probe_warranted(bb, bb_e1));
+	assert(!udp_status_working(bb, bb_e1));
 
-	meshlink_channel_abort(a, ch);
-	meshlink_close(a);
-	meshlink_close(b);
-	assert(meshlink_destroy("path_stability_t6_conf.1"));
-	assert(meshlink_destroy("path_stability_t6_conf.2"));
-	printf("path-stability T6 ok: probes follow demand\n");
+	/* A second channel to the same peer shares one punch state. */
+	reset_sync_flag(&accepted);
+	reset_sync_flag(&received);
+	meshlink_channel_t *ch2 = meshlink_channel_open(e1, e1_e2, 9, receive_cb, NULL, 0);
+	assert(ch2);
+	assert(wait_sync_flag(&accepted, 15));
+	assert(meshlink_channel_send(e1, ch2, "Hello", 5) == 5);
+	assert(wait_sync_flag(&received, 15));
+	assert(devtool_liveness_probe_warranted(e1, e1_e2));
+	assert(udp_status_working(e1, e1_e2));
+
+	meshlink_channel_abort(e1, ch);
+	assert(devtool_liveness_probe_warranted(e1, e1_e2));
+	assert(udp_status_working(e1, e1_e2));
+
+	meshlink_channel_abort(e1, ch2);
+	assert(devtool_liveness_probe_warranted(e1, e1_e2));
+	assert_after(!devtool_liveness_probe_warranted(e1, e1_e2) && !udp_status_working(e1, e1_e2), PATH_PEER_UDP_GRACE_SEC + 15);
+
+	/* Incoming accept also acquires and starts punching. */
+	reset_sync_flag(&accepted);
+	reset_sync_flag(&received);
+	meshlink_channel_t *ch_in = meshlink_channel_open(e2, e2_e1, 10, receive_cb, NULL, 0);
+	assert(ch_in);
+	assert(wait_sync_flag(&accepted, 15));
+	assert_after(udp_status_working(e1, e1_e2), 30);
+	assert(devtool_liveness_probe_warranted(e1, e1_e2));
+	assert(!devtool_liveness_probe_warranted(bb, bb_e1));
+	assert(!udp_status_working(bb, bb_e1));
+
+	meshlink_channel_abort(e2, ch_in);
+	meshlink_channel_abort(bb, ch_bb);
+	stability_close_trio("path_stability_t6_conf", bb, e1, e2);
+	printf("path-stability T6 ok: edge punching follows demand, backbone never starts it\n");
 }
 
 /* --- T7: the route the send path used is the route that gets recorded ----- */
@@ -732,35 +812,27 @@ static void test_fallback_keeps_suspect(void) {
 static void test_parked_pmtu_promotes_local(void) {
 	printf("\n=== path-stability T9: parked PMTU still completes two promotion rounds ===\n");
 
-	assert(meshlink_destroy("path_stability_t9_conf.1"));
-	assert(meshlink_destroy("path_stability_t9_conf.2"));
-
-	meshlink_handle_t *a = meshlink_open("path_stability_t9_conf.1", "aaa", "path-stability-9", DEV_CLASS_BACKBONE);
-	meshlink_handle_t *b = meshlink_open("path_stability_t9_conf.2", "bbb", "path-stability-9", DEV_CLASS_STATIONARY);
-	assert(a && b);
-	meshlink_enable_discovery(a, false);
-	meshlink_enable_discovery(b, false);
+	meshlink_handle_t *bb, *a, *b;
+	stability_open_trio("path_stability_t9_conf", "path-stability-9", &bb, &a, &b);
 
 	init_sync_flag(&accepted);
 	init_sync_flag(&received);
 	meshlink_set_channel_accept_cb(b, accept_cb);
-	join_meshlink_peer(a, b);
-	assert(meshlink_start(a));
-	assert(meshlink_start(b));
 
-	meshlink_node_t *a_b = meshlink_get_node(a, "bbb");
-	meshlink_node_t *b_a = meshlink_get_node(b, "aaa");
+	assert_after(meshlink_get_node(a, "baz") && meshlink_get_node(b, "bar"), 15);
+	meshlink_node_t *a_b = meshlink_get_node(a, "baz");
+	meshlink_node_t *b_a = meshlink_get_node(b, "bar");
 	assert(a_b && b_a);
 	assert_after(node_is_reachable(a, a_b), 15);
-	assert_after(node_is_keyed(a, a_b), 20);
-	assert_after(udp_status_working(a, a_b), 30);
-	assert_after(pmtu_parked(a, a_b), 40);
 
 	meshlink_channel_t *ch = meshlink_channel_open(a, a_b, 7, receive_cb, NULL, 0);
 	assert(ch);
 	assert(wait_sync_flag(&accepted, 15));
 	assert(meshlink_channel_send(a, ch, "Hello", 5) == 5);
 	assert(wait_sync_flag(&received, 15));
+	assert_after(node_is_keyed(a, a_b), 20);
+	assert_after(udp_status_working(a, a_b), 30);
+	assert_after(pmtu_parked(a, a_b), 40);
 
 	devtool_node_status_t st = snapshot(a, a_b);
 	struct sockaddr_storage local = st.address;
@@ -800,11 +872,138 @@ static void test_parked_pmtu_promotes_local(void) {
 	devtool_free_node_status(&st);
 
 	meshlink_channel_abort(a, ch);
-	meshlink_close(a);
-	meshlink_close(b);
-	assert(meshlink_destroy("path_stability_t9_conf.1"));
-	assert(meshlink_destroy("path_stability_t9_conf.2"));
+	stability_close_trio("path_stability_t9_conf", bb, a, b);
 	printf("path-stability T9 ok: two rounds completed while PMTU stayed parked\n");
+}
+
+/* --- T10: receive EOF does not drop demand on a half-open channel --------- */
+
+static meshlink_channel_t *t10_peer_ch;
+static struct sync_flag eof_seen;
+static struct sync_flag hello_seen;
+static struct sync_flag more_seen;
+
+static void t10_local_recv(meshlink_handle_t *mesh, meshlink_channel_t *channel, const void *data, size_t len) {
+	(void)mesh;
+	(void)channel;
+	(void)data;
+
+	if(!len) {
+		set_sync_flag(&eof_seen, true);
+	}
+}
+
+static void t10_remote_recv(meshlink_handle_t *mesh, meshlink_channel_t *channel, const void *data, size_t len) {
+	(void)mesh;
+	(void)channel;
+
+	if(len == 5 && data && !memcmp(data, "Hello", 5)) {
+		set_sync_flag(&hello_seen, true);
+	}
+
+	if(len == 4 && data && !memcmp(data, "More", 4)) {
+		set_sync_flag(&more_seen, true);
+	}
+}
+
+static bool t10_accept(meshlink_handle_t *mesh, meshlink_channel_t *channel, uint16_t port, const void *data, size_t len) {
+	(void)port;
+	(void)data;
+	(void)len;
+	t10_peer_ch = channel;
+	meshlink_set_channel_receive_cb(mesh, channel, t10_remote_recv);
+	set_sync_flag(&accepted, true);
+	return true;
+}
+
+static void test_half_open_keeps_demand(void) {
+	printf("\n=== path-stability T10: half-close does not drop UDP demand ===\n");
+
+	meshlink_handle_t *bb, *e1, *e2;
+	stability_open_trio("path_stability_t10_conf", "path-stability-10", &bb, &e1, &e2);
+
+	init_sync_flag(&accepted);
+	init_sync_flag(&eof_seen);
+	init_sync_flag(&hello_seen);
+	init_sync_flag(&more_seen);
+	t10_peer_ch = NULL;
+	meshlink_set_channel_accept_cb(e2, t10_accept);
+
+	assert_after(meshlink_get_node(e1, "baz"), 15);
+	meshlink_node_t *e1_e2 = meshlink_get_node(e1, "baz");
+	assert(e1_e2);
+	assert_after(node_is_reachable(e1, e1_e2), 15);
+
+	meshlink_channel_t *ch = meshlink_channel_open(e1, e1_e2, 7, t10_local_recv, NULL, 0);
+	assert(ch);
+	assert(wait_sync_flag(&accepted, 15));
+	assert(t10_peer_ch);
+	assert(meshlink_channel_send(e1, ch, "Hello", 5) == 5);
+	assert(wait_sync_flag(&hello_seen, 15));
+	assert(devtool_liveness_probe_warranted(e1, e1_e2));
+	assert_after(udp_status_working(e1, e1_e2), 30);
+
+	meshlink_channel_shutdown(e2, t10_peer_ch, SHUT_WR);
+	assert(wait_sync_flag(&eof_seen, 15));
+	assert(meshlink_channel_send(e1, ch, "More", 4) == 4);
+	assert(wait_sync_flag(&more_seen, 15));
+	assert(devtool_liveness_probe_warranted(e1, e1_e2));
+	assert(udp_status_working(e1, e1_e2));
+
+	meshlink_channel_close(e1, ch);
+	assert_after(!devtool_liveness_probe_warranted(e1, e1_e2), PATH_PEER_UDP_GRACE_SEC + 15);
+
+	stability_close_trio("path_stability_t10_conf", bb, e1, e2);
+	printf("path-stability T10 ok: EOF kept demand until local close\n");
+}
+
+/* --- T11: release still drops demand after the peer's class changes ----- */
+
+static void test_release_after_reclassify(void) {
+	printf("\n=== path-stability T11: close after reclassify does not leak demand ===\n");
+
+	meshlink_handle_t *bb, *e1, *e2;
+	stability_open_trio("path_stability_t11_conf", "path-stability-11", &bb, &e1, &e2);
+
+	init_sync_flag(&accepted);
+	init_sync_flag(&received);
+	meshlink_set_channel_accept_cb(e2, accept_cb);
+
+	assert_after(meshlink_get_node(e1, "baz"), 15);
+	meshlink_node_t *e1_e2 = meshlink_get_node(e1, "baz");
+	assert(e1_e2);
+	assert_after(node_is_reachable(e1, e1_e2), 15);
+
+	meshlink_channel_t *ch = meshlink_channel_open(e1, e1_e2, 7, receive_cb, NULL, 0);
+	assert(ch);
+	assert(wait_sync_flag(&accepted, 15));
+	assert(meshlink_channel_send(e1, ch, "Hello", 5) == 5);
+	assert(wait_sync_flag(&received, 15));
+	assert(devtool_liveness_probe_warranted(e1, e1_e2));
+
+	devtool_set_node_devclass(e1, e1_e2, DEV_CLASS_UNKNOWN);
+	assert(!devtool_liveness_probe_warranted(e1, e1_e2));
+
+	meshlink_channel_close(e1, ch);
+
+	devtool_set_node_devclass(e1, e1_e2, DEV_CLASS_STATIONARY);
+	assert(!devtool_liveness_probe_warranted(e1, e1_e2));
+	assert_after(!devtool_liveness_probe_warranted(e1, e1_e2) && !udp_status_working(e1, e1_e2), PATH_PEER_UDP_GRACE_SEC + 5);
+
+	devtool_set_node_devclass(e1, e1_e2, DEV_CLASS_BACKBONE);
+	reset_sync_flag(&accepted);
+	reset_sync_flag(&received);
+	meshlink_set_channel_accept_cb(e2, accept_cb);
+	ch = meshlink_channel_open(e1, e1_e2, 8, receive_cb, NULL, 0);
+	assert(ch);
+	assert(wait_sync_flag(&accepted, 15));
+	assert(!devtool_liveness_probe_warranted(e1, e1_e2));
+	meshlink_channel_close(e1, ch);
+	devtool_set_node_devclass(e1, e1_e2, DEV_CLASS_STATIONARY);
+	assert(!devtool_liveness_probe_warranted(e1, e1_e2));
+
+	stability_close_trio("path_stability_t11_conf", bb, e1, e2);
+	printf("path-stability T11 ok: reclassify then close left no demand\n");
 }
 
 int main(void) {
@@ -819,6 +1018,8 @@ int main(void) {
 	test_recorded_route();
 	test_fallback_keeps_suspect();
 	test_parked_pmtu_promotes_local();
+	test_half_open_keeps_demand();
+	test_release_after_reclassify();
 
 	printf("\npath-stability: all checks passed\n");
 	return 0;
