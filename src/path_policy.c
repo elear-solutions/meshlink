@@ -2067,8 +2067,7 @@ static void path_candidate_discard(meshlink_handle_t *mesh, node_t *n) {
 	memset(&n->promotion_candidate, 0, sizeof n->promotion_candidate);
 }
 
-/* End the in-flight attempt but keep what we learned about this endpoint: its
-   identity, how often it has let us down, and how long it owes us. */
+/* End the in-flight attempt. Endpoint retry history lives on node_t. */
 static void path_candidate_end_attempt(meshlink_handle_t *mesh, node_t *n) {
 	route_candidate_t *c = &n->promotion_candidate;
 
@@ -2109,14 +2108,50 @@ void path_candidate_clear_cooldown(meshlink_handle_t *mesh, node_t *n) {
 		return;
 	}
 
-	memset(&n->promotion_candidate.cooldown_until, 0, sizeof n->promotion_candidate.cooldown_until);
+	memset(&n->candidate_retry.cooldown_until, 0, sizeof n->candidate_retry.cooldown_until);
 	path_consider_promotion(mesh, n, PATH_PROMOTION_COOLDOWN_CLEARED);
 }
 
-/* A long healthy stretch does say the earlier failures are not representative. */
+static void path_note_candidate_failure(meshlink_handle_t *mesh, node_t *n) {
+	n->candidate_retry.last_failure_at = mesh->loop.now;
+	memset(&n->active_route.healthy_since, 0, sizeof n->active_route.healthy_since);
+}
+
+void path_note_authenticated_route_success(meshlink_handle_t *mesh, node_t *n) {
+	if(!mesh || !n || n->active_route.kind == DATA_ROUTE_NONE || n->active_route.suspect) {
+		return;
+	}
+
+	if(!n->active_route.healthy_since.tv_sec) {
+		n->active_route.healthy_since = mesh->loop.now;
+	}
+}
+
+static bool path_retry_is_endpoint(const node_t *n, const sockaddr_t *ep) {
+	return n && ep && n->candidate_retry.endpoint.sa.sa_family && ep->sa.sa_family
+	       && !sockaddrcmp(&n->candidate_retry.endpoint, ep);
+}
+
+static bool path_cooldown_outstanding(const meshlink_handle_t *mesh, const node_t *n) {
+	return n->candidate_retry.cooldown_until.tv_sec
+	       && mesh->loop.now.tv_sec < n->candidate_retry.cooldown_until.tv_sec;
+}
+
+static bool path_failure_this_tick(const meshlink_handle_t *mesh, const node_t *n) {
+	return n->candidate_retry.last_failure_at.tv_sec == mesh->loop.now.tv_sec
+	       && n->candidate_retry.last_failure_at.tv_nsec == mesh->loop.now.tv_nsec;
+}
+
+/* A long healthy stretch does say the earlier failures are not representative.
+   Cooldown stays until finding 14; WAN health must not wipe an in-flight wait. */
 static void path_candidate_reset_escalation(node_t *n) {
-	n->promotion_candidate.failures = 0;
-	memset(&n->promotion_candidate.cooldown_until, 0, sizeof n->promotion_candidate.cooldown_until);
+	n->candidate_retry.failures = 0;
+}
+
+static void path_retry_clear_if_endpoint(node_t *n, const sockaddr_t *ep) {
+	if(path_retry_is_endpoint(n, ep)) {
+		memset(&n->candidate_retry, 0, sizeof n->candidate_retry);
+	}
 }
 
 void path_candidate_timeout(meshlink_handle_t *mesh, node_t *n, const char *reason) {
@@ -2125,20 +2160,42 @@ void path_candidate_timeout(meshlink_handle_t *mesh, node_t *n, const char *reas
 	}
 
 	route_candidate_t *c = &n->promotion_candidate;
-	int cooldown = path_cooldown_seconds(mesh, c->failures);
+	path_candidate_retry_t *r = &n->candidate_retry;
+	sockaddr_t endpoint = c->endpoint;
+	bool local_udp = c->kind == DATA_ROUTE_DIRECT_UDP;
+	int cooldown = 0;
 
-	if(c->failures < UINT8_MAX) {
-		c->failures++;
+	if(local_udp) {
+		if(!path_retry_is_endpoint(n, &c->endpoint)) {
+			memset(r, 0, sizeof *r);
+			path_copy_sockaddr(&r->endpoint, &c->endpoint);
+		}
+
+		path_note_candidate_failure(mesh, n);
+		cooldown = path_cooldown_seconds(mesh, r->failures);
+
+		if(r->failures < UINT8_MAX) {
+			r->failures++;
+		}
 	}
 
 	path_candidate_end_attempt(mesh, n);
-	c->cooldown_until = mesh->loop.now;
-	c->cooldown_until.tv_sec += cooldown;
+
+	if(local_udp) {
+		r->cooldown_until = mesh->loop.now;
+		r->cooldown_until.tv_sec += cooldown;
+	}
 
 	if(mesh->log_level <= MESHLINK_INFO) {
 		char detail[64];
-		snprintf(detail, sizeof detail, "%s cooldown=%ds", reason ? reason : "no reply", cooldown);
-		path_log_validation(mesh, n, &c->endpoint, "candidate-dropped", detail);
+
+		if(local_udp) {
+			snprintf(detail, sizeof detail, "%s cooldown=%ds", reason ? reason : "no reply", cooldown);
+		} else {
+			snprintf(detail, sizeof detail, "%s", reason ? reason : "no reply");
+		}
+
+		path_log_validation(mesh, n, endpoint.sa.sa_family ? &endpoint : NULL, "candidate-dropped", detail);
 	}
 }
 
@@ -2272,11 +2329,6 @@ void path_consider_promotion(meshlink_handle_t *mesh, node_t *n, path_promotion_
 		replace_carrier = true;
 	}
 
-	if(!replace_carrier
-	                && c->cooldown_until.tv_sec && mesh->loop.now.tv_sec < c->cooldown_until.tv_sec) {
-		return;
-	}
-
 	if(!n->status.udp_confirmed || n->udp_tier != PATH_TIER_DIRECT_WAN_UDP) {
 		return;
 	}
@@ -2287,16 +2339,22 @@ void path_consider_promotion(meshlink_handle_t *mesh, node_t *n, path_promotion_
 		return;
 	}
 
+	if(path_retry_is_endpoint(n, &better)
+	                && path_cooldown_outstanding(mesh, n)) {
+		return;
+	}
+
 	if(replace_carrier) {
 		path_candidate_discard(mesh, n);
 	}
 
 	/* Retrying the endpoint that already failed keeps its place on the
 	   escalation ladder. A different endpoint starts with a clean record. */
-	uint8_t failures = c->endpoint.sa.sa_family && !sockaddrcmp(&c->endpoint, &better) ? c->failures : 0;
+	if(n->candidate_retry.endpoint.sa.sa_family && sockaddrcmp(&n->candidate_retry.endpoint, &better)) {
+		memset(&n->candidate_retry, 0, sizeof n->candidate_retry);
+	}
 
 	memset(c, 0, sizeof *c);
-	c->failures = failures;
 	c->active = true;
 	c->kind = DATA_ROUTE_DIRECT_UDP;
 	c->endpoint = better;
@@ -2550,7 +2608,8 @@ void path_commit_candidate(meshlink_handle_t *mesh, node_t *n) {
 		return;
 	}
 
-	if(c->kind == DATA_ROUTE_DIRECT_UDP) {
+	if(target.kind == DATA_ROUTE_DIRECT_UDP) {
+		path_retry_clear_if_endpoint(n, &target.udp_endpoint);
 		path_candidate_discard(mesh, n);
 		path_log_validation(mesh, n, &endpoint, "candidate-promoted", "validated");
 		(void)path_promote_udp_if_better(mesh, n, &endpoint);
@@ -2583,6 +2642,7 @@ void path_observe_probe_reply(meshlink_handle_t *mesh, node_t *n, const sockaddr
 			path_log_validation(mesh, n, from, "suspect-cleared", "probe answered");
 		}
 
+		path_note_authenticated_route_success(mesh, n);
 		return;
 	}
 
@@ -2632,6 +2692,7 @@ void path_note_route_suspect(meshlink_handle_t *mesh, node_t *n, const char *rea
 
 	n->active_route.suspect = true;
 	n->active_route.suspect_at = mesh->loop.now;
+	memset(&n->active_route.healthy_since, 0, sizeof n->active_route.healthy_since);
 	path_log_validation(mesh, n, &n->address, "route-suspect", reason ? reason : "");
 }
 
@@ -3024,16 +3085,20 @@ void path_route_tick(meshlink_handle_t *mesh, node_t *n) {
 		}
 	}
 
-	/* A long healthy stretch means the earlier failures are not representative. */
-	if(!n->active_route.suspect && n->active_route.selected_at.tv_sec
-	                && mesh->loop.now.tv_sec - n->active_route.selected_at.tv_sec >= PATH_HEALTHY_RESET_SEC) {
+	/* Failures reset from authenticated service after the latest failure, never
+	   from selected_at, and never while a cooldown is still owed. */
+	if(!n->active_route.suspect
+	                && n->active_route.healthy_since.tv_sec
+	                && mesh->loop.now.tv_sec - n->active_route.healthy_since.tv_sec >= PATH_HEALTHY_RESET_SEC
+	                && !path_cooldown_outstanding(mesh, n)
+	                && !path_failure_this_tick(mesh, n)) {
 		path_candidate_reset_escalation(n);
 	}
 
 	/* After cooldown expires (or never started) this is the retry that used to
-	   hitchhike on the path-MTU timer. Do not start a replacement in the same
-	   tick that just committed or retired the current candidate: memset on a
-	   new start would wipe the cooldown the timeout just wrote. */
+	   hitchhike on the path-MTU timer. Skip consider_* in the same tick that
+	   committed or retired the current candidate so the cooldown and same-tick
+	   failure just written are observed before the next start. */
 	path_peer_ensure_udp_key(mesh, n);
 
 	if(!committed) {

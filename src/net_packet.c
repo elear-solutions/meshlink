@@ -1012,6 +1012,12 @@ bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t
 	memcpy(inpkt.data, data, len); // TODO: get rid of memcpy
 	inpkt.len = len;
 
+	if(from->active_route.kind != DATA_ROUTE_DIRECT_UDP
+	                || (from->last_udp_from.sa.sa_family
+	                    && !sockaddrcmp(&from->last_udp_from, &from->active_route.udp_endpoint))) {
+		path_note_authenticated_route_success(mesh, from);
+	}
+
 	receive_packet(mesh, from, &inpkt);
 	return true;
 }

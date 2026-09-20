@@ -86,10 +86,21 @@ typedef struct data_route_t {
 	bool suspect;                           /* probing after a retransmit, still carrying */
 	struct timespec selected_at;            /* start of the minimum residency */
 	struct timespec suspect_at;             /* when the retransmission raised suspicion */
-	struct timespec healthy_since;          /* finding 11 owns reset math; zeroed on commit */
+	struct timespec healthy_since;          /* start of authenticated service after the latest candidate failure or commit; zero until then */
 } data_route_t;
 
-/* The one higher-ranked endpoint being validated, if any. */
+/* Local-UDP endpoint retry history. Lives on node_t, not on the in-flight
+   candidate: carrier promotions may replace promotion_candidate without
+   forgiving a stale local endpoint. */
+typedef struct path_candidate_retry_t {
+	sockaddr_t endpoint;
+	uint8_t failures;                       /* drives the cooldown ladder */
+	struct timespec cooldown_until;
+	struct timespec last_failure_at;        /* same-tick guard */
+} path_candidate_retry_t;
+
+/* The one higher-ranked route being validated, if any. Identity and
+   validation only; endpoint retry state is path_candidate_retry_t. */
 typedef struct route_candidate_t {
 	bool active;
 	data_route_kind_t kind;
@@ -100,10 +111,8 @@ typedef struct route_candidate_t {
 	bool local;
 	uint64_t nonce;
 	uint8_t successful_rounds;
-	uint8_t failures;                       /* drives the cooldown ladder */
 	struct timespec first_success;
 	struct timespec deadline;
-	struct timespec cooldown_until;
 } route_candidate_t;
 
 /* What the send path was told to use for one record. */
@@ -291,13 +300,18 @@ void path_candidate_timeout(struct meshlink_handle *mesh, struct node_t *n, cons
 /* A fresh discovery or network change may clear cooldown once. */
 void path_candidate_clear_cooldown(struct meshlink_handle *mesh, struct node_t *n);
 
-/* Periodic: expire a stale candidate, resolve suspect state, reset escalation
-   after a long healthy stretch. Requires mesh->mutex. */
+/* Periodic: expire a stale candidate, resolve suspect state, reset failures
+   from healthy_since (never selected_at, never while cooldown is live).
+   Requires mesh->mutex. */
 void path_route_tick(struct meshlink_handle *mesh, struct node_t *n);
 
 /* Mark the active route suspect after a reliable retransmission. Does not
    demote: the route keeps carrying data until its probes go unanswered. */
 void path_note_route_suspect(struct meshlink_handle *mesh, struct node_t *n, const char *reason);
+
+/* First authenticated proof of the active route after a failure or commit.
+   Liveness replies and application records; not send-side or fallback. */
+void path_note_authenticated_route_success(struct meshlink_handle *mesh, struct node_t *n);
 
 /* True when a lower-ranked route is already live and could take over now. */
 bool path_has_live_fallback(struct meshlink_handle *mesh, const struct node_t *n);

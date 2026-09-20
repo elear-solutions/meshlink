@@ -295,7 +295,8 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 	mesh->contradicting_add_edge = 0;
 	mesh->contradicting_del_edge = 0;
 
-	/* Expire stale candidates, resolve suspect routes and reset escalation. */
+	/* Expire stale candidates, resolve suspect routes and reset failures
+	   from healthy_since, never selected_at, never while cooldown is live. */
 	for splay_each(node_t, n, mesh->nodes) {
 		if(n != mesh->self) {
 			path_route_tick(mesh, n);

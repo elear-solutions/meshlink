@@ -355,7 +355,7 @@ static void devtool_get_reset_node_status(meshlink_handle_t *mesh, meshlink_node
 		status->active_route_local = internal->active_route.local;
 		status->candidate_active = internal->promotion_candidate.active;
 		status->candidate_rounds = internal->promotion_candidate.successful_rounds;
-		status->candidate_failures = internal->promotion_candidate.failures;
+		status->candidate_failures = internal->candidate_retry.failures;
 		status->candidate_nonce = internal->promotion_candidate.active ? internal->promotion_candidate.nonce : 0;
 		status->channel_mtu = internal->utcp ? utcp_get_mtu(internal->utcp) : 0;
 		memset(&status->candidate_endpoint, 0, sizeof status->candidate_endpoint);
@@ -366,8 +366,8 @@ static void devtool_get_reset_node_status(meshlink_handle_t *mesh, meshlink_node
 
 		status->candidate_cooldown_remaining = 0;
 
-		if(internal->promotion_candidate.cooldown_until.tv_sec > mesh->loop.now.tv_sec) {
-			status->candidate_cooldown_remaining = (int)(internal->promotion_candidate.cooldown_until.tv_sec - mesh->loop.now.tv_sec);
+		if(internal->candidate_retry.cooldown_until.tv_sec > mesh->loop.now.tv_sec) {
+			status->candidate_cooldown_remaining = (int)(internal->candidate_retry.cooldown_until.tv_sec - mesh->loop.now.tv_sec);
 		}
 
 		if(internal->startup_skip_sa.sa.sa_family) {
@@ -1596,6 +1596,10 @@ void devtool_age_route(meshlink_handle_t *mesh, meshlink_node_t *node, int secon
 		n->active_route.suspect_at.tv_sec -= seconds;
 	}
 
+	if(n->active_route.healthy_since.tv_sec) {
+		n->active_route.healthy_since.tv_sec -= seconds;
+	}
+
 	pthread_mutex_unlock(&mesh->mutex);
 }
 
@@ -1619,8 +1623,8 @@ void devtool_age_candidate(meshlink_handle_t *mesh, meshlink_node_t *node, int s
 		n->promotion_candidate.deadline.tv_sec -= seconds;
 	}
 
-	if(n->promotion_candidate.cooldown_until.tv_sec) {
-		n->promotion_candidate.cooldown_until.tv_sec -= seconds;
+	if(n->candidate_retry.cooldown_until.tv_sec) {
+		n->candidate_retry.cooldown_until.tv_sec -= seconds;
 	}
 
 	pthread_mutex_unlock(&mesh->mutex);

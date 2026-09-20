@@ -45,7 +45,9 @@ established by earlier findings.
   `connection_policy`. Finding 6 added the telescopic retry ladder on
   the same `BACKBONE_REQUIRED` intent. Findings 7-8 extend that
   ownership.
-- Findings 9-14 complete route correctness and traffic budgets.
+- Findings 9-11 are done for route authority, demand, and cooldown
+  escalation. Findings 12-14 finish suspect recovery, probe budgets, and
+  cooldown-clear semantics.
 - Findings 15-20 finish interfaces, verification, and cleanup.
 
 Do not implement a later finding by adding a second competing state machine.
@@ -681,16 +683,16 @@ Same-class endpoint changes must restart residency only after explicit commit.
 ## 11. Correct cooldown escalation on long-lived routes
 
 **Priority:** P1  
-**Status:** Open
+**Status:** Completed
 
 ### Issue Summary
 
-Candidate failure escalation is currently reset from the active route's
-original `selected_at` time. Once a route is older than sixty seconds, a new
-candidate failure can create a cooldown and have it cleared in the same tick.
+Candidate failure escalation was reset from the active route's original
+`selected_at` time. Once a route was older than sixty seconds, a new
+candidate failure created a cooldown and had it cleared in the same tick.
 
-Repeated stale local candidates therefore never progress through the intended
-30, 60, 120, 300, and 600 second cooldown ladder.
+Repeated stale local candidates therefore never progressed through the
+intended 30, 60, 120, 300, and 600 second cooldown ladder.
 
 ### Example Real-world scenario failure
 
@@ -701,26 +703,27 @@ continuously.
 
 ### Suggested code change to fix
 
-Track health since the most recent failure:
+Completed. Escalation resets from `healthy_since` after sixty seconds of
+authenticated service following the latest failure. `selected_at` stays
+residency-only. An in-flight cooldown is never cleared by this path.
+
+Preserve these invariants:
 
 ```c
-static void path_note_candidate_failure(meshlink_handle_t *mesh, node_t *n) {
-	n->promotion_candidate.last_failure_at = mesh->loop.now;
-	memset(&n->active_route.healthy_since, 0,
-	       sizeof n->active_route.healthy_since);
-}
+path_note_candidate_failure:
+    last_failure_at = now
+    zero healthy_since
 
-static void path_note_authenticated_route_success(meshlink_handle_t *mesh,
-                                                  node_t *n) {
-	if(!n->active_route.healthy_since.tv_sec) {
-		n->active_route.healthy_since = mesh->loop.now;
-	}
-}
+path_note_authenticated_route_success:
+    set healthy_since once if the active route is not suspect
+
+path_route_tick reset:
+    healthy_since set
+    && age >= PATH_HEALTHY_RESET_SEC
+    && cooldown not outstanding
+    && last_failure_at is not this tick
+    -> failures = 0  (leave cooldown_until to finding 14)
 ```
-
-Reset escalation once after sixty uninterrupted seconds of authenticated
-service following the latest failure. Never clear a cooldown in the tick that
-created it.
 
 ---
 

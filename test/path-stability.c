@@ -45,6 +45,7 @@ typedef struct {
 #define PATH_ROUTE_MIN_RESIDENCY_SEC 30
 #define PATH_SUSPECT_WINDOW_MS 1000
 #define PATH_LIVENESS_INTERVAL_SEC 60
+#define PATH_HEALTHY_RESET_SEC 60
 #define PATH_PEER_UDP_GRACE_SEC 5
 
 static struct sync_flag accepted;
@@ -530,6 +531,68 @@ static void test_candidate_cooldown(void) {
 	printf("path-stability T4 ok: first cooldown %ds, retried only after it was cleared\n", first_cooldown);
 }
 
+/* --- T4b: a long-lived active route must not wipe candidate cooldown ------ */
+
+static void test_candidate_cooldown_survives_old_route(void) {
+	printf("\n=== path-stability T4b: long-lived route does not reset candidate cooldown ===\n");
+
+	meshlink_handle_t *bb, *a, *b;
+	stability_open_trio("path_stability_t4b_conf", "path-stability-4b", &bb, &a, &b);
+
+	init_sync_flag(&accepted);
+	init_sync_flag(&received);
+	meshlink_set_channel_accept_cb(b, accept_cb);
+
+	assert_after(meshlink_get_node(a, "baz"), 15);
+	meshlink_node_t *a_b = meshlink_get_node(a, "baz");
+	assert(a_b);
+	assert_after(node_is_reachable(a, a_b), 15);
+
+	meshlink_channel_t *ch = meshlink_channel_open(a, a_b, 7, receive_cb, NULL, 0);
+	assert(ch);
+	assert(wait_sync_flag(&accepted, 15));
+	assert(meshlink_channel_send(a, ch, "Hello", 5) == 5);
+	assert(wait_sync_flag(&received, 15));
+
+	struct sockaddr_in wan = v4("203.0.113.10", 9);
+	struct sockaddr_in local = v4("192.168.77.11", 7777);
+	assert(devtool_confirm_udp_from(a, a_b, (struct sockaddr *)&wan, 1));
+	meshlink_hint_address(a, a_b, (struct sockaddr *)&local);
+
+	devtool_node_status_t st = snapshot(a, a_b);
+	assert(st.candidate_active);
+	assert(st.active_route_kind == ROUTE_DIRECT_UDP);
+	devtool_free_node_status(&st);
+
+	devtool_age_route(a, a_b, PATH_HEALTHY_RESET_SEC + 1);
+	devtool_age_candidate(a, a_b, 60);
+	devtool_path_route_tick(a, a_b);
+
+	st = snapshot(a, a_b);
+	assert(!st.candidate_active);
+	assert(st.candidate_failures == 1);
+	int first_cooldown = st.candidate_cooldown_remaining;
+	assert(first_cooldown > 0);
+	devtool_free_node_status(&st);
+
+	devtool_candidate_clear_cooldown(a, a_b);
+	st = snapshot(a, a_b);
+	assert(st.candidate_active);
+	devtool_free_node_status(&st);
+
+	devtool_age_candidate(a, a_b, 60);
+	devtool_path_route_tick(a, a_b);
+	st = snapshot(a, a_b);
+	assert(!st.candidate_active);
+	assert(st.candidate_failures == 2);
+	assert(st.candidate_cooldown_remaining > first_cooldown);
+	devtool_free_node_status(&st);
+
+	meshlink_channel_abort(a, ch);
+	stability_close_trio("path_stability_t4b_conf", bb, a, b);
+	printf("path-stability T4b ok: aged route kept cooldown %ds and still escalated\n", first_cooldown);
+}
+
 /* --- T5: a retransmission makes a route suspect, not dead ----------------- */
 
 static void test_suspect_before_demote(void) {
@@ -1013,6 +1076,7 @@ int main(void) {
 	test_mss_under_route_churn();
 	test_promotion_is_slow();
 	test_candidate_cooldown();
+	test_candidate_cooldown_survives_old_route();
 	test_suspect_before_demote();
 	test_idle_peer_is_not_probed();
 	test_recorded_route();

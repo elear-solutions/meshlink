@@ -145,6 +145,7 @@ typedef struct node_t {
 	// One active data route, at most one candidate being validated (ADR 0004)
 	data_route_t active_route;
 	route_candidate_t promotion_candidate;
+	path_candidate_retry_t candidate_retry; /* local-UDP endpoint cooldown; not wiped by carrier promotions */
 	timeout_t promotion_timer;
 	peer_path_demand_t peer_udp;            /* Channel refcount + grace for ordinary-peer UDP */
 	time_t last_application_traffic;        /* Last recorded application send; not a demand signal */

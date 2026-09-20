@@ -555,8 +555,9 @@ int devtool_select_hop_tier(struct meshlink_handle *mesh, struct meshlink_node *
 int devtool_select_dest_with_udp(struct meshlink_handle *mesh, struct meshlink_node *dest, bool dest_udp, struct meshlink_node *hop, bool hop_udp, bool meta_in);
 
 /// Run one periodic route tick for this node without waiting for the timer.
-/** Expires a stale candidate, resolves a suspect route and resets escalation
- *  after a healthy stretch, so tests do not depend on wall-clock timing.
+/** Expires a stale candidate, resolves a suspect route and resets failures
+ *  from healthy_since (never selected_at, never while cooldown is live),
+ *  so tests do not depend on wall-clock timing.
  */
 void devtool_path_route_tick(struct meshlink_handle *mesh, struct meshlink_node *node);
 
@@ -580,10 +581,10 @@ void devtool_note_route_suspect(struct meshlink_handle *mesh, struct meshlink_no
 /// True when a lower-ranked route is already live for this node.
 bool devtool_has_live_fallback(struct meshlink_handle *mesh, struct meshlink_node *node);
 
-/// Age the active route's residency and suspicion by `seconds`.
-/** Lets a test reach the residency and suspect-window boundaries immediately.
- *  A negative value moves them away, so a test can hold a route inside its
- *  residency for as long as it needs.
+/// Age the active route's residency, suspicion and healthy_since by `seconds`.
+/** Lets a test reach the residency, suspect-window and healthy-reset
+ *  boundaries immediately. A negative value moves them away, so a test can
+ *  hold a route inside its residency for as long as it needs.
  */
 void devtool_age_route(struct meshlink_handle *mesh, struct meshlink_node *node, int seconds);
 
