@@ -76,6 +76,7 @@ devtool_apply_send_target
 devtool_candidate_probe_target
 devtool_observe_probe_reply
 devtool_note_route_suspect
+devtool_suspect_probe_target
 devtool_has_live_fallback
 devtool_age_route
 devtool_liveness_probe_warranted

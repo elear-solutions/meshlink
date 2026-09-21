@@ -630,19 +630,66 @@ static void test_suspect_before_demote(void) {
 	assert(st.udp_status == DEVTOOL_UDP_WORKING);
 	devtool_free_node_status(&st);
 
-	/* An answered probe on the active endpoint clears suspicion outright, and
-	   does not count as a promotion. */
+	struct sockaddr_storage got;
+	uint64_t nonce = 0;
+	assert(devtool_suspect_probe_target(a, a_b, &got, &nonce));
+	assert(nonce);
+
+	/* PMTU-style nonce 0, a wrong nonce, and a matching nonce from another
+	   endpoint must not clear this epoch. */
 	devtool_observe_probe_reply(a, a_b, (struct sockaddr *)&wan, 0);
+	st = snapshot(a, a_b);
+	assert(st.active_route_suspect);
+	assert(st.udp_status == DEVTOOL_UDP_WORKING);
+	devtool_free_node_status(&st);
+
+	devtool_observe_probe_reply(a, a_b, (struct sockaddr *)&wan, nonce ^ 1);
+	st = snapshot(a, a_b);
+	assert(st.active_route_suspect);
+	devtool_free_node_status(&st);
+
+	struct sockaddr_in other = v4("203.0.113.99", 9);
+	devtool_observe_probe_reply(a, a_b, (struct sockaddr *)&other, nonce);
+	st = snapshot(a, a_b);
+	assert(st.active_route_suspect);
+	assert(!st.candidate_active);
+	devtool_free_node_status(&st);
+
+	devtool_observe_probe_reply(a, a_b, (struct sockaddr *)&wan, nonce);
 	st = snapshot(a, a_b);
 	assert(!st.active_route_suspect);
 	assert(!st.candidate_active);
 	assert(st.udp_status == DEVTOOL_UDP_WORKING);
 	devtool_free_node_status(&st);
 
-	/* Unanswered, and only once the window has closed, it is demoted. */
+	/* A previous-epoch echo cannot heal a new suspicion. */
+	uint64_t first_epoch = nonce;
+	devtool_note_route_suspect(a, a_b);
+	assert(devtool_suspect_probe_target(a, a_b, &got, &nonce));
+	assert(nonce);
+	assert(nonce != first_epoch);
+	devtool_observe_probe_reply(a, a_b, (struct sockaddr *)&wan, first_epoch);
+	st = snapshot(a, a_b);
+	assert(st.active_route_suspect);
+	devtool_free_node_status(&st);
+	devtool_observe_probe_reply(a, a_b, (struct sockaddr *)&wan, nonce);
+	st = snapshot(a, a_b);
+	assert(!st.active_route_suspect);
+	assert(st.udp_status == DEVTOOL_UDP_WORKING);
+	devtool_free_node_status(&st);
+
+	/* Unanswered: a late matching reply must not heal, and only once the
+	   window has closed is the route demoted. */
 	assert(devtool_confirm_udp_from(a, a_b, (struct sockaddr *)&wan, 1));
 	devtool_note_route_suspect(a, a_b);
+	assert(devtool_suspect_probe_target(a, a_b, &got, &nonce));
+	assert(nonce);
 	devtool_age_route(a, a_b, 2);
+	devtool_observe_probe_reply(a, a_b, (struct sockaddr *)&wan, nonce);
+	st = snapshot(a, a_b);
+	assert(st.active_route_suspect);
+	assert(st.udp_status == DEVTOOL_UDP_WORKING);
+	devtool_free_node_status(&st);
 	devtool_path_route_tick(a, a_b);
 	st = snapshot(a, a_b);
 	assert(!st.active_route_suspect);

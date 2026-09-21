@@ -11,6 +11,7 @@
     (at your option) any later version.
 */
 
+#include "event.h"
 #include "sockaddr.h"
 
 #include <stdbool.h>
@@ -114,6 +115,19 @@ typedef struct route_candidate_t {
 	struct timespec first_success;
 	struct timespec deadline;
 } route_candidate_t;
+
+/* One in-flight suspect recovery for the recorded UDP endpoint. PMTU, promotion,
+   and previous-epoch replies must not satisfy this nonce. Finding 13 will admit
+   this timer through the global scheduler; until then it is the reservation. */
+typedef struct suspect_validation_t {
+	bool active;
+	sockaddr_t endpoint;
+	uint64_t nonce;                         /* epoch id; never 0 */
+	uint8_t probes_sent;
+	uint8_t replies_received;
+	struct timespec deadline;               /* now + PATH_SUSPECT_WINDOW_MS */
+	timeout_t timer;
+} suspect_validation_t;
 
 /* What the send path was told to use for one record. */
 typedef struct path_target_t {
@@ -288,10 +302,11 @@ void path_consider_route_promotion(struct meshlink_handle *mesh, struct node_t *
    False means nothing is under validation. */
 bool path_candidate_probe_target(struct meshlink_handle *mesh, struct node_t *n, sockaddr_t *out, uint64_t *nonce_out);
 
-/* An authenticated probe reply arrived from `from` carrying `nonce`. Counts a
-   validation round. The timer owns the rounds and the 10s deadline; once
-   PATH_PROMOTION_ROUNDS have passed it is stopped and path_route_tick commits
-   after hold and residency. */
+/* An authenticated probe reply arrived from `from` carrying `nonce`. Suspect
+   recovery matches endpoint and current epoch first. Promotion counts a
+   validation round. The promotion timer owns the rounds and the 10s deadline;
+   once PATH_PROMOTION_ROUNDS have passed it is stopped and path_route_tick
+   commits after hold and residency. */
 void path_observe_probe_reply(struct meshlink_handle *mesh, struct node_t *n, const sockaddr_t *from, uint64_t nonce);
 
 /* Give up on the candidate and put its endpoint into escalating cooldown. */
@@ -305,9 +320,22 @@ void path_candidate_clear_cooldown(struct meshlink_handle *mesh, struct node_t *
    Requires mesh->mutex. */
 void path_route_tick(struct meshlink_handle *mesh, struct node_t *n);
 
-/* Mark the active route suspect after a reliable retransmission. Does not
-   demote: the route keeps carrying data until its probes go unanswered. */
+/* Mark the active DIRECT_UDP or RELAY_UDP route suspect after a reliable
+   retransmission and start a two-probe nonce epoch. Relay UDP probes the hop
+   with that hop's authenticated packets, not the destination. Does not demote:
+   the route keeps carrying data until those probes go unanswered.
+   Already-suspect is a no-op. */
 void path_note_route_suspect(struct meshlink_handle *mesh, struct node_t *n, const char *reason);
+
+/* Drop the suspect transaction without logging a heal. Idempotent. */
+void path_suspect_stop(struct meshlink_handle *mesh, struct node_t *n);
+
+/* Matching suspect-epoch reply: clear the flag, stop the transaction, then
+   record authenticated success. */
+void path_clear_route_suspicion(struct meshlink_handle *mesh, struct node_t *n);
+
+/* Query the in-flight suspect endpoint and nonce. False if none. */
+bool path_suspect_probe_target(struct meshlink_handle *mesh, struct node_t *n, sockaddr_t *out, uint64_t *nonce_out);
 
 /* First authenticated proof of the active route after a failure or commit.
    Liveness replies and application records; not send-side or fallback. */

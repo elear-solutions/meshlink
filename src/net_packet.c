@@ -46,8 +46,9 @@ static void send_udppacket(meshlink_handle_t *mesh, node_t *, vpn_packet_t *);
 #define PROBE_OVERHEAD (SPTPS_DATAGRAM_OVERHEAD + 40)
 
 /* data[0] is the request/reply flag and data[14..] is random padding. Bytes
-   1..13 are zeroed on PMTU probes. Promotion probes stamp a nonce at offset 1
-   so the echo can be identified without a wire format change. */
+   1..13 are zeroed on PMTU probes. Promotion, suspect, and backbone probes
+   stamp a nonce at offset 1 so the echo can be identified without a wire
+   format change. */
 #define PROBE_NONCE_OFFSET 1
 
 /* mtuprobes == 1..30: initial discovery, send bursts with 1 second interval
@@ -220,6 +221,33 @@ void send_candidate_probe(meshlink_handle_t *mesh, node_t *n) {
 	send_probe_to(mesh, n, &packet, &n->promotion_candidate.endpoint);
 }
 
+void send_suspect_probe(meshlink_handle_t *mesh, node_t *n) {
+	suspect_validation_t *s;
+
+	if(!mesh || !n) {
+		return;
+	}
+
+	s = &n->suspect_validation;
+
+	if(!s->active || !s->nonce) {
+		return;
+	}
+
+	if(!n->status.reachable || !n->status.validkey) {
+		return;
+	}
+
+	vpn_packet_t packet;
+	memset(&packet, 0, sizeof packet);
+	packet.probe = true;
+	memcpy(packet.data + PROBE_NONCE_OFFSET, &s->nonce, sizeof s->nonce);
+	randomize(packet.data + 14, PATH_PROMOTION_PROBE_LEN - 14);
+	packet.len = PATH_PROMOTION_PROBE_LEN;
+	n->out_meta += packet.len + PROBE_OVERHEAD;
+	send_probe_to(mesh, n, &packet, &s->endpoint);
+}
+
 void send_backbone_udp_probe(meshlink_handle_t *mesh) {
 	node_t *n;
 	vpn_packet_t packet;
@@ -332,7 +360,7 @@ static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet
 			path_observe_probe_reply(mesh, n, &n->last_udp_from, nonce);
 		}
 
-		/* Promotion echoes carry a nonce. They must not unpark or resize PMTU. */
+		/* Nonce-bearing echoes (promotion, suspect, backbone) must not unpark or resize PMTU. */
 		if(nonce) {
 			return;
 		}

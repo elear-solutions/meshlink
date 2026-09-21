@@ -92,6 +92,7 @@ static void node_clear_route_references(meshlink_handle_t *mesh, node_t *dying) 
 	if(mesh->nodes) {
 		for splay_each(node_t, n, mesh->nodes) {
 			if(n->active_route.first_hop == dying) {
+				path_suspect_stop(mesh, n);
 				memset(&n->active_route, 0, sizeof n->active_route);
 			}
 
@@ -139,7 +140,7 @@ void free_node(node_t *n) {
 	ecdsa_free(n->ecdsa);
 	sptps_stop(&n->sptps);
 
-	if(n->mtutimeout.cb || n->promotion_timer.cb) {
+	if(n->mtutimeout.cb || n->promotion_timer.cb || n->suspect_validation.timer.cb) {
 		abort();
 	}
 
@@ -200,6 +201,7 @@ void node_del(meshlink_handle_t *mesh, node_t *n) {
 	node_clear_route_references(mesh, n);
 	timeout_del(&mesh->loop, &n->mtutimeout);
 	timeout_del(&mesh->loop, &n->promotion_timer);
+	path_suspect_stop(mesh, n);
 	memset(&n->peer_udp, 0, sizeof n->peer_udp);
 
 	for splay_each(edge_t, e, n->edge_tree) {

@@ -45,9 +45,9 @@ established by earlier findings.
   `connection_policy`. Finding 6 added the telescopic retry ladder on
   the same `BACKBONE_REQUIRED` intent. Findings 7-8 extend that
   ownership.
-- Findings 9-11 are done for route authority, demand, and cooldown
-  escalation. Findings 12-14 finish suspect recovery, probe budgets, and
-  cooldown-clear semantics.
+- Findings 9-12 are done for route authority, demand, cooldown
+  escalation, and suspect recovery. Findings 13-14 finish probe budgets
+  and cooldown-clear semantics.
 - Findings 15-20 finish interfaces, verification, and cleanup.
 
 Do not implement a later finding by adding a second competing state machine.
@@ -730,7 +730,7 @@ path_route_tick reset:
 ## 12. Separate suspect validation from PMTU and reject stale replies
 
 **Priority:** P1  
-**Status:** Open
+**Status:** Completed
 
 ### Issue Summary
 
@@ -755,6 +755,8 @@ Large PMTU probes may also fail during congestion even when 64-byte liveness
 would succeed, causing unnecessary demotion.
 
 ### Suggested code change to fix
+
+Completed. Preserve these invariants:
 
 Add one temporary suspect transaction for the exact active endpoint:
 

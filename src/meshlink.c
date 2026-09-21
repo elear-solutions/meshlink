@@ -4561,19 +4561,20 @@ static void channel_retransmit(struct utcp_connection *utcp_connection) {
 	node_t *n = utcp_connection->utcp->priv;
 	meshlink_handle_t *mesh = n->mesh;
 
-	/* Established data retransmit means the selected direct UDP path may not be
+	/* Established data retransmit means the selected UDP path may not be
 	   delivering. One retransmission is not proof, so the path is marked
 	   suspect and probed; subsequent records take a live fallback meanwhile and
-	   the path is only demoted if those probes go unanswered (ADR 0004). */
-	if(utcp_connection_established(utcp_connection)
-	                && n->status.udp_confirmed && !n->status.temp_udp_confirmed) {
-		path_note_route_suspect(mesh, n, "reliable retransmit");
+	   the path is only demoted if those probes go unanswered (ADR 0004).
+	   Relay UDP probes the hop with that hop's SPTPS, not the destination. */
+	if(!utcp_connection_established(utcp_connection) || n->status.temp_udp_confirmed) {
+		return;
 	}
 
-	if(n->mtutimeout.cb) {
-		timeout_set(&mesh->loop, &n->mtutimeout, &(struct timespec) {
-			0, 0
-		});
+	if(n->active_route.kind == DATA_ROUTE_DIRECT_UDP && n->status.udp_confirmed) {
+		path_note_route_suspect(mesh, n, "reliable retransmit");
+	} else if(n->active_route.kind == DATA_ROUTE_RELAY
+	                && n->active_route.relay_carrier == RELAY_CARRIER_UDP) {
+		path_note_route_suspect(mesh, n, "reliable retransmit");
 	}
 }
 

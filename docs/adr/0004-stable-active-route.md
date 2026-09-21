@@ -81,10 +81,14 @@ residency, before traffic moves.
 Demotion is honest. A hard socket error on the active endpoint moves
 future records to an already live fallback immediately. A reliable-channel
 retransmission marks the route suspect, moves subsequent records to a
-live fallback, and probes the suspect endpoint; the route is demoted only
-if those probes go unanswered. With no live fallback the suspect route
-keeps carrying data while it is probed, and the node is not reported
-unreachable.
+live fallback, and probes the suspect endpoint with two 64-byte
+nonce-epoch packets on a dedicated timer; the route is demoted only
+if those probes go unanswered. PMTU and stale replies do not clear
+the current epoch. Relay UDP probes the backbone hop with that hop's
+SPTPS nonce path; a matching reply clears dependent destinations, and
+a miss demotes backbone UDP and reranks them. With no live fallback
+the suspect route keeps carrying data while it is probed, and the
+node is not reported unreachable.
 
 Probing is demand driven and globally bounded. An idle peer is not
 probed. An active route is proven by traffic, or by one small liveness

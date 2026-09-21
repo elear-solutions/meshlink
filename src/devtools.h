@@ -572,16 +572,19 @@ bool devtool_apply_send_target(struct meshlink_handle *mesh, struct meshlink_nod
  */
 bool devtool_candidate_probe_target(struct meshlink_handle *mesh, struct meshlink_node *node, struct sockaddr_storage *addr, uint64_t *nonce);
 
-/// Feed an authenticated probe reply into the promotion state machine.
+/// Feed an authenticated probe reply into the promotion/suspect state machines.
 void devtool_observe_probe_reply(struct meshlink_handle *mesh, struct meshlink_node *node, const struct sockaddr *addr, uint64_t nonce);
 
 /// Mark the active route suspect, as a reliable retransmission would.
 void devtool_note_route_suspect(struct meshlink_handle *mesh, struct meshlink_node *node);
 
+/// Query the in-flight suspect endpoint and nonce. False if none.
+bool devtool_suspect_probe_target(struct meshlink_handle *mesh, struct meshlink_node *node, struct sockaddr_storage *addr, uint64_t *nonce);
+
 /// True when a lower-ranked route is already live for this node.
 bool devtool_has_live_fallback(struct meshlink_handle *mesh, struct meshlink_node *node);
 
-/// Age the active route's residency, suspicion and healthy_since by `seconds`.
+/// Age the active route's residency, suspicion, suspect deadline and healthy_since by `seconds`.
 /** Lets a test reach the residency, suspect-window and healthy-reset
  *  boundaries immediately. A negative value moves them away, so a test can
  *  hold a route inside its residency for as long as it needs.

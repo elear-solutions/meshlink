@@ -1059,6 +1059,7 @@ void devtool_force_meta(meshlink_handle_t *mesh, meshlink_node_t *node, bool ena
 	if(enabled) {
 		timeout_del(&mesh->loop, &n->mtutimeout);
 		timeout_del(&mesh->loop, &n->promotion_timer);
+		path_suspect_stop(mesh, n);
 		n->mtuprobes = 31;
 		n->status.udp_confirmed = false;
 		n->status.want_udp = false;
@@ -1547,6 +1548,30 @@ void devtool_observe_probe_reply(meshlink_handle_t *mesh, meshlink_node_t *node,
 	pthread_mutex_unlock(&mesh->mutex);
 }
 
+bool devtool_suspect_probe_target(meshlink_handle_t *mesh, meshlink_node_t *node, struct sockaddr_storage *addr, uint64_t *nonce) {
+	if(!mesh || !node || !addr || !nonce) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	sockaddr_t sa;
+	memset(&sa, 0, sizeof sa);
+	bool ok = path_suspect_probe_target(mesh, (node_t *)node, &sa, nonce);
+
+	memset(addr, 0, sizeof *addr);
+
+	if(ok) {
+		memcpy(addr, &sa, sizeof sa < sizeof *addr ? sizeof sa : sizeof *addr);
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return ok;
+}
+
 void devtool_note_route_suspect(meshlink_handle_t *mesh, meshlink_node_t *node) {
 	if(!mesh || !node) {
 		meshlink_errno = MESHLINK_EINVAL;
@@ -1594,6 +1619,20 @@ void devtool_age_route(meshlink_handle_t *mesh, meshlink_node_t *node, int secon
 
 	if(n->active_route.suspect_at.tv_sec) {
 		n->active_route.suspect_at.tv_sec -= seconds;
+	}
+
+	if(n->suspect_validation.deadline.tv_sec || n->suspect_validation.deadline.tv_nsec) {
+		n->suspect_validation.deadline.tv_sec -= seconds;
+	}
+
+	if(n->active_route.kind == DATA_ROUTE_RELAY
+	                && n->active_route.relay_carrier == RELAY_CARRIER_UDP
+	                && n->active_route.first_hop) {
+		suspect_validation_t *hs = &n->active_route.first_hop->suspect_validation;
+
+		if(hs->deadline.tv_sec || hs->deadline.tv_nsec) {
+			hs->deadline.tv_sec -= seconds;
+		}
 	}
 
 	if(n->active_route.healthy_since.tv_sec) {

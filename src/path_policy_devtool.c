@@ -21,6 +21,7 @@
 #include "path_policy.h"
 #include "path_policy_devtool.h"
 #include "sptps.h"
+#include "splay_tree.h"
 #include "xalloc.h"
 
 #include <arpa/inet.h>
@@ -740,6 +741,7 @@ static bool cover_promote(meshlink_handle_t *mesh, node_t *live) {
 
 	path_learn_address(mesh, live, &local, ADDR_SRC_DISCOVERY);
 	timeout_del(&mesh->loop, &live->promotion_timer);
+	path_suspect_stop(mesh, live);
 	memset(&live->promotion_candidate, 0, sizeof live->promotion_candidate);
 	live->address = local;
 	live->udp_tier = PATH_TIER_DIRECT_WAN_UDP;
@@ -775,6 +777,7 @@ static bool cover_promote(meshlink_handle_t *mesh, node_t *live) {
 
 done:
 	timeout_del(&mesh->loop, &live->promotion_timer);
+	path_suspect_stop(mesh, live);
 	memset(&live->promotion_candidate, 0, sizeof live->promotion_candidate);
 	restore_live(mesh, live, &saved);
 	return ok;
@@ -964,6 +967,8 @@ static bool cover_active_route(meshlink_handle_t *mesh) {
 
 	path_note_route_suspect(mesh, &dest, "reliable retransmit");
 	CHECK(dest.active_route.suspect);
+	CHECK(dest.suspect_validation.active);
+	CHECK(dest.suspect_validation.nonce);
 	CHECK(path_has_live_fallback(mesh, &dest));
 
 	CHECK(path_active_send_target(mesh, &dest, &target));
@@ -975,11 +980,51 @@ static bool cover_active_route(meshlink_handle_t *mesh) {
 	CHECK(dest.active_route.suspect);
 	CHECK(dest.last_application_traffic == mesh->loop.now.tv_sec);
 
-	dest.active_route.suspect_at.tv_sec = mesh->loop.now.tv_sec - 2;
-	path_route_tick(mesh, &dest);
+	{
+		uint64_t n1 = dest.suspect_validation.nonce;
+		uint64_t n2;
+		sockaddr_t other;
+
+		path_observe_probe_reply(mesh, &dest, &dest.address, 0);
+		CHECK(dest.active_route.suspect);
+		path_observe_probe_reply(mesh, &dest, &dest.address, n1 ^ 1);
+		CHECK(dest.active_route.suspect);
+		set_v4(&other, "203.0.113.99", 9);
+		path_observe_probe_reply(mesh, &dest, &other, n1);
+		CHECK(dest.active_route.suspect);
+
+		path_observe_probe_reply(mesh, &dest, &dest.active_route.udp_endpoint, n1);
+		CHECK(!dest.active_route.suspect);
+		CHECK(!dest.suspect_validation.active);
+
+		path_note_route_suspect(mesh, &dest, "reliable retransmit");
+		CHECK(dest.active_route.suspect);
+		n2 = dest.suspect_validation.nonce;
+		CHECK(n2);
+		CHECK(n2 != n1);
+		path_observe_probe_reply(mesh, &dest, &dest.active_route.udp_endpoint, n1);
+		CHECK(dest.active_route.suspect);
+		path_observe_probe_reply(mesh, &dest, &dest.active_route.udp_endpoint, n2);
+		CHECK(!dest.active_route.suspect);
+	}
+
+	path_note_route_suspect(mesh, &dest, "reliable retransmit");
+	CHECK(dest.active_route.suspect);
+	{
+		uint64_t late = dest.suspect_validation.nonce;
+
+		CHECK(late);
+		CHECK(dest.suspect_validation.timer.cb);
+		dest.active_route.suspect_at.tv_sec = mesh->loop.now.tv_sec - 2;
+		dest.suspect_validation.deadline.tv_sec = mesh->loop.now.tv_sec - 1;
+		path_observe_probe_reply(mesh, &dest, &dest.active_route.udp_endpoint, late);
+		CHECK(dest.active_route.suspect);
+		path_route_tick(mesh, &dest);
+	}
 	CHECK(!dest.active_route.suspect);
 	CHECK(!dest.status.udp_confirmed);
 	CHECK(dest.active_route.kind == DATA_ROUTE_DIRECT_LOCAL_META);
+	path_suspect_stop(mesh, &dest);
 
 	memset(&dest.active_route, 0, sizeof dest.active_route);
 	dest.status.udp_confirmed = false;
@@ -1081,6 +1126,8 @@ static bool cover_active_route(meshlink_handle_t *mesh) {
 	CHECK(!path_active_send_target(mesh, &dest, &target));
 	path_route_tick(mesh, NULL);
 	path_route_tick(NULL, &dest);
+	path_suspect_stop(mesh, &dest);
+	timeout_del(&mesh->loop, &dest.promotion_timer);
 	return true;
 }
 
@@ -1226,6 +1273,7 @@ static bool cover_route_usability_and_promotion(meshlink_handle_t *mesh) {
 	/* A worse candidate must not overwrite a better route that landed during hold. */
 	memset(&dest.promotion_candidate, 0, sizeof dest.promotion_candidate);
 	timeout_del(&mesh->loop, &dest.promotion_timer);
+	path_suspect_stop(mesh, &dest);
 	dest.status.udp_confirmed = false;
 	dest.udp_tier = PATH_TIER_NONE;
 	dest.connection = &conn;
@@ -1260,6 +1308,7 @@ static bool cover_route_usability_and_promotion(meshlink_handle_t *mesh) {
 	/* Backbone UDP endpoint change during hold must not commit the new endpoint. */
 	memset(&dest.promotion_candidate, 0, sizeof dest.promotion_candidate);
 	timeout_del(&mesh->loop, &dest.promotion_timer);
+	path_suspect_stop(mesh, &dest);
 	dest.status.udp_confirmed = false;
 	dest.udp_tier = PATH_TIER_NONE;
 	dest.connection = NULL;
@@ -1290,6 +1339,7 @@ static bool cover_route_usability_and_promotion(meshlink_handle_t *mesh) {
 	/* Already-live direct-UDP carrier: demote during hold must not commit the stale endpoint. */
 	memset(&dest.promotion_candidate, 0, sizeof dest.promotion_candidate);
 	timeout_del(&mesh->loop, &dest.promotion_timer);
+	path_suspect_stop(mesh, &dest);
 	dest.connection = NULL;
 	dest.lan_admitted_epoch = 0;
 	dest.status.udp_confirmed = true;
@@ -1359,6 +1409,7 @@ static bool cover_route_usability_and_promotion(meshlink_handle_t *mesh) {
 		node_add(mesh, dying);
 
 		timeout_del(&mesh->loop, &waiter->promotion_timer);
+		path_suspect_stop(mesh, waiter);
 		memset(&waiter->promotion_candidate, 0, sizeof waiter->promotion_candidate);
 		waiter->promotion_candidate.active = true;
 		waiter->promotion_candidate.kind = DATA_ROUTE_RELAY;
@@ -1424,6 +1475,7 @@ static bool cover_route_usability_and_promotion(meshlink_handle_t *mesh) {
 	}
 
 	timeout_del(&mesh->loop, &dest.promotion_timer);
+	path_suspect_stop(mesh, &dest);
 	memset(&dest.promotion_candidate, 0, sizeof dest.promotion_candidate);
 	return true;
 }
@@ -1541,6 +1593,7 @@ static bool cover_demand(meshlink_handle_t *mesh) {
 
 	timeout_del(&mesh->loop, &dummy.mtutimeout);
 	timeout_del(&mesh->loop, &dummy.promotion_timer);
+	path_suspect_stop(mesh, &dummy);
 	return true;
 }
 
@@ -1553,6 +1606,7 @@ static bool cover_promotion(meshlink_handle_t *mesh, node_t *live) {
 
 	snapshot_live(live, &saved);
 	timeout_del(&mesh->loop, &live->promotion_timer);
+	path_suspect_stop(mesh, live);
 	memset(&live->promotion_candidate, 0, sizeof live->promotion_candidate);
 	memset(&live->candidate_retry, 0, sizeof live->candidate_retry);
 	saved_demand = live->peer_udp;
@@ -1629,6 +1683,7 @@ static bool cover_promotion(meshlink_handle_t *mesh, node_t *live) {
 
 done:
 	timeout_del(&mesh->loop, &live->promotion_timer);
+	path_suspect_stop(mesh, live);
 	memset(&live->promotion_candidate, 0, sizeof live->promotion_candidate);
 	memset(&live->candidate_retry, 0, sizeof live->candidate_retry);
 	live->peer_udp = saved_demand;
@@ -1647,6 +1702,7 @@ static bool cover_escalation(meshlink_handle_t *mesh, node_t *live) {
 	snapshot_live(live, &saved);
 	saved_route = live->active_route;
 	timeout_del(&mesh->loop, &live->promotion_timer);
+	path_suspect_stop(mesh, live);
 	memset(&live->promotion_candidate, 0, sizeof live->promotion_candidate);
 	memset(&live->candidate_retry, 0, sizeof live->candidate_retry);
 	saved_demand = live->peer_udp;
@@ -1711,6 +1767,7 @@ static bool cover_escalation(meshlink_handle_t *mesh, node_t *live) {
 
 done:
 	timeout_del(&mesh->loop, &live->promotion_timer);
+	path_suspect_stop(mesh, live);
 	memset(&live->promotion_candidate, 0, sizeof live->promotion_candidate);
 	memset(&live->candidate_retry, 0, sizeof live->candidate_retry);
 	live->peer_udp = saved_demand;
@@ -1837,10 +1894,161 @@ static bool cover_retry_survives_carrier(meshlink_handle_t *mesh) {
 
 done:
 	timeout_del(&mesh->loop, &dest.promotion_timer);
+	path_suspect_stop(mesh, &dest);
 	mesh->backbone.node = saved_bb;
 	mesh->backbone_udp = saved_udp;
 	return ok;
 #undef CHECK_RETRY
+}
+
+static bool cover_suspect_epoch(meshlink_handle_t *mesh) {
+	node_t dest;
+	node_t hop;
+	connection_t hopconn;
+	node_t *relay_dest = NULL;
+	node_t *saved_bb;
+	backbone_udp_path_t saved_udp;
+	path_target_t target;
+	sockaddr_t wan;
+	uint64_t n1, n2;
+	bool ok = true;
+
+#define CHECK_S(cond) do { \
+	if(!(cond)) { \
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: %s", #cond); \
+		ok = false; \
+		goto done; \
+	} \
+} while(0)
+
+	memset(&dest, 0, sizeof dest);
+	memset(&hop, 0, sizeof hop);
+	memset(&hopconn, 0, sizeof hopconn);
+	saved_bb = mesh->backbone.node;
+	saved_udp = mesh->backbone_udp;
+
+	set_v4(&wan, "203.0.113.55", 9);
+	dest.name = scratch("cover-nofallback-suspect");
+	dest.mesh = mesh;
+	dest.status.reachable = true;
+	dest.status.validkey = true;
+	dest.status.udp_confirmed = true;
+	dest.udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+	path_copy_sockaddr(&dest.address, &wan);
+	dest.active_route.kind = DATA_ROUTE_DIRECT_UDP;
+	path_copy_sockaddr(&dest.active_route.udp_endpoint, &wan);
+
+	mesh->backbone.node = NULL;
+	mesh->backbone_udp.confirmed = false;
+
+	CHECK_S(!path_has_live_fallback(mesh, &dest));
+	path_note_route_suspect(mesh, &dest, "reliable retransmit");
+	CHECK_S(dest.active_route.suspect);
+	CHECK_S(dest.suspect_validation.active);
+	CHECK_S(dest.suspect_validation.timer.cb);
+	n1 = dest.suspect_validation.nonce;
+	CHECK_S(n1);
+
+	dest.suspect_validation.deadline.tv_sec = mesh->loop.now.tv_sec - 1;
+	path_observe_probe_reply(mesh, &dest, &wan, n1);
+	CHECK_S(dest.active_route.suspect);
+	CHECK_S(dest.suspect_validation.nonce == n1);
+
+	path_route_tick(mesh, &dest);
+	CHECK_S(dest.active_route.suspect);
+	CHECK_S(dest.status.udp_confirmed);
+	n2 = dest.suspect_validation.nonce;
+	CHECK_S(n2);
+	CHECK_S(n2 != n1);
+	CHECK_S(dest.suspect_validation.timer.cb);
+
+	path_observe_probe_reply(mesh, &dest, &wan, n1);
+	CHECK_S(dest.active_route.suspect);
+	path_observe_probe_reply(mesh, &dest, &wan, n2);
+	CHECK_S(!dest.active_route.suspect);
+	CHECK_S(!dest.suspect_validation.active);
+
+	path_suspect_stop(mesh, &dest);
+	mesh->backbone.node = saved_bb;
+	mesh->backbone_udp.confirmed = saved_udp.confirmed;
+
+	hop.name = scratch("cover-hop-suspect");
+	hop.mesh = mesh;
+	hop.status.reachable = true;
+	hop.status.validkey = true;
+	hop.status.udp_confirmed = true;
+	hop.udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+	hop.address_source = ADDR_SRC_AUTH_DIRECT;
+	set_v4(&hop.address, "203.0.113.80", 9);
+	hopconn.status.active = true;
+	hopconn.node = &hop;
+	hop.connection = &hopconn;
+	hop.active_route.kind = DATA_ROUTE_DIRECT_UDP;
+	path_copy_sockaddr(&hop.active_route.udp_endpoint, &hop.address);
+
+	mesh->backbone.node = &hop;
+
+	relay_dest = new_node();
+	relay_dest->name = xstrdup("cover-relay-suspect");
+	relay_dest->devclass = DEV_CLASS_STATIONARY;
+	relay_dest->status.reachable = true;
+	relay_dest->status.validkey = true;
+	relay_dest->mesh = mesh;
+	splay_insert(mesh->nodes, relay_dest);
+
+	relay_dest->active_route.kind = DATA_ROUTE_RELAY;
+	relay_dest->active_route.relay_carrier = RELAY_CARRIER_UDP;
+	relay_dest->active_route.first_hop = &hop;
+	relay_dest->active_route.endpoint_source = ADDR_SRC_AUTH_DIRECT;
+	path_copy_sockaddr(&relay_dest->active_route.udp_endpoint, &hop.address);
+
+	path_note_route_suspect(mesh, relay_dest, "reliable retransmit");
+	CHECK_S(relay_dest->active_route.suspect);
+	CHECK_S(!relay_dest->suspect_validation.active);
+	CHECK_S(hop.suspect_validation.active);
+	CHECK_S(hop.suspect_validation.nonce);
+	CHECK_S(hop.active_route.suspect);
+	CHECK_S(hop.suspect_validation.timer.cb);
+	CHECK_S(path_has_live_fallback(mesh, relay_dest));
+
+	CHECK_S(path_active_send_target(mesh, relay_dest, &target));
+	CHECK_S(target.temporary_fallback);
+	CHECK_S(!(target.kind == DATA_ROUTE_RELAY && target.relay_carrier == RELAY_CARRIER_UDP));
+
+	n1 = hop.suspect_validation.nonce;
+	path_observe_probe_reply(mesh, relay_dest, &hop.suspect_validation.endpoint, n1);
+	CHECK_S(relay_dest->active_route.suspect);
+
+	path_observe_probe_reply(mesh, &hop, &hop.suspect_validation.endpoint, n1);
+	CHECK_S(!relay_dest->active_route.suspect);
+	CHECK_S(!hop.active_route.suspect);
+	CHECK_S(!hop.suspect_validation.active);
+
+	path_note_route_suspect(mesh, relay_dest, "reliable retransmit");
+	CHECK_S(relay_dest->active_route.suspect);
+	CHECK_S(hop.suspect_validation.active);
+	hop.suspect_validation.deadline.tv_sec = mesh->loop.now.tv_sec - 1;
+	path_route_tick(mesh, &hop);
+	CHECK_S(!hop.status.udp_confirmed);
+	CHECK_S(!relay_dest->active_route.suspect);
+	CHECK_S(!(relay_dest->active_route.kind == DATA_ROUTE_RELAY
+	                && relay_dest->active_route.relay_carrier == RELAY_CARRIER_UDP));
+
+done:
+	path_suspect_stop(mesh, &dest);
+	path_suspect_stop(mesh, &hop);
+
+	if(relay_dest) {
+		path_suspect_stop(mesh, relay_dest);
+		splay_delete(mesh->nodes, relay_dest);
+		relay_dest = NULL;
+	}
+
+	mesh->backbone.node = saved_bb;
+	mesh->backbone_udp.confirmed = saved_udp.confirmed;
+
+	return ok;
+#undef CHECK_S
 }
 
 bool path_policy_cover_unit(meshlink_handle_t *mesh, node_t *live) {
@@ -1863,6 +2071,7 @@ bool path_policy_cover_unit(meshlink_handle_t *mesh, node_t *live) {
 	                || !cover_udp_cache(mesh, live)
 	                || !cover_transport(mesh)
 	                || !cover_active_route(mesh)
+	                || !cover_suspect_epoch(mesh)
 	                || !cover_route_usability_and_promotion(mesh)
 	                || !cover_preserve(mesh)) {
 		return false;
