@@ -98,6 +98,8 @@ typedef struct path_candidate_retry_t {
 	uint8_t failures;                       /* drives the cooldown ladder */
 	struct timespec cooldown_until;
 	struct timespec last_failure_at;        /* same-tick guard */
+	uint64_t network_generation;            /* mesh->lan_network_epoch at timeout or last clear */
+	bool auth_seen;                         /* AUTH_DIRECT already spent its reset on this stamp */
 } path_candidate_retry_t;
 
 /* The one higher-ranked route being validated, if any. Identity and
@@ -334,10 +336,13 @@ void path_backbone_udp_note_direct(struct meshlink_handle *mesh, struct node_t *
 
 /* --- promotion of one candidate endpoint, and honest demotion ------------- */
 
-/* Why a candidate start was considered. Log-only; does not change policy. */
+/* Why a candidate start was considered. DISCOVERY, HINT and AUTH_DIRECT are
+   observations that may clear a same-endpoint cooldown once per
+   (lan_network_epoch, endpoint); TICK and UDP_CONFIRMED never do. */
 typedef enum path_promotion_reason_t {
 	PATH_PROMOTION_DISCOVERY,
 	PATH_PROMOTION_HINT,
+	PATH_PROMOTION_AUTH_DIRECT,
 	PATH_PROMOTION_COOLDOWN_CLEARED,
 	PATH_PROMOTION_UDP_CONFIRMED,
 	PATH_PROMOTION_TICK
@@ -375,7 +380,9 @@ void path_observe_probe_reply(struct meshlink_handle *mesh, struct node_t *n, co
 /* Give up on the candidate and put its endpoint into escalating cooldown. */
 void path_candidate_timeout(struct meshlink_handle *mesh, struct node_t *n, const char *reason);
 
-/* A fresh discovery or network change may clear cooldown once. */
+/* The clearer. Production eligibility is the observation epoch gate in
+   path_consider_promotion; this helper (and the devtool) force a retry
+   without forgiving failures. */
 void path_candidate_clear_cooldown(struct meshlink_handle *mesh, struct node_t *n);
 
 /* Periodic: expire a stale candidate, resolve suspect state, reset failures

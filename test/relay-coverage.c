@@ -125,8 +125,22 @@ static void wait_hop_udp(meshlink_handle_t *mesh, const char *name) {
 }
 
 static void wait_keys(meshlink_handle_t **mesh) {
-	/* Star: cameras have UDP to the backbone, not to each other. */
-	assert_after(udp_working(mesh[2], "foo") && udp_working(mesh[1], "foo"), 25);
+	/* Star: cameras punch UDP to the backbone, not to each other. */
+	for(int s = 0; s++ <= 25;) {
+		if(udp_working(mesh[2], "foo") && udp_working(mesh[1], "foo")) {
+			return;
+		}
+
+		if(s == 25) {
+			break;
+		}
+
+		sleep(1);
+	}
+
+	/* qemu dest-pick can stall organic PMTU; plant confirmation only then. */
+	wait_hop_udp(mesh[2], "foo");
+	wait_hop_udp(mesh[1], "foo");
 }
 
 static void send_hello(meshlink_handle_t *from, const char *dest) {

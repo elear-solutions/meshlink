@@ -62,6 +62,12 @@
  *   D4  Promote refuses: not confirmed, same address, canonical, same-tier WAN, worse WAN-vs-LOCAL
  *   D5  Fail local does not invent a WAN dest; WAN only after re-confirm
  *   D6  Rate-limited local probe while WAN is active
+
+ * Candidate cooldown
+ *   R1  Duplicate DISCOVERY/HINT of a cooling endpoint does not clear
+ *   R2  New lan_network_epoch plus DISCOVERY/HINT clears once, keeps failures
+ *   R3  AUTH_DIRECT of that sockaddr clears once per stamp; TICK/UDP/EXTERNAL never
+ *   R4  Duplicate already-front AUTH_DIRECT still reaches the promotion gate
  */
 
 enum {

@@ -55,6 +55,7 @@ static bool path_fill_local_meta(meshlink_handle_t *mesh, const node_t *n, path_
 static bool path_fill_relay_udp(meshlink_handle_t *mesh, const node_t *n, path_target_t *out);
 static bool path_fill_relay_meta(meshlink_handle_t *mesh, const node_t *n, path_target_t *out);
 static void path_consider_demanded_route_promotions(meshlink_handle_t *mesh, path_route_promotion_t which);
+static path_promotion_reason_t path_promotion_reason_for_source(address_source_t src);
 
 /* Split "host port" into host and port. copy is xstrdup'd; caller frees it. */
 static bool split_canonical_address(const char *canonical, char **copy, char **host, char **port) {
@@ -875,6 +876,10 @@ bool path_learn_address_cap(meshlink_handle_t *mesh, node_t *n, const sockaddr_t
 			upgraded = source_trust(src) > source_trust(n->recent_source[i]) || merged != n->recent_cap[i];
 
 			if(i == 0 && !upgraded) {
+				if((merged & PATH_CAP_UDP) && path_address_is_local(sa)) {
+					path_consider_promotion(mesh, n, path_promotion_reason_for_source(src));
+				}
+
 				return false;
 			}
 
@@ -882,7 +887,7 @@ bool path_learn_address_cap(meshlink_handle_t *mesh, node_t *n, const sockaddr_t
 			path_log_candidate(mesh, n, sa, n->recent_source[0], n->recent_cap[0], "updated");
 
 			if((n->recent_cap[0] & PATH_CAP_UDP) && path_address_is_local(sa)) {
-				path_consider_promotion(mesh, n, PATH_PROMOTION_DISCOVERY);
+				path_consider_promotion(mesh, n, path_promotion_reason_for_source(src));
 			}
 
 			if(upgraded) {
@@ -897,7 +902,7 @@ bool path_learn_address_cap(meshlink_handle_t *mesh, node_t *n, const sockaddr_t
 	path_log_candidate(mesh, n, sa, src, cap, "learned");
 
 	if((cap & PATH_CAP_UDP) && path_address_is_local(sa)) {
-		path_consider_promotion(mesh, n, PATH_PROMOTION_DISCOVERY);
+		path_consider_promotion(mesh, n, path_promotion_reason_for_source(src));
 	}
 
 	path_backbone_udp_note_direct(mesh, n, sa, src, cap);
@@ -2130,6 +2135,9 @@ static const char *path_promotion_reason_name(path_promotion_reason_t reason) {
 	case PATH_PROMOTION_HINT:
 		return "hint";
 
+	case PATH_PROMOTION_AUTH_DIRECT:
+		return "auth-direct";
+
 	case PATH_PROMOTION_COOLDOWN_CLEARED:
 		return "cooldown-cleared";
 
@@ -2141,6 +2149,38 @@ static const char *path_promotion_reason_name(path_promotion_reason_t reason) {
 
 	default:
 		return "unknown";
+	}
+}
+
+static path_promotion_reason_t path_promotion_reason_for_source(address_source_t src) {
+	switch(src) {
+	case ADDR_SRC_DISCOVERY:
+		return PATH_PROMOTION_DISCOVERY;
+
+	case ADDR_SRC_HINT:
+		return PATH_PROMOTION_HINT;
+
+	case ADDR_SRC_AUTH_DIRECT:
+		return PATH_PROMOTION_AUTH_DIRECT;
+
+	default:
+		return PATH_PROMOTION_TICK;
+	}
+}
+
+static address_source_t path_promotion_observation_source(path_promotion_reason_t reason) {
+	switch(reason) {
+	case PATH_PROMOTION_DISCOVERY:
+		return ADDR_SRC_DISCOVERY;
+
+	case PATH_PROMOTION_HINT:
+		return ADDR_SRC_HINT;
+
+	case PATH_PROMOTION_AUTH_DIRECT:
+		return ADDR_SRC_AUTH_DIRECT;
+
+	default:
+		return ADDR_SRC_UNKNOWN;
 	}
 }
 
@@ -2248,16 +2288,31 @@ static void promotion_timer_handler(event_loop_t *loop, void *data) {
 	path_promotion_timer_tick(loop->data, data);
 }
 
-/* A fresh discovery or network change is new information, so the endpoint may
-   be tried again now. It is not evidence that the earlier failures were wrong,
-   so the escalation ladder keeps its position. */
-void path_candidate_clear_cooldown(meshlink_handle_t *mesh, node_t *n) {
+/* A justified observation may retry now. Failures stay: the ladder does not
+   reset. Production callers go through the epoch gate in consider_promotion. */
+static void path_candidate_clear_cooldown_from(meshlink_handle_t *mesh, node_t *n,
+                address_source_t src) {
 	if(!n) {
 		return;
 	}
 
 	memset(&n->candidate_retry.cooldown_until, 0, sizeof n->candidate_retry.cooldown_until);
+
+	if(mesh) {
+		n->candidate_retry.network_generation = mesh->lan_network_epoch;
+	}
+
+	if(src == ADDR_SRC_AUTH_DIRECT) {
+		n->candidate_retry.auth_seen = true;
+	} else if(src == ADDR_SRC_DISCOVERY || src == ADDR_SRC_HINT) {
+		n->candidate_retry.auth_seen = false;
+	}
+
 	path_consider_promotion(mesh, n, PATH_PROMOTION_COOLDOWN_CLEARED);
+}
+
+void path_candidate_clear_cooldown(meshlink_handle_t *mesh, node_t *n) {
+	path_candidate_clear_cooldown_from(mesh, n, ADDR_SRC_UNKNOWN);
 }
 
 static void path_note_candidate_failure(meshlink_handle_t *mesh, node_t *n) {
@@ -2285,13 +2340,33 @@ static bool path_cooldown_outstanding(const meshlink_handle_t *mesh, const node_
 	       && mesh->loop.now.tv_sec < n->candidate_retry.cooldown_until.tv_sec;
 }
 
+static bool path_retry_epoch_is_new(const meshlink_handle_t *mesh, const node_t *n,
+                                    const sockaddr_t *ep, address_source_t src) {
+	const path_candidate_retry_t *r = &n->candidate_retry;
+
+	if(!path_cooldown_outstanding(mesh, n) || !path_retry_is_endpoint(n, ep)) {
+		return false;
+	}
+
+	if(mesh->lan_network_epoch != r->network_generation) {
+		return true;
+	}
+
+	if(src == ADDR_SRC_AUTH_DIRECT && !r->auth_seen) {
+		return true;
+	}
+
+	return false;
+}
+
 static bool path_failure_this_tick(const meshlink_handle_t *mesh, const node_t *n) {
 	return n->candidate_retry.last_failure_at.tv_sec == mesh->loop.now.tv_sec
 	       && n->candidate_retry.last_failure_at.tv_nsec == mesh->loop.now.tv_nsec;
 }
 
 /* A long healthy stretch does say the earlier failures are not representative.
-   Cooldown stays until finding 14; WAN health must not wipe an in-flight wait. */
+   cooldown_until clears only via the observation epoch gate, time expiry, or
+   the force helper. WAN health must not wipe an in-flight wait. */
 static void path_candidate_reset_escalation(node_t *n) {
 	n->candidate_retry.failures = 0;
 }
@@ -2332,6 +2407,7 @@ void path_candidate_timeout(meshlink_handle_t *mesh, node_t *n, const char *reas
 	if(local_udp) {
 		r->cooldown_until = mesh->loop.now;
 		r->cooldown_until.tv_sec += cooldown;
+		r->network_generation = mesh->lan_network_epoch;
 	}
 
 	if(mesh->log_level <= MESHLINK_INFO) {
@@ -2472,7 +2548,8 @@ void path_consider_promotion(meshlink_handle_t *mesh, node_t *n, path_promotion_
 	bool replace_carrier = false;
 
 	if(c->active) {
-		if((reason != PATH_PROMOTION_HINT && reason != PATH_PROMOTION_DISCOVERY)
+		if((reason != PATH_PROMOTION_HINT && reason != PATH_PROMOTION_DISCOVERY
+		                && reason != PATH_PROMOTION_AUTH_DIRECT)
 		                || c->nonce
 		                || c->kind != DATA_ROUTE_DIRECT_UDP) {
 			return;
@@ -2493,6 +2570,12 @@ void path_consider_promotion(meshlink_handle_t *mesh, node_t *n, path_promotion_
 
 	if(path_retry_is_endpoint(n, &better)
 	                && path_cooldown_outstanding(mesh, n)) {
+		address_source_t src = path_promotion_observation_source(reason);
+
+		if(src != ADDR_SRC_UNKNOWN && path_retry_epoch_is_new(mesh, n, &better, src)) {
+			path_candidate_clear_cooldown_from(mesh, n, src);
+		}
+
 		return;
 	}
 
@@ -3604,7 +3687,9 @@ void path_route_tick(meshlink_handle_t *mesh, node_t *n) {
 	}
 
 	/* Failures reset from authenticated service after the latest failure, never
-	   from selected_at, and never while a cooldown is still owed. */
+	   from selected_at, and never while a cooldown is still owed.
+	   cooldown_until itself clears only via the observation epoch gate, time
+	   expiry, or the force helper. */
 	if(!n->active_route.suspect
 	                && n->active_route.healthy_since.tv_sec
 	                && mesh->loop.now.tv_sec - n->active_route.healthy_since.tv_sec >= PATH_HEALTHY_RESET_SEC

@@ -512,9 +512,11 @@ static void test_candidate_cooldown(void) {
 	assert(!st.candidate_active);
 	devtool_free_node_status(&st);
 
-	/* A fresh discovery lets it be tried again, but does not forgive the
-	   earlier failure: the next cooldown is longer, not the same. */
-	devtool_candidate_clear_cooldown(a, a_b);
+	/* A network-generation change plus a fresh observation of the same
+	   endpoint lets it be tried again, but does not forgive the earlier
+	   failure: the next cooldown is longer, not the same. */
+	meshlink_hint_network_change(a);
+	meshlink_hint_address(a, a_b, (struct sockaddr *)&local);
 	st = snapshot(a, a_b);
 	assert(st.candidate_active);
 	devtool_free_node_status(&st);
@@ -529,7 +531,7 @@ static void test_candidate_cooldown(void) {
 
 	meshlink_channel_abort(a, ch);
 	stability_close_trio("path_stability_t4_conf", bb, a, b);
-	printf("path-stability T4 ok: first cooldown %ds, retried only after it was cleared\n", first_cooldown);
+	printf("path-stability T4 ok: first cooldown %ds, retried only after network-generation change\n", first_cooldown);
 }
 
 /* --- T4b: a long-lived active route must not wipe candidate cooldown ------ */

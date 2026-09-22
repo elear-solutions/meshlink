@@ -1902,6 +1902,148 @@ done:
 #undef CHECK_RETRY
 }
 
+static bool cover_retry_epoch(meshlink_handle_t *mesh) {
+	node_t dest;
+	connection_t conn;
+	sockaddr_t local, wan;
+	uint64_t saved_epoch;
+	bool ok = true;
+
+	memset(&dest, 0, sizeof dest);
+	memset(&conn, 0, sizeof conn);
+	dest.name = scratch("retry-epoch");
+	dest.mesh = mesh;
+	dest.devclass = DEV_CLASS_STATIONARY;
+	dest.status.reachable = true;
+	dest.status.udp_confirmed = true;
+	dest.status.validkey = true;
+	dest.udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+	dest.peer_udp.channel_count = 1;
+	set_v4(&wan, "203.0.113.41", 9);
+	set_v4(&local, "10.9.8.8", 4242);
+	dest.address = wan;
+	conn.status.active = true;
+	conn.node = &dest;
+	set_v4(&conn.address, "10.0.0.2", 1);
+	dest.connection = &conn;
+	path_mark_meta_dial(&conn, true);
+
+	saved_epoch = mesh->lan_network_epoch;
+
+#define CHECK_EPOCH(cond) do { \
+	if(!(cond)) { \
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: %s", #cond); \
+		ok = false; \
+		goto done; \
+	} \
+} while(0)
+
+	path_clear_recent(&dest);
+	path_learn_address(mesh, &dest, &wan, ADDR_SRC_AUTH_DIRECT);
+	memset(&dest.active_route, 0, sizeof dest.active_route);
+	dest.active_route.kind = DATA_ROUTE_DIRECT_UDP;
+	path_copy_sockaddr(&dest.active_route.udp_endpoint, &wan);
+	dest.active_route.selected_at = mesh->loop.now;
+
+	path_learn_address(mesh, &dest, &local, ADDR_SRC_DISCOVERY);
+	CHECK_EPOCH(dest.promotion_candidate.active);
+
+	path_candidate_timeout(mesh, &dest, "epoch-1");
+	CHECK_EPOCH(dest.candidate_retry.failures == 1);
+	CHECK_EPOCH(dest.candidate_retry.cooldown_until.tv_sec > mesh->loop.now.tv_sec);
+	CHECK_EPOCH(dest.candidate_retry.network_generation == mesh->lan_network_epoch);
+	CHECK_EPOCH(!dest.candidate_retry.auth_seen);
+	CHECK_EPOCH(!dest.promotion_candidate.active);
+
+	path_consider_promotion(mesh, &dest, PATH_PROMOTION_DISCOVERY);
+	CHECK_EPOCH(!dest.promotion_candidate.active);
+	path_consider_promotion(mesh, &dest, PATH_PROMOTION_HINT);
+	CHECK_EPOCH(!dest.promotion_candidate.active);
+	path_learn_address(mesh, &dest, &local, ADDR_SRC_DISCOVERY);
+	CHECK_EPOCH(!dest.promotion_candidate.active);
+	CHECK_EPOCH(dest.candidate_retry.failures == 1);
+
+	path_consider_promotion(mesh, &dest, PATH_PROMOTION_TICK);
+	CHECK_EPOCH(!dest.promotion_candidate.active);
+	path_consider_promotion(mesh, &dest, PATH_PROMOTION_UDP_CONFIRMED);
+	CHECK_EPOCH(!dest.promotion_candidate.active);
+
+	mesh->lan_network_epoch++;
+
+	if(!mesh->lan_network_epoch) {
+		mesh->lan_network_epoch = 1;
+	}
+
+	path_consider_promotion(mesh, &dest, PATH_PROMOTION_TICK);
+	CHECK_EPOCH(!dest.promotion_candidate.active);
+	CHECK_EPOCH(dest.candidate_retry.cooldown_until.tv_sec > mesh->loop.now.tv_sec);
+	path_consider_promotion(mesh, &dest, PATH_PROMOTION_UDP_CONFIRMED);
+	CHECK_EPOCH(!dest.promotion_candidate.active);
+	CHECK_EPOCH(dest.candidate_retry.failures == 1);
+
+	path_learn_address(mesh, &dest, &local, ADDR_SRC_EXTERNAL);
+	CHECK_EPOCH(!dest.promotion_candidate.active);
+	path_learn_address(mesh, &dest, &local, ADDR_SRC_EDGE_DIRECT);
+	CHECK_EPOCH(!dest.promotion_candidate.active);
+	path_learn_address(mesh, &dest, &local, ADDR_SRC_UDP_REFLEXIVE);
+	CHECK_EPOCH(!dest.promotion_candidate.active);
+	CHECK_EPOCH(dest.candidate_retry.cooldown_until.tv_sec > mesh->loop.now.tv_sec);
+
+	path_consider_promotion(mesh, &dest, PATH_PROMOTION_DISCOVERY);
+	CHECK_EPOCH(dest.promotion_candidate.active);
+	CHECK_EPOCH(dest.candidate_retry.failures == 1);
+	CHECK_EPOCH(!dest.candidate_retry.cooldown_until.tv_sec);
+	CHECK_EPOCH(!dest.candidate_retry.auth_seen);
+
+	path_candidate_timeout(mesh, &dest, "epoch-2");
+	CHECK_EPOCH(dest.candidate_retry.failures == 2);
+	CHECK_EPOCH(dest.candidate_retry.cooldown_until.tv_sec > mesh->loop.now.tv_sec);
+	CHECK_EPOCH(dest.candidate_retry.network_generation == mesh->lan_network_epoch);
+	CHECK_EPOCH(!dest.promotion_candidate.active);
+
+	path_consider_promotion(mesh, &dest, PATH_PROMOTION_DISCOVERY);
+	CHECK_EPOCH(!dest.promotion_candidate.active);
+	path_learn_address(mesh, &dest, &local, ADDR_SRC_DISCOVERY);
+	CHECK_EPOCH(!dest.promotion_candidate.active);
+	CHECK_EPOCH(dest.candidate_retry.failures == 2);
+
+	path_learn_address(mesh, &dest, &local, ADDR_SRC_AUTH_DIRECT);
+	CHECK_EPOCH(dest.promotion_candidate.active);
+	CHECK_EPOCH(dest.candidate_retry.failures == 2);
+	CHECK_EPOCH(dest.candidate_retry.auth_seen);
+	CHECK_EPOCH(!dest.candidate_retry.cooldown_until.tv_sec);
+
+	path_candidate_timeout(mesh, &dest, "epoch-3");
+	CHECK_EPOCH(dest.candidate_retry.failures == 3);
+	CHECK_EPOCH(dest.candidate_retry.cooldown_until.tv_sec > mesh->loop.now.tv_sec);
+	CHECK_EPOCH(dest.candidate_retry.auth_seen);
+	CHECK_EPOCH(!dest.promotion_candidate.active);
+
+	path_consider_promotion(mesh, &dest, PATH_PROMOTION_AUTH_DIRECT);
+	CHECK_EPOCH(!dest.promotion_candidate.active);
+	path_learn_address(mesh, &dest, &local, ADDR_SRC_AUTH_DIRECT);
+	CHECK_EPOCH(!dest.promotion_candidate.active);
+	CHECK_EPOCH(dest.candidate_retry.failures == 3);
+
+	dest.candidate_retry.auth_seen = false;
+	path_learn_address(mesh, &dest, &local, ADDR_SRC_AUTH_DIRECT);
+	CHECK_EPOCH(dest.promotion_candidate.active);
+	CHECK_EPOCH(dest.candidate_retry.failures == 3);
+	CHECK_EPOCH(dest.candidate_retry.auth_seen);
+	CHECK_EPOCH(!dest.candidate_retry.cooldown_until.tv_sec);
+
+done:
+	if(dest.promotion_candidate.active) {
+		path_candidate_timeout(mesh, &dest, "epoch-cleanup");
+	}
+
+	timeout_del(&mesh->loop, &dest.promotion_timer);
+	path_suspect_stop(mesh, &dest);
+	mesh->lan_network_epoch = saved_epoch;
+	return ok;
+#undef CHECK_EPOCH
+}
+
 static bool cover_suspect_epoch(meshlink_handle_t *mesh) {
 	node_t dest;
 	node_t hop;
@@ -2917,6 +3059,7 @@ bool path_policy_cover_unit(meshlink_handle_t *mesh, node_t *live) {
 	                && cover_promotion(mesh, live)
 	                && cover_escalation(mesh, live)
 	                && cover_retry_survives_carrier(mesh)
+	                && cover_retry_epoch(mesh)
 	                && cover_udp_cache(mesh, live)
 	                && cover_transport(mesh)
 	                && cover_active_route(mesh)

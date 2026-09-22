@@ -622,7 +622,7 @@ bool devtool_backbone_udp_failed_endpoint(struct meshlink_handle *mesh, struct s
 /// Current telescopic establishment backoff step (0 at start / after a new dest).
 unsigned devtool_backbone_udp_establish_step(struct meshlink_handle *mesh);
 
-/// Clear a candidate cooldown, as a fresh discovery or network change does.
+/// Force-clear a candidate cooldown. Production eligibility is the observation epoch gate.
 void devtool_candidate_clear_cooldown(struct meshlink_handle *mesh, struct meshlink_node *node);
 
 /// Simulate a hard UDP send failure on `hop`'s confirmed address.

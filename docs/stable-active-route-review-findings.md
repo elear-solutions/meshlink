@@ -45,12 +45,13 @@ established by earlier findings.
   `connection_policy`. Finding 6 added the telescopic retry ladder on
   the same `BACKBONE_REQUIRED` intent. Findings 7-8 extend that
   ownership.
-- Findings 9-13 are done for route authority, demand, cooldown
-  escalation, suspect recovery, and mesh-wide probe admission. Finding 13
-  admits live validation slots separately from packet tokens (2 concurrent
-  transactions, 4 optional pkt/s, 20 optional pkt/min for parked liveness,
-  plus a reserved 1 pkt/s backbone bucket). Admitted promotion/suspect/PMTU
-  packets use the 4 pkt/s burst cap only. Finding 14 finishes cooldown-clear semantics.
+- Findings 9-14 are done for route authority, demand, cooldown
+  escalation, suspect recovery, mesh-wide probe admission, and
+  cooldown-clear epochs. Finding 13 admits live validation slots
+  separately from packet tokens (2 concurrent transactions, 4 optional
+  pkt/s, 20 optional pkt/min for parked liveness, plus a reserved 1
+  pkt/s backbone bucket). Admitted promotion/suspect/PMTU packets use
+  the 4 pkt/s burst cap only.
 - Findings 15-20 finish interfaces, verification, and cleanup.
 
 Do not implement a later finding by adding a second competing state machine.
@@ -726,7 +727,7 @@ path_route_tick reset:
     && age >= PATH_HEALTHY_RESET_SEC
     && cooldown not outstanding
     && last_failure_at is not this tick
-    -> failures = 0  (leave cooldown_until to finding 14)
+    -> failures = 0  (cooldown_until stays; finding 14 owns explicit clear)
 ```
 
 ---
@@ -871,7 +872,7 @@ scheduler-owned.
 ## 14. Clear candidate cooldown only for genuinely new network information
 
 **Priority:** P2  
-**Status:** Open
+**Status:** Completed
 
 ### Issue Summary
 
@@ -889,26 +890,36 @@ the cooldown and create continuous probes.
 
 ### Suggested code change to fix
 
-Have address learning report material change and record which endpoint/network
-generation consumed the one cooldown reset:
+Completed. The receipt lives on `path_candidate_retry_t` (not a second
+state machine). `mesh->lan_network_epoch` is the generation. Production
+clear goes through the observation gate in `path_consider_promotion`.
+
+Preserve these invariants:
 
 ```c
-typedef struct candidate_retry_epoch_t {
-	uint64_t network_generation;
-	sockaddr_t endpoint;
-	bool cooldown_cleared;
-} candidate_retry_epoch_t;
-```
+if(path_retry_is_endpoint(n, &better)
+                && path_cooldown_outstanding(mesh, n)) {
+	address_source_t src = path_promotion_observation_source(reason);
 
-Only a new endpoint, interface generation, or authenticated network change may
-clear cooldown:
+	if(src != ADDR_SRC_UNKNOWN
+	                && path_retry_epoch_is_new(mesh, n, &better, src)) {
+		path_candidate_clear_cooldown_from(mesh, n, src);
+	}
 
-```c
-if(address_materially_changed
-                && retry_epoch_is_new(mesh, node, endpoint)) {
-	path_candidate_clear_cooldown(mesh, node);
+	return;
 }
 ```
+
+- Timeout stamps `network_generation = lan_network_epoch`. Duplicate
+  DISCOVERY/HINT in that generation do not clear.
+- A later DISCOVERY/HINT after `lan_network_epoch` changes clears once
+  and keeps `failures`.
+- AUTH_DIRECT of the same sockaddr clears once per stamp (`auth_seen`),
+  including a duplicate already-front learn.
+- Only DISCOVERY, HINT, and AUTH_DIRECT are clearing observations.
+  TICK, UDP_CONFIRMED, EXTERNAL, EDGE_DIRECT, UDP_REFLEXIVE, UNKNOWN,
+  and 60s WAN `healthy_since` never clear `cooldown_until`.
+- A different picked local sockaddr still `memset`s the retry record.
 
 Repeated identical hints or discovery packets must not clear it again.
 
