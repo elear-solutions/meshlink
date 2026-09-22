@@ -709,6 +709,7 @@ static void restore_live(meshlink_handle_t *mesh, node_t *live, const live_snaps
 	live->udp_local_probe_next = s->probe;
 	live->status.udp_confirmed = s->uc;
 	live->sock = s->sock;
+	path_scheduler_cancel_node(mesh, live);
 }
 
 static bool cover_promote(meshlink_handle_t *mesh, node_t *live) {
@@ -2051,31 +2052,878 @@ done:
 #undef CHECK_S
 }
 
+static unsigned cover_sched_runs;
+static char cover_sched_order[8][8];
+static unsigned cover_sched_order_n;
+static uint16_t cover_sched_len[8];
+static bool cover_sched_bcast[8];
+
+static void cover_sched_send(meshlink_handle_t *mesh, const path_probe_request_t *req) {
+	(void)mesh;
+	cover_sched_runs++;
+
+	if(cover_sched_order_n < 8) {
+		cover_sched_len[cover_sched_order_n] = req->length;
+		cover_sched_bcast[cover_sched_order_n] = req->broadcast;
+
+		if(req->node && req->node->name) {
+			snprintf(cover_sched_order[cover_sched_order_n], sizeof cover_sched_order[0], "%s", req->node->name);
+		} else {
+			cover_sched_order[cover_sched_order_n][0] = 0;
+		}
+
+		cover_sched_order_n++;
+	}
+}
+
+static path_probe_request_t cover_req(node_t *node, path_transaction_priority_t prio, uint16_t len, bool broadcast) {
+	path_probe_request_t req;
+
+	memset(&req, 0, sizeof req);
+	req.node = node;
+	req.length = len;
+	req.broadcast = broadcast;
+	req.priority = prio;
+	req.send = cover_sched_send;
+	return req;
+}
+
+static void cover_promo_timer(event_loop_t *loop, void *data) {
+	path_promotion_timer_tick(loop->data, data);
+}
+
+static bool cover_plant_promotion(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *ep, bool probing) {
+	if(!path_scheduler_begin_transaction(mesh, n, PATH_TXN_PROMOTION, PATH_TX_CHANNEL_PROMOTION, path_transaction_preempt)) {
+		return false;
+	}
+
+	memset(&n->promotion_candidate, 0, sizeof n->promotion_candidate);
+	n->promotion_candidate.active = true;
+	n->promotion_candidate.kind = DATA_ROUTE_DIRECT_UDP;
+	path_copy_sockaddr(&n->promotion_candidate.endpoint, ep);
+	n->promotion_candidate.source = ADDR_SRC_DISCOVERY;
+	n->promotion_candidate.local = true;
+
+	if(probing) {
+		n->promotion_candidate.nonce = 1;
+		n->promotion_candidate.deadline = mesh->loop.now;
+		n->promotion_candidate.deadline.tv_sec += PATH_PROMOTION_DEADLINE_SEC;
+		timeout_add(&mesh->loop, &n->promotion_timer, cover_promo_timer, n, &(struct timespec) {
+			PATH_CANDIDATE_PROBE_INTERVAL_SEC, 0
+		});
+	} else {
+		n->promotion_candidate.nonce = 1;
+		n->promotion_candidate.successful_rounds = PATH_PROMOTION_ROUNDS;
+		n->promotion_candidate.first_success = mesh->loop.now;
+	}
+
+	return true;
+}
+
+static bool cover_scheduler(meshlink_handle_t *mesh) {
+	path_probe_budget_t saved_budget;
+	unsigned saved_max;
+	node_t *saved_bb;
+	node_t a, b, m, z, cap;
+	node_t q[6];
+	static const char *qnames[] = {"q0", "q1", "q2", "q3", "q4", "q5"};
+	unsigned before_opt;
+	unsigned before_bb;
+	unsigned i;
+	path_probe_request_t req;
+	path_sched_txn_t *t0, *t1, *t2, *t3;
+	bool ok = true;
+
+	if(!mesh) {
+		return false;
+	}
+
+	path_scheduler_init(mesh);
+	saved_budget = mesh->probe_budget;
+	saved_max = mesh->probe_max_transactions;
+	saved_bb = mesh->backbone_udp.node;
+
+	if(mesh->nodes) {
+		for splay_each(node_t, n, mesh->nodes) {
+			path_scheduler_cancel_node(mesh, n);
+		}
+	}
+
+	memset(q, 0, sizeof q);
+	memset(&a, 0, sizeof a);
+	memset(&b, 0, sizeof b);
+	memset(&m, 0, sizeof m);
+	memset(&z, 0, sizeof z);
+	memset(&cap, 0, sizeof cap);
+	a.name = scratch("aaa");
+	b.name = scratch("bbb");
+	m.name = scratch("mmm");
+	z.name = scratch("zzz");
+	cap.name = scratch("cap");
+	a.mesh = mesh;
+	b.mesh = mesh;
+	m.mesh = mesh;
+	z.mesh = mesh;
+	cap.mesh = mesh;
+
+	for(i = 0; i < 6; i++) {
+		memset(&q[i], 0, sizeof q[i]);
+		q[i].name = scratch(qnames[i]);
+		q[i].mesh = mesh;
+	}
+
+	/* 1. Transaction cap: full packet tokens, only PATH_SCHED_MAX_TRANSACTIONS stay active.
+	   Same-priority promotion does not preempt. Recovery does, later. */
+	path_scheduler_set_budget(mesh, 8, 60, PATH_SCHED_MAX_TRANSACTIONS);
+	mesh->probe_budget.backbone_second_tokens = 1;
+	t0 = path_scheduler_begin_transaction(mesh, &q[0], PATH_TXN_PROMOTION, PATH_TX_CHANNEL_PROMOTION, NULL);
+	t1 = path_scheduler_begin_transaction(mesh, &q[1], PATH_TXN_PROMOTION, PATH_TX_CHANNEL_PROMOTION, NULL);
+	t2 = path_scheduler_begin_transaction(mesh, &q[2], PATH_TXN_PROMOTION, PATH_TX_CHANNEL_PROMOTION, NULL);
+
+	if(!t0 || !t1 || t2
+	                || mesh->probe_budget.active_transactions != PATH_SCHED_MAX_TRANSACTIONS) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: transaction cap");
+		ok = false;
+		goto done;
+	}
+
+	path_scheduler_end_transaction(mesh, t0);
+	t2 = path_scheduler_begin_transaction(mesh, &q[2], PATH_TXN_PROMOTION, PATH_TX_CHANNEL_PROMOTION, NULL);
+
+	if(!t2 || mesh->probe_budget.active_transactions != PATH_SCHED_MAX_TRANSACTIONS) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: transaction slot reuse");
+		ok = false;
+		goto done;
+	}
+
+	path_scheduler_end_transaction(mesh, t1);
+	path_scheduler_end_transaction(mesh, t2);
+
+	/* Promotion preempts that node's live PMTU slot rather than waiting out discovery. */
+	if(!path_scheduler_begin_transaction(mesh, &q[0], PATH_TXN_PMTU_DISCOVERY, PATH_TX_LIVENESS, NULL)
+	                || !path_scheduler_begin_transaction(mesh, &q[1], PATH_TXN_PMTU_DISCOVERY, PATH_TX_LIVENESS, NULL)) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: pmtu fill");
+		ok = false;
+		goto done;
+	}
+
+	t2 = path_scheduler_begin_transaction(mesh, &q[0], PATH_TXN_PROMOTION, PATH_TX_CHANNEL_PROMOTION, NULL);
+
+	if(!t2
+	                || mesh->probe_budget.active_transactions != PATH_SCHED_MAX_TRANSACTIONS
+	                || path_scheduler_begin_transaction(mesh, &q[0], PATH_TXN_PMTU_DISCOVERY, PATH_TX_LIVENESS, NULL)) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: pmtu preemption");
+		ok = false;
+		goto done;
+	}
+
+	path_scheduler_end_type(mesh, &q[1], PATH_TXN_PMTU_DISCOVERY);
+	path_scheduler_end_transaction(mesh, t2);
+
+	/* Recovery preempts the globally lowest-priority transaction, any node. */
+	if(!path_scheduler_begin_transaction(mesh, &q[0], PATH_TXN_PMTU_DISCOVERY, PATH_TX_LIVENESS, NULL)
+	                || !path_scheduler_begin_transaction(mesh, &q[1], PATH_TXN_PMTU_DISCOVERY, PATH_TX_LIVENESS, NULL)) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: pmtu refill");
+		ok = false;
+		goto done;
+	}
+
+	t3 = path_scheduler_begin_transaction(mesh, &q[2], PATH_TXN_SUSPECT, PATH_TX_ACTIVE_ROUTE_RECOVERY, NULL);
+
+	if(!t3
+	                || mesh->probe_budget.active_transactions != PATH_SCHED_MAX_TRANSACTIONS
+	                || (path_scheduler_begin_transaction(mesh, &q[0], PATH_TXN_PMTU_DISCOVERY, PATH_TX_LIVENESS, NULL)
+	                    && path_scheduler_begin_transaction(mesh, &q[1], PATH_TXN_PMTU_DISCOVERY, PATH_TX_LIVENESS, NULL))) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: cross-node recovery preemption");
+		ok = false;
+		goto done;
+	}
+
+	path_scheduler_end_type(mesh, &q[0], PATH_TXN_PMTU_DISCOVERY);
+	path_scheduler_end_type(mesh, &q[1], PATH_TXN_PMTU_DISCOVERY);
+	path_scheduler_end_transaction(mesh, t3);
+
+	if(!path_scheduler_begin_transaction(mesh, &q[0], PATH_TXN_PROMOTION, PATH_TX_CHANNEL_PROMOTION, NULL)
+	                || !path_scheduler_begin_transaction(mesh, &q[1], PATH_TXN_PROMOTION, PATH_TX_CHANNEL_PROMOTION, NULL)) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: promotion refill");
+		ok = false;
+		goto done;
+	}
+
+	t3 = path_scheduler_begin_transaction(mesh, &q[2], PATH_TXN_SUSPECT, PATH_TX_ACTIVE_ROUTE_RECOVERY, NULL);
+
+	if(!t3
+	                || mesh->probe_budget.active_transactions != PATH_SCHED_MAX_TRANSACTIONS
+	                || (path_scheduler_begin_transaction(mesh, &q[0], PATH_TXN_PROMOTION, PATH_TX_CHANNEL_PROMOTION, NULL)
+	                    && path_scheduler_begin_transaction(mesh, &q[1], PATH_TXN_PROMOTION, PATH_TX_CHANNEL_PROMOTION, NULL))) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: recovery preempts promotion");
+		ok = false;
+		goto done;
+	}
+
+	path_scheduler_end_type(mesh, &q[0], PATH_TXN_PROMOTION);
+	path_scheduler_end_type(mesh, &q[1], PATH_TXN_PROMOTION);
+	path_scheduler_end_transaction(mesh, t3);
+
+	/* Two PMTU/promotions occupy all slots, then a third node retransmits.
+	   Recovery must start and must not demote probe-free. */
+	if(!path_scheduler_begin_transaction(mesh, &q[0], PATH_TXN_PMTU_DISCOVERY, PATH_TX_LIVENESS, NULL)
+	                || !path_scheduler_begin_transaction(mesh, &q[1], PATH_TXN_PMTU_DISCOVERY, PATH_TX_LIVENESS, NULL)) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: pmtu occupy");
+		ok = false;
+		goto done;
+	}
+
+	q[4].status.reachable = true;
+	q[4].status.validkey = true;
+	q[4].status.udp_confirmed = true;
+	q[4].udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+	set_v4(&q[4].address, "203.0.113.44", 9);
+	q[4].active_route.kind = DATA_ROUTE_DIRECT_UDP;
+	path_copy_sockaddr(&q[4].active_route.udp_endpoint, &q[4].address);
+	path_note_route_suspect(mesh, &q[4], "reliable retransmit");
+
+	if(!q[4].suspect_validation.active
+	                || !q[4].active_route.suspect
+	                || !q[4].suspect_validation.nonce
+	                || !q[4].suspect_validation.timer.cb
+	                || q[4].active_route.kind != DATA_ROUTE_DIRECT_UDP
+	                || !q[4].status.udp_confirmed
+	                || mesh->probe_budget.active_transactions != PATH_SCHED_MAX_TRANSACTIONS) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: recovery starts without demote");
+		ok = false;
+		goto done;
+	}
+
+	path_route_tick(mesh, &q[4]);
+
+	if(q[4].active_route.kind != DATA_ROUTE_DIRECT_UDP
+	                || !q[4].status.udp_confirmed
+	                || !q[4].suspect_validation.active) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: tick demoted probe-free");
+		ok = false;
+		goto done;
+	}
+
+	path_suspect_stop(mesh, &q[4]);
+	q[4].active_route.suspect = false;
+	path_scheduler_end_type(mesh, &q[0], PATH_TXN_PMTU_DISCOVERY);
+	path_scheduler_end_type(mesh, &q[1], PATH_TXN_PMTU_DISCOVERY);
+	path_scheduler_end_type(mesh, &q[4], PATH_TXN_SUSPECT);
+
+	/* Equal-priority recovery cannot steal a slot; do not mark or demote. */
+	if(!path_scheduler_begin_transaction(mesh, &q[0], PATH_TXN_SUSPECT, PATH_TX_ACTIVE_ROUTE_RECOVERY, NULL)
+	                || !path_scheduler_begin_transaction(mesh, &q[1], PATH_TXN_SUSPECT, PATH_TX_ACTIVE_ROUTE_RECOVERY, NULL)) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: recovery occupy");
+		ok = false;
+		goto done;
+	}
+
+	path_note_route_suspect(mesh, &q[4], "reliable retransmit");
+
+	if(q[4].active_route.suspect
+	                || q[4].suspect_validation.active
+	                || q[4].active_route.kind != DATA_ROUTE_DIRECT_UDP
+	                || !q[4].status.udp_confirmed) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: recovery queued without mark");
+		ok = false;
+		goto done;
+	}
+
+	q[4].active_route.suspect = true;
+	path_route_tick(mesh, &q[4]);
+
+	if(q[4].suspect_validation.active
+	                || q[4].active_route.kind != DATA_ROUTE_DIRECT_UDP
+	                || !q[4].status.udp_confirmed) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: leftover suspect demoted");
+		ok = false;
+		goto done;
+	}
+
+	q[4].active_route.suspect = false;
+	path_scheduler_end_type(mesh, &q[0], PATH_TXN_SUSPECT);
+	path_scheduler_end_type(mesh, &q[1], PATH_TXN_SUSPECT);
+
+	/* Preemption must tear down the owner, not just the scheduler record. */
+	{
+		sockaddr_t promo_wan;
+		sockaddr_t promo_local;
+		unsigned order_i;
+		bool q0_sent = false;
+
+		path_scheduler_set_budget(mesh, 8, 60, PATH_SCHED_MAX_TRANSACTIONS);
+		timeout_del(&mesh->loop, &q[0].promotion_timer);
+		timeout_del(&mesh->loop, &q[1].promotion_timer);
+		memset(&q[0].promotion_candidate, 0, sizeof q[0].promotion_candidate);
+		memset(&q[1].promotion_candidate, 0, sizeof q[1].promotion_candidate);
+		set_v4(&promo_wan, "203.0.113.40", 9);
+		set_v4(&promo_local, "10.9.8.7", 4242);
+		q[0].status.reachable = true;
+		q[0].status.validkey = true;
+		q[0].status.udp_confirmed = true;
+		q[0].udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+		path_copy_sockaddr(&q[0].address, &promo_wan);
+		q[0].active_route.kind = DATA_ROUTE_DIRECT_UDP;
+		path_copy_sockaddr(&q[0].active_route.udp_endpoint, &promo_wan);
+		q[0].active_route.selected_at = mesh->loop.now;
+		q[1].status.reachable = true;
+		q[1].status.validkey = true;
+		q[1].status.udp_confirmed = true;
+		q[1].udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+		path_copy_sockaddr(&q[1].address, &promo_wan);
+		q[1].active_route.kind = DATA_ROUTE_DIRECT_UDP;
+		path_copy_sockaddr(&q[1].active_route.udp_endpoint, &promo_wan);
+		q[1].active_route.selected_at = mesh->loop.now;
+
+		if(!cover_plant_promotion(mesh, &q[0], &promo_local, true)
+		                || !cover_plant_promotion(mesh, &q[1], &promo_local, true)
+		                || mesh->probe_budget.active_transactions != PATH_SCHED_MAX_TRANSACTIONS) {
+			logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: real promotion fill");
+			ok = false;
+			goto done;
+		}
+
+		path_scheduler_set_budget(mesh, 0, 0, PATH_SCHED_MAX_TRANSACTIONS);
+		req = cover_req(&q[0], PATH_TX_CHANNEL_PROMOTION, 64, false);
+
+		if(path_scheduler_emit_packet(mesh, path_scheduler_begin_transaction(mesh, &q[0], PATH_TXN_PROMOTION, PATH_TX_CHANNEL_PROMOTION, path_transaction_preempt), &req) != PATH_SCHED_QUEUED) {
+			logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: promotion queue victim");
+			ok = false;
+			goto done;
+		}
+
+		req = cover_req(&q[1], PATH_TX_CHANNEL_PROMOTION, 64, false);
+
+		if(path_scheduler_emit_packet(mesh, path_scheduler_begin_transaction(mesh, &q[1], PATH_TXN_PROMOTION, PATH_TX_CHANNEL_PROMOTION, path_transaction_preempt), &req) != PATH_SCHED_QUEUED) {
+			logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: promotion queue survivor");
+			ok = false;
+			goto done;
+		}
+
+		q[2].status.reachable = true;
+		q[2].status.validkey = true;
+		q[2].status.udp_confirmed = true;
+		q[2].udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+		set_v4(&q[2].address, "203.0.113.41", 9);
+		q[2].active_route.kind = DATA_ROUTE_DIRECT_UDP;
+		path_copy_sockaddr(&q[2].active_route.udp_endpoint, &q[2].address);
+		path_note_route_suspect(mesh, &q[2], "reliable retransmit");
+
+		if(!q[2].suspect_validation.active
+		                || q[0].promotion_candidate.active
+		                || q[0].promotion_timer.cb
+		                || path_scheduler_has_transaction(mesh, &q[0], PATH_TXN_PROMOTION)
+		                || !q[1].promotion_candidate.active
+		                || !path_scheduler_has_transaction(mesh, &q[1], PATH_TXN_PROMOTION)
+		                || !path_scheduler_has_transaction(mesh, &q[2], PATH_TXN_SUSPECT)
+		                || mesh->probe_budget.active_transactions != PATH_SCHED_MAX_TRANSACTIONS) {
+			logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: promotion owner preempted");
+			ok = false;
+			goto done;
+		}
+
+		cover_sched_runs = 0;
+		cover_sched_order_n = 0;
+		mesh->probe_budget.second_tokens = 8;
+		mesh->probe_budget.minute_tokens = 60;
+		path_scheduler_drain(mesh);
+
+		for(order_i = 0; order_i < cover_sched_order_n; order_i++) {
+			if(!strcmp(cover_sched_order[order_i], "q0")) {
+				q0_sent = true;
+			}
+		}
+
+		if(q0_sent) {
+			logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: preempted promotion still emitted");
+			ok = false;
+			goto done;
+		}
+
+		q[0].promotion_candidate.active = true;
+		q[0].promotion_candidate.kind = DATA_ROUTE_DIRECT_UDP;
+		q[0].promotion_candidate.nonce = 1;
+		q[0].promotion_candidate.local = true;
+		q[0].promotion_candidate.successful_rounds = PATH_PROMOTION_ROUNDS;
+		q[0].promotion_candidate.first_success = mesh->loop.now;
+		q[0].promotion_candidate.first_success.tv_sec -= 2;
+		path_copy_sockaddr(&q[0].promotion_candidate.endpoint, &promo_local);
+		q[0].active_route.selected_at.tv_sec -= PATH_ROUTE_MIN_RESIDENCY_SEC + 1;
+		path_route_tick(mesh, &q[0]);
+
+		if(path_scheduler_has_transaction(mesh, &q[0], PATH_TXN_PROMOTION)
+		                || sockaddrcmp(&q[0].active_route.udp_endpoint, &promo_wan)) {
+			logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: slotless promotion committed");
+			ok = false;
+			goto done;
+		}
+
+		q[0].promotion_candidate.active = true;
+		q[0].promotion_candidate.kind = DATA_ROUTE_DIRECT_UDP;
+		q[0].promotion_candidate.nonce = 1;
+		q[0].promotion_candidate.local = true;
+		q[0].promotion_candidate.successful_rounds = 0;
+		q[0].promotion_candidate.requests_sent = 0;
+		q[0].promotion_candidate.deadline = mesh->loop.now;
+		q[0].promotion_candidate.deadline.tv_sec += PATH_PROMOTION_DEADLINE_SEC;
+		path_copy_sockaddr(&q[0].promotion_candidate.endpoint, &promo_local);
+		path_promotion_timer_tick(mesh, &q[0]);
+		path_scheduler_drain(mesh);
+
+		if(q[0].promotion_candidate.requests_sent
+		                || path_scheduler_has_transaction(mesh, &q[0], PATH_TXN_PROMOTION)) {
+			logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: slotless promotion emitted");
+			ok = false;
+			goto done;
+		}
+
+		path_suspect_stop(mesh, &q[2]);
+		q[2].active_route.suspect = false;
+		path_scheduler_end_type(mesh, &q[2], PATH_TXN_SUSPECT);
+
+		if(!path_scheduler_begin_transaction(mesh, &q[0], PATH_TXN_PROMOTION, PATH_TX_CHANNEL_PROMOTION, path_transaction_preempt)
+		                || !path_scheduler_has_transaction(mesh, &q[0], PATH_TXN_PROMOTION)
+		                || !q[0].promotion_candidate.active) {
+			logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: promotion reacquire");
+			ok = false;
+			goto done;
+		}
+
+		timeout_del(&mesh->loop, &q[0].promotion_timer);
+		timeout_del(&mesh->loop, &q[1].promotion_timer);
+		path_candidate_timeout(mesh, &q[0], "cover");
+		path_candidate_timeout(mesh, &q[1], "cover");
+		path_scheduler_end_type(mesh, &q[0], PATH_TXN_PROMOTION);
+		path_scheduler_end_type(mesh, &q[1], PATH_TXN_PROMOTION);
+		path_scheduler_end_type(mesh, &q[2], PATH_TXN_SUSPECT);
+	}
+
+	/* Queued promotion work must not inherit a rotated nonce. */
+	{
+		sockaddr_t promo_wan;
+		sockaddr_t promo_local;
+		uint64_t nonce;
+
+		path_scheduler_set_budget(mesh, 8, 60, PATH_SCHED_MAX_TRANSACTIONS);
+		timeout_del(&mesh->loop, &q[3].promotion_timer);
+		memset(&q[3].promotion_candidate, 0, sizeof q[3].promotion_candidate);
+		set_v4(&promo_wan, "203.0.113.40", 9);
+		set_v4(&promo_local, "10.9.8.7", 4242);
+		q[3].status.reachable = true;
+		q[3].status.validkey = true;
+		q[3].status.udp_confirmed = true;
+		q[3].udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+		path_copy_sockaddr(&q[3].address, &promo_wan);
+		q[3].active_route.kind = DATA_ROUTE_DIRECT_UDP;
+		path_copy_sockaddr(&q[3].active_route.udp_endpoint, &promo_wan);
+		q[3].active_route.selected_at = mesh->loop.now;
+
+		if(!cover_plant_promotion(mesh, &q[3], &promo_local, true)) {
+			logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: nonce plant");
+			ok = false;
+			goto done;
+		}
+
+		path_scheduler_set_budget(mesh, 0, 0, PATH_SCHED_MAX_TRANSACTIONS);
+		req = cover_req(&q[3], PATH_TX_CHANNEL_PROMOTION, 64, false);
+
+		if(path_scheduler_emit_packet(mesh, path_scheduler_begin_transaction(mesh, &q[3], PATH_TXN_PROMOTION, PATH_TX_CHANNEL_PROMOTION, path_transaction_preempt), &req) != PATH_SCHED_QUEUED) {
+			logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: nonce queue round");
+			ok = false;
+			goto done;
+		}
+
+		nonce = q[3].promotion_candidate.nonce;
+		path_observe_probe_reply(mesh, &q[3], &promo_local, nonce);
+
+		if(q[3].promotion_candidate.successful_rounds != 1
+		                || q[3].promotion_candidate.nonce == nonce
+		                || !path_scheduler_has_transaction(mesh, &q[3], PATH_TXN_PROMOTION)) {
+			logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: nonce rotate dropped txn");
+			ok = false;
+			goto done;
+		}
+
+		cover_sched_runs = 0;
+		cover_sched_order_n = 0;
+		mesh->probe_budget.second_tokens = 8;
+		mesh->probe_budget.minute_tokens = 60;
+		path_scheduler_drain(mesh);
+
+		if(cover_sched_runs) {
+			logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: queued probe skipped round gap");
+			ok = false;
+			goto done;
+		}
+
+		q[3].promotion_candidate.first_success.tv_sec -= 1;
+		path_scheduler_set_budget(mesh, 0, 0, PATH_SCHED_MAX_TRANSACTIONS);
+		req = cover_req(&q[3], PATH_TX_CHANNEL_PROMOTION, 64, false);
+
+		if(path_scheduler_emit_packet(mesh, path_scheduler_begin_transaction(mesh, &q[3], PATH_TXN_PROMOTION, PATH_TX_CHANNEL_PROMOTION, path_transaction_preempt), &req) != PATH_SCHED_QUEUED) {
+			logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: nonce queue final");
+			ok = false;
+			goto done;
+		}
+
+		nonce = q[3].promotion_candidate.nonce;
+		path_observe_probe_reply(mesh, &q[3], &promo_local, nonce);
+
+		if(q[3].promotion_candidate.successful_rounds != PATH_PROMOTION_ROUNDS
+		                || !q[3].promotion_candidate.active
+		                || q[3].promotion_timer.cb
+		                || !path_scheduler_has_transaction(mesh, &q[3], PATH_TXN_PROMOTION)
+		                || sockaddrcmp(&q[3].active_route.udp_endpoint, &promo_wan)) {
+			logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: final round still parked");
+			ok = false;
+			goto done;
+		}
+
+		cover_sched_runs = 0;
+		cover_sched_order_n = 0;
+		mesh->probe_budget.second_tokens = 8;
+		mesh->probe_budget.minute_tokens = 60;
+		path_scheduler_drain(mesh);
+
+		if(cover_sched_runs) {
+			logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: queued probe after validation");
+			ok = false;
+			goto done;
+		}
+
+		timeout_del(&mesh->loop, &q[3].promotion_timer);
+		path_candidate_timeout(mesh, &q[3], "cover");
+		path_scheduler_end_type(mesh, &q[3], PATH_TXN_PROMOTION);
+	}
+
+	/* Validated pause: preempt keeps the candidate parked; tick recommits. */
+	{
+		sockaddr_t promo_wan;
+		sockaddr_t promo_local;
+
+		path_scheduler_set_budget(mesh, 8, 60, PATH_SCHED_MAX_TRANSACTIONS);
+		timeout_del(&mesh->loop, &q[0].promotion_timer);
+		timeout_del(&mesh->loop, &q[1].promotion_timer);
+		memset(&q[0].promotion_candidate, 0, sizeof q[0].promotion_candidate);
+		memset(&q[1].promotion_candidate, 0, sizeof q[1].promotion_candidate);
+		set_v4(&promo_wan, "203.0.113.40", 9);
+		set_v4(&promo_local, "10.9.8.7", 4242);
+		q[0].status.reachable = true;
+		q[0].status.validkey = true;
+		q[0].status.udp_confirmed = true;
+		q[0].udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+		path_copy_sockaddr(&q[0].address, &promo_wan);
+		q[0].active_route.kind = DATA_ROUTE_DIRECT_UDP;
+		q[0].active_route.local = false;
+		path_copy_sockaddr(&q[0].active_route.udp_endpoint, &promo_wan);
+		q[0].active_route.selected_at = mesh->loop.now;
+		q[0].active_route.selected_at.tv_sec -= PATH_ROUTE_MIN_RESIDENCY_SEC + 1;
+		q[1].status.reachable = true;
+		q[1].status.validkey = true;
+		q[1].status.udp_confirmed = true;
+		q[1].udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+		path_copy_sockaddr(&q[1].address, &promo_wan);
+		q[1].active_route.kind = DATA_ROUTE_DIRECT_UDP;
+		path_copy_sockaddr(&q[1].active_route.udp_endpoint, &promo_wan);
+		q[1].active_route.selected_at = mesh->loop.now;
+		q[2].status.reachable = true;
+		q[2].status.validkey = true;
+		q[2].status.udp_confirmed = true;
+		q[2].udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+		set_v4(&q[2].address, "203.0.113.41", 9);
+		q[2].active_route.kind = DATA_ROUTE_DIRECT_UDP;
+		path_copy_sockaddr(&q[2].active_route.udp_endpoint, &q[2].address);
+		q[2].active_route.suspect = false;
+
+		if(!cover_plant_promotion(mesh, &q[0], &promo_local, false)
+		                || !cover_plant_promotion(mesh, &q[1], &promo_local, true)
+		                || mesh->probe_budget.active_transactions != PATH_SCHED_MAX_TRANSACTIONS) {
+			logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: validated fill");
+			ok = false;
+			goto done;
+		}
+
+		q[0].promotion_candidate.first_success.tv_sec -= 2;
+		path_note_route_suspect(mesh, &q[2], "reliable retransmit");
+
+		if(!q[2].suspect_validation.active
+		                || !q[0].promotion_candidate.active
+		                || q[0].promotion_candidate.successful_rounds < PATH_PROMOTION_ROUNDS
+		                || q[0].promotion_timer.cb
+		                || path_scheduler_has_transaction(mesh, &q[0], PATH_TXN_PROMOTION)
+		                || !q[1].promotion_candidate.active
+		                || !path_scheduler_has_transaction(mesh, &q[1], PATH_TXN_PROMOTION)
+		                || !path_scheduler_has_transaction(mesh, &q[2], PATH_TXN_SUSPECT)
+		                || sockaddrcmp(&q[0].active_route.udp_endpoint, &promo_wan)) {
+			logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: validated candidate discarded");
+			ok = false;
+			goto done;
+		}
+
+		path_suspect_stop(mesh, &q[2]);
+		q[2].active_route.suspect = false;
+		path_scheduler_end_type(mesh, &q[2], PATH_TXN_SUSPECT);
+		path_route_tick(mesh, &q[0]);
+
+		if(q[0].promotion_candidate.active
+		                || path_scheduler_has_transaction(mesh, &q[0], PATH_TXN_PROMOTION)
+		                || sockaddrcmp(&q[0].active_route.udp_endpoint, &promo_local)
+		                || !q[0].active_route.local) {
+			logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: validated tick commit");
+			ok = false;
+			goto done;
+		}
+
+		timeout_del(&mesh->loop, &q[0].promotion_timer);
+		timeout_del(&mesh->loop, &q[1].promotion_timer);
+		path_candidate_timeout(mesh, &q[0], "cover");
+		path_candidate_timeout(mesh, &q[1], "cover");
+		path_scheduler_end_type(mesh, &q[0], PATH_TXN_PROMOTION);
+		path_scheduler_end_type(mesh, &q[1], PATH_TXN_PROMOTION);
+		path_scheduler_end_type(mesh, &q[2], PATH_TXN_SUSPECT);
+	}
+
+	/* 2. Queued PMTU sizes/broadcast survive drain. */
+	path_scheduler_set_budget(mesh, 0, 0, 8);
+	cover_sched_runs = 0;
+	cover_sched_order_n = 0;
+	req = cover_req(&m, PATH_TX_LIVENESS, 100, false);
+
+	if(path_scheduler_emit_packet(mesh, NULL, &req) != PATH_SCHED_QUEUED) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: pmtu liveness queue");
+		ok = false;
+		goto done;
+	}
+
+	req = cover_req(&m, PATH_TX_PMTU_INCREASE, 1400, true);
+
+	if(path_scheduler_emit_packet(mesh, NULL, &req) != PATH_SCHED_QUEUED) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: pmtu increase queue");
+		ok = false;
+		goto done;
+	}
+
+	mesh->probe_budget.second_tokens = 8;
+	mesh->probe_budget.minute_tokens = 60;
+	path_scheduler_drain(mesh);
+
+	if(cover_sched_runs != 2
+	                || cover_sched_len[0] != 100 || cover_sched_bcast[0]
+	                || cover_sched_len[1] != 1400 || !cover_sched_bcast[1]) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: queued pmtu sizes");
+		ok = false;
+		goto done;
+	}
+
+	/* 3. Cancel promotion, keep queued backbone keepalive on the same node. */
+	path_scheduler_set_budget(mesh, 0, 0, 8);
+	mesh->probe_budget.backbone_second_tokens = 0;
+	cover_sched_runs = 0;
+	cover_sched_order_n = 0;
+	req = cover_req(&a, PATH_TX_BACKBONE_REQUIRED, 64, false);
+
+	if(path_scheduler_emit_packet(mesh, NULL, &req) != PATH_SCHED_QUEUED) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: backbone queue");
+		ok = false;
+		goto done;
+	}
+
+	req = cover_req(&a, PATH_TX_CHANNEL_PROMOTION, 64, false);
+
+	if(path_scheduler_emit_packet(mesh, NULL, &req) != PATH_SCHED_QUEUED) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: promotion queue");
+		ok = false;
+		goto done;
+	}
+
+	path_scheduler_cancel(mesh, &a, PATH_TX_CHANNEL_PROMOTION);
+	mesh->probe_budget.backbone_second_tokens = 1;
+	path_scheduler_drain(mesh);
+
+	if(cover_sched_runs != 1 || strcmp(cover_sched_order[0], "aaa")) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: scoped cancel");
+		ok = false;
+		goto done;
+	}
+
+	/* 4. Required backbone packets consume the reserved bucket, not optional tokens. */
+	path_scheduler_set_budget(mesh, 4, 20, 8);
+	mesh->probe_budget.backbone_second_tokens = 1;
+	before_opt = mesh->probe_budget.second_tokens;
+	before_bb = mesh->probe_budget.backbone_second_tokens;
+	cover_sched_runs = 0;
+	req = cover_req(&a, PATH_TX_BACKBONE_REQUIRED, 64, false);
+
+	if(path_scheduler_emit_packet(mesh, NULL, &req) != PATH_SCHED_SENT
+	                || mesh->probe_budget.backbone_second_tokens != before_bb - 1
+	                || mesh->probe_budget.second_tokens != before_opt
+	                || mesh->probe_budget.minute_tokens != 20) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: backbone bucket");
+		ok = false;
+		goto done;
+	}
+
+	before_opt = mesh->probe_budget.second_tokens;
+	req = cover_req(&m, PATH_TX_LIVENESS, 64, false);
+
+	if(path_scheduler_emit_packet(mesh, NULL, &req) != PATH_SCHED_SENT
+	                || mesh->probe_budget.second_tokens != before_opt - 1) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: optional token consume");
+		ok = false;
+		goto done;
+	}
+
+	/* Admitted PMTU packets skip the minute bucket; parked liveness does not. */
+	path_scheduler_set_budget(mesh, 4, 0, 8);
+	t0 = path_scheduler_begin_transaction(mesh, &m, PATH_TXN_PMTU_DISCOVERY, PATH_TX_LIVENESS, NULL);
+	cover_sched_runs = 0;
+	req = cover_req(&m, PATH_TX_LIVENESS, 64, false);
+
+	if(!t0
+	                || path_scheduler_emit_packet(mesh, t0, &req) != PATH_SCHED_SENT
+	                || mesh->probe_budget.minute_tokens
+	                || mesh->probe_budget.second_tokens != 3
+	                || path_scheduler_emit_packet(mesh, NULL, &req) != PATH_SCHED_QUEUED) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: txn skip minute");
+		ok = false;
+		goto done;
+	}
+
+	path_scheduler_end_transaction(mesh, t0);
+	path_scheduler_cancel(mesh, &m, PATH_TX_LIVENESS);
+
+	/* 5. Same-priority FIFO, not lexicographic name order. */
+	path_scheduler_set_budget(mesh, 0, 0, 8);
+	cover_sched_runs = 0;
+	cover_sched_order_n = 0;
+	req = cover_req(&z, PATH_TX_LIVENESS, 64, false);
+	(void)path_scheduler_emit_packet(mesh, NULL, &req);
+	req = cover_req(&a, PATH_TX_LIVENESS, 64, false);
+	(void)path_scheduler_emit_packet(mesh, NULL, &req);
+	mesh->probe_budget.second_tokens = 1;
+	mesh->probe_budget.minute_tokens = 20;
+	path_scheduler_drain(mesh);
+
+	if(cover_sched_order_n != 1 || strcmp(cover_sched_order[0], "zzz")) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: fifo first");
+		ok = false;
+		goto done;
+	}
+
+	req = cover_req(&z, PATH_TX_LIVENESS, 64, false);
+	(void)path_scheduler_emit_packet(mesh, NULL, &req);
+	mesh->probe_budget.second_tokens = 1;
+	mesh->probe_budget.minute_tokens = 20;
+	path_scheduler_drain(mesh);
+
+	if(cover_sched_order_n != 2 || strcmp(cover_sched_order[1], "aaa")) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: fifo no starve");
+		ok = false;
+		goto done;
+	}
+
+	mesh->probe_budget.second_tokens = 8;
+	path_scheduler_drain(mesh);
+
+	/* Promotion 8-cap still lives on emit. */
+	path_scheduler_set_budget(mesh, 8, 60, 8);
+	mesh->backbone_udp.node = NULL;
+	cap.promotion_candidate.active = true;
+	cap.promotion_candidate.nonce = 1;
+	cap.promotion_candidate.requests_sent = 0;
+	cover_sched_runs = 0;
+
+	for(i = 0; i < PATH_PROMOTION_MAX_REQUESTS; i++) {
+		req = cover_req(&cap, PATH_TX_CHANNEL_PROMOTION, 64, false);
+
+		if(path_scheduler_emit_packet(mesh, NULL, &req) != PATH_SCHED_SENT) {
+			logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: promotion cap admit");
+			ok = false;
+			goto done;
+		}
+	}
+
+	req = cover_req(&cap, PATH_TX_CHANNEL_PROMOTION, 64, false);
+
+	if(cover_sched_runs != PATH_PROMOTION_MAX_REQUESTS
+	                || cap.promotion_candidate.requests_sent != PATH_PROMOTION_MAX_REQUESTS
+	                || path_scheduler_emit_packet(mesh, NULL, &req) != PATH_SCHED_DENIED
+	                || !cap.promotion_candidate.active) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: eight-request cap");
+		ok = false;
+		goto done;
+	}
+
+	/* Optional cannot run from the backbone bucket. */
+	path_scheduler_set_budget(mesh, 0, 0, 8);
+	mesh->probe_budget.backbone_second_tokens = 1;
+	cover_sched_runs = 0;
+	req = cover_req(&z, PATH_TX_PMTU_INCREASE, 64, false);
+
+	if(path_scheduler_emit_packet(mesh, NULL, &req) == PATH_SCHED_SENT
+	                || !path_scheduler_begin_transaction(mesh, &a, PATH_TXN_META_UPGRADE, PATH_TX_BACKBONE_REQUIRED, NULL)) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: backbone reserve");
+		ok = false;
+		goto done;
+	}
+
+	req = cover_req(&a, PATH_TX_BACKBONE_REQUIRED, 64, false);
+
+	if(path_scheduler_emit_packet(mesh, NULL, &req) != PATH_SCHED_SENT || cover_sched_runs != 1) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: backbone emit");
+		ok = false;
+		goto done;
+	}
+
+done:
+	path_scheduler_cancel_node(mesh, &a);
+	path_scheduler_cancel_node(mesh, &b);
+	path_scheduler_cancel_node(mesh, &m);
+	path_scheduler_cancel_node(mesh, &z);
+	path_scheduler_cancel_node(mesh, &cap);
+
+	for(i = 0; i < 6; i++) {
+		path_suspect_stop(mesh, &q[i]);
+		timeout_del(&mesh->loop, &q[i].promotion_timer);
+		path_scheduler_cancel_node(mesh, &q[i]);
+	}
+
+	mesh->backbone_udp.node = saved_bb;
+	mesh->probe_budget = saved_budget;
+	mesh->probe_max_transactions = saved_max;
+	return ok;
+}
+
 bool path_policy_cover_unit(meshlink_handle_t *mesh, node_t *live) {
+	unsigned saved_max;
+	bool ok;
+
 	if(!mesh || !live) {
 		return false;
 	}
 
-	if(!cover_names(mesh)
-	                || !cover_local_classify(mesh)
-	                || !cover_canonical(mesh)
-	                || !cover_learn_sanitize(mesh)
-	                || !cover_sanitize(mesh)
-	                || !cover_select(mesh)
-	                || !cover_probe(mesh)
-	                || !cover_demand(mesh)
-	                || !cover_promote(mesh, live)
-	                || !cover_promotion(mesh, live)
-	                || !cover_escalation(mesh, live)
-	                || !cover_retry_survives_carrier(mesh)
-	                || !cover_udp_cache(mesh, live)
-	                || !cover_transport(mesh)
-	                || !cover_active_route(mesh)
-	                || !cover_suspect_epoch(mesh)
-	                || !cover_route_usability_and_promotion(mesh)
-	                || !cover_preserve(mesh)) {
-		return false;
-	}
-
-	return true;
+	saved_max = mesh->probe_max_transactions;
+	mesh->probe_max_transactions = 32;
+	ok = cover_names(mesh)
+	                && cover_local_classify(mesh)
+	                && cover_canonical(mesh)
+	                && cover_learn_sanitize(mesh)
+	                && cover_sanitize(mesh)
+	                && cover_select(mesh)
+	                && cover_probe(mesh)
+	                && cover_demand(mesh)
+	                && cover_promote(mesh, live)
+	                && cover_promotion(mesh, live)
+	                && cover_escalation(mesh, live)
+	                && cover_retry_survives_carrier(mesh)
+	                && cover_udp_cache(mesh, live)
+	                && cover_transport(mesh)
+	                && cover_active_route(mesh)
+	                && cover_suspect_epoch(mesh)
+	                && cover_route_usability_and_promotion(mesh)
+	                && cover_preserve(mesh)
+	                && cover_scheduler(mesh);
+	mesh->probe_max_transactions = saved_max;
+	return ok;
 }

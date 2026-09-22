@@ -92,7 +92,7 @@ typedef struct backbone_udp_path_t {
 	uint8_t establish_step;               /* Telescopic no-dest / exhausted-dest delay */
 	uint64_t liveness_nonce;
 	struct timespec last_authenticated_reply;
-	timeout_t timer;
+	timeout_t timer;                      /* due-time owner; packets admit through path_scheduler_emit_packet() */
 } backbone_udp_path_t;
 
 /// Device class traits
@@ -195,6 +195,11 @@ struct meshlink_handle {
 	backbone_udp_path_t backbone_udp;
 	int backbone_udp_keepalive_sec;       /* Default PATH_BACKBONE_UDP_KEEPALIVE_SEC; tests may shorten */
 	uint64_t lan_network_epoch;           /* Bumped on interface/network change; 0 is never current */
+	path_probe_budget_t probe_budget;
+	struct list_t *probe_queue;
+	struct list_t *probe_txns;
+	timeout_t probe_scheduler;
+	unsigned probe_max_transactions;      /* 0 = PATH_SCHED_MAX_TRANSACTIONS */
 
 	int invitation_timeout;
 

@@ -1880,6 +1880,7 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 	mesh->threadstarted = false;
 	event_loop_init(&mesh->loop);
 	mesh->loop.data = mesh;
+	path_scheduler_init(mesh);
 
 	meshlink_queue_init(&mesh->outpacketqueue);
 
@@ -2285,6 +2286,7 @@ void meshlink_close(meshlink_handle_t *mesh) {
 
 	logger(mesh, MESHLINK_INFO, "Terminating");
 
+	path_scheduler_stop(mesh);
 	event_loop_exit(&mesh->loop);
 
 #ifdef HAVE_MINGW

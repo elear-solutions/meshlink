@@ -56,28 +56,89 @@ static void send_udppacket(meshlink_handle_t *mesh, node_t *, vpn_packet_t *);
    mtuprobes ==    32: send 1 burst, sleep pingtimeout second
    mtuprobes ==    33: no response from other side, restart PMTU discovery process
 
-   Probes are sent in batches of at least three, with random sizes between the
-   lower and upper boundaries for the MTU thus far discovered.
+   Discovery sends at most three probes per tick so one search fits in the
+   4 pkt/s burst cap. The first sized probe is the midpoint of the remaining
+   range; another is random; a local-discovery broadcast is included while
+   mtuprobes <= 10 so LAN peers are not stuck on a canonical localhost dest.
 
-   After the initial discovery, a fourth packet is added to each batch with a
-   size larger than the currently known PMTU, to test if the PMTU has increased.
-
-   In case local discovery is enabled, another packet is added to each batch,
-   which will be broadcast to the local network.
+   After parking, liveness is one 64-byte probe plus an occasional increase.
 
 */
+
+static void path_mtu_send_request(meshlink_handle_t *mesh, const path_probe_request_t *req) {
+	node_t *n = req->node;
+	int len = req->length;
+	vpn_packet_t packet;
+	bool saved_broadcast;
+	uint16_t saved_len;
+
+	if(!n) {
+		return;
+	}
+
+	if(len < 64) {
+		len = 64;
+	}
+
+	saved_broadcast = n->status.broadcast;
+	saved_len = n->mtu_probe_request_len;
+	n->status.broadcast = req->broadcast;
+	n->mtu_probe_request_len = (uint16_t)len;
+
+	memset(&packet, 0, sizeof packet);
+	packet.probe = true;
+	memset(packet.data, 0, 14);
+	randomize(packet.data + 14, (size_t)len - 14);
+	packet.len = (uint16_t)len;
+	n->out_meta += packet.len + PROBE_OVERHEAD;
+	send_udppacket(mesh, n, &packet);
+
+	n->status.broadcast = saved_broadcast;
+	n->mtu_probe_request_len = saved_len;
+}
+
+static path_sched_admit_t path_mtu_emit(meshlink_handle_t *mesh, node_t *n, path_sched_txn_t *txn,
+                int len, bool broadcast, path_transaction_priority_t prio) {
+	path_probe_request_t req;
+
+	memset(&req, 0, sizeof req);
+	req.node = n;
+	req.length = (uint16_t)(len < 64 ? 64 : len);
+	req.broadcast = broadcast;
+	req.priority = prio;
+	req.send = path_mtu_send_request;
+	return path_scheduler_emit_packet(mesh, txn, &req);
+}
+
+/* Discovery ticks must not enqueue: a queued burst sits until the minute
+   bucket refills (60s) and still consumes tokens that the next tick needs. */
+static bool path_mtu_optional_ready(meshlink_handle_t *mesh, bool skip_minute) {
+	path_scheduler_refill(mesh);
+
+	if(!mesh->probe_budget.second_tokens) {
+		return false;
+	}
+
+	return skip_minute || mesh->probe_budget.minute_tokens > 0;
+}
 
 static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 	meshlink_handle_t *mesh = loop->data;
 	node_t *n = data;
 	int timeout = 1;
+	int prev = n->mtuprobes;
+	int sent = 0;
+	bool want_send;
+	path_sched_txn_t *txn = NULL;
 
 	n->mtuprobes++;
 
 	if(!n->status.reachable || !n->status.validkey) {
 		logger(mesh, MESHLINK_INFO, "Trying to send MTU probe to unreachable or rekeying node %s", n->name);
 		n->mtuprobes = 0;
-		return;
+		path_scheduler_end_type(mesh, n, PATH_TXN_PMTU_DISCOVERY);
+		timeout = 1;
+		goto end;
 	}
 
 	if(n->mtuprobes > 32) {
@@ -131,10 +192,44 @@ static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 			timeout = mesh->dev_class_traits[n->devclass].pinginterval;
 			goto end;
 		}
+
+		if(path_mtu_optional_ready(mesh, false)
+		                && path_mtu_emit(mesh, n, NULL, 64, false, PATH_TX_LIVENESS) == PATH_SCHED_SENT) {
+			sent++;
+		}
+
+		if(n->maxmtu + 8 < MTU && mesh->loop.now.tv_sec >= n->pmtu_increase_next
+		                && path_mtu_optional_ready(mesh, false)) {
+			n->pmtu_increase_next = mesh->loop.now.tv_sec + PATH_PMTU_INCREASE_INTERVAL_SEC;
+			(void)path_mtu_emit(mesh, n, NULL, n->maxmtu + 8, false, PATH_TX_PMTU_INCREASE);
+		}
+
+		if(!sent) {
+			n->mtuprobes = 31;
+			timeout = 1;
+		}
+
+		goto end;
 	}
 
-	for(int i = 0; i < 5; i++) {
+	txn = path_scheduler_begin_transaction(mesh, n, PATH_TXN_PMTU_DISCOVERY, PATH_TX_LIVENESS, path_transaction_preempt);
+
+	if(!txn) {
+		n->mtuprobes = prev;
+		timeout = 1;
+		goto end;
+	}
+
+	want_send = n->mtuprobes < 31;
+
+	for(int i = 0; i < 4; i++) {
 		int len;
+		path_transaction_priority_t prio;
+		path_sched_admit_t admit;
+
+		if(sent >= 3) {
+			break;
+		}
 
 		if(i == 0) {
 			if(n->mtuprobes < 30 || n->maxmtu + 8 >= MTU) {
@@ -149,29 +244,54 @@ static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 
 			n->pmtu_increase_next = mesh->loop.now.tv_sec + PATH_PMTU_INCREASE_INTERVAL_SEC;
 			len = n->maxmtu + 8;
+			prio = PATH_TX_PMTU_INCREASE;
+		} else if(i == 3) {
+			if(n->mtuprobes > 10 || !n->prevedge) {
+				continue;
+			}
+
+			len = n->minmtu ? n->minmtu : 64;
+			prio = PATH_TX_LIVENESS;
 		} else if(n->maxmtu <= n->minmtu) {
 			len = n->maxmtu;
+			prio = PATH_TX_LIVENESS;
+		} else if(i == 1) {
+			len = n->minmtu + 1 + (n->maxmtu - n->minmtu) / 2;
+			prio = PATH_TX_LIVENESS;
 		} else {
 			len = n->minmtu + 1 + prng(mesh, n->maxmtu - n->minmtu);
+			prio = PATH_TX_LIVENESS;
 		}
 
 		if(len < 64) {
 			len = 64;
 		}
 
-		vpn_packet_t packet;
-		packet.probe = true;
-		memset(packet.data, 0, 14);
-		randomize(packet.data + 14, len - 14);
-		packet.len = len;
-		n->status.broadcast = i >= 4 && n->mtuprobes <= 10 && n->prevedge;
-		n->out_meta += packet.len + PROBE_OVERHEAD;
-		send_udppacket(mesh, n, &packet);
+		if(!path_mtu_optional_ready(mesh, true)) {
+			break;
+		}
+
+		admit = path_mtu_emit(mesh, n, txn, len, i == 3, prio);
+
+		if(admit == PATH_SCHED_SENT) {
+			sent++;
+		} else if(prio == PATH_TX_PMTU_INCREASE) {
+			continue;
+		} else {
+			break;
+		}
 	}
 
-	n->status.broadcast = false;
+	if(want_send && !sent) {
+		n->mtuprobes = prev;
+		timeout = 1;
+	}
 
 end:
+	if(n->mtuprobes == 0 || n->mtuprobes == 31) {
+		path_scheduler_end_type(mesh, n, PATH_TXN_PMTU_DISCOVERY);
+	}
+
 	if(n->mtutimeout.cb) {
 		timeout_set(&mesh->loop, &n->mtutimeout, &(struct timespec) {
 			timeout, prng(mesh, TIMER_FUDGE)
@@ -246,6 +366,7 @@ void send_suspect_probe(meshlink_handle_t *mesh, node_t *n) {
 	packet.len = PATH_PROMOTION_PROBE_LEN;
 	n->out_meta += packet.len + PROBE_OVERHEAD;
 	send_probe_to(mesh, n, &packet, &s->endpoint);
+	s->probes_sent++;
 }
 
 void send_backbone_udp_probe(meshlink_handle_t *mesh) {

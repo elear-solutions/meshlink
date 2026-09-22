@@ -45,9 +45,12 @@ established by earlier findings.
   `connection_policy`. Finding 6 added the telescopic retry ladder on
   the same `BACKBONE_REQUIRED` intent. Findings 7-8 extend that
   ownership.
-- Findings 9-12 are done for route authority, demand, cooldown
-  escalation, and suspect recovery. Findings 13-14 finish probe budgets
-  and cooldown-clear semantics.
+- Findings 9-13 are done for route authority, demand, cooldown
+  escalation, suspect recovery, and mesh-wide probe admission. Finding 13
+  admits live validation slots separately from packet tokens (2 concurrent
+  transactions, 4 optional pkt/s, 20 optional pkt/min for parked liveness,
+  plus a reserved 1 pkt/s backbone bucket). Admitted promotion/suspect/PMTU
+  packets use the 4 pkt/s burst cap only. Finding 14 finishes cooldown-clear semantics.
 - Findings 15-20 finish interfaces, verification, and cleanup.
 
 Do not implement a later finding by adding a second competing state machine.
@@ -489,7 +492,8 @@ demand-driven.
 `path_policy` owns `mesh->backbone_udp`: 64-byte nonce probes, endpoint-scoped
 fail, keepalive default 25s ±20%. Canonical TCP is not a UDP dest. PMTU stays
 on `mtutimeout` after confirm. `path_liveness_probe_warranted` is unchanged.
-The dedicated timer is the scheduler reservation until finding 13.
+The dedicated timer remains the due-time owner; admission is through
+`path_scheduler_submit()`.
 
 ### Issue Summary
 
@@ -792,7 +796,7 @@ previous-suspect reply must not affect current suspicion.
 ## 13. Add role-aware global probe and transaction budgets
 
 **Priority:** P1  
-**Status:** Open
+**Status:** Completed
 
 ### Issue Summary
 
@@ -838,20 +842,29 @@ typedef struct path_probe_budget_t {
 ```
 
 All promotion, suspect, liveness, PMTU, backbone UDP, and META upgrade work
-requests admission through one interface:
+admits through `path_scheduler_begin_transaction` / `path_scheduler_emit_packet`
+/ `path_scheduler_end_transaction`. Promotion, suspect validation and PMTU
+discovery hold a slot until commit, timeout or cancel. Promotion and suspect
+may preempt the globally lowest-priority live slot (any node) so two other-node
+PMTU or promotion searches cannot block active-route recovery. Preemption drops
+the victim's queued packets and runs an owner callback: promotion discards the
+candidate and timer; PMTU pauses and retries next tick. A promotion timer or
+route tick cannot emit or commit without a live transaction. Recovery
+acquires the slot before marking the route suspect; if unavailable the route
+is not marked, no deadline starts, and the next retransmit retries. META
+upgrade and keepalive packets consume packet tokens only.
 
-```c
-bool path_scheduler_submit(meshlink_handle_t *mesh,
-                           path_transaction_priority_t priority,
-                           node_t *node,
-                           path_transaction_fn run);
-```
-
-Enforce the agreed fleet budgets, including the later eight-request promotion
-cap, here rather than adding counters to each candidate implementation.
-
-Reserve capacity for mandatory backbone recovery and UDP keepalive so optional
-peer discovery cannot starve the guaranteed network path.
+Fleet limits are 2 concurrent validation transactions and 4 optional packets
+per second. `PATH_SCHED_PARKED_PACKETS_PER_MIN` (20) is a parked-probe cap for
+liveness and PMTU-increase only — not a global optional cap. Packets sent
+under an admitted promotion, suspect or PMTU-discovery transaction use the
+4 pkt/s burst cap but not the parked minute bucket, so a search can finish
+and a second admitted search does not wait 60s. Worst-case optional
+validation traffic is 4 pkt/s × 60s = 240 packets/minute while both slots
+stay admitted. Parked probes add at most 20/min when second tokens remain.
+Required backbone traffic uses a separate 1 packet/s bucket (60/min) and is
+not taken from the optional cap. The eight-request promotion cap is
+scheduler-owned.
 
 ---
 

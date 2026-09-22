@@ -99,6 +99,7 @@ static void node_clear_route_references(meshlink_handle_t *mesh, node_t *dying) 
 			if(n->promotion_candidate.first_hop == dying) {
 				timeout_del(&mesh->loop, &n->promotion_timer);
 				memset(&n->promotion_candidate, 0, sizeof n->promotion_candidate);
+				path_scheduler_cancel(mesh, n, PATH_TX_CHANNEL_PROMOTION);
 			}
 		}
 	}
@@ -203,6 +204,7 @@ void node_del(meshlink_handle_t *mesh, node_t *n) {
 	timeout_del(&mesh->loop, &n->promotion_timer);
 	path_suspect_stop(mesh, n);
 	memset(&n->peer_udp, 0, sizeof n->peer_udp);
+	path_scheduler_cancel_node(mesh, n);
 
 	for splay_each(edge_t, e, n->edge_tree) {
 		edge_del(mesh, e);

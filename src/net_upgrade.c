@@ -20,6 +20,7 @@
 #include "system.h"
 
 #include "connection.h"
+#include "connection_policy.h"
 #include "devtools.h"
 #include "edge.h"
 #include "logger.h"
@@ -115,10 +116,32 @@ void start_upgrade_probe(meshlink_handle_t *mesh, node_t *n) {
 	devtool_upgrade_probe(mesh, (meshlink_node_t *)n, DEVTOOL_UPGRADE_PROBE_STARTED);
 }
 
-void try_upgrade_probe(meshlink_handle_t *mesh, node_t *n) {
+static void path_upgrade_packet(meshlink_handle_t *mesh, const path_probe_request_t *req) {
+	node_t *n = req->node;
+
 	if(upgrade_probe_eligible(mesh, n)) {
 		start_upgrade_probe(mesh, n);
 	}
+}
+
+static path_transaction_priority_t path_upgrade_priority(meshlink_handle_t *mesh, node_t *n) {
+	return (n && n == connection_policy_backbone(mesh)) ? PATH_TX_BACKBONE_REQUIRED : PATH_TX_CHANNEL_PROMOTION;
+}
+
+void try_upgrade_probe(meshlink_handle_t *mesh, node_t *n) {
+	path_probe_request_t req;
+	path_transaction_priority_t prio;
+
+	if(!upgrade_probe_eligible(mesh, n)) {
+		return;
+	}
+
+	prio = path_upgrade_priority(mesh, n);
+	memset(&req, 0, sizeof req);
+	req.node = n;
+	req.priority = prio;
+	req.send = path_upgrade_packet;
+	(void)path_scheduler_emit_packet(mesh, NULL, &req);
 }
 
 void upgrade_probe_failed(meshlink_handle_t *mesh, node_t *n, const char *reason) {
@@ -409,13 +432,8 @@ void upgrade_connection_closing(meshlink_handle_t *mesh, connection_t *c) {
 	}
 }
 
-/* At most one probe start per tick, so a burst of eligible nodes does not
-   open a burst of sockets. */
 void upgrade_probe_sweep(meshlink_handle_t *mesh) {
 	for splay_each(node_t, n, mesh->nodes) {
-		if(upgrade_probe_eligible(mesh, n)) {
-			start_upgrade_probe(mesh, n);
-			return;
-		}
+		try_upgrade_probe(mesh, n);
 	}
 }

@@ -1816,11 +1816,25 @@ static int path_backbone_udp_pingtimeout(meshlink_handle_t *mesh, const node_t *
 	return timeout;
 }
 
-static void path_backbone_udp_send(meshlink_handle_t *mesh) {
-	backbone_udp_path_t *p = &mesh->backbone_udp;
-
-	p->liveness_nonce = path_fresh_nonce();
+static void path_backbone_udp_packet(meshlink_handle_t *mesh, const path_probe_request_t *req) {
+	(void)req;
+	mesh->backbone_udp.liveness_nonce = path_fresh_nonce();
 	send_backbone_udp_probe(mesh);
+}
+
+static void path_backbone_udp_send(meshlink_handle_t *mesh) {
+	path_probe_request_t req;
+
+	if(!mesh->backbone_udp.node) {
+		return;
+	}
+
+	memset(&req, 0, sizeof req);
+	req.node = mesh->backbone_udp.node;
+	req.length = PATH_PROMOTION_PROBE_LEN;
+	req.priority = PATH_TX_BACKBONE_REQUIRED;
+	req.send = path_backbone_udp_packet;
+	(void)path_scheduler_emit_packet(mesh, NULL, &req);
 }
 
 static bool path_backbone_udp_pick_and_send(meshlink_handle_t *mesh, node_t *n) {
@@ -1964,6 +1978,9 @@ void path_backbone_udp_stop(meshlink_handle_t *mesh) {
 
 	if(node) {
 		timeout_del(&mesh->loop, &node->mtutimeout);
+		path_scheduler_cancel(mesh, node, PATH_TX_BACKBONE_REQUIRED);
+		path_scheduler_cancel(mesh, node, PATH_TX_LIVENESS);
+		path_scheduler_cancel(mesh, node, PATH_TX_PMTU_INCREASE);
 	}
 
 	if(owns_active_endpoint) {
@@ -2129,7 +2146,44 @@ static const char *path_promotion_reason_name(path_promotion_reason_t reason) {
 
 static void path_candidate_discard(meshlink_handle_t *mesh, node_t *n) {
 	path_promotion_timer_stop(mesh, n);
+	path_scheduler_cancel(mesh, n, PATH_TX_CHANNEL_PROMOTION);
 	memset(&n->promotion_candidate, 0, sizeof n->promotion_candidate);
+}
+
+void path_transaction_preempt(meshlink_handle_t *mesh, node_t *node, path_transaction_type_t type) {
+	if(!mesh || !node) {
+		return;
+	}
+
+	switch(type) {
+	case PATH_TXN_PROMOTION:
+		if(node->promotion_candidate.active
+		                && node->promotion_candidate.successful_rounds >= PATH_PROMOTION_ROUNDS) {
+			/* Already validated: stop emitting, keep the candidate so tick
+			   can reacquire the slot and commit. Probing searches discard. */
+			path_log_validation(mesh, node,
+			                    node->promotion_candidate.endpoint.sa.sa_family ? &node->promotion_candidate.endpoint : NULL,
+			                    "candidate-paused", "preempted");
+			path_promotion_timer_stop(mesh, node);
+			break;
+		}
+
+		if(node->promotion_candidate.active) {
+			path_log_validation(mesh, node,
+			                    node->promotion_candidate.endpoint.sa.sa_family ? &node->promotion_candidate.endpoint : NULL,
+			                    "candidate-dropped", "preempted");
+		}
+
+		path_candidate_discard(mesh, node);
+		break;
+
+	case PATH_TXN_SUSPECT:
+		path_suspect_stop(mesh, node);
+		break;
+
+	default:
+		break;
+	}
 }
 
 /* End the in-flight attempt. Endpoint retry history lives on node_t. */
@@ -2137,6 +2191,7 @@ static void path_candidate_end_attempt(meshlink_handle_t *mesh, node_t *n) {
 	route_candidate_t *c = &n->promotion_candidate;
 
 	path_promotion_timer_stop(mesh, n);
+	path_scheduler_cancel(mesh, n, PATH_TX_CHANNEL_PROMOTION);
 	c->active = false;
 	c->nonce = 0;
 	c->successful_rounds = 0;
@@ -2144,10 +2199,20 @@ static void path_candidate_end_attempt(meshlink_handle_t *mesh, node_t *n) {
 	memset(&c->deadline, 0, sizeof c->deadline);
 }
 
-static void promotion_timer_handler(event_loop_t *loop, void *data) {
-	meshlink_handle_t *mesh = loop->data;
-	node_t *n = data;
-	route_candidate_t *c = &n->promotion_candidate;
+static void path_candidate_send_packet(meshlink_handle_t *mesh, const path_probe_request_t *req) {
+	send_candidate_probe(mesh, req->node);
+}
+
+void path_promotion_timer_tick(meshlink_handle_t *mesh, node_t *n) {
+	route_candidate_t *c;
+	path_probe_request_t req;
+	path_sched_txn_t *txn;
+
+	if(!mesh || !n) {
+		return;
+	}
+
+	c = &n->promotion_candidate;
 
 	if(!c->active || c->successful_rounds >= PATH_PROMOTION_ROUNDS) {
 		path_promotion_timer_stop(mesh, n);
@@ -2159,10 +2224,28 @@ static void promotion_timer_handler(event_loop_t *loop, void *data) {
 		return;
 	}
 
-	send_candidate_probe(mesh, n);
+	txn = path_scheduler_begin_transaction(mesh, n, PATH_TXN_PROMOTION, PATH_TX_CHANNEL_PROMOTION, path_transaction_preempt);
+
+	if(!txn) {
+		path_promotion_timer_arm(mesh, n, &(struct timespec) {
+			PATH_CANDIDATE_PROBE_INTERVAL_SEC, 0
+		});
+		return;
+	}
+
+	memset(&req, 0, sizeof req);
+	req.node = n;
+	req.length = PATH_PROMOTION_PROBE_LEN;
+	req.priority = PATH_TX_CHANNEL_PROMOTION;
+	req.send = path_candidate_send_packet;
+	(void)path_scheduler_emit_packet(mesh, txn, &req);
 	path_promotion_timer_arm(mesh, n, &(struct timespec) {
 		PATH_CANDIDATE_PROBE_INTERVAL_SEC, 0
 	});
+}
+
+static void promotion_timer_handler(event_loop_t *loop, void *data) {
+	path_promotion_timer_tick(loop->data, data);
 }
 
 /* A fresh discovery or network change is new information, so the endpoint may
@@ -2322,6 +2405,9 @@ static void path_peer_udp_stop(meshlink_handle_t *mesh, node_t *n) {
 	path_suspect_stop(mesh, n);
 	n->status.want_udp = false;
 	memset(&n->peer_udp.idle_until, 0, sizeof n->peer_udp.idle_until);
+	path_scheduler_cancel(mesh, n, PATH_TX_CHANNEL_PROMOTION);
+	path_scheduler_cancel(mesh, n, PATH_TX_LIVENESS);
+	path_scheduler_cancel(mesh, n, PATH_TX_PMTU_INCREASE);
 	path_note_udp_demoted_reason(mesh, n, "peer demand idle");
 }
 
@@ -2418,6 +2504,10 @@ void path_consider_promotion(meshlink_handle_t *mesh, node_t *n, path_promotion_
 	   escalation ladder. A different endpoint starts with a clean record. */
 	if(n->candidate_retry.endpoint.sa.sa_family && sockaddrcmp(&n->candidate_retry.endpoint, &better)) {
 		memset(&n->candidate_retry, 0, sizeof n->candidate_retry);
+	}
+
+	if(!path_scheduler_begin_transaction(mesh, n, PATH_TXN_PROMOTION, PATH_TX_CHANNEL_PROMOTION, path_transaction_preempt)) {
+		return;
 	}
 
 	memset(c, 0, sizeof *c);
@@ -2556,6 +2646,10 @@ void path_consider_route_promotion(meshlink_handle_t *mesh, node_t *n, path_rout
 		return;
 	}
 
+	if(!path_scheduler_begin_transaction(mesh, n, PATH_TXN_PROMOTION, PATH_TX_CHANNEL_PROMOTION, path_transaction_preempt)) {
+		return;
+	}
+
 	memset(c, 0, sizeof *c);
 	c->active = true;
 	c->kind = proposed.kind;
@@ -2688,6 +2782,7 @@ void path_commit_candidate(meshlink_handle_t *mesh, node_t *n) {
 	path_commit_active_route(n, &target, &mesh->loop.now);
 }
 
+static bool path_suspect_begin_epoch(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *endpoint);
 static void suspect_timer_handler(event_loop_t *loop, void *data);
 static void path_suspect_expire(meshlink_handle_t *mesh, node_t *n);
 
@@ -2714,18 +2809,34 @@ void path_suspect_stop(meshlink_handle_t *mesh, node_t *n) {
 
 	if(mesh) {
 		timeout_del(&mesh->loop, &n->suspect_validation.timer);
+		path_scheduler_cancel(mesh, n, PATH_TX_ACTIVE_ROUTE_RECOVERY);
 	}
 
 	memset(&n->suspect_validation, 0, sizeof n->suspect_validation);
 }
 
-static void path_suspect_send(meshlink_handle_t *mesh, node_t *n) {
-	n->suspect_validation.probes_sent++;
-	send_suspect_probe(mesh, n);
+static void path_suspect_send_packet(meshlink_handle_t *mesh, const path_probe_request_t *req) {
+	send_suspect_probe(mesh, req->node);
 }
 
-static void path_suspect_begin_epoch(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *endpoint) {
+static void path_suspect_send(meshlink_handle_t *mesh, node_t *n) {
+	path_probe_request_t req;
+
+	memset(&req, 0, sizeof req);
+	req.node = n;
+	req.length = PATH_PROMOTION_PROBE_LEN;
+	req.priority = PATH_TX_ACTIVE_ROUTE_RECOVERY;
+	req.send = path_suspect_send_packet;
+	(void)path_scheduler_emit_packet(mesh, path_scheduler_begin_transaction(mesh, n, PATH_TXN_SUSPECT, PATH_TX_ACTIVE_ROUTE_RECOVERY, path_transaction_preempt), &req);
+}
+
+static bool path_suspect_begin_epoch(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *endpoint) {
 	path_suspect_stop(mesh, n);
+
+	if(!path_scheduler_begin_transaction(mesh, n, PATH_TXN_SUSPECT, PATH_TX_ACTIVE_ROUTE_RECOVERY, path_transaction_preempt)) {
+		return false;
+	}
+
 	n->suspect_validation.active = true;
 	path_copy_sockaddr(&n->suspect_validation.endpoint, endpoint);
 	n->suspect_validation.nonce = path_fresh_nonce();
@@ -2733,6 +2844,7 @@ static void path_suspect_begin_epoch(meshlink_handle_t *mesh, node_t *n, const s
 	path_suspect_timer_arm(mesh, n, &(struct timespec) {
 		0, 0
 	});
+	return true;
 }
 
 static void path_suspect_reopen_epoch(meshlink_handle_t *mesh, node_t *n) {
@@ -2838,14 +2950,22 @@ static void path_suspect_expire(meshlink_handle_t *mesh, node_t *n) {
 	if(!s->active) {
 		if(n->active_route.kind == DATA_ROUTE_RELAY
 		                && n->active_route.relay_carrier == RELAY_CARRIER_UDP
-		                && n->active_route.first_hop
-		                && n->active_route.first_hop->suspect_validation.active) {
-			path_suspect_expire(mesh, n->active_route.first_hop);
+		                && n->active_route.first_hop) {
+			if(n->active_route.first_hop->suspect_validation.active) {
+				path_suspect_expire(mesh, n->active_route.first_hop);
+			} else if(n->active_route.suspect) {
+				path_suspect_begin_epoch(mesh, n->active_route.first_hop, &n->active_route.udp_endpoint);
+			}
+
 			return;
 		}
 
-		if(n->active_route.suspect && !n->promotion_candidate.active && path_has_live_fallback(mesh, n)) {
-			path_suspect_commit_fallback(mesh, n);
+		/* No epoch means we never acquired a recovery slot. Retry; never
+		   demote without a transaction and probes. */
+		if(n->active_route.suspect && !n->promotion_candidate.active
+		                && n->active_route.udp_endpoint.sa.sa_family
+		                && n->active_route.udp_endpoint.sa.sa_family != AF_UNKNOWN) {
+			path_suspect_begin_epoch(mesh, n, &n->active_route.udp_endpoint);
 		}
 
 		return;
@@ -2999,6 +3119,8 @@ void path_observe_probe_reply(meshlink_handle_t *mesh, node_t *n, const sockaddr
 		return;
 	}
 
+	path_scheduler_cancel_packets(mesh, n, PATH_TX_CHANNEL_PROMOTION);
+
 	if(!c->successful_rounds) {
 		c->first_success = mesh->loop.now;
 	}
@@ -3025,6 +3147,11 @@ void path_observe_probe_reply(meshlink_handle_t *mesh, node_t *n, const sockaddr
 		return;
 	}
 
+	if(!path_scheduler_has_transaction(mesh, n, PATH_TXN_PROMOTION)
+	                && !path_scheduler_begin_transaction(mesh, n, PATH_TXN_PROMOTION, PATH_TX_CHANNEL_PROMOTION, path_transaction_preempt)) {
+		return;
+	}
+
 	path_commit_candidate(mesh, n);
 }
 
@@ -3043,8 +3170,11 @@ void path_note_route_suspect(meshlink_handle_t *mesh, node_t *n, const char *rea
 	}
 
 	if(n->active_route.kind == DATA_ROUTE_DIRECT_UDP) {
+		if(!path_suspect_begin_epoch(mesh, n, ep)) {
+			return;
+		}
+
 		path_suspect_mark_route(mesh, n, reason);
-		path_suspect_begin_epoch(mesh, n, ep);
 		return;
 	}
 
@@ -3055,19 +3185,30 @@ void path_note_route_suspect(meshlink_handle_t *mesh, node_t *n, const char *rea
 	}
 
 	hop = n->active_route.first_hop;
-	path_suspect_mark_route(mesh, n, reason);
 
 	if(hop->suspect_validation.active && !sockaddrcmp(&hop->suspect_validation.endpoint, ep)) {
+		path_suspect_mark_route(mesh, n, reason);
+
+		if(hop->active_route.kind == DATA_ROUTE_DIRECT_UDP
+		                && !hop->active_route.suspect
+		                && !sockaddrcmp(&hop->active_route.udp_endpoint, ep)) {
+			path_suspect_mark_route(mesh, hop, reason);
+		}
+
 		return;
 	}
+
+	if(!path_suspect_begin_epoch(mesh, hop, ep)) {
+		return;
+	}
+
+	path_suspect_mark_route(mesh, n, reason);
 
 	if(hop->active_route.kind == DATA_ROUTE_DIRECT_UDP
 	                && !hop->active_route.suspect
 	                && !sockaddrcmp(&hop->active_route.udp_endpoint, ep)) {
 		path_suspect_mark_route(mesh, hop, reason);
 	}
-
-	path_suspect_begin_epoch(mesh, hop, ep);
 }
 
 static node_t *path_app_relay_hop(meshlink_handle_t *mesh, const node_t *n) {
@@ -3430,8 +3571,11 @@ void path_route_tick(meshlink_handle_t *mesh, node_t *n) {
 	if(validated
 	                && timespec_ms_between(&c->first_success, &mesh->loop.now) >= PATH_PROMOTION_HOLD_MS
 	                && path_residency_served(mesh, n)) {
-		path_commit_candidate(mesh, n);
-		committed = true;
+		if(path_scheduler_has_transaction(mesh, n, PATH_TXN_PROMOTION)
+		                || path_scheduler_begin_transaction(mesh, n, PATH_TXN_PROMOTION, PATH_TX_CHANNEL_PROMOTION, path_transaction_preempt)) {
+			path_commit_candidate(mesh, n);
+			committed = true;
+		}
 	} else if(!validated && c->active && c->deadline.tv_sec && mesh->loop.now.tv_sec >= c->deadline.tv_sec) {
 		path_candidate_timeout(mesh, n, "no validated reply");
 		committed = true;
@@ -3446,13 +3590,16 @@ void path_route_tick(meshlink_handle_t *mesh, node_t *n) {
 	} else if(n->active_route.suspect) {
 		if(n->active_route.kind == DATA_ROUTE_RELAY
 		                && n->active_route.relay_carrier == RELAY_CARRIER_UDP
-		                && n->active_route.first_hop
-		                && n->active_route.first_hop->suspect_validation.active) {
-			if(timespec_after_or_equal(&mesh->loop.now, &n->active_route.first_hop->suspect_validation.deadline)) {
-				path_suspect_expire(mesh, n->active_route.first_hop);
+		                && n->active_route.first_hop) {
+			if(n->active_route.first_hop->suspect_validation.active) {
+				if(timespec_after_or_equal(&mesh->loop.now, &n->active_route.first_hop->suspect_validation.deadline)) {
+					path_suspect_expire(mesh, n->active_route.first_hop);
+				}
+			} else {
+				path_suspect_begin_epoch(mesh, n->active_route.first_hop, &n->active_route.udp_endpoint);
 			}
-		} else if(timespec_ms_between(&n->active_route.suspect_at, &mesh->loop.now) >= PATH_SUSPECT_WINDOW_MS) {
-			path_suspect_expire(mesh, n);
+		} else {
+			path_suspect_begin_epoch(mesh, n, &n->active_route.udp_endpoint);
 		}
 	}
 

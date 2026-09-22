@@ -184,6 +184,7 @@ static void check_reachability(meshlink_handle_t *mesh) {
 			timeout_del(&mesh->loop, &n->promotion_timer);
 			memset(&n->promotion_candidate, 0, sizeof n->promotion_candidate);
 			path_suspect_stop(mesh, n);
+			path_scheduler_cancel_node(mesh, n);
 			n->probe_dest_override_active = false;
 			path_backbone_udp_reset(mesh, n);
 			path_peer_ensure_udp_key(mesh, n);
@@ -222,6 +223,7 @@ static void check_reachability(meshlink_handle_t *mesh) {
 			timeout_del(&mesh->loop, &n->promotion_timer);
 			memset(&n->promotion_candidate, 0, sizeof n->promotion_candidate);
 			path_suspect_stop(mesh, n);
+			path_scheduler_cancel_node(mesh, n);
 			n->probe_dest_override_active = false;
 			path_backbone_udp_reset(mesh, n);
 

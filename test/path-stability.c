@@ -47,6 +47,7 @@ typedef struct {
 #define PATH_LIVENESS_INTERVAL_SEC 60
 #define PATH_HEALTHY_RESET_SEC 60
 #define PATH_PEER_UDP_GRACE_SEC 5
+#define PATH_PROMOTION_MAX_REQUESTS 8
 
 static struct sync_flag accepted;
 static struct sync_flag received;
@@ -1116,6 +1117,94 @@ static void test_release_after_reclassify(void) {
 	printf("path-stability T11 ok: reclassify then close left no demand\n");
 }
 
+static void test_backbone_not_starved(void) {
+	printf("\n=== path-stability T12: optional probe budget cannot starve backbone UDP ===\n");
+
+	meshlink_handle_t *bb, *a, *b;
+	stability_open_trio("path_stability_t12_conf", "path-stability-12", &bb, &a, &b);
+	devtool_set_backbone_udp_keepalive(a, 1);
+
+	init_sync_flag(&accepted);
+	meshlink_set_channel_accept_cb(b, accept_cb);
+
+	assert_after(meshlink_get_node(a, "foo"), 15);
+	assert_after(devtool_backbone_udp_confirmed(a), 20);
+	assert(devtool_backbone_udp_timer_armed(a));
+
+	meshlink_node_t *a_b = meshlink_get_node(a, "baz");
+	assert(a_b);
+	assert_after(node_is_reachable(a, a_b), 15);
+
+	meshlink_channel_t *ch = meshlink_channel_open(a, a_b, 7, receive_cb, NULL, 0);
+	assert(ch);
+	assert(wait_sync_flag(&accepted, 15));
+
+	struct sockaddr_in wan = v4("203.0.113.12", 9);
+	struct sockaddr_in local = v4("192.168.77.12", 7777);
+	assert(devtool_confirm_udp_from(a, a_b, (struct sockaddr *)&wan, 1));
+	meshlink_hint_address(a, a_b, (struct sockaddr *)&local);
+	assert(candidate_is_active(a, a_b));
+
+	devtool_set_probe_budget(a, 0, 0, 1);
+	sleep(3);
+	assert(devtool_backbone_udp_timer_armed(a));
+	assert(devtool_backbone_udp_confirmed(a));
+
+	meshlink_channel_abort(a, ch);
+	stability_close_trio("path_stability_t12_conf", bb, a, b);
+	printf("path-stability T12 ok: backbone UDP stayed warm under an empty optional budget\n");
+}
+
+static void test_promotion_request_cap(void) {
+	printf("\n=== path-stability T13: a candidate is capped at eight probe requests ===\n");
+
+	meshlink_handle_t *bb, *a, *b;
+	stability_open_trio("path_stability_t13_conf", "path-stability-13", &bb, &a, &b);
+
+	init_sync_flag(&accepted);
+	meshlink_set_channel_accept_cb(b, accept_cb);
+
+	assert_after(meshlink_get_node(a, "baz"), 15);
+	meshlink_node_t *a_b = meshlink_get_node(a, "baz");
+	assert(a_b);
+	assert_after(node_is_reachable(a, a_b), 15);
+
+	meshlink_channel_t *ch = meshlink_channel_open(a, a_b, 7, receive_cb, NULL, 0);
+	assert(ch);
+	assert(wait_sync_flag(&accepted, 15));
+
+	struct sockaddr_in wan = v4("203.0.113.13", 9);
+	struct sockaddr_in local = v4("192.168.77.13", 7777);
+	assert(devtool_confirm_udp_from(a, a_b, (struct sockaddr *)&wan, 1));
+	meshlink_hint_address(a, a_b, (struct sockaddr *)&local);
+	assert(candidate_is_active(a, a_b));
+
+	unsigned max_sent = 0;
+
+	for(int i = 0; i < 12; i++) {
+		unsigned sent = devtool_candidate_requests_sent(a, a_b);
+
+		if(sent > max_sent) {
+			max_sent = sent;
+		}
+
+		if(max_sent >= PATH_PROMOTION_MAX_REQUESTS) {
+			break;
+		}
+
+		sleep(1);
+	}
+
+	assert(max_sent <= PATH_PROMOTION_MAX_REQUESTS);
+	assert(max_sent == PATH_PROMOTION_MAX_REQUESTS);
+	assert(candidate_is_active(a, a_b));
+	assert_after(!candidate_is_active(a, a_b), 15);
+
+	meshlink_channel_abort(a, ch);
+	stability_close_trio("path_stability_t13_conf", bb, a, b);
+	printf("path-stability T13 ok: silent candidate stayed inside the eight-request cap\n");
+}
+
 int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_WARNING, NULL);
 
@@ -1131,6 +1220,8 @@ int main(void) {
 	test_parked_pmtu_promotes_local();
 	test_half_open_keeps_demand();
 	test_release_after_reclassify();
+	test_backbone_not_starved();
+	test_promotion_request_cap();
 
 	printf("\npath-stability: all checks passed\n");
 	return 0;

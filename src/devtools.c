@@ -1639,6 +1639,16 @@ void devtool_age_route(meshlink_handle_t *mesh, meshlink_node_t *node, int secon
 		n->active_route.healthy_since.tv_sec -= seconds;
 	}
 
+	/* Time travel must not race the wall-clock suspect timer: tick owns the
+	   expire after age_route, matching the tests that then observe/tick. */
+	timeout_del(&mesh->loop, &n->suspect_validation.timer);
+
+	if(n->active_route.kind == DATA_ROUTE_RELAY
+	                && n->active_route.relay_carrier == RELAY_CARRIER_UDP
+	                && n->active_route.first_hop) {
+		timeout_del(&mesh->loop, &n->active_route.first_hop->suspect_validation.timer);
+	}
+
 	pthread_mutex_unlock(&mesh->mutex);
 }
 
@@ -1696,6 +1706,105 @@ bool devtool_liveness_probe_warranted(meshlink_handle_t *mesh, meshlink_node_t *
 	bool warranted = path_liveness_probe_warranted(mesh, (node_t *)node);
 	pthread_mutex_unlock(&mesh->mutex);
 	return warranted;
+}
+
+unsigned devtool_probe_second_tokens(meshlink_handle_t *mesh) {
+	unsigned tokens;
+
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return 0;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	path_scheduler_init(mesh);
+	tokens = mesh->probe_budget.second_tokens;
+	pthread_mutex_unlock(&mesh->mutex);
+	return tokens;
+}
+
+unsigned devtool_probe_minute_tokens(meshlink_handle_t *mesh) {
+	unsigned tokens;
+
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return 0;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	path_scheduler_init(mesh);
+	tokens = mesh->probe_budget.minute_tokens;
+	pthread_mutex_unlock(&mesh->mutex);
+	return tokens;
+}
+
+unsigned devtool_probe_active_transactions(meshlink_handle_t *mesh) {
+	unsigned n;
+
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return 0;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	path_scheduler_init(mesh);
+	n = mesh->probe_budget.active_transactions;
+	pthread_mutex_unlock(&mesh->mutex);
+	return n;
+}
+
+void devtool_set_probe_budget(meshlink_handle_t *mesh, unsigned second, unsigned minute, unsigned txns) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	path_scheduler_set_budget(mesh, second, minute, txns);
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+unsigned devtool_candidate_requests_sent(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	unsigned n;
+
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return 0;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	n = ((node_t *)node)->promotion_candidate.requests_sent;
+	pthread_mutex_unlock(&mesh->mutex);
+	return n;
+}
+
+void devtool_scheduler_drain(meshlink_handle_t *mesh) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	path_scheduler_drain(mesh);
+	pthread_mutex_unlock(&mesh->mutex);
 }
 
 void devtool_set_backbone_udp_keepalive(meshlink_handle_t *mesh, int seconds) {

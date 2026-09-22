@@ -597,6 +597,13 @@ void devtool_age_candidate(struct meshlink_handle *mesh, struct meshlink_node *n
 /// True when this peer currently warrants a liveness probe.
 bool devtool_liveness_probe_warranted(struct meshlink_handle *mesh, struct meshlink_node *node);
 
+unsigned devtool_probe_second_tokens(struct meshlink_handle *mesh);
+unsigned devtool_probe_minute_tokens(struct meshlink_handle *mesh);
+unsigned devtool_probe_active_transactions(struct meshlink_handle *mesh);
+void devtool_set_probe_budget(struct meshlink_handle *mesh, unsigned second, unsigned minute, unsigned txns);
+unsigned devtool_candidate_requests_sent(struct meshlink_handle *mesh, struct meshlink_node *node);
+void devtool_scheduler_drain(struct meshlink_handle *mesh);
+
 /// Shorten the backbone UDP keepalive interval for tests. Seconds must be >= 1.
 void devtool_set_backbone_udp_keepalive(struct meshlink_handle *mesh, int seconds);
 

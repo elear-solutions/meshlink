@@ -437,6 +437,7 @@ void main_loop(meshlink_handle_t *mesh) {
 	timeout_add(&mesh->loop, &mesh->periodictimer, periodic_handler, &mesh->periodictimer, &(struct timespec) {
 		0, 0
 	});
+	path_scheduler_init(mesh);
 
 	//Add signal handler
 	mesh->datafromapp.signum = 0;
@@ -450,4 +451,5 @@ void main_loop(meshlink_handle_t *mesh) {
 	signal_del(&mesh->loop, &mesh->datafromapp);
 	timeout_del(&mesh->loop, &mesh->periodictimer);
 	timeout_del(&mesh->loop, &mesh->pingtimer);
+	path_scheduler_stop(mesh);
 }
