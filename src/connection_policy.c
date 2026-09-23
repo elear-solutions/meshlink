@@ -928,6 +928,12 @@ void connection_policy_schedule_backbone_retry(meshlink_handle_t *mesh, outgoing
 		return;
 	}
 
+	/* In-flight refusals must not walk the backoff ladder. One armed retry
+	   reloads addresses discovered while those connects were outstanding. */
+	if(outgoing->ev.cb) {
+		return;
+	}
+
 	delay = backbone_retry_delay(mesh, outgoing->retry_step);
 
 	if(outgoing->retry_step + 1 < n) {
@@ -1320,7 +1326,8 @@ done:
 }
 
 void connection_policy_on_discovery(meshlink_handle_t *mesh, node_t *node,
-                                    const sockaddr_t *address, address_source_t source) {
+                                    const sockaddr_t *address, address_source_t source,
+                                    bool material) {
 	if(!mesh || !node) {
 		return;
 	}
@@ -1344,8 +1351,8 @@ void connection_policy_on_discovery(meshlink_handle_t *mesh, node_t *node,
 	node->last_connect_try = 0;
 
 	/* Duplicate discovery must not collapse backbone UDP establish_step.
-	   path_learn_address_cap() already notes a dest when it is newly stored
-	   or materially upgraded. */
+	   material is true only when the address was new or its source or
+	   capability was upgraded. An LRU move of an unchanged address is not. */
 
 	if(connection_policy_is_backbone(mesh, node)
 	                && node->connection && node->connection->status.active) {
@@ -1362,12 +1369,24 @@ void connection_policy_on_discovery(meshlink_handle_t *mesh, node_t *node,
 				continue;
 			}
 
-			if(outgoing->purpose != META_PURPOSE_BACKBONE_REQUIRED) {
-				outgoing->timeout = 0;
+			if(outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED) {
+				/* Duplicate announcements leave an armed backoff where it is.
+				   A newly stored or upgraded address brings that retry forward
+				   without resetting retry_step. One armed timer still absorbs
+				   the in-flight refusal burst. */
+				if(material && outgoing->ev.cb && !outgoing->pending) {
+					timeout_set(&mesh->loop, &outgoing->ev, &(struct timespec) {
+						0, 0
+					});
+				}
+
+				continue;
 			}
 
+			outgoing->timeout = 0;
+
 			/* Wake a scheduled retry. Keep retry_step. Do not abort a
-			   pending connect or invent a second dial. LAN keeps its backoff. */
+			   pending connect or invent a second dial. */
 			if(outgoing->ev.cb && !outgoing->pending) {
 				timeout_set(&mesh->loop, &outgoing->ev, &(struct timespec) {
 					0, 0

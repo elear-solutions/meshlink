@@ -240,7 +240,13 @@ struct meshlink_handle {
 		bool addr_dump_complete;       /* Linux: GETADDR dump finished; later batches may advance epoch */
 #ifdef __APPLE__
 		pthread_t thread;
+		pthread_mutex_t stop_mutex;
+		pthread_cond_t stop_cond;
 		void *runloop;
+		bool thread_started;
+		bool joining;
+		bool stopping;
+		bool stopped;
 #endif
 	} discovery;
 

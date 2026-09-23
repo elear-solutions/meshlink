@@ -228,9 +228,37 @@ void stop_tcp_relay(tcp_relay_t *relay) {
 	relay->stopping = true;
 	assert(pthread_mutex_unlock(&relay->mutex) == 0);
 
-	/* Wake accept() with an error and let the thread exit before the fd is closed,
-	   so it cannot come back to accept() on a reused fd number. */
+	/* Wake accept() and let the thread exit before the fd is closed, so it
+	   cannot come back to accept() on a reused fd number. shutdown() does
+	   that on Linux. Darwin leaves accept() blocked, so also connect. */
 	shutdown(relay->listen_fd, SHUT_RDWR);
+	{
+		struct sockaddr_storage ss;
+		socklen_t len = sizeof ss;
+
+		if(getsockname(relay->listen_fd, (struct sockaddr *)&ss, &len) == 0) {
+			if(ss.ss_family == AF_INET) {
+				struct sockaddr_in *in = (struct sockaddr_in *)&ss;
+
+				if(in->sin_addr.s_addr == htonl(INADDR_ANY)) {
+					in->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+				}
+			} else if(ss.ss_family == AF_INET6) {
+				struct sockaddr_in6 *in6 = (struct sockaddr_in6 *)&ss;
+
+				if(IN6_IS_ADDR_UNSPECIFIED(&in6->sin6_addr)) {
+					in6->sin6_addr = in6addr_loopback;
+				}
+			}
+
+			int poke = socket(ss.ss_family, SOCK_STREAM, 0);
+
+			if(poke >= 0) {
+				connect(poke, (struct sockaddr *)&ss, len);
+				close(poke);
+			}
+		}
+	}
 	pthread_join(relay->thread, NULL);
 	close(relay->listen_fd);
 

@@ -103,6 +103,13 @@ void retry_outgoing(meshlink_handle_t *mesh, outgoing_t *outgoing) {
 		return;
 	}
 
+	/* A burst of refused connects used to stack this delay into minutes
+	   before a discovery callback could replace the address list. One
+	   armed retry is enough; the next failure after it fires may wait longer. */
+	if(outgoing->ev.cb) {
+		return;
+	}
+
 	if(!mesh->reachable && mesh->loop.now.tv_sec < mesh->last_unreachable + mesh->dev_class_traits[outgoing->node->devclass].fast_retry_period) {
 		outgoing->timeout = 1;
 	} else {

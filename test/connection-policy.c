@@ -987,6 +987,78 @@ static void test_epoch_retires_live_lan_adjacency(void) {
 	destroy_conf("connection_policy_t19_conf.3");
 }
 
+static bool retry_deadline_stable(meshlink_handle_t *mesh, struct timespec *out) {
+	struct timespec first;
+	struct timespec second;
+
+	if(!devtool_backbone_intent_retry_deadline(mesh, &first)) {
+		return false;
+	}
+
+	usleep(200000);
+
+	if(!devtool_backbone_intent_retry_deadline(mesh, &second)) {
+		return false;
+	}
+
+	if(first.tv_sec != second.tv_sec || first.tv_nsec != second.tv_nsec) {
+		return false;
+	}
+
+	*out = second;
+	return true;
+}
+
+/* Two known addresses announced in turn must not pull an armed backbone retry. */
+static void test_alternating_duplicate_discovery_keeps_retry(void) {
+	destroy_conf("connection_policy_t20_conf.1");
+	destroy_conf("connection_policy_t20_conf.2");
+
+	meshlink_handle_t *bb = meshlink_open("connection_policy_t20_conf.1", "aaa", "connection-policy", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *cam = meshlink_open("connection_policy_t20_conf.2", "bbb", "connection-policy", DEV_CLASS_PORTABLE);
+	assert(bb && cam);
+	meshlink_enable_discovery(bb, false);
+	meshlink_enable_discovery(cam, false);
+
+	join_meshlink_peer(bb, cam);
+	meshlink_node_t *node = meshlink_get_node(cam, "aaa");
+	assert(node);
+	forget_addresses(cam, node);
+	hint_address(cam, node, "127.0.0.1", find_closed_port("127.0.0.1"));
+
+	meshlink_stop(bb);
+	assert(meshlink_start(cam));
+	assert_after(devtool_outgoing_count(cam) == 1, 5);
+	assert_after(devtool_backbone_intent_retry_step(cam) >= 1, 5);
+
+	uint16_t port_a = (uint16_t)find_closed_port("127.0.0.1");
+	uint16_t port_b = (uint16_t)(port_a == 65535 ? port_a - 1 : port_a + 1);
+	struct sockaddr_in first = ipv4("127.0.0.1", port_a);
+	struct sockaddr_in second = ipv4("127.0.0.1", port_b);
+	assert(devtool_learn_discovery_address(cam, node, (struct sockaddr *)&first));
+	assert(devtool_learn_discovery_address(cam, node, (struct sockaddr *)&second));
+
+	struct timespec deadline;
+	assert_after(retry_deadline_stable(cam, &deadline), 8);
+	int step = devtool_backbone_intent_retry_step(cam);
+
+	assert(devtool_learn_discovery_address(cam, node, (struct sockaddr *)&first));
+	assert(devtool_learn_discovery_address(cam, node, (struct sockaddr *)&second));
+	assert(devtool_learn_discovery_address(cam, node, (struct sockaddr *)&first));
+	assert(devtool_learn_discovery_address(cam, node, (struct sockaddr *)&second));
+
+	struct timespec after;
+	assert(devtool_backbone_intent_retry_deadline(cam, &after));
+	assert(after.tv_sec == deadline.tv_sec);
+	assert(after.tv_nsec == deadline.tv_nsec);
+	assert(devtool_backbone_intent_retry_step(cam) == step);
+
+	meshlink_close(bb);
+	meshlink_close(cam);
+	destroy_conf("connection_policy_t20_conf.1");
+	destroy_conf("connection_policy_t20_conf.2");
+}
+
 int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, capture_log_cb);
 	test_backbone_initiates_nothing();
@@ -1008,6 +1080,7 @@ int main(void) {
 	test_stale_persisted_addresses_need_fresh_discovery();
 	test_unknown_class_not_lan_eligible();
 	test_epoch_retires_live_lan_adjacency();
+	test_alternating_duplicate_discovery_keeps_retry();
 	free_captured_log();
 	return 0;
 }

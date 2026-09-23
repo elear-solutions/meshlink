@@ -183,6 +183,7 @@ void update_node_udp_from(struct meshlink_handle *mesh, node_t *n, const sockadd
 void node_udp_cache_alias(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *sa);
 bool node_add_recent_address(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *addr, address_source_t src);
 bool node_add_recent_address_cap(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *addr, address_source_t src, path_cap_t cap);
+bool node_add_recent_address_cap_ex(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *addr, address_source_t src, path_cap_t cap, bool *material);
 bool node_append_recent_address(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *addr, address_source_t src);
 bool node_append_recent_address_cap(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *addr, address_source_t src, path_cap_t cap);
 bool graph_may_seed_udp(const node_t *n, const sockaddr_t *edge_addr);

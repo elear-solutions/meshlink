@@ -293,9 +293,12 @@ void path_reclassify_active_meta(struct meshlink_handle *mesh, struct node_t *n)
 void path_migrate_legacy_caps(struct node_t *n);
 void path_persist_node(struct meshlink_handle *mesh, struct node_t *n);
 
-/* Remember sa with provenance and transport cap. Canonical-equivalent addresses are dropped. INDIRECT is never stored at the front. */
+/* Remember sa with provenance and transport cap. Canonical-equivalent addresses are dropped. INDIRECT is never stored at the front.
+   The return value is true when the address was stored or moved to the front, including an unchanged LRU move.
+   *material is set only when the address was new or its source or capability was upgraded. material may be NULL. */
 bool path_learn_address(struct meshlink_handle *mesh, struct node_t *n, const sockaddr_t *sa, address_source_t src);
 bool path_learn_address_cap(struct meshlink_handle *mesh, struct node_t *n, const sockaddr_t *sa, address_source_t src, path_cap_t cap);
+bool path_learn_address_cap_ex(struct meshlink_handle *mesh, struct node_t *n, const sockaddr_t *sa, address_source_t src, path_cap_t cap, bool *material);
 /* Append behind proven slots. Empty or full recent[] drops the address (does not evict). INDIRECT is allowed. */
 bool path_learn_address_fallback(struct meshlink_handle *mesh, struct node_t *n, const sockaddr_t *sa, address_source_t src);
 bool path_learn_address_fallback_cap(struct meshlink_handle *mesh, struct node_t *n, const sockaddr_t *sa, address_source_t src, path_cap_t cap);

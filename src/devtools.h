@@ -24,6 +24,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <time.h>
 
 
 /// \file devtools.h
@@ -206,6 +207,9 @@ const char *devtool_backbone_intent_name(meshlink_handle_t *mesh);
 
 /// Ladder index of the BACKBONE_REQUIRED outgoing, or -1 if none.
 int devtool_backbone_intent_retry_step(meshlink_handle_t *mesh);
+
+/// Absolute deadline of the armed BACKBONE_REQUIRED retry, or false if none is armed.
+bool devtool_backbone_intent_retry_deadline(meshlink_handle_t *mesh, struct timespec *deadline);
 
 /// True when this instance is allowed to initiate META (not a BACKBONE-class node).
 bool devtool_self_initiates_meta(meshlink_handle_t *mesh);

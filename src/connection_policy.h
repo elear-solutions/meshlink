@@ -52,7 +52,8 @@ void connection_policy_on_node_deleted(struct meshlink_handle *mesh, struct node
 void connection_policy_on_devclass(struct meshlink_handle *mesh, struct node_t *n);
 void connection_policy_tick(struct meshlink_handle *mesh);
 void connection_policy_on_discovery(struct meshlink_handle *mesh, struct node_t *node,
-                                    const sockaddr_t *address, address_source_t source);
+                                    const sockaddr_t *address, address_source_t source,
+                                    bool material);
 void connection_policy_on_connection_closed(struct meshlink_handle *mesh, struct node_t *node,
                 meta_connection_purpose_t purpose);
 void connection_policy_schedule_backbone_retry(struct meshlink_handle *mesh, struct outgoing_t *outgoing);

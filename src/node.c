@@ -225,7 +225,16 @@ node_t *lookup_node(meshlink_handle_t *mesh, const char *name) {
 }
 
 node_t *lookup_node_udp(meshlink_handle_t *mesh, const sockaddr_t *sa) {
-	return hash_search(mesh->node_udp_cache, sa);
+	sockaddr_t key;
+
+	/* Same canonical form path_copy_sockaddr() uses for cache keys. */
+	path_copy_sockaddr(&key, sa);
+
+	if(!key.sa.sa_family) {
+		return NULL;
+	}
+
+	return hash_search(mesh->node_udp_cache, &key);
 }
 
 bool graph_may_seed_udp(const node_t *n, const sockaddr_t *edge_addr) {
@@ -299,6 +308,10 @@ bool node_add_recent_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_
 
 bool node_add_recent_address_cap(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa, address_source_t src, path_cap_t cap) {
 	return path_learn_address_cap(mesh, n, sa, src, cap);
+}
+
+bool node_add_recent_address_cap_ex(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa, address_source_t src, path_cap_t cap, bool *material) {
+	return path_learn_address_cap_ex(mesh, n, sa, src, cap, material);
 }
 
 bool node_append_recent_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa, address_source_t src) {

@@ -209,6 +209,22 @@ static bool getlocaladdr(const char *destaddr, sockaddr_t *sa, socklen_t *salen,
 	}
 
 	closesocket(sock);
+
+	/* A ULA or link-local source means this host has no global IPv6. macOS
+	   still picks the ULA for a connect() to a global address. Publishing
+	   that address makes peers dial something the probed host cannot reach. */
+	if(sa->sa.sa_family == AF_INET6) {
+		const uint8_t *a = sa->in6.sin6_addr.s6_addr;
+
+		if(IN6_IS_ADDR_UNSPECIFIED(&sa->in6.sin6_addr)
+		                || IN6_IS_ADDR_LOOPBACK(&sa->in6.sin6_addr)
+		                || IN6_IS_ADDR_LINKLOCAL(&sa->in6.sin6_addr)
+		                || IN6_IS_ADDR_MULTICAST(&sa->in6.sin6_addr)
+		                || (a[0] & 0xfe) == 0xfc) {
+			return false;
+		}
+	}
+
 	return true;
 }
 
@@ -398,7 +414,11 @@ static bool is_localaddr(sockaddr_t *sa) {
 		return *(uint8_t *)(&sa->in.sin_addr.s_addr) == 127;
 
 	case AF_INET6: {
-		uint16_t first = sa->in6.sin6_addr.s6_addr[0] << 8 | sa->in6.sin6_addr.s6_addr[1];
+		uint16_t first = (uint16_t)sa->in6.sin6_addr.s6_addr[0] << 8
+		                 | sa->in6.sin6_addr.s6_addr[1];
+
+		/* Unspecified and fe80::/10. ULA remains a valid local-address
+		   fallback for MESHLINK_INVITE_LOCAL. */
 		return first == 0 || (first & 0xffc0) == 0xfe80;
 	}
 
@@ -632,9 +652,20 @@ static char *get_my_hostname(meshlink_handle_t *mesh, uint32_t flags) {
 		}
 
 		/* Canonical-derived invitation endpoints stay in the URL and the
-		   canonical field. They are not direct recent[] candidates. */
+		   canonical field. They are not direct recent[] candidates.
+		   A ULA stays in the URL so a ULA-only network can join, and is
+		   not installed here: the global-route probe already refused to
+		   publish it, and planting it displaces the address peers dial. */
 		if(i != canonical_idx) {
 			for(struct addrinfo *aip = ai_in; aip; aip = aip->ai_next) {
+				if(aip->ai_addr->sa_family == AF_INET6) {
+					const struct sockaddr_in6 *in6 = (const struct sockaddr_in6 *)aip->ai_addr;
+
+					if((in6->sin6_addr.s6_addr[0] & 0xfe) == 0xfc) {
+						continue;
+					}
+				}
+
 				node_add_recent_address_cap(mesh, mesh->self, (sockaddr_t *)aip->ai_addr, ADDR_SRC_HINT, PATH_CAP_BOTH);
 			}
 		}
@@ -1874,6 +1905,10 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 
 	pthread_mutex_init(&mesh->mutex, &attr);
 	pthread_cond_init(&mesh->cond, NULL);
+#ifdef __APPLE__
+	pthread_mutex_init(&mesh->discovery.stop_mutex, NULL);
+	pthread_cond_init(&mesh->discovery.stop_cond, NULL);
+#endif
 
 	pthread_cond_init(&mesh->adns_cond, NULL);
 
@@ -2205,6 +2240,14 @@ void meshlink_stop(meshlink_handle_t *mesh) {
 			continue;
 		}
 
+		/* A socket bound to the wildcard gets that address back. Darwin
+		   rejects sendto() of ::, so aim the kick at loopback instead. */
+		if(sa.sa.sa_family == AF_INET && sa.in.sin_addr.s_addr == htonl(INADDR_ANY)) {
+			sa.in.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		} else if(sa.sa.sa_family == AF_INET6 && IN6_IS_ADDR_UNSPECIFIED(&sa.in6.sin6_addr)) {
+			sa.in6.sin6_addr = in6addr_loopback;
+		}
+
 		if(sendto(mesh->listen_socket[i].udp.fd, "", 1, MSG_NOSIGNAL, &sa.sa, salen) == -1) {
 			logger(mesh, MESHLINK_ERROR, "Could not send a UDP packet to ourself: %s", sockstrerror(sockerrno));
 		}
@@ -2327,6 +2370,10 @@ void meshlink_close(meshlink_handle_t *mesh) {
 
 	pthread_mutex_unlock(&mesh->mutex);
 	pthread_mutex_destroy(&mesh->mutex);
+#ifdef __APPLE__
+	pthread_cond_destroy(&mesh->discovery.stop_cond);
+	pthread_mutex_destroy(&mesh->discovery.stop_mutex);
+#endif
 
 	memset(mesh, 0, sizeof(*mesh));
 
@@ -4359,7 +4406,10 @@ void meshlink_hint_address(meshlink_handle_t *mesh, meshlink_node_t *node, const
 
 	node_t *n = (node_t *)node;
 
-	if(node_add_recent_address_cap(mesh, n, (sockaddr_t *)addr, ADDR_SRC_HINT, PATH_CAP_BOTH)) {
+	bool material = false;
+	bool learned = node_add_recent_address_cap_ex(mesh, n, (sockaddr_t *)addr, ADDR_SRC_HINT, PATH_CAP_BOTH, &material);
+
+	if(learned) {
 		n->upgrade_recent_idx = 0;
 
 		if(!node_write_config(mesh, n, false)) {
@@ -4371,7 +4421,7 @@ void meshlink_hint_address(meshlink_handle_t *mesh, meshlink_node_t *node, const
 
 	/* A fresh direct address for a peer we only reach via its canonical address is worth a probe right away. */
 	try_upgrade_probe(mesh, n);
-	connection_policy_on_discovery(mesh, n, (const sockaddr_t *)addr, ADDR_SRC_HINT);
+	connection_policy_on_discovery(mesh, n, (const sockaddr_t *)addr, ADDR_SRC_HINT, material);
 
 	/* We are on the caller's thread; the loop thread is parked in pselect() with a copy of the
 	   fd set, so wake it up to watch the probe socket or a zeroed retry timer. */
@@ -5347,7 +5397,14 @@ void meshlink_enable_discovery(meshlink_handle_t *mesh, bool enable) {
 		if(enable) {
 			discovery_start(mesh);
 		} else {
+			/* The reachability thread takes mesh->mutex. Joining it
+			   while this lock is held deadlocks. */
+			pthread_mutex_unlock(&mesh->mutex);
 			discovery_stop(mesh);
+
+			if(pthread_mutex_lock(&mesh->mutex) != 0) {
+				abort();
+			}
 		}
 	}
 

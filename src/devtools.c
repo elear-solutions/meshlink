@@ -683,6 +683,32 @@ int devtool_backbone_intent_retry_step(meshlink_handle_t *mesh) {
 	return step;
 }
 
+bool devtool_backbone_intent_retry_deadline(meshlink_handle_t *mesh, struct timespec *deadline) {
+	if(!mesh || !deadline) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	bool armed = false;
+
+	if(mesh->outgoings) {
+		for list_each(outgoing_t, outgoing, mesh->outgoings) {
+			if(outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED && outgoing->ev.cb) {
+				*deadline = outgoing->ev.tv;
+				armed = true;
+				break;
+			}
+		}
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return armed;
+}
+
 bool devtool_self_initiates_meta(meshlink_handle_t *mesh) {
 	if(!mesh) {
 		meshlink_errno = MESHLINK_EINVAL;
@@ -720,8 +746,10 @@ bool devtool_learn_discovery_address(meshlink_handle_t *mesh, meshlink_node_t *n
 		return false;
 	}
 
-	path_learn_address_cap(mesh, (node_t *)node, &sa, ADDR_SRC_DISCOVERY, PATH_CAP_BOTH);
-	connection_policy_on_discovery(mesh, (node_t *)node, &sa, ADDR_SRC_DISCOVERY);
+	bool material = false;
+
+	path_learn_address_cap_ex(mesh, (node_t *)node, &sa, ADDR_SRC_DISCOVERY, PATH_CAP_BOTH, &material);
+	connection_policy_on_discovery(mesh, (node_t *)node, &sa, ADDR_SRC_DISCOVERY, material);
 	pthread_mutex_unlock(&mesh->mutex);
 	return true;
 }

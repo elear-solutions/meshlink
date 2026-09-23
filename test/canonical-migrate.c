@@ -567,10 +567,21 @@ static void test_migrate_from_req_external(void) {
 	uint32_t restarts = st.sptps_restart_count;
 	devtool_free_node_status(&st);
 
-	/* More traffic after promotion must not restart node SPTPS or re-log the route. */
+	/* The local-UDP route is recorded on the next application send after UDP
+	   is confirmed. A fast host finishes the migration stream before that
+	   confirm, so keep sending until the commit is in the log. Later traffic
+	   must not restart node SPTPS or re-log the route. */
+	size_t extra = sent;
+
+	for(int i = 0; i < 15 && !log_contains("a: Path route: b meta-direct -> direct-local-udp"); i++) {
+		stream_send(p.a, channel, extra++);
+		sleep(1);
+	}
+
+	assert(log_contains("a: Path route: b meta-direct -> direct-local-udp"));
+
 	int routes = log_count("a: Path route: b ");
 	size_t mark = log_mark();
-	size_t extra = sent;
 
 	for(size_t i = 0; i < 20; i++) {
 		stream_send(p.a, channel, extra++);

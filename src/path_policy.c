@@ -192,6 +192,24 @@ void path_copy_sockaddr(sockaddr_t *dst, const sockaddr_t *src) {
 	}
 
 	memcpy(dst, src, len);
+
+	/* The UDP node cache hashes the whole sockaddr_t. Darwin's sin_len is
+	   part of that, and a caller-built address leaves it 0 while recvfrom()
+	   fills it in, so the same host:port misses. sin_zero is padding. */
+	if(dst->sa.sa_family == AF_INET) {
+		memset(dst->in.sin_zero, 0, sizeof dst->in.sin_zero);
+#ifdef __APPLE__
+		dst->in.sin_len = sizeof dst->in;
+#endif
+	}
+
+#ifdef __APPLE__
+
+	if(dst->sa.sa_family == AF_INET6) {
+		dst->in6.sin6_len = sizeof dst->in6;
+	}
+
+#endif
 }
 
 bool path_source_is_direct(address_source_t src) {
@@ -846,13 +864,28 @@ static void recent_store_front(node_t *n, int i, const sockaddr_t *sa, address_s
 		memmove(n->recent_cap + 1, n->recent_cap, (size_t)i * sizeof(*n->recent_cap));
 	}
 
-	memcpy(n->recent, sa, SALEN(sa->sa));
+	/* SALEN() is sa_len on Darwin. A parsed address often has sa_len 0, and
+	   memcpy of that length stores nothing, so a discovery result never
+	   becomes dialable. */
+	path_copy_sockaddr(&n->recent[0], sa);
 	n->recent_source[0] = keep;
 	n->recent_cap[0] = keep_cap;
 	n->status.dirty = true;
 }
 
+static void learn_set_material(bool *material, bool value) {
+	if(material) {
+		*material = value;
+	}
+}
+
 bool path_learn_address_cap(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa, address_source_t src, path_cap_t cap) {
+	return path_learn_address_cap_ex(mesh, n, sa, src, cap, NULL);
+}
+
+bool path_learn_address_cap_ex(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa, address_source_t src, path_cap_t cap, bool *material) {
+	learn_set_material(material, false);
+
 	if(!n || !sa || sa->sa.sa_family == AF_UNSPEC || sa->sa.sa_family == AF_UNKNOWN) {
 		return false;
 	}
@@ -894,6 +927,8 @@ bool path_learn_address_cap(meshlink_handle_t *mesh, node_t *n, const sockaddr_t
 				path_backbone_udp_note_direct(mesh, n, sa, n->recent_source[0], n->recent_cap[0]);
 			}
 
+			/* An unchanged address moving forward is persistence/LRU, not a new fact. */
+			learn_set_material(material, upgraded);
 			return true;
 		}
 	}
@@ -906,6 +941,7 @@ bool path_learn_address_cap(meshlink_handle_t *mesh, node_t *n, const sockaddr_t
 	}
 
 	path_backbone_udp_note_direct(mesh, n, sa, src, cap);
+	learn_set_material(material, true);
 	return true;
 }
 
@@ -956,7 +992,7 @@ bool path_learn_address_fallback_cap(meshlink_handle_t *mesh, node_t *n, const s
 		return false;
 	}
 
-	memcpy(&n->recent[i], sa, SALEN(sa->sa));
+	path_copy_sockaddr(&n->recent[i], sa);
 	n->recent_source[i] = src;
 	n->recent_cap[i] = cap;
 	n->status.dirty = true;

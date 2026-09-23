@@ -19,6 +19,7 @@
 
 #define __APPLE_USE_RFC_3542
 #include "system.h"
+#include <time.h>
 
 #if defined(__APPLE__)
 #include <CoreFoundation/CoreFoundation.h>
@@ -379,16 +380,22 @@ static void mdns_io_handler(event_loop_t *loop, void *data, int flags) {
 			}
 
 			if(sa.sa.sa_family != AF_UNKNOWN) {
-				n->catta_address = sa;
+				bool learned;
+
+				path_copy_sockaddr(&n->catta_address, &sa);
 				n->last_connect_try = 0;
 
-				if(node_add_recent_address_cap(mesh, n, &sa, ADDR_SRC_DISCOVERY, PATH_CAP_BOTH)) {
+				bool material = false;
+
+				learned = node_add_recent_address_cap_ex(mesh, n, &sa, ADDR_SRC_DISCOVERY, PATH_CAP_BOTH, &material);
+
+				if(learned) {
 					n->upgrade_recent_idx = 0;
 				}
 
 				path_consider_promotion(mesh, n, PATH_PROMOTION_DISCOVERY);
 				try_upgrade_probe(mesh, n);
-				connection_policy_on_discovery(mesh, n, &sa, ADDR_SRC_DISCOVERY);
+				connection_policy_on_discovery(mesh, n, &sa, ADDR_SRC_DISCOVERY, material);
 			}
 		}
 	} else if(parse_request(buf, len, mesh->appname, "tcp")) {
@@ -507,7 +514,29 @@ static void iface_down(meshlink_handle_t *mesh, int index) {
 	handle_network_change(mesh, mesh->discovery.iface_count);
 }
 
+/* Link-local IPv6 is not announced. sockaddr2str() drops the zone, and a
+   fe80 address with no sin6_scope_id cannot be dialed or sent to (Darwin
+   returns EHOSTUNREACH). An IPv6-only link-local mesh therefore does not
+   discover itself. Scope-id preservation through serialization is not
+   implemented. Point-to-point tunnels (utun and friends) are not a local
+   mDNS link. */
+static bool discovery_usable_address(const sockaddr_t *sa) {
+	if(!sa) {
+		return false;
+	}
+
+	if(sa->sa.sa_family == AF_INET6) {
+		return !(sa->in6.sin6_addr.s6_addr[0] == 0xfe && (sa->in6.sin6_addr.s6_addr[1] & 0xc0) == 0x80);
+	}
+
+	return sa->sa.sa_family == AF_INET;
+}
+
 static void addr_add(meshlink_handle_t *mesh, const discovery_address_t *addr) {
+	if(!discovery_usable_address(&addr->address)) {
+		return;
+	}
+
 	discovery_address_t *p = bsearch(addr, mesh->discovery.addresses, mesh->discovery.address_count, sizeof(*p), address_compare);
 
 	if(p) {
@@ -603,13 +632,15 @@ void scan_ifaddrs(meshlink_handle_t *mesh) {
 
 		int index = if_nametoindex(ifap->ifa_name);
 
-		if(ifap->ifa_flags & IFF_UP && ifap->ifa_flags & IFF_MULTICAST && !(ifap->ifa_flags & IFF_LOOPBACK)) {
+		if(ifap->ifa_flags & IFF_UP && ifap->ifa_flags & IFF_MULTICAST
+		                && !(ifap->ifa_flags & IFF_LOOPBACK)
+		                && !(ifap->ifa_flags & IFF_POINTOPOINT)) {
 			iface_up(mesh, index);
 		} else {
 			iface_down(mesh, index);
 		}
 
-		if(!ifap->ifa_addr) {
+		if((ifap->ifa_flags & IFF_POINTOPOINT) || !ifap->ifa_addr) {
 			continue;
 		}
 
@@ -673,7 +704,7 @@ static void netlink_getaddr(int fd) {
 static void netlink_parse_link(meshlink_handle_t *mesh, const struct nlmsghdr *nlm) {
 	const struct ifinfomsg *ifi = (const struct ifinfomsg *)(nlm + 1);
 
-	if(ifi->ifi_flags & IFF_UP && ifi->ifi_flags & IFF_MULTICAST) {
+	if(ifi->ifi_flags & IFF_UP && ifi->ifi_flags & IFF_MULTICAST && !(ifi->ifi_flags & IFF_POINTOPOINT)) {
 		iface_up(mesh, ifi->ifi_index);
 	} else {
 		iface_down(mesh, ifi->ifi_index);
@@ -829,53 +860,155 @@ static void reachability_change_callback(SCNetworkReachabilityRef reachability, 
 	pthread_mutex_unlock(&mesh->mutex);
 }
 
+static void discovery_thread_exited(meshlink_handle_t *mesh) {
+	pthread_mutex_lock(&mesh->discovery.stop_mutex);
+	mesh->discovery.runloop = NULL;
+	mesh->discovery.stopped = true;
+	pthread_cond_broadcast(&mesh->discovery.stop_cond);
+	pthread_mutex_unlock(&mesh->discovery.stop_mutex);
+}
+
+static void discovery_unschedule_reachability(SCNetworkReachabilityRef reach, CFRunLoopRef loop) {
+	if(!reach) {
+		return;
+	}
+
+	SCNetworkReachabilitySetCallback(reach, NULL, NULL);
+	SCNetworkReachabilityUnscheduleFromRunLoop(reach, loop, kCFRunLoopDefaultMode);
+	CFRelease(reach);
+}
+
 static void *network_change_handler(void *arg) {
 	meshlink_handle_t *mesh = arg;
-
-	mesh->discovery.runloop = CFRunLoopGetCurrent();
-
-	SCNetworkReachabilityRef reach_v4 = SCNetworkReachabilityCreateWithName(NULL, "93.184.216.34");
-	SCNetworkReachabilityRef reach_v6 = SCNetworkReachabilityCreateWithName(NULL, "2606:2800:220:1:248:1893:25c8:1946");
-
+	CFRunLoopRef loop = CFRunLoopGetCurrent();
+	bool stop;
+	SCNetworkReachabilityRef reach_v4;
+	SCNetworkReachabilityRef reach_v6;
 	SCNetworkReachabilityContext context;
+
+	pthread_mutex_lock(&mesh->discovery.stop_mutex);
+	mesh->discovery.runloop = loop;
+	stop = mesh->discovery.stopping;
+	pthread_mutex_unlock(&mesh->discovery.stop_mutex);
+
+	if(stop) {
+		discovery_thread_exited(mesh);
+		return NULL;
+	}
+
+	reach_v4 = SCNetworkReachabilityCreateWithName(NULL, "93.184.216.34");
+	reach_v6 = SCNetworkReachabilityCreateWithName(NULL, "2606:2800:220:1:248:1893:25c8:1946");
+
 	memset(&context, 0, sizeof(context));
 	context.info = mesh;
 
 	if(reach_v4) {
 		SCNetworkReachabilitySetCallback(reach_v4, reachability_change_callback, &context);
-		SCNetworkReachabilityScheduleWithRunLoop(reach_v4, mesh->discovery.runloop, kCFRunLoopDefaultMode);
+		SCNetworkReachabilityScheduleWithRunLoop(reach_v4, loop, kCFRunLoopDefaultMode);
 	} else {
 		logger(mesh, MESHLINK_ERROR, "Could not create IPv4 network reachability watcher");
 	}
 
 	if(reach_v6) {
 		SCNetworkReachabilitySetCallback(reach_v6, reachability_change_callback, &context);
-		SCNetworkReachabilityScheduleWithRunLoop(reach_v6, mesh->discovery.runloop, kCFRunLoopDefaultMode);
+		SCNetworkReachabilityScheduleWithRunLoop(reach_v6, loop, kCFRunLoopDefaultMode);
 	} else {
 		logger(mesh, MESHLINK_ERROR, "Could not create IPv6 network reachability watcher");
 	}
 
-	CFRunLoopRun();
+	/* CFRunLoopStop() issued before the thread is inside the run loop is ignored.
+	   Recheck stopping between runs so that window still exits. */
+	for(;;) {
+		pthread_mutex_lock(&mesh->discovery.stop_mutex);
+		stop = mesh->discovery.stopping;
+		pthread_mutex_unlock(&mesh->discovery.stop_mutex);
 
-	mesh->discovery.runloop = NULL;
+		if(stop) {
+			break;
+		}
 
-	if(reach_v4) {
-		SCNetworkReachabilityUnscheduleFromRunLoop(reach_v4, mesh->discovery.runloop, kCFRunLoopDefaultMode);
-		CFRelease(reach_v4);
+		CFRunLoopRunInMode(kCFRunLoopDefaultMode, 3600, false);
 	}
 
-	if(reach_v6) {
-		SCNetworkReachabilityUnscheduleFromRunLoop(reach_v6, mesh->discovery.runloop, kCFRunLoopDefaultMode);
-		CFRelease(reach_v6);
-	}
-
+	discovery_unschedule_reachability(reach_v4, loop);
+	discovery_unschedule_reachability(reach_v6, loop);
+	discovery_thread_exited(mesh);
 	return NULL;
+}
+
+static bool discovery_join_thread(meshlink_handle_t *mesh) {
+	pthread_t thread;
+
+	pthread_mutex_lock(&mesh->discovery.stop_mutex);
+
+	while(mesh->discovery.joining) {
+		pthread_cond_wait(&mesh->discovery.stop_cond, &mesh->discovery.stop_mutex);
+	}
+
+	if(!mesh->discovery.thread_started) {
+		pthread_mutex_unlock(&mesh->discovery.stop_mutex);
+		return false;
+	}
+
+	mesh->discovery.joining = true;
+	mesh->discovery.stopping = true;
+
+	while(!mesh->discovery.stopped) {
+		CFRunLoopRef runloop = mesh->discovery.runloop;
+		struct timespec ts;
+
+		if(runloop) {
+			CFRetain(runloop);
+		}
+
+		pthread_mutex_unlock(&mesh->discovery.stop_mutex);
+
+		if(runloop) {
+			CFRunLoopStop(runloop);
+			CFRunLoopWakeUp(runloop);
+			CFRelease(runloop);
+		}
+
+		pthread_mutex_lock(&mesh->discovery.stop_mutex);
+
+		if(mesh->discovery.stopped) {
+			break;
+		}
+
+		clock_gettime(CLOCK_REALTIME, &ts);
+		ts.tv_nsec += 2000000;
+
+		if(ts.tv_nsec >= 1000000000L) {
+			ts.tv_sec++;
+			ts.tv_nsec -= 1000000000L;
+		}
+
+		pthread_cond_timedwait(&mesh->discovery.stop_cond, &mesh->discovery.stop_mutex, &ts);
+	}
+
+	thread = mesh->discovery.thread;
+	pthread_mutex_unlock(&mesh->discovery.stop_mutex);
+	pthread_join(thread, NULL);
+	return true;
+}
+
+static void discovery_release_thread(meshlink_handle_t *mesh) {
+	pthread_mutex_lock(&mesh->discovery.stop_mutex);
+	mesh->discovery.thread_started = false;
+	mesh->discovery.joining = false;
+	mesh->discovery.stopping = false;
+	mesh->discovery.stopped = false;
+	mesh->discovery.runloop = NULL;
+	pthread_cond_broadcast(&mesh->discovery.stop_cond);
+	pthread_mutex_unlock(&mesh->discovery.stop_mutex);
 }
 #elif defined(RTM_NEWADDR)
 static void pfroute_parse_iface(meshlink_handle_t *mesh, const struct rt_msghdr *rtm) {
 	const struct if_msghdr *ifm = (const struct if_msghdr *)rtm;
 
-	if(ifm->ifm_flags & IFF_UP && ifm->ifm_flags & IFF_MULTICAST && !(ifm->ifm_flags & IFF_LOOPBACK)) {
+	if(ifm->ifm_flags & IFF_UP && ifm->ifm_flags & IFF_MULTICAST
+	                && !(ifm->ifm_flags & IFF_LOOPBACK)
+	                && !(ifm->ifm_flags & IFF_POINTOPOINT)) {
 		iface_up(mesh, ifm->ifm_index);
 	} else {
 		iface_down(mesh, ifm->ifm_index);
@@ -1060,8 +1193,16 @@ bool discovery_start(meshlink_handle_t *mesh) {
 	}
 
 #elif defined(__APPLE__)
-	pthread_create(&mesh->discovery.thread, NULL, network_change_handler, mesh);
-	// TODO: Do we need to wait for the thread to start succesfully?
+	pthread_mutex_lock(&mesh->discovery.stop_mutex);
+
+	if(!mesh->discovery.thread_started) {
+		mesh->discovery.stopping = false;
+		mesh->discovery.stopped = false;
+		mesh->discovery.runloop = NULL;
+		mesh->discovery.thread_started = pthread_create(&mesh->discovery.thread, NULL, network_change_handler, mesh) == 0;
+	}
+
+	pthread_mutex_unlock(&mesh->discovery.stop_mutex);
 	scan_ifaddrs(mesh);
 #elif defined(RTM_NEWADDR)
 	int sock = socket(PF_ROUTE, SOCK_RAW, AF_UNSPEC);
@@ -1083,6 +1224,16 @@ void discovery_stop(meshlink_handle_t *mesh) {
 
 	assert(mesh);
 
+#if defined(__APPLE__)
+	/* Join before taking mesh->mutex. The reachability callback needs that lock.
+	   joining/thread_started stay set until teardown below finishes. */
+	bool discovery_joined = discovery_join_thread(mesh);
+#endif
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
 	free(mesh->discovery.ifaces);
 	free(mesh->discovery.addresses);
 	mesh->discovery.ifaces = NULL;
@@ -1092,15 +1243,6 @@ void discovery_stop(meshlink_handle_t *mesh) {
 	mesh->discovery.addr_set_fingerprint = 0;
 	mesh->discovery.addr_set_initialized = false;
 	mesh->discovery.addr_dump_complete = false;
-
-#if defined(__APPLE__)
-
-	if(mesh->discovery.runloop) {
-		CFRunLoopStop(mesh->discovery.runloop);
-		pthread_join(mesh->discovery.thread, NULL);
-	}
-
-#endif
 
 	if(mesh->discovery.pfroute_io.cb) {
 		close(mesh->discovery.pfroute_io.fd);
@@ -1113,6 +1255,14 @@ void discovery_stop(meshlink_handle_t *mesh) {
 			io_del(&mesh->loop, &mesh->discovery.sockets[i]);
 		}
 	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+
+#if defined(__APPLE__)
+	if(discovery_joined) {
+		discovery_release_thread(mesh);
+	}
+#endif
 }
 
 void discovery_refresh(meshlink_handle_t *mesh) {
