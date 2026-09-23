@@ -52,8 +52,10 @@ established by earlier findings.
   pkt/s, 20 optional pkt/min for parked liveness, plus a reserved 1
   pkt/s backbone bucket). Admitted promotion/suspect/PMTU packets use
   the 4 pkt/s burst cap only.
-- Finding 15 preserves pick/candidate/commit provenance. Findings
-  16-20 finish remaining interfaces, verification, and cleanup.
+- Finding 15 preserves pick/candidate/commit provenance. Finding 16
+  rejects a channel whose node is not owned by the mesh passed to
+  `meshlink_channel_get_mss()`. Findings 17-20 finish remaining
+  interfaces, verification, and cleanup.
 
 Do not implement a later finding by adding a second competing state machine.
 Move ownership to the module introduced by the earliest relevant finding.
@@ -992,7 +994,7 @@ path_commit_candidate:
 ## 16. Validate channel ownership in the fixed MSS getter
 
 **Priority:** P2  
-**Status:** Open
+**Status:** Completed
 
 ### Issue Summary
 
@@ -1009,21 +1011,24 @@ Mesh B can race the getter despite the apparent lock in the function.
 
 ### Suggested code change to fix
 
-Validate ownership under the supplied mesh lock:
+Completed. Ownership is checked under the supplied mesh lock. A missing
+node, a node from another instance, or a destination without UTCP returns
+`(size_t)-1` with `MESHLINK_EINVAL` after unlocking. `get_flags`,
+`get_sendq`, and `get_recvq` were not given this lock and stay unchanged.
+
+Preserve these invariants:
 
 ```c
-node_t *node = channel->node;
+node_t *n = channel->node;
 
-if(!node || node->mesh != mesh || !node->utcp) {
+if(!n || n->mesh != mesh || !n->utcp) {
 	meshlink_errno = MESHLINK_EINVAL;
 	pthread_mutex_unlock(&mesh->mutex);
-	return (size_t)-1;
+	return (size_t) - 1;
 }
 
-size_t mss = utcp_get_mss(node->utcp);
+size_t mss = utcp_get_mss(n->utcp);
 ```
-
-Apply the same ownership rule to related channel getters touched by this work.
 
 ---
 

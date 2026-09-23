@@ -5241,11 +5241,14 @@ size_t meshlink_channel_get_mss(meshlink_handle_t *mesh, meshlink_channel_t *cha
 	}
 
 	node_t *n = channel->node;
-	size_t mss = n && n->utcp ? utcp_get_mss(n->utcp) : (size_t) - 1;
 
-	if(!n || !n->utcp) {
+	if(!n || n->mesh != mesh || !n->utcp) {
 		meshlink_errno = MESHLINK_EINVAL;
+		pthread_mutex_unlock(&mesh->mutex);
+		return (size_t) - 1;
 	}
+
+	size_t mss = utcp_get_mss(n->utcp);
 
 	pthread_mutex_unlock(&mesh->mutex);
 	return mss;

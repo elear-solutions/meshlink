@@ -263,6 +263,64 @@ static void test_fixed_channel_size(void) {
 	printf("path-stability T1 ok: size %zu survived every path event\n", expected);
 }
 
+/* --- T14: a channel from another mesh is rejected ------------------------- */
+
+static void test_mss_rejects_foreign_mesh(void) {
+	printf("\n=== path-stability T14: get_mss rejects a channel from another mesh ===\n");
+
+	assert(meshlink_destroy("path_stability_t14_conf.1"));
+	assert(meshlink_destroy("path_stability_t14_conf.2"));
+	assert(meshlink_destroy("path_stability_t14_conf.foreign"));
+
+	meshlink_handle_t *a = meshlink_open("path_stability_t14_conf.1", "aaa", "path-stability-14", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *b = meshlink_open("path_stability_t14_conf.2", "bbb", "path-stability-14", DEV_CLASS_STATIONARY);
+	meshlink_handle_t *foreign = meshlink_open("path_stability_t14_conf.foreign", "zzz", "path-stability-14", DEV_CLASS_STATIONARY);
+	assert(a && b && foreign);
+	meshlink_enable_discovery(a, false);
+	meshlink_enable_discovery(b, false);
+	meshlink_enable_discovery(foreign, false);
+
+	init_sync_flag(&accepted);
+	init_sync_flag(&received);
+	meshlink_set_channel_accept_cb(b, accept_cb);
+	join_meshlink_peer(a, b);
+	assert(meshlink_start(a));
+	assert(meshlink_start(b));
+
+	meshlink_node_t *a_b = meshlink_get_node(a, "bbb");
+	assert(a_b);
+	assert_after(node_is_reachable(a, a_b), 15);
+	assert_after(node_is_keyed(a, a_b), 20);
+
+	meshlink_channel_t *ch = meshlink_channel_open(a, a_b, 7, receive_cb, NULL, 0);
+	assert(ch);
+
+	size_t expected = relay_floor_mss("aaa", "bbb");
+	assert(meshlink_channel_get_mss(a, ch) == expected);
+
+	meshlink_errno = MESHLINK_OK;
+	assert(meshlink_channel_get_mss(foreign, ch) == (size_t) - 1);
+	assert(meshlink_errno == MESHLINK_EINVAL);
+
+	meshlink_errno = MESHLINK_OK;
+	assert(meshlink_channel_get_mss(foreign, ch) == (size_t) - 1);
+	assert(meshlink_errno == MESHLINK_EINVAL);
+
+	assert(meshlink_channel_get_mss(a, ch) == expected);
+
+	assert(meshlink_channel_get_mss(NULL, ch) == (size_t) - 1);
+	assert(meshlink_channel_get_mss(a, NULL) == (size_t) - 1);
+
+	meshlink_channel_abort(a, ch);
+	meshlink_close(a);
+	meshlink_close(b);
+	meshlink_close(foreign);
+	assert(meshlink_destroy("path_stability_t14_conf.1"));
+	assert(meshlink_destroy("path_stability_t14_conf.2"));
+	assert(meshlink_destroy("path_stability_t14_conf.foreign"));
+	printf("path-stability T14 ok: foreign mesh returned EINVAL without touching the owner\n");
+}
+
 /* --- T2: reading the size races nothing ----------------------------------- */
 
 struct hammer {
@@ -1211,6 +1269,7 @@ int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_WARNING, NULL);
 
 	test_fixed_channel_size();
+	test_mss_rejects_foreign_mesh();
 	test_mss_under_route_churn();
 	test_promotion_is_slow();
 	test_candidate_cooldown();
