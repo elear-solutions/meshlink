@@ -39,6 +39,7 @@
  *   P10 HINT persists across close/reopen
  *   P11 Planted NLB is stripped on reload
  *   P12 Planted NLB-IP/NMN-port hybrid is stripped on reload
+ *   P13 Pick returns recent[] source+cap; catta fallback is DISCOVERY/BOTH
 
  * META classification
  *   M1  via_canonical, meta_dial_tier, or address match => canonical META
@@ -54,6 +55,7 @@
  *   U4  WAN stays selected while an unvalidated local candidate exists
  *   U5  Local probe reply promotes WAN -> LOCAL
  *   U6  Cover-unit: NONE -> WAN, WAN -> LOCAL via path_promote_udp_if_better
+ *   U7  Cover-unit: WAN->local commit keeps AUTH_DIRECT/HINT/DISCOVERY class
 
  * Downgrade / refuse
  *   D1  Unconfirm dest while hop UDP is up => RELAY_UDP, not a silent WAN keep

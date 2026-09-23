@@ -43,6 +43,13 @@ typedef uint8_t path_cap_t;
 #define PATH_CAP_UDP  0x02
 #define PATH_CAP_BOTH (PATH_CAP_META | PATH_CAP_UDP)
 
+/* One learned UDP/META dest: address plus the recent[] slot it came from. */
+typedef struct path_endpoint_t {
+	sockaddr_t address;
+	address_source_t source;
+	path_cap_t capability;
+} path_endpoint_t;
+
 /* Ranked validated-path tiers. Lower is better. */
 typedef enum path_tier_t {
 	PATH_TIER_DIRECT_LOCAL_UDP = 0,
@@ -111,6 +118,7 @@ typedef struct route_candidate_t {
 	struct node_t *first_hop;
 	sockaddr_t endpoint;
 	address_source_t source;
+	path_cap_t capability;                  /* PATH_CAP_NONE => path_default_cap(source) at install */
 	bool local;
 	uint64_t nonce;
 	uint8_t successful_rounds;
@@ -314,9 +322,9 @@ const char *path_upgrade_ineligible_reason(struct meshlink_handle *mesh, const s
 path_tier_t path_select_hop_tier(const struct node_t *hop, bool meta_in);
 path_tier_t path_select_destination_tier(const struct node_t *dest, bool meta_in);
 
-/* When out is non-NULL, fills the local candidate (one pick). out may be NULL for a boolean check. */
+/* When out is non-NULL, fills the local candidate address (one pick). out may be NULL for a boolean check. */
 bool path_udp_should_probe_local(struct meshlink_handle *mesh, const struct node_t *n, sockaddr_t *out);
-bool path_pick_local_udp_candidate(struct meshlink_handle *mesh, const struct node_t *n, sockaddr_t *out);
+bool path_pick_local_udp_candidate(struct meshlink_handle *mesh, const struct node_t *n, path_endpoint_t *out);
 void path_schedule_local_udp_probe(struct meshlink_handle *mesh, struct node_t *n);
 void path_note_udp_confirmed(struct meshlink_handle *mesh, struct node_t *n);
 void path_note_udp_demoted(struct meshlink_handle *mesh, struct node_t *n);

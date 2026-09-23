@@ -589,7 +589,8 @@ static bool cover_select(meshlink_handle_t *mesh) {
 
 static bool cover_probe(meshlink_handle_t *mesh) {
 	node_t dummy;
-	sockaddr_t out, local, wan, nlb, unixish, relayed;
+	path_endpoint_t out;
+	sockaddr_t local, wan, nlb, unixish, relayed;
 
 	memset(&dummy, 0, sizeof dummy);
 	dummy.name = scratch("probe");
@@ -635,7 +636,9 @@ static bool cover_probe(meshlink_handle_t *mesh) {
 	CHECK(!path_pick_local_udp_candidate(mesh, &dummy, &out));
 	dummy.address = wan;
 	CHECK(path_pick_local_udp_candidate(mesh, &dummy, &out));
-	CHECK(!sockaddrcmp(&out, &local));
+	CHECK(!sockaddrcmp(&out.address, &local));
+	CHECK(out.source == ADDR_SRC_HINT);
+	CHECK(out.capability == PATH_CAP_BOTH);
 	dummy.udp_local_probe_next = mesh->loop.now.tv_sec + 60;
 	CHECK(!path_udp_should_probe_local(mesh, &dummy, NULL));
 	dummy.udp_local_probe_next = 0;
@@ -650,7 +653,9 @@ static bool cover_probe(meshlink_handle_t *mesh) {
 	dummy.address = wan;
 	set_v4(&dummy.catta_address, "192.168.9.9", 9);
 	CHECK(path_pick_local_udp_candidate(mesh, &dummy, &out));
-	CHECK(!sockaddrcmp(&out, &dummy.catta_address));
+	CHECK(!sockaddrcmp(&out.address, &dummy.catta_address));
+	CHECK(out.source == ADDR_SRC_DISCOVERY);
+	CHECK(out.capability == PATH_CAP_BOTH);
 	dummy.address = dummy.catta_address;
 	CHECK(!path_pick_local_udp_candidate(mesh, &dummy, &out));
 	memset(&dummy.catta_address, 0, sizeof dummy.catta_address);
@@ -1635,6 +1640,8 @@ static bool cover_promotion(meshlink_handle_t *mesh, node_t *live) {
 
 	path_learn_address(mesh, live, &local, ADDR_SRC_DISCOVERY);
 	CHECK_LIVE(live->promotion_candidate.active);
+	CHECK_LIVE(live->promotion_candidate.source == ADDR_SRC_DISCOVERY);
+	CHECK_LIVE(live->promotion_candidate.capability == PATH_CAP_BOTH);
 	CHECK_LIVE(live->promotion_timer.cb);
 	send_candidate_probe(mesh, live);
 	CHECK_LIVE(!live->probe_dest_override_active);
@@ -1679,6 +1686,8 @@ static bool cover_promotion(meshlink_handle_t *mesh, node_t *live) {
 	path_route_tick(mesh, live);
 	CHECK_LIVE(!live->promotion_candidate.active);
 	CHECK_LIVE(!sockaddrcmp(&live->address, &local));
+	CHECK_LIVE(live->active_route.endpoint_source == ADDR_SRC_DISCOVERY);
+	CHECK_LIVE(live->address_source == ADDR_SRC_DISCOVERY);
 	CHECK_LIVE(!live->candidate_retry.failures);
 	CHECK_LIVE(!live->candidate_retry.cooldown_until.tv_sec);
 
@@ -1691,6 +1700,264 @@ done:
 	restore_live(mesh, live, &saved);
 	return ok;
 #undef CHECK_LIVE
+}
+
+static bool cover_provenance(meshlink_handle_t *mesh, node_t *live) {
+	live_snapshot_t saved;
+	peer_path_demand_t saved_demand;
+	data_route_t saved_route;
+	bool ok = true;
+	sockaddr_t local_auth, local_hint, local_edge, canon_edge, wan;
+	sockaddr_t saved_canon_extra[MAX_CANONICAL_SA - 1];
+	uint64_t nonce;
+	uint8_t saved_canon_count;
+
+	snapshot_live(live, &saved);
+	saved_canon_count = live->canonical_sa_count;
+	memcpy(saved_canon_extra, live->canonical_extra, sizeof saved_canon_extra);
+	saved_route = live->active_route;
+	timeout_del(&mesh->loop, &live->promotion_timer);
+	path_suspect_stop(mesh, live);
+	memset(&live->promotion_candidate, 0, sizeof live->promotion_candidate);
+	memset(&live->candidate_retry, 0, sizeof live->candidate_retry);
+	saved_demand = live->peer_udp;
+	live->peer_udp.channel_count = 1;
+	memset(&live->peer_udp.idle_until, 0, sizeof live->peer_udp.idle_until);
+
+	set_v4(&local_auth, "10.9.8.11", 4242);
+	set_v4(&local_hint, "10.9.8.12", 4242);
+	set_v4(&wan, "203.0.113.40", 9);
+
+#define CHECK_PROV(cond) do { \
+	if(!(cond)) { \
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: %s", #cond); \
+		ok = false; \
+		goto done; \
+	} \
+} while(0)
+
+	live->address = wan;
+	live->status.udp_confirmed = true;
+	memset(&live->catta_address, 0, sizeof live->catta_address);
+	path_clear_recent(live);
+	path_learn_address(mesh, live, &wan, ADDR_SRC_AUTH_DIRECT);
+	live->udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+	path_learn_address(mesh, live, &local_auth, ADDR_SRC_AUTH_DIRECT);
+	CHECK_PROV(live->promotion_candidate.active);
+	CHECK_PROV(live->promotion_candidate.source == ADDR_SRC_AUTH_DIRECT);
+	CHECK_PROV(live->promotion_candidate.capability == PATH_CAP_BOTH);
+	CHECK_PROV(live->promotion_candidate.source != ADDR_SRC_DISCOVERY);
+
+	nonce = live->promotion_candidate.nonce;
+	CHECK_PROV(nonce);
+	path_observe_probe_reply(mesh, live, &local_auth, nonce);
+	CHECK_PROV(live->promotion_candidate.successful_rounds == 1);
+	nonce = live->promotion_candidate.nonce;
+	memset(&live->active_route, 0, sizeof live->active_route);
+	live->active_route.kind = DATA_ROUTE_DIRECT_UDP;
+	path_copy_sockaddr(&live->active_route.udp_endpoint, &wan);
+	live->active_route.selected_at = mesh->loop.now;
+	live->promotion_candidate.first_success.tv_sec -= 1;
+	path_observe_probe_reply(mesh, live, &local_auth, nonce);
+	CHECK_PROV(live->promotion_candidate.successful_rounds == 2);
+	CHECK_PROV(live->promotion_candidate.active);
+	live->active_route.selected_at.tv_sec -= PATH_ROUTE_MIN_RESIDENCY_SEC + 1;
+	path_route_tick(mesh, live);
+	CHECK_PROV(!live->promotion_candidate.active);
+	CHECK_PROV(!sockaddrcmp(&live->address, &local_auth));
+	CHECK_PROV(live->active_route.endpoint_source == ADDR_SRC_AUTH_DIRECT);
+	CHECK_PROV(live->address_source == ADDR_SRC_AUTH_DIRECT);
+	CHECK_PROV(live->address_cap == PATH_CAP_BOTH);
+
+	timeout_del(&mesh->loop, &live->promotion_timer);
+	path_suspect_stop(mesh, live);
+	memset(&live->promotion_candidate, 0, sizeof live->promotion_candidate);
+	memset(&live->candidate_retry, 0, sizeof live->candidate_retry);
+	live->address = wan;
+	live->udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+	path_clear_recent(live);
+	path_learn_address(mesh, live, &wan, ADDR_SRC_AUTH_DIRECT);
+	path_learn_address(mesh, live, &local_hint, ADDR_SRC_HINT);
+	CHECK_PROV(live->promotion_candidate.active);
+	CHECK_PROV(live->promotion_candidate.source == ADDR_SRC_HINT);
+	CHECK_PROV(live->promotion_candidate.capability == PATH_CAP_BOTH);
+
+	nonce = live->promotion_candidate.nonce;
+	CHECK_PROV(nonce);
+	path_observe_probe_reply(mesh, live, &local_hint, nonce);
+	CHECK_PROV(live->promotion_candidate.successful_rounds == 1);
+	nonce = live->promotion_candidate.nonce;
+	memset(&live->active_route, 0, sizeof live->active_route);
+	live->active_route.kind = DATA_ROUTE_DIRECT_UDP;
+	path_copy_sockaddr(&live->active_route.udp_endpoint, &wan);
+	live->active_route.selected_at = mesh->loop.now;
+	live->promotion_candidate.first_success.tv_sec -= 1;
+	path_observe_probe_reply(mesh, live, &local_hint, nonce);
+	CHECK_PROV(live->promotion_candidate.successful_rounds == 2);
+	live->active_route.selected_at.tv_sec -= PATH_ROUTE_MIN_RESIDENCY_SEC + 1;
+	path_route_tick(mesh, live);
+	CHECK_PROV(!live->promotion_candidate.active);
+	CHECK_PROV(!sockaddrcmp(&live->address, &local_hint));
+	CHECK_PROV(live->active_route.endpoint_source == ADDR_SRC_HINT);
+	CHECK_PROV(live->address_source == ADDR_SRC_HINT);
+
+	timeout_del(&mesh->loop, &live->promotion_timer);
+	path_suspect_stop(mesh, live);
+	memset(&live->promotion_candidate, 0, sizeof live->promotion_candidate);
+	memset(&live->candidate_retry, 0, sizeof live->candidate_retry);
+	live->address = wan;
+	live->udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+	live->status.udp_confirmed = true;
+	path_clear_recent(live);
+	path_copy_sockaddr(&live->recent[0], &local_auth);
+	live->recent_source[0] = ADDR_SRC_AUTH_DIRECT;
+	live->recent_cap[0] = PATH_CAP_BOTH;
+	path_consider_promotion(mesh, live, PATH_PROMOTION_DISCOVERY);
+	CHECK_PROV(live->promotion_candidate.active);
+	CHECK_PROV(live->promotion_candidate.source == ADDR_SRC_AUTH_DIRECT);
+	CHECK_PROV(live->promotion_candidate.source != ADDR_SRC_DISCOVERY);
+	CHECK_PROV(live->promotion_candidate.capability == PATH_CAP_BOTH);
+	path_candidate_timeout(mesh, live, "provenance-cleanup");
+	CHECK_PROV(!live->promotion_candidate.active);
+
+	/* The candidate sockaddr is already the UDP dest, under a different class.
+	   Commit must refresh that class instead of leaving the route and the node
+	   dest disagreeing. */
+	timeout_del(&mesh->loop, &live->promotion_timer);
+	path_suspect_stop(mesh, live);
+	memset(&live->promotion_candidate, 0, sizeof live->promotion_candidate);
+	memset(&live->candidate_retry, 0, sizeof live->candidate_retry);
+	path_clear_canonical_endpoints(live);
+	live->address = wan;
+	live->address_source = ADDR_SRC_AUTH_DIRECT;
+	live->address_cap = PATH_CAP_BOTH;
+	live->status.udp_confirmed = true;
+	live->udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+	path_clear_recent(live);
+	path_learn_address(mesh, live, &wan, ADDR_SRC_AUTH_DIRECT);
+	path_learn_address(mesh, live, &local_auth, ADDR_SRC_AUTH_DIRECT);
+	CHECK_PROV(live->promotion_candidate.active);
+	CHECK_PROV(live->promotion_candidate.source == ADDR_SRC_AUTH_DIRECT);
+	nonce = live->promotion_candidate.nonce;
+	CHECK_PROV(nonce);
+	path_observe_probe_reply(mesh, live, &local_auth, nonce);
+	nonce = live->promotion_candidate.nonce;
+	memset(&live->active_route, 0, sizeof live->active_route);
+	live->active_route.kind = DATA_ROUTE_DIRECT_UDP;
+	path_copy_sockaddr(&live->active_route.udp_endpoint, &wan);
+	live->active_route.selected_at = mesh->loop.now;
+	live->promotion_candidate.first_success.tv_sec -= 1;
+	path_observe_probe_reply(mesh, live, &local_auth, nonce);
+	CHECK_PROV(live->promotion_candidate.successful_rounds == 2);
+	path_copy_sockaddr(&live->address, &local_auth);
+	live->address_source = ADDR_SRC_DISCOVERY;
+	live->address_cap = PATH_CAP_UDP;
+	live->udp_tier = PATH_TIER_DIRECT_LOCAL_UDP;
+	live->active_route.selected_at.tv_sec -= PATH_ROUTE_MIN_RESIDENCY_SEC + 1;
+	path_route_tick(mesh, live);
+	CHECK_PROV(!live->promotion_candidate.active);
+	CHECK_PROV(!sockaddrcmp(&live->address, &local_auth));
+	CHECK_PROV(live->address_source == ADDR_SRC_AUTH_DIRECT);
+	CHECK_PROV(live->address_cap == PATH_CAP_BOTH);
+	CHECK_PROV(live->active_route.endpoint_source == ADDR_SRC_AUTH_DIRECT);
+	CHECK_PROV(live->active_route.local);
+	CHECK_PROV(!sockaddrcmp(&live->active_route.udp_endpoint, &local_auth));
+
+	/* Canonical learned during validation must not be committed. */
+	timeout_del(&mesh->loop, &live->promotion_timer);
+	path_suspect_stop(mesh, live);
+	memset(&live->promotion_candidate, 0, sizeof live->promotion_candidate);
+	memset(&live->candidate_retry, 0, sizeof live->candidate_retry);
+	path_clear_canonical_endpoints(live);
+	live->address = wan;
+	live->address_source = ADDR_SRC_AUTH_DIRECT;
+	live->address_cap = PATH_CAP_BOTH;
+	live->status.udp_confirmed = true;
+	live->udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+	path_clear_recent(live);
+	path_learn_address(mesh, live, &wan, ADDR_SRC_AUTH_DIRECT);
+	path_learn_address(mesh, live, &local_hint, ADDR_SRC_HINT);
+	CHECK_PROV(live->promotion_candidate.active);
+	nonce = live->promotion_candidate.nonce;
+	CHECK_PROV(nonce);
+	path_observe_probe_reply(mesh, live, &local_hint, nonce);
+	nonce = live->promotion_candidate.nonce;
+	memset(&live->active_route, 0, sizeof live->active_route);
+	live->active_route.kind = DATA_ROUTE_DIRECT_UDP;
+	live->active_route.endpoint_source = ADDR_SRC_AUTH_DIRECT;
+	path_copy_sockaddr(&live->active_route.udp_endpoint, &wan);
+	live->active_route.selected_at = mesh->loop.now;
+	live->promotion_candidate.first_success.tv_sec -= 1;
+	path_observe_probe_reply(mesh, live, &local_hint, nonce);
+	CHECK_PROV(live->promotion_candidate.successful_rounds == 2);
+	path_set_canonical_sockaddr(live, &local_hint);
+	live->active_route.selected_at.tv_sec -= PATH_ROUTE_MIN_RESIDENCY_SEC + 1;
+	path_route_tick(mesh, live);
+	CHECK_PROV(!live->promotion_candidate.active);
+	CHECK_PROV(!sockaddrcmp(&live->address, &wan));
+	CHECK_PROV(live->address_source == ADDR_SRC_AUTH_DIRECT);
+	CHECK_PROV(!live->active_route.local);
+	CHECK_PROV(!sockaddrcmp(&live->active_route.udp_endpoint, &wan));
+	CHECK_PROV(live->active_route.endpoint_source == ADDR_SRC_AUTH_DIRECT);
+
+	/* EDGE_DIRECT that shares a canonical IP learned during validation is a
+	   hybrid. Commit must refuse it and leave the WAN route in place. */
+	set_v4(&local_edge, "10.9.8.13", 4242);
+	set_v4(&canon_edge, "10.9.8.13", 9);
+	timeout_del(&mesh->loop, &live->promotion_timer);
+	path_suspect_stop(mesh, live);
+	memset(&live->promotion_candidate, 0, sizeof live->promotion_candidate);
+	memset(&live->candidate_retry, 0, sizeof live->candidate_retry);
+	path_clear_canonical_endpoints(live);
+	live->address = wan;
+	live->address_source = ADDR_SRC_AUTH_DIRECT;
+	live->address_cap = PATH_CAP_BOTH;
+	live->status.udp_confirmed = true;
+	live->udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+	path_clear_recent(live);
+	path_learn_address(mesh, live, &wan, ADDR_SRC_AUTH_DIRECT);
+	path_learn_address(mesh, live, &local_edge, ADDR_SRC_EDGE_DIRECT);
+	CHECK_PROV(live->promotion_candidate.active);
+	CHECK_PROV(live->promotion_candidate.source == ADDR_SRC_EDGE_DIRECT);
+	nonce = live->promotion_candidate.nonce;
+	CHECK_PROV(nonce);
+	path_observe_probe_reply(mesh, live, &local_edge, nonce);
+	nonce = live->promotion_candidate.nonce;
+	memset(&live->active_route, 0, sizeof live->active_route);
+	live->active_route.kind = DATA_ROUTE_DIRECT_UDP;
+	live->active_route.endpoint_source = ADDR_SRC_AUTH_DIRECT;
+	path_copy_sockaddr(&live->active_route.udp_endpoint, &wan);
+	live->active_route.selected_at = mesh->loop.now;
+	live->promotion_candidate.first_success.tv_sec -= 1;
+	path_observe_probe_reply(mesh, live, &local_edge, nonce);
+	CHECK_PROV(live->promotion_candidate.successful_rounds == 2);
+	path_set_canonical_sockaddr(live, &canon_edge);
+	live->active_route.selected_at.tv_sec -= PATH_ROUTE_MIN_RESIDENCY_SEC + 1;
+	path_route_tick(mesh, live);
+	CHECK_PROV(!live->promotion_candidate.active);
+	CHECK_PROV(!sockaddrcmp(&live->address, &wan));
+	CHECK_PROV(live->address_source == ADDR_SRC_AUTH_DIRECT);
+	CHECK_PROV(!live->active_route.local);
+	CHECK_PROV(!sockaddrcmp(&live->active_route.udp_endpoint, &wan));
+	CHECK_PROV(live->active_route.endpoint_source == ADDR_SRC_AUTH_DIRECT);
+
+done:
+	if(live->promotion_candidate.active) {
+		path_candidate_timeout(mesh, live, "provenance-cleanup");
+	}
+
+	live->canonical_sa_count = saved_canon_count;
+	memcpy(live->canonical_extra, saved_canon_extra, sizeof saved_canon_extra);
+
+	timeout_del(&mesh->loop, &live->promotion_timer);
+	path_suspect_stop(mesh, live);
+	memset(&live->promotion_candidate, 0, sizeof live->promotion_candidate);
+	memset(&live->candidate_retry, 0, sizeof live->candidate_retry);
+	live->active_route = saved_route;
+	live->peer_udp = saved_demand;
+	restore_live(mesh, live, &saved);
+	return ok;
+#undef CHECK_PROV
 }
 
 static bool cover_escalation(meshlink_handle_t *mesh, node_t *live) {
@@ -3057,6 +3324,7 @@ bool path_policy_cover_unit(meshlink_handle_t *mesh, node_t *live) {
 	                && cover_demand(mesh)
 	                && cover_promote(mesh, live)
 	                && cover_promotion(mesh, live)
+	                && cover_provenance(mesh, live)
 	                && cover_escalation(mesh, live)
 	                && cover_retry_survives_carrier(mesh)
 	                && cover_retry_epoch(mesh)

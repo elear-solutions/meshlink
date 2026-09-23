@@ -52,7 +52,8 @@ established by earlier findings.
   pkt/s, 20 optional pkt/min for parked liveness, plus a reserved 1
   pkt/s backbone bucket). Admitted promotion/suspect/PMTU packets use
   the 4 pkt/s burst cap only.
-- Findings 15-20 finish interfaces, verification, and cleanup.
+- Finding 15 preserves pick/candidate/commit provenance. Findings
+  16-20 finish remaining interfaces, verification, and cleanup.
 
 Do not implement a later finding by adding a second competing state machine.
 Move ownership to the module introduced by the earliest relevant finding.
@@ -928,7 +929,7 @@ Repeated identical hints or discovery packets must not clear it again.
 ## 15. Preserve endpoint provenance through candidate and route commitment
 
 **Priority:** P2  
-**Status:** Open
+**Status:** Completed
 
 ### Issue Summary
 
@@ -948,22 +949,43 @@ because the original trust class was lost.
 
 ### Suggested code change to fix
 
-Pass complete endpoint descriptors:
+Completed. The picker returns a `path_endpoint_t`. Start copies source and cap
+into `route_candidate_t`. Commit copies source onto `data_route_t` and installs
+the same class on `n->address_source` / `n->address_cap`. Observation `reason`
+still owns cooldown-clear only.
+
+Preserve these invariants:
 
 ```c
-typedef struct path_endpoint_t {
-	sockaddr_t address;
-	address_source_t source;
-	path_cap_t capability;
-} path_endpoint_t;
+path_pick_local_udp_candidate:
+    out->source = recent_source[i]   /* catta fallback: DISCOVERY */
+    out->capability = recent_cap[i]  /* catta fallback: PATH_CAP_BOTH */
 
-bool path_pick_local_udp_candidate(meshlink_handle_t *mesh,
-                                   const node_t *node,
-                                   path_endpoint_t *out);
+path_consider_promotion:
+    c->source = better.source        /* not ADDR_SRC_DISCOVERY */
+    c->capability = better.capability
+
+path_commit_candidate:
+    target.endpoint_source = c->source
+    if(!path_install_committed_udp(mesh, n, &ep))
+        drop candidate; do not clear retry; do not commit
+    path_retry_clear_if_endpoint(...)
+    path_commit_active_route(...)
 ```
 
-Copy provenance into `route_candidate_t`, then into `data_route_t` only after
-successful validation and commitment.
+- `path_install_committed_udp` accepts an already-current sockaddr and
+  refreshes source and cap. Before it writes, it re-runs the picker gate:
+  `path_is_udp_candidate`, direct-or-`UDP_REFLEXIVE`, and `udp_address_bound`.
+  That rejects canonical, an `EDGE_DIRECT`/`UNKNOWN` hybrid, and a
+  HINT/UNKNOWN blocked by an unresolved hostname canonical. It does not
+  apply the tier-better gate.
+- Wake-up `reason` is not the candidate's learn class.
+- `path_promote_udp_if_better` stays the stricter helper: `recent[]`
+  lookup, else AUTH_DIRECT, same-address and non-improving tier rejected.
+  Production commit does not go through that helper.
+- `PATH_CAP_NONE` on a planted candidate uses `path_default_cap(source)`.
+- After a WAN-to-local UDP commit, picked source equals
+  `active_route.endpoint_source` and `n->address_source`.
 
 ---
 

@@ -1264,8 +1264,7 @@ path_tier_t path_select_destination_tier(const node_t *dest, bool meta_in) {
 }
 
 bool path_udp_should_probe_local(meshlink_handle_t *mesh, const node_t *n, sockaddr_t *out) {
-	sockaddr_t sa;
-	sockaddr_t *dest = out ? out : &sa;
+	path_endpoint_t ep;
 
 	if(!mesh || !n || !n->status.udp_confirmed || n->udp_tier != PATH_TIER_DIRECT_WAN_UDP) {
 		return false;
@@ -1275,7 +1274,15 @@ bool path_udp_should_probe_local(meshlink_handle_t *mesh, const node_t *n, socka
 		return false;
 	}
 
-	return path_pick_local_udp_candidate(mesh, n, dest);
+	if(!path_pick_local_udp_candidate(mesh, n, &ep)) {
+		return false;
+	}
+
+	if(out) {
+		path_copy_sockaddr(out, &ep.address);
+	}
+
+	return true;
 }
 
 void path_schedule_local_udp_probe(meshlink_handle_t *mesh, node_t *n) {
@@ -1286,12 +1293,14 @@ void path_schedule_local_udp_probe(meshlink_handle_t *mesh, node_t *n) {
 	n->udp_local_probe_next = mesh->loop.now.tv_sec + UDP_LOCAL_PROBE_SEC;
 }
 
-bool path_pick_local_udp_candidate(meshlink_handle_t *mesh, const node_t *n, sockaddr_t *out) {
+bool path_pick_local_udp_candidate(meshlink_handle_t *mesh, const node_t *n, path_endpoint_t *out) {
 	(void)mesh;
 
 	if(!n || !out) {
 		return false;
 	}
+
+	memset(out, 0, sizeof *out);
 
 	for(int i = 0; i < MAX_RECENT && n->recent[i].sa.sa_family; i++) {
 		if(!path_is_udp_candidate(n, &n->recent[i], n->recent_source[i], n->recent_cap[i])) {
@@ -1314,13 +1323,17 @@ bool path_pick_local_udp_candidate(meshlink_handle_t *mesh, const node_t *n, soc
 			continue;
 		}
 
-		*out = n->recent[i];
+		path_copy_sockaddr(&out->address, &n->recent[i]);
+		out->source = n->recent_source[i];
+		out->capability = n->recent_cap[i];
 		return true;
 	}
 
 	if(n->catta_address.sa.sa_family != AF_UNSPEC && path_address_is_local(&n->catta_address)
 	                && (n->address.sa.sa_family == AF_UNSPEC || sockaddrcmp(&n->catta_address, &n->address))) {
-		*out = n->catta_address;
+		path_copy_sockaddr(&out->address, &n->catta_address);
+		out->source = ADDR_SRC_DISCOVERY;
+		out->capability = PATH_CAP_BOTH;
 		return true;
 	}
 
@@ -1484,6 +1497,10 @@ void path_note_udp_demoted_reason(meshlink_handle_t *mesh, node_t *n, const char
 	n->maxmtu = MTU;
 	path_log_udp_tier(mesh, n, was, PATH_TIER_NONE, reason);
 
+	if(mesh) {
+		path_scheduler_end_type(mesh, n, PATH_TXN_PMTU_DISCOVERY);
+	}
+
 	if(mesh && n == mesh->backbone_udp.node) {
 		mesh->backbone_udp.confirmed = false;
 		mesh->backbone_udp.liveness_nonce = 0;
@@ -1510,10 +1527,15 @@ void path_note_udp_demoted(meshlink_handle_t *mesh, node_t *n) {
 	path_note_udp_demoted_reason(mesh, n, "reliable retransmit");
 }
 
-bool path_promote_udp_if_better(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *from) {
-	if(!n || !from || !n->status.udp_confirmed) {
+static bool path_promote_udp_endpoint(meshlink_handle_t *mesh, node_t *n, const path_endpoint_t *ep) {
+	const sockaddr_t *from;
+	path_cap_t cap;
+
+	if(!n || !ep || !n->status.udp_confirmed) {
 		return false;
 	}
+
+	from = &ep->address;
 
 	if(n->address.sa.sa_family != AF_UNSPEC && !sockaddrcmp(from, &n->address)) {
 		return false;
@@ -1523,19 +1545,85 @@ bool path_promote_udp_if_better(meshlink_handle_t *mesh, node_t *n, const sockad
 		return false;
 	}
 
-	path_tier_t next = path_udp_tier_for(from, ADDR_SRC_AUTH_DIRECT);
+	path_tier_t next = path_udp_tier_for(from, ep->source);
 
 	if(!path_tier_better(next, n->udp_tier == PATH_TIER_NONE ? PATH_TIER_DIRECT_WAN_UDP : n->udp_tier)
 	                && n->udp_tier != PATH_TIER_NONE) {
 		return false;
 	}
 
+	cap = ep->capability ? ep->capability : path_default_cap(ep->source);
+
 	path_tier_t was = n->udp_tier;
-	update_node_udp_from(mesh, n, from, ADDR_SRC_AUTH_DIRECT);
+	update_node_udp_from(mesh, n, from, ep->source);
 	n->udp_tier = next;
-	path_learn_address_cap(mesh, n, from, ADDR_SRC_AUTH_DIRECT, path_address_is_local(from) ? PATH_CAP_BOTH : PATH_CAP_UDP);
+	n->address_cap = cap;
+	path_learn_address_cap(mesh, n, from, ep->source, cap);
 	path_log_udp_tier(mesh, n, was, next, "local probe reply");
 	return true;
+}
+
+/* Production commit install. Same sockaddr refreshes source and cap. Eligibility
+   is the picker gate, re-checked before any write: UDP candidate, direct or
+   reflexive, and a bound address. That rejects canonical, an EDGE_DIRECT or
+   UNKNOWN NLB-IP hybrid, and a HINT/UNKNOWN blocked by an unresolved hostname
+   canonical. Tier ranking stays on path_promote_udp_endpoint so the devtool
+   wrapper can still refuse a non-improving dest. */
+static bool path_install_committed_udp(meshlink_handle_t *mesh, node_t *n, const path_endpoint_t *ep) {
+	const sockaddr_t *from;
+	path_cap_t cap;
+	path_tier_t next;
+	path_tier_t was;
+
+	if(!mesh || !n || !ep || !n->status.udp_confirmed) {
+		return false;
+	}
+
+	from = &ep->address;
+	cap = ep->capability ? ep->capability : path_default_cap(ep->source);
+
+	if(!path_is_udp_candidate(n, from, ep->source, cap)
+	                || (!path_is_direct_candidate(n, from, ep->source)
+	                    && ep->source != ADDR_SRC_UDP_REFLEXIVE)
+	                || !udp_address_bound(from)) {
+		return false;
+	}
+
+	next = path_udp_tier_for(from, ep->source);
+	was = n->udp_tier;
+	update_node_udp_from(mesh, n, from, ep->source);
+	n->address_source = ep->source;
+	n->address_cap = cap;
+	n->udp_tier = next;
+	path_learn_address_cap(mesh, n, from, ep->source, cap);
+	path_log_udp_tier(mesh, n, was, next, "candidate commit");
+	return true;
+}
+
+bool path_promote_udp_if_better(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *from) {
+	path_endpoint_t ep;
+	int i;
+
+	if(!from) {
+		return false;
+	}
+
+	memset(&ep, 0, sizeof ep);
+	path_copy_sockaddr(&ep.address, from);
+	ep.source = ADDR_SRC_AUTH_DIRECT;
+	ep.capability = path_default_cap(ADDR_SRC_AUTH_DIRECT);
+
+	if(n) {
+		for(i = 0; i < MAX_RECENT && n->recent[i].sa.sa_family; i++) {
+			if(!sockaddrcmp(&n->recent[i], from)) {
+				ep.source = n->recent_source[i];
+				ep.capability = n->recent_cap[i];
+				break;
+			}
+		}
+	}
+
+	return path_promote_udp_endpoint(mesh, n, &ep);
 }
 
 static path_tier_t path_route_to_tier(const data_route_t *r) {
@@ -2535,6 +2623,19 @@ void path_channel_release(meshlink_handle_t *mesh, node_t *peer) {
 	}
 }
 
+static void path_log_validation_source(meshlink_handle_t *mesh, const node_t *n, const sockaddr_t *sa,
+                                       const char *action, const char *detail, address_source_t src) {
+	char buf[160];
+
+	if(detail && detail[0]) {
+		snprintf(buf, sizeof buf, "%s source=%s", detail, address_source_name(src));
+	} else {
+		snprintf(buf, sizeof buf, "source=%s", address_source_name(src));
+	}
+
+	path_log_validation(mesh, n, sa, action, buf);
+}
+
 void path_consider_promotion(meshlink_handle_t *mesh, node_t *n, path_promotion_reason_t reason) {
 	if(!mesh || !n || n->mesh != mesh) {
 		return;
@@ -2562,17 +2663,17 @@ void path_consider_promotion(meshlink_handle_t *mesh, node_t *n, path_promotion_
 		return;
 	}
 
-	sockaddr_t better;
+	path_endpoint_t better;
 
 	if(!path_pick_local_udp_candidate(mesh, n, &better)) {
 		return;
 	}
 
-	if(path_retry_is_endpoint(n, &better)
+	if(path_retry_is_endpoint(n, &better.address)
 	                && path_cooldown_outstanding(mesh, n)) {
 		address_source_t src = path_promotion_observation_source(reason);
 
-		if(src != ADDR_SRC_UNKNOWN && path_retry_epoch_is_new(mesh, n, &better, src)) {
+		if(src != ADDR_SRC_UNKNOWN && path_retry_epoch_is_new(mesh, n, &better.address, src)) {
 			path_candidate_clear_cooldown_from(mesh, n, src);
 		}
 
@@ -2585,7 +2686,7 @@ void path_consider_promotion(meshlink_handle_t *mesh, node_t *n, path_promotion_
 
 	/* Retrying the endpoint that already failed keeps its place on the
 	   escalation ladder. A different endpoint starts with a clean record. */
-	if(n->candidate_retry.endpoint.sa.sa_family && sockaddrcmp(&n->candidate_retry.endpoint, &better)) {
+	if(n->candidate_retry.endpoint.sa.sa_family && sockaddrcmp(&n->candidate_retry.endpoint, &better.address)) {
 		memset(&n->candidate_retry, 0, sizeof n->candidate_retry);
 	}
 
@@ -2596,14 +2697,16 @@ void path_consider_promotion(meshlink_handle_t *mesh, node_t *n, path_promotion_
 	memset(c, 0, sizeof *c);
 	c->active = true;
 	c->kind = DATA_ROUTE_DIRECT_UDP;
-	c->endpoint = better;
-	c->source = ADDR_SRC_DISCOVERY;
-	c->local = path_address_is_local(&better);
+	path_copy_sockaddr(&c->endpoint, &better.address);
+	c->source = better.source;
+	c->capability = better.capability;
+	c->local = path_address_is_local(&better.address);
 	c->nonce = path_fresh_nonce();
 	c->deadline = mesh->loop.now;
 	c->deadline.tv_sec += PATH_PROMOTION_DEADLINE_SEC;
 
-	path_log_validation(mesh, n, &better, "candidate-start", path_promotion_reason_name(reason));
+	path_log_validation_source(mesh, n, &better.address, "candidate-start",
+	                           path_promotion_reason_name(reason), better.source);
 	path_promotion_timer_arm(mesh, n, &(struct timespec) {
 		0, 0
 	});
@@ -2743,8 +2846,8 @@ void path_consider_route_promotion(meshlink_handle_t *mesh, node_t *n, path_rout
 	path_copy_sockaddr(&c->endpoint, &proposed.udp_endpoint);
 	c->successful_rounds = PATH_PROMOTION_ROUNDS;
 	c->first_success = mesh->loop.now;
-	path_log_validation(mesh, n, proposed.udp_endpoint.sa.sa_family ? &proposed.udp_endpoint : NULL,
-	                    "candidate-start", path_route_promotion_name(which));
+	path_log_validation_source(mesh, n, proposed.udp_endpoint.sa.sa_family ? &proposed.udp_endpoint : NULL,
+	                           "candidate-start", path_route_promotion_name(which), c->source);
 }
 
 static void path_consider_demanded_route_promotions(meshlink_handle_t *mesh, path_route_promotion_t which) {
@@ -2852,17 +2955,35 @@ void path_commit_candidate(meshlink_handle_t *mesh, node_t *n) {
 	}
 
 	if(target.kind == DATA_ROUTE_DIRECT_UDP) {
+		path_endpoint_t ep;
+		address_source_t src = c->source;
+		path_cap_t cap = c->capability;
+
+		memset(&ep, 0, sizeof ep);
+		path_copy_sockaddr(&ep.address, &endpoint);
+		ep.source = src;
+		ep.capability = cap;
+
+		if(!path_install_committed_udp(mesh, n, &ep)) {
+			path_log_validation_source(mesh, n, &endpoint, "candidate-dropped", "endpoint install rejected", src);
+			path_candidate_discard(mesh, n);
+			return;
+		}
+
 		path_retry_clear_if_endpoint(n, &target.udp_endpoint);
 		path_candidate_discard(mesh, n);
-		path_log_validation(mesh, n, &endpoint, "candidate-promoted", "validated");
-		(void)path_promote_udp_if_better(mesh, n, &endpoint);
+		path_log_validation_source(mesh, n, &endpoint, "candidate-promoted", "validated", src);
 		path_commit_active_route(n, &target, &mesh->loop.now);
 		return;
 	}
 
-	path_candidate_discard(mesh, n);
-	path_log_validation(mesh, n, endpoint.sa.sa_family ? &endpoint : NULL, "candidate-promoted", "validated");
-	path_commit_active_route(n, &target, &mesh->loop.now);
+	{
+		address_source_t src = c->source;
+
+		path_candidate_discard(mesh, n);
+		path_log_validation_source(mesh, n, endpoint.sa.sa_family ? &endpoint : NULL, "candidate-promoted", "validated", src);
+		path_commit_active_route(n, &target, &mesh->loop.now);
+	}
 }
 
 static bool path_suspect_begin_epoch(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *endpoint);
