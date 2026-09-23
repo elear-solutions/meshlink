@@ -273,6 +273,11 @@ static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 
 		admit = path_mtu_emit(mesh, n, txn, len, i == 3, prio);
 
+		if(!path_scheduler_has_transaction(mesh, n, PATH_TXN_PMTU_DISCOVERY)) {
+			txn = NULL;
+			break;
+		}
+
 		if(admit == PATH_SCHED_SENT) {
 			sent++;
 		} else if(prio == PATH_TX_PMTU_INCREASE) {
