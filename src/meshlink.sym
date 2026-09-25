@@ -5,6 +5,7 @@ devtool_choose_udp_address_advance
 devtool_confirm_udp_from
 devtool_promote_udp_if_better
 devtool_plant_recent_address
+devtool_plant_meta_hybrid_address
 devtool_clear_relay_reports
 devtool_export_json_all_edges_state
 devtool_fail_relay_realloc
@@ -38,6 +39,7 @@ devtool_self_initiates_meta
 devtool_set_node_devclass
 devtool_set_allow_peer_bootstrap
 devtool_learn_discovery_address
+devtool_clear_lan_discovery_presence
 devtool_lan_intent_count
 devtool_local_adjacency_count
 devtool_try_ack_replace

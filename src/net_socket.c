@@ -418,6 +418,10 @@ static void outgoing_startup_timeout(event_loop_t *loop, void *data) {
 }
 
 void outgoing_on_canonical_resolved(meshlink_handle_t *mesh, node_t *n, struct addrinfo *ai, int err, bool usable, char *host, char *serv) {
+	bool logged_fail = false;
+	bool stale_resolve = false;
+
+	/* Process every waiter for n before freeing the shared resolve result. */
 	for list_each(outgoing_t, outgoing, mesh->outgoings) {
 		if(outgoing->node != n) {
 			continue;
@@ -426,14 +430,7 @@ void outgoing_on_canonical_resolved(meshlink_handle_t *mesh, node_t *n, struct a
 		if(outgoing->startup_waiting_dns) {
 			if(outgoing->pending && outgoing->pending->status.active) {
 				outgoing_clear_pending(mesh, outgoing, false);
-
-				if(ai) {
-					freeaddrinfo(ai);
-				}
-
-				free(host);
-				free(serv);
-				return;
+				continue;
 			}
 
 			if(outgoing->pending) {
@@ -454,14 +451,7 @@ void outgoing_on_canonical_resolved(meshlink_handle_t *mesh, node_t *n, struct a
 			}
 
 			do_outgoing_connection(mesh, outgoing);
-			free(host);
-			free(serv);
-
-			if(ai) {
-				freeaddrinfo(ai);
-			}
-
-			return;
+			continue;
 		}
 
 		if(outgoing->state != OUTGOING_CANONICAL_RESOLVE) {
@@ -469,45 +459,37 @@ void outgoing_on_canonical_resolved(meshlink_handle_t *mesh, node_t *n, struct a
 		}
 
 		if(usable) {
-			if(ai) {
-				freeaddrinfo(ai);
-			}
-
 			outgoing->ai = path_canonical_addrinfo(n);
 			outgoing->aip = NULL;
 			outgoing->ai_is_getaddrinfo = false;
 			outgoing->state = OUTGOING_CANONICAL;
 			do_outgoing_connection(mesh, outgoing);
-			free(host);
-			free(serv);
-			return;
-		}
-
-		if(ai) {
-			freeaddrinfo(ai);
-			ai = NULL;
+			continue;
 		}
 
 		if(!path_canonical_host_matches(n, host, serv) && path_canonical_is_hostname(n)) {
-			path_request_canonical_resolve(mesh, n);
-			free(host);
-			free(serv);
-			return;
+			stale_resolve = true;
+			continue;
 		}
 
-		if(err) {
-			logger(mesh, MESHLINK_WARNING, "Canonical resolve for %s failed: %s%s", n->name, strerror(err),
-			       outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED ? "" : "; trying indirect addresses");
-		} else {
-			logger(mesh, MESHLINK_WARNING, "Canonical resolve for %s failed%s", n->name,
-			       outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED ? "" : "; trying indirect addresses");
+		if(!logged_fail) {
+			if(err) {
+				logger(mesh, MESHLINK_WARNING, "Canonical resolve for %s failed: %s%s", n->name, strerror(err),
+				       outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED ? "" : "; trying indirect addresses");
+			} else {
+				logger(mesh, MESHLINK_WARNING, "Canonical resolve for %s failed%s", n->name,
+				       outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED ? "" : "; trying indirect addresses");
+			}
+
+			logged_fail = true;
 		}
 
 		outgoing_advance_past_canonical(outgoing);
 		do_outgoing_connection(mesh, outgoing);
-		free(host);
-		free(serv);
-		return;
+	}
+
+	if(stale_resolve) {
+		path_request_canonical_resolve(mesh, n);
 	}
 
 	if(ai) {

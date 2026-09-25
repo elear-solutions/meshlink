@@ -238,6 +238,66 @@ static void test_canonical_change_resanitizes(void) {
 	assert(meshlink_destroy("hybrid_udp_resan_conf.2"));
 }
 
+/* META startup walk must not dial a planted NLB-IP/NMN-port UNKNOWN hybrid. */
+static void test_meta_startup_skips_hybrid(void) {
+	printf("\n=== hybrid-udp-probe: META startup does not dial planted UNKNOWN hybrid ===\n");
+
+	assert(meshlink_destroy("hybrid_udp_meta_conf.1"));
+	assert(meshlink_destroy("hybrid_udp_meta_conf.2"));
+
+	meshlink_handle_t *a = meshlink_open("hybrid_udp_meta_conf.1", "a", "hybrid-udp-meta", DEV_CLASS_PORTABLE);
+	meshlink_handle_t *b = meshlink_open("hybrid_udp_meta_conf.2", "b", "hybrid-udp-meta", DEV_CLASS_BACKBONE);
+	assert(a && b);
+	meshlink_enable_discovery(a, false);
+	meshlink_enable_discovery(b, false);
+
+	int b_port = meshlink_get_port(b);
+	assert(b_port > 0);
+	char port_str[16];
+	snprintf(port_str, sizeof port_str, "%d", b_port);
+
+	join_meshlink_peer(b, a);
+	meshlink_node_t *node_b = meshlink_get_node(a, "b");
+	assert(node_b);
+	forget_addresses(a, node_b);
+	assert(meshlink_set_canonical_address(a, node_b, "127.0.0.1", port_str));
+
+	assert(meshlink_start(b));
+	assert(meshlink_start(a));
+	assert_after(meshlink_get_node_reachability(a, node_b, NULL, NULL), 15);
+
+	meshlink_stop(b);
+	assert_after(!meshlink_get_node_reachability(a, node_b, NULL, NULL), 10);
+
+	/* Live plant after load so sanitize-on-open cannot strip it first. META-capable
+	   UNKNOWN hybrid must still be skipped by the reconnect walk. */
+	struct sockaddr_in hybrid = ipv4("127.0.0.1", 23349);
+	assert(devtool_plant_meta_hybrid_address(a, node_b, (const struct sockaddr *)&hybrid));
+
+	size_t mark = log_mark();
+	assert(meshlink_start(b));
+	hint_address(a, node_b, "127.0.0.1", b_port);
+	assert_after(meshlink_get_node_reachability(a, node_b, NULL, NULL), 15);
+
+	char hybrid_needle[128];
+	char canonical_needle[128];
+	snprintf(hybrid_needle, sizeof hybrid_needle,
+	         "a: Trying to connect to b at 127.0.0.1 port 23349");
+	snprintf(canonical_needle, sizeof canonical_needle,
+	         "a: Trying to connect to b at 127.0.0.1 port %d", b_port);
+	assert(log_find(mark, hybrid_needle) < 0);
+	assert(log_find(mark, canonical_needle) >= 0);
+
+	printf("hybrid-udp-probe T6 ok: META walk skipped planted hybrid\n");
+
+	meshlink_stop(a);
+	meshlink_stop(b);
+	meshlink_close(a);
+	meshlink_close(b);
+	assert(meshlink_destroy("hybrid_udp_meta_conf.1"));
+	assert(meshlink_destroy("hybrid_udp_meta_conf.2"));
+}
+
 int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, capture_log_cb);
 
@@ -246,6 +306,7 @@ int main(void) {
 	test_empty_recent_raw_edge();
 	test_persist_hybrid_cleaned();
 	test_canonical_change_resanitizes();
+	test_meta_startup_skips_hybrid();
 
 	free_captured_log();
 	return 0;

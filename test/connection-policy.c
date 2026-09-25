@@ -13,6 +13,7 @@
 #include "meshlink.h"
 #include "devtools.h"
 #include "utils.h"
+#include "connection_policy.h"
 
 static struct sync_flag peer_up;
 
@@ -1059,6 +1060,53 @@ static void test_alternating_duplicate_discovery_keeps_retry(void) {
 	destroy_conf("connection_policy_t20_conf.2");
 }
 
+/* Same-epoch local META drop arms LAN_AUTH_DIRECT_GRACE_SEC; without fresh
+   DISCOVERY presence the overlay stays eligible only until that grace expires. */
+static void test_lan_auth_direct_grace_after_local_drop(void) {
+	destroy_conf("connection_policy_t21_conf.1");
+	destroy_conf("connection_policy_t21_conf.2");
+	destroy_conf("connection_policy_t21_conf.3");
+
+	meshlink_handle_t *bb = meshlink_open("connection_policy_t21_conf.1", "aaa", "connection-policy", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *cam1 = meshlink_open("connection_policy_t21_conf.2", "bbb", "connection-policy", DEV_CLASS_PORTABLE);
+	meshlink_handle_t *cam2 = meshlink_open("connection_policy_t21_conf.3", "ccc", "connection-policy", DEV_CLASS_STATIONARY);
+	assert(bb && cam1 && cam2);
+	meshlink_enable_discovery(bb, false);
+	meshlink_enable_discovery(cam1, false);
+	meshlink_enable_discovery(cam2, false);
+
+	join_meshlink_peer(bb, cam1);
+	join_meshlink_peer(bb, cam2);
+	exchange_meshlink_pair(cam1, cam2);
+	assert(meshlink_start(bb));
+	assert(meshlink_start(cam1));
+	assert(meshlink_start(cam2));
+	assert_after(node_meta_connected(cam1, "aaa"), 15);
+	plant_lan_discovery(cam1, cam2);
+	plant_lan_discovery(cam2, cam1);
+	assert_after(devtool_lan_intent_count(cam1) == 1 && node_meta_connected(cam1, "ccc"), 15);
+
+	meshlink_stop(cam2);
+	assert_after(!node_meta_connected(cam1, "ccc"), 5);
+
+	meshlink_node_t *peer = meshlink_get_node(cam1, "ccc");
+	assert(peer);
+	/* Drop left AUTH_DIRECT in recent[] and armed grace. Strip DISCOVERY
+	   presence so eligibility is grace-only (ADR 0007). */
+	devtool_clear_lan_discovery_presence(cam1, peer);
+	assert_after(devtool_lan_intent_count(cam1) == 1, 5);
+
+	sleep(LAN_AUTH_DIRECT_GRACE_SEC + 2);
+	assert_after(devtool_lan_intent_count(cam1) == 0, 5);
+
+	meshlink_close(bb);
+	meshlink_close(cam1);
+	meshlink_close(cam2);
+	destroy_conf("connection_policy_t21_conf.1");
+	destroy_conf("connection_policy_t21_conf.2");
+	destroy_conf("connection_policy_t21_conf.3");
+}
+
 int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, capture_log_cb);
 	test_backbone_initiates_nothing();
@@ -1081,6 +1129,7 @@ int main(void) {
 	test_unknown_class_not_lan_eligible();
 	test_epoch_retires_live_lan_adjacency();
 	test_alternating_duplicate_discovery_keeps_retry();
+	test_lan_auth_direct_grace_after_local_drop();
 	free_captured_log();
 	return 0;
 }

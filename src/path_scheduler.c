@@ -293,7 +293,7 @@ static void path_scheduler_arm(meshlink_handle_t *mesh, const struct timespec *d
 		timeout_set(&mesh->loop, &mesh->probe_scheduler, &when);
 	}
 
-	if(mesh->datafromapp.cb) {
+	if(mesh->threadstarted && mesh->loop.pipefd[1] != -1 && !pthread_equal(mesh->thread, pthread_self())) {
 		signal_trigger(&mesh->loop, &mesh->datafromapp);
 	}
 }

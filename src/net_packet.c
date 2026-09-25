@@ -313,6 +313,12 @@ void send_mtu_probe(meshlink_handle_t *mesh, node_t *n) {
 		1, 0
 	});
 	send_mtu_probe_handler(&mesh->loop, n);
+
+	/* channel_demand_hold can arm from an app thread; wake the mesh loop so
+	   the new timeout is not stuck until the next ping (~1s). */
+	if(mesh->threadstarted && mesh->loop.pipefd[1] != -1 && !pthread_equal(mesh->thread, pthread_self())) {
+		signal_trigger(&mesh->loop, &mesh->datafromapp);
+	}
 }
 
 static void send_probe_to(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet, const sockaddr_t *destination) {

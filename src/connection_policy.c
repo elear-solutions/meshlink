@@ -984,10 +984,42 @@ void connection_policy_bind_connection(meshlink_handle_t *mesh, connection_t *c)
 	c->outgoing = intent;
 }
 
-static bool backbone_outgoing_in_flight(const outgoing_t *outgoing) {
-	return outgoing->pending
-	       || outgoing->ev.cb
-	       || (outgoing->node && outgoing->node->connection && outgoing->node->connection->status.active);
+static bool backbone_outgoing_in_flight(const meshlink_handle_t *mesh, const outgoing_t *outgoing) {
+	const node_t *n = outgoing->node;
+
+	if(outgoing->pending || outgoing->ev.cb) {
+		return true;
+	}
+
+	if(!n) {
+		return false;
+	}
+
+	if(n->connection && n->connection->status.active) {
+		return true;
+	}
+
+	/* Mid-ACK handover: n->connection is NULL while the upgrade probe and/or
+	   drain_only loser are still in mesh->connections — do not dial again. */
+	if(n->upgrade_probe) {
+		return true;
+	}
+
+	if(!mesh || !mesh->connections || !n->name) {
+		return false;
+	}
+
+	for list_each(connection_t, c, mesh->connections) {
+		if(c->node == n) {
+			return true;
+		}
+
+		if(c->name && !strcmp(c->name, n->name)) {
+			return true;
+		}
+	}
+
+	return false;
 }
 
 static void ensure_backbone_outgoing(meshlink_handle_t *mesh, node_t *bb, bool may_dial) {
@@ -996,7 +1028,7 @@ static void ensure_backbone_outgoing(meshlink_handle_t *mesh, node_t *bb, bool m
 	if(existing) {
 		existing->purpose = META_PURPOSE_BACKBONE_REQUIRED;
 
-		if(may_dial && !backbone_outgoing_in_flight(existing)) {
+		if(may_dial && !backbone_outgoing_in_flight(mesh, existing)) {
 			setup_outgoing_connection(mesh, existing);
 		}
 
@@ -1199,19 +1231,17 @@ static bool admit_incoming_eval(meshlink_handle_t *mesh, connection_t *c, node_t
 
 	if(desired_peer || degree < META_LAN_RESILIENCE_MAX) {
 		if(desired_peer && degree >= META_LAN_RESILIENCE_MAX) {
-			node_t *extra;
-
-			if(!apply_side_effects) {
-				return true;
-			}
-
-			extra = least_preferred_extra(mesh, desired, nd);
+			/* Fail closed for may_accept too: a true here with no victim
+			   lets replace run and then admit fail (ADR 0007). */
+			node_t *extra = least_preferred_extra(mesh, desired, nd);
 
 			if(!extra) {
 				return false;
 			}
 
-			retire_local_adjacency(mesh, extra);
+			if(apply_side_effects) {
+				retire_local_adjacency(mesh, extra);
+			}
 		}
 
 		if(apply_side_effects) {

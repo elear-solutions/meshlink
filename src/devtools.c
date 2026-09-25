@@ -756,6 +756,22 @@ bool devtool_learn_discovery_address(meshlink_handle_t *mesh, meshlink_node_t *n
 	return true;
 }
 
+void devtool_clear_lan_discovery_presence(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	node_t *n = (node_t *)node;
+	n->lan_presence.last_discovered_at = 0;
+	n->lan_presence.network_epoch = 0;
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
 unsigned devtool_lan_intent_count(meshlink_handle_t *mesh) {
 	unsigned count = 0;
 
@@ -1142,6 +1158,34 @@ bool devtool_plant_recent_address(meshlink_handle_t *mesh, meshlink_node_t *node
 		pthread_mutex_unlock(&mesh->mutex);
 		return false;
 	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return true;
+}
+
+bool devtool_plant_meta_hybrid_address(meshlink_handle_t *mesh, meshlink_node_t *node, const struct sockaddr *addr) {
+	if(!mesh || !node || !addr) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	node_t *n = (node_t *)node;
+	sockaddr_t sa;
+
+	path_copy_sockaddr(&sa, (const sockaddr_t *)addr);
+
+	if(sa.sa.sa_family == AF_UNSPEC) {
+		meshlink_errno = MESHLINK_EINVAL;
+		pthread_mutex_unlock(&mesh->mutex);
+		return false;
+	}
+
+	path_plant_recent(n, &sa);
+	n->recent_cap[0] = PATH_CAP_BOTH;
 
 	pthread_mutex_unlock(&mesh->mutex);
 	return true;

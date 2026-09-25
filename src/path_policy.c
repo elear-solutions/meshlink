@@ -285,11 +285,14 @@ bool path_is_direct_candidate(const node_t *n, const sockaddr_t *sa, address_sou
 		return false;
 	}
 
-	/* HINT/UNKNOWN cannot stand in for a hostname canonical that has not been
-	   tried yet (or is still in flight). After a resolve failure, backoff is
-	   set and a later application hint is allowed to fall through. AUTH_DIRECT
-	   and DISCOVERY stay eligible so a real local peer is not blocked. */
-	if((src == ADDR_SRC_UNKNOWN || src == ADDR_SRC_HINT)
+	/* HINT/UNKNOWN/EDGE_DIRECT cannot stand in for a hostname canonical that
+	   has not been tried yet (or is still in flight). EDGE must wait too: an
+	   unresolved hostname means hybrid NLB-IP+other-port cannot be detected
+	   yet and would burn the 250ms startup budget (ADR 0003). After a resolve
+	   failure, backoff is set and a later application hint is allowed to fall
+	   through. AUTH_DIRECT and DISCOVERY stay eligible so a real local peer is
+	   not blocked. */
+	if((src == ADDR_SRC_UNKNOWN || src == ADDR_SRC_HINT || src == ADDR_SRC_EDGE_DIRECT)
 	                && path_canonical_is_hostname(n)
 	                && n->canonical_sa_count == 0
 	                && n->canonical_resolve_backoff == 0) {
@@ -1893,7 +1896,7 @@ static void path_backbone_udp_arm(meshlink_handle_t *mesh, int sec, long nsec) {
 		timeout_set(&mesh->loop, &mesh->backbone_udp.timer, &when);
 	}
 
-	if(mesh->datafromapp.cb) {
+	if(mesh->threadstarted && mesh->loop.pipefd[1] != -1 && !pthread_equal(mesh->thread, pthread_self())) {
 		signal_trigger(&mesh->loop, &mesh->datafromapp);
 	}
 }
@@ -2246,7 +2249,7 @@ static void path_promotion_timer_arm(meshlink_handle_t *mesh, node_t *n, const s
 		timeout_set(&mesh->loop, &n->promotion_timer, &when);
 	}
 
-	if(mesh->datafromapp.cb) {
+	if(mesh->threadstarted && mesh->loop.pipefd[1] != -1 && !pthread_equal(mesh->thread, pthread_self())) {
 		signal_trigger(&mesh->loop, &mesh->datafromapp);
 	}
 }
@@ -3037,7 +3040,7 @@ static void path_suspect_timer_arm(meshlink_handle_t *mesh, node_t *n, const str
 		timeout_set(&mesh->loop, &n->suspect_validation.timer, &when);
 	}
 
-	if(mesh->datafromapp.cb) {
+	if(mesh->threadstarted && mesh->loop.pipefd[1] != -1 && !pthread_equal(mesh->thread, pthread_self())) {
 		signal_trigger(&mesh->loop, &mesh->datafromapp);
 	}
 }

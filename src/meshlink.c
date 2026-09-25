@@ -5265,7 +5265,14 @@ size_t meshlink_channel_get_sendq(meshlink_handle_t *mesh, meshlink_channel_t *c
 		return -1;
 	}
 
-	return utcp_get_sendq(channel->c);
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	size_t sendq = utcp_get_sendq(channel->c);
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return sendq;
 }
 
 size_t meshlink_channel_get_recvq(meshlink_handle_t *mesh, meshlink_channel_t *channel) {
@@ -5274,7 +5281,14 @@ size_t meshlink_channel_get_recvq(meshlink_handle_t *mesh, meshlink_channel_t *c
 		return -1;
 	}
 
-	return utcp_get_recvq(channel->c);
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	size_t recvq = utcp_get_recvq(channel->c);
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return recvq;
 }
 
 /* The fixed payload budget for this channel's destination. It is chosen when
@@ -5397,14 +5411,22 @@ void meshlink_enable_discovery(meshlink_handle_t *mesh, bool enable) {
 		if(enable) {
 			discovery_start(mesh);
 		} else {
-			/* The reachability thread takes mesh->mutex. Joining it
-			   while this lock is held deadlocks. */
+			/* Clear enabled before dropping the lock so a concurrent
+			   enable(true) does not early-out on a stale true and lose
+			   the re-enable after we finish stopping. The reachability
+			   thread takes mesh->mutex; joining it while this lock is
+			   held deadlocks. */
+			mesh->discovery.enabled = false;
 			pthread_mutex_unlock(&mesh->mutex);
 			discovery_stop(mesh);
 
 			if(pthread_mutex_lock(&mesh->mutex) != 0) {
 				abort();
 			}
+
+			/* Concurrent enable(true) may have started discovery and set
+			   enabled while we were unlocked; leave that result alone. */
+			goto end;
 		}
 	}
 

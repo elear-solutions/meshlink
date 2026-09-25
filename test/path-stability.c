@@ -993,6 +993,84 @@ static void test_relay_carrier_is_backbone(void) {
 	printf("path-stability T7b ok: relay first hop is foo (configured backbone)\n");
 }
 
+/* Finding 10 / ADR 0005: live meshlink_send must not relay via a conflict_backbone hop. */
+static void test_conflict_backbone_skips_relay_hop(void) {
+	printf("\n=== path-stability T7c: conflict_backbone skips relay hop ===\n");
+
+	meshlink_handle_t *bb, *e1, *e2;
+	stability_open_trio("path_stability_t7c_conf", "path-stability-7c", &bb, &e1, &e2);
+
+	init_sync_flag(&received);
+	meshlink_set_receive_cb(e2, packet_receive_cb);
+
+	assert_after(meshlink_get_node(e1, "baz") && meshlink_get_node(e2, "bar"), 15);
+	meshlink_node_t *e1_e2 = meshlink_get_node(e1, "baz");
+	meshlink_node_t *e1_bb = meshlink_get_node(e1, "foo");
+	assert(e1_e2 && e1_bb);
+	assert_after(node_is_reachable(e1, e1_e2), 15);
+	assert_after(node_is_keyed(e1, e1_bb), 20);
+	assert_after(udp_status_working(e1, e1_bb), 30);
+
+	for(int i = 0; i < 30; i++) {
+		assert(meshlink_send(e1, e1_e2, "Hello", 5));
+
+		if(wait_sync_flag(&received, 1)) {
+			break;
+		}
+	}
+
+	assert(wait_sync_flag(&received, 15));
+
+	devtool_node_status_t st = snapshot(e1, e1_e2);
+	assert(st.active_route_kind == ROUTE_RELAY);
+	assert(st.active_route_first_hop);
+	assert(!strcmp(st.active_route_first_hop, "foo"));
+	devtool_free_node_status(&st);
+
+	/* Wrong-class stored backbone → conflict_backbone. Tick drops the reserved
+	   META; any later successful send target must not use foo as relay hop. */
+	devtool_set_node_devclass(e1, e1_bb, DEV_CLASS_STATIONARY);
+	assert(devtool_node_has_conflict_backbone(e1, e1_bb));
+
+	int chosen = ROUTE_NONE;
+	bool ok = devtool_apply_send_target(e1, e1_e2, &chosen);
+
+	if(ok) {
+		st = snapshot(e1, e1_e2);
+		assert(chosen != ROUTE_RELAY || !st.active_route_first_hop
+		                || strcmp(st.active_route_first_hop, "foo"));
+		assert(st.active_route_kind != ROUTE_RELAY || !st.active_route_first_hop
+		                || strcmp(st.active_route_first_hop, "foo"));
+		devtool_free_node_status(&st);
+	}
+
+	init_sync_flag(&received);
+	bool delivered = false;
+
+	for(int i = 0; i < 15; i++) {
+		if(meshlink_send(e1, e1_e2, "Nope", 4) && wait_sync_flag(&received, 1)) {
+			delivered = true;
+			break;
+		}
+
+		usleep(100000);
+	}
+
+	if(delivered) {
+		st = snapshot(e1, e1_e2);
+		assert(st.active_route_kind != ROUTE_RELAY || !st.active_route_first_hop
+		                || strcmp(st.active_route_first_hop, "foo"));
+		devtool_free_node_status(&st);
+	} else {
+		/* No alternate carrier after the conflicted hop is skipped — send fails
+		   rather than continuing to use foo. */
+		assert(!ok || chosen != ROUTE_RELAY);
+	}
+
+	stability_close_trio("path_stability_t7c_conf", bb, e1, e2);
+	printf("path-stability T7c ok: conflict_backbone hop is not used for relay\n");
+}
+
 /* --- T8: fallback records do not clear suspicion ---------------------------- */
 
 static void test_fallback_keeps_suspect(void) {
@@ -1856,6 +1934,7 @@ int main(void) {
 	test_idle_peer_is_not_probed();
 	test_recorded_route();
 	test_relay_carrier_is_backbone();
+	test_conflict_backbone_skips_relay_hop();
 	test_local_peer_meta_route();
 
 	/* Netns setup calls exit(77). Skip only these cases so the rest of the binary still runs. */

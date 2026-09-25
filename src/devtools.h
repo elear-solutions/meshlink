@@ -231,6 +231,12 @@ void devtool_set_allow_peer_bootstrap(meshlink_handle_t *mesh, bool allow);
 bool devtool_learn_discovery_address(meshlink_handle_t *mesh, meshlink_node_t *node,
                                      const struct sockaddr *addr);
 
+/// Clear runtime DISCOVERY presence for a peer without touching recent[] or AUTH_DIRECT grace.
+/** Setup only: isolates LAN_AUTH_DIRECT_GRACE_SEC after a live local META drop.
+ *  Does not advance the network epoch and does not clear lan_auth_direct_until.
+ */
+void devtool_clear_lan_discovery_presence(meshlink_handle_t *mesh, meshlink_node_t *node);
+
 /// Number of LAN_RESILIENCE outgoings.
 unsigned devtool_lan_intent_count(meshlink_handle_t *mesh);
 
@@ -441,6 +447,12 @@ void devtool_force_meta(struct meshlink_handle *mesh, struct meshlink_node *node
  *  Marks the node dirty and writes its host config.
  */
 bool devtool_plant_recent_address(struct meshlink_handle *mesh, struct meshlink_node *node, const struct sockaddr *addr);
+
+/// Plant UNKNOWN hybrid with META+UDP caps without sanitizing (live META-walk tests).
+/** Unlike plant_recent_address (UDP-only), this leaves a META-capable hybrid in
+ *  recent[] so the outgoing walk can prove it skips the address.
+ */
+bool devtool_plant_meta_hybrid_address(struct meshlink_handle *mesh, struct meshlink_node *node, const struct sockaddr *addr);
 
 /// Force a confirmed UDP dest and tier without waiting for a probe reply.
 bool devtool_confirm_udp_from(struct meshlink_handle *mesh, struct meshlink_node *node, const struct sockaddr *addr, int tier);

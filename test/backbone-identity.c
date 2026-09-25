@@ -178,6 +178,60 @@ static void rewrite_invitation_first_host(const char *path, const void *blob, si
 	free(outbuf);
 }
 
+static void rewrite_invitation_version(const char *path, uint32_t version) {
+	size_t len;
+	uint8_t *buf = read_file(path, &len);
+	packmsg_input_t in = {buf, len};
+	uint8_t *outbuf = malloc(len + 64);
+	packmsg_output_t out;
+	char *name;
+	char *submesh;
+	int32_t devclass;
+	char *backbone;
+	uint32_t count;
+	uint32_t i;
+
+	assert(outbuf);
+	out.ptr = outbuf;
+	out.len = (ptrdiff_t)(len + 64);
+
+	(void)packmsg_get_uint32(&in);
+	name = packmsg_get_str_dup(&in);
+	submesh = packmsg_get_str_dup(&in);
+	devclass = packmsg_get_int32(&in);
+	backbone = packmsg_get_str_dup(&in);
+	count = packmsg_get_array(&in);
+
+	assert(packmsg_input_ok(&in));
+	assert(name && submesh && backbone);
+	assert(count >= 1);
+
+	packmsg_add_uint32(&out, version);
+	packmsg_add_str(&out, name);
+	packmsg_add_str(&out, submesh);
+	packmsg_add_int32(&out, devclass);
+	packmsg_add_str(&out, backbone);
+	packmsg_add_array(&out, count);
+
+	for(i = 0; i < count; i++) {
+		const void *data;
+		uint32_t data_len = packmsg_get_bin_raw(&in, &data);
+
+		assert(data && data_len);
+		packmsg_add_bin(&out, data, data_len);
+	}
+
+	assert(packmsg_done(&in));
+	assert(packmsg_output_ok(&out));
+	write_file(path, outbuf, packmsg_output_size(&out, outbuf));
+
+	free(name);
+	free(submesh);
+	free(backbone);
+	free(buf);
+	free(outbuf);
+}
+
 static void assert_joiner_untouched(meshlink_handle_t *b, const char *confbase, const char *name, const char *fp, bool had_sidecar) {
 	char host[256];
 	char conf[256];
@@ -738,6 +792,38 @@ static void test_join_malformed_first_host(void) {
 	assert(meshlink_destroy("backbone_identity_t20_conf.2"));
 }
 
+static void test_join_rejects_invitation_v2(void) {
+	assert(meshlink_destroy("backbone_identity_t20b_conf.1"));
+	assert(meshlink_destroy("backbone_identity_t20b_conf.2"));
+
+	meshlink_handle_t *a = meshlink_open("backbone_identity_t20b_conf.1", "aaa", "backbone-identity", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *b = meshlink_open("backbone_identity_t20b_conf.2", "bbb", "backbone-identity", DEV_CLASS_PORTABLE);
+	assert(a && b);
+	meshlink_enable_discovery(a, false);
+	meshlink_enable_discovery(b, false);
+
+	assert(meshlink_start(a));
+	char *url = meshlink_invite(a, NULL, "bbb");
+	assert(url);
+	char *inv = find_invitation_file("backbone_identity_t20b_conf.1");
+	rewrite_invitation_version(inv, 2);
+	free(inv);
+
+	char *fp = meshlink_get_fingerprint(b, meshlink_get_self(b));
+	assert(fp);
+	assert(!meshlink_join(b, url));
+	assert(meshlink_errno == MESHLINK_EPEER);
+	free(url);
+	assert_joiner_untouched(b, "backbone_identity_t20b_conf.2", "bbb", fp, false);
+	assert(!meshlink_get_node(b, "aaa"));
+	free(fp);
+
+	meshlink_close(a);
+	meshlink_close(b);
+	assert(meshlink_destroy("backbone_identity_t20b_conf.1"));
+	assert(meshlink_destroy("backbone_identity_t20b_conf.2"));
+}
+
 static void test_join_trailing_invitation(void) {
 	assert(meshlink_destroy("backbone_identity_t21_conf.1"));
 	assert(meshlink_destroy("backbone_identity_t21_conf.2"));
@@ -888,6 +974,7 @@ int main(void) {
 	test_named_backbone_wrong_class();
 	test_join_rejects_extra_backbone_inviter();
 	test_join_malformed_first_host();
+	test_join_rejects_invitation_v2();
 	test_join_trailing_invitation();
 	test_join_truncated_invitation();
 	test_ambiguous_legacy_cannot_invite_or_serve();

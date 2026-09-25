@@ -446,8 +446,13 @@ bool ack_replace_if_admitted(meshlink_handle_t *mesh, connection_t *c, int annou
 		return false;
 	}
 
-	/* Side-effect-free: a WAN/non-local duplicate must not close the existing adjacency. */
+	/* Side-effect-free first: a WAN/non-local duplicate must not close the existing adjacency. */
 	if(!connection_policy_may_accept_incoming(mesh, c, announced_devclass)) {
+		return false;
+	}
+
+	/* Admit (with side effects) before any drain/close so a refuse cannot leave n->connection NULL. */
+	if(!connection_policy_admit_incoming(mesh, c, announced_devclass)) {
 		return false;
 	}
 
@@ -537,32 +542,36 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		return send_ack(mesh, c);
 	}
 
-	if(!ack_replace_if_admitted(mesh, c, devclass, drain_old)) {
-		logger(mesh, MESHLINK_INFO, "Refusing excess or non-local META from %s", c->name);
-		return false;
-	}
-
-	/* A probe that got this far replaces the canonical connection it was opened next to. */
-
+	/* Bind node before admit so probe bypass and conflict checks see the peer.
+	   Keep upgrade_probe set through admit (cleared only after replace succeeds). */
 	if(was_upgrade_probe) {
 		c->node = n;
-		upgrade_probe_succeeded(mesh, c);
 	}
 
 	n->devclass = devclass;
 	n->status.dirty = true;
 	n->status.tiny = c->flags & PROTOCOL_TINY;
-	connection_policy_on_devclass(mesh, n);
+
+	/* Conflict before replace: refuse must not tear down the existing META. */
+	(void)connection_policy_validate_topology(mesh);
 
 	if(n->status.conflict_backbone) {
 		logger(mesh, MESHLINK_WARNING, "Refusing META connection with conflicted backbone node %s", n->name);
 		return false;
 	}
 
-	if(!connection_policy_admit_incoming(mesh, c, devclass)) {
+	if(!ack_replace_if_admitted(mesh, c, devclass, drain_old)) {
 		logger(mesh, MESHLINK_INFO, "Refusing excess or non-local META from %s", c->name);
 		return false;
 	}
+
+	/* Probe succeeded only after admit+replace — flag stayed set for admit bypass. */
+	if(was_upgrade_probe) {
+		upgrade_probe_succeeded(mesh, c);
+	}
+
+	/* Tick after replace; backbone_outgoing_in_flight covers upgrade/drain sockets. */
+	connection_policy_on_devclass(mesh, n);
 
 	install_node_connection(mesh, n, c);
 

@@ -11,6 +11,7 @@
 #include <assert.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <time.h>
 
 #include "meshlink.h"
 #include "devtools.h"
@@ -307,6 +308,51 @@ static void flap_to_step_2(meshlink_handle_t *a, meshlink_handle_t *b, meshlink_
 	wait_step(b, 2);
 }
 
+/* T20b: a material new address zeros an armed BACKBONE_REQUIRED retry immediately. */
+static void test_material_hint_zeros_armed_retry(void) {
+	printf("\n=== T20b: material hint zeros an armed BACKBONE_REQUIRED retry ===\n");
+
+	meshlink_handle_t *a, *b;
+	meshlink_node_t *b_a;
+	open_pair("reconnect_backoff_t20b_conf.1", "reconnect_backoff_t20b_conf.2",
+	          "reconnect_backoff_t20b", &a, &b, &b_a);
+
+	flap_to_step_2(a, b, b_a);
+	assert(intent_step(b) >= 2);
+
+	struct timespec before;
+
+	for(int i = 0; i < 50; i++) {
+		if(devtool_backbone_intent_retry_deadline(b, &before)) {
+			break;
+		}
+
+		usleep(100000);
+	}
+
+	assert(devtool_backbone_intent_retry_deadline(b, &before));
+	int step = intent_step(b);
+	assert(step >= 2);
+
+	uint16_t fresh = (uint16_t)find_closed_port("127.0.0.1");
+	size_t mark = log_mark();
+	hint_address(b, b_a, "127.0.0.1", fresh);
+
+	struct timespec after;
+
+	if(devtool_backbone_intent_retry_deadline(b, &after)) {
+		bool sooner = after.tv_sec < before.tv_sec
+		              || (after.tv_sec == before.tv_sec && after.tv_nsec < before.tv_nsec);
+		assert(sooner || log_find(mark, "Trying to connect to a") >= 0);
+	}
+
+	assert_after(log_find(mark, "Trying to connect to a") >= 0, 3);
+	assert(intent_step(b) >= step);
+
+	printf("T20b ok: material hint pulled the armed retry forward (step %d)\n", intent_step(b));
+	close_pair(a, b, "reconnect_backoff_t20b_conf.1", "reconnect_backoff_t20b_conf.2");
+}
+
 /* T21: after escalation, a long-enough session resets; the next drop starts at step 1. */
 static void test_stable_after_escalation_resets(void) {
 	printf("\n=== T21: stable session after escalation restarts at step 0 ===\n");
@@ -421,6 +467,7 @@ int main(void) {
 	test_stable_drop_restarts_ladder();
 	test_short_flaps_escalate();
 	test_discovery_does_not_reset();
+	test_material_hint_zeros_armed_retry();
 	test_stable_after_escalation_resets();
 	test_stable_canonical_resets();
 	test_key_renewal_does_not_restamp();
