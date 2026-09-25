@@ -5424,8 +5424,19 @@ void meshlink_enable_discovery(meshlink_handle_t *mesh, bool enable) {
 				abort();
 			}
 
-			/* Concurrent enable(true) may have started discovery and set
-			   enabled while we were unlocked; leave that result alone. */
+			/* A concurrent enable(true) may have started discovery during
+			   the unlocked stop window; discovery_stop then tore those
+			   IOs down while leaving enabled==true. Restart if the flag
+			   says on but no discovery IOs remain. If enable(true) ran
+			   entirely after stop, sockets are already live — do not
+			   double-start. */
+			if(mesh->discovery.enabled
+			                && !mesh->discovery.sockets[0].cb
+			                && !mesh->discovery.sockets[1].cb
+			                && !mesh->discovery.pfroute_io.cb) {
+				discovery_start(mesh);
+			}
+
 			goto end;
 		}
 	}
