@@ -64,6 +64,11 @@ endif
 
 dist_check_SCRIPTS = $(TESTS)
 
+# utcp-benchmark scripts invoke src/utcp-test (EXTRA_PROGRAMS — not built by default).
+utcp-benchmark.log utcp-benchmark-stream.log: $(top_builddir)/src/utcp-test$(EXEEXT)
+$(top_builddir)/src/utcp-test$(EXEEXT):
+	$(MAKE) $(AM_MAKEFLAGS) -C $(top_builddir)/src utcp-test
+
 AM_CPPFLAGS = $(PTHREAD_CFLAGS) -I${top_srcdir}/src -iquote. -Wall
 AM_LDFLAGS = $(PTHREAD_LIBS)
 
