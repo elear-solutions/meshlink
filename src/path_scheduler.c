@@ -210,6 +210,7 @@ static void path_scheduler_consume(meshlink_handle_t *mesh, const path_probe_req
 
 	if(mesh->probe_budget.second_tokens) {
 		mesh->probe_budget.second_tokens--;
+		mesh->probe_budget.optional_packets_sent++;
 	}
 
 	if(!req->skip_minute && mesh->probe_budget.minute_tokens) {

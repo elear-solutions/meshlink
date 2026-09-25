@@ -13,12 +13,93 @@
 #include <time.h>
 #include <unistd.h>
 #include <poll.h>
+#include <limits.h>
+#include <sys/stat.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
+
 #include "utils.h"
 #include "../src/devtools.h"
+
+/* Conf and scratch files follow the process cwd. Park unit tests in test/tmp/
+   so ./test/foo from the repo root and make check (cwd test/) share one place.
+   Blackbox does not link this file. */
+static void test_enter_tmp(void) __attribute__((constructor));
+
+static int mkdir_tmp(const char *path) {
+	if(!mkdir(path, 0755) || errno == EEXIST) {
+		return 0;
+	}
+
+	return -1;
+}
+
+static void test_enter_tmp(void) {
+	const char *override = getenv("MESHLINK_TEST_TMP");
+	char exe[PATH_MAX];
+	char *slash;
+
+	if(override && *override) {
+		if(!mkdir_tmp(override) && chdir(override) != 0) {
+			return;
+		}
+
+		return;
+	}
+
+	exe[0] = 0;
+#if defined(__APPLE__)
+	{
+		uint32_t size = sizeof exe;
+
+		if(_NSGetExecutablePath(exe, &size) != 0) {
+			return;
+		}
+	}
+#else
+	{
+		ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+
+		if(n <= 0) {
+			return;
+		}
+
+		exe[n] = 0;
+	}
+#endif
+
+	slash = strrchr(exe, '/');
+
+	if(!slash) {
+		return;
+	}
+
+	*slash = 0;
+	slash = strrchr(exe, '/');
+
+	if(slash && !strcmp(slash + 1, ".libs")) {
+		*slash = 0;
+	}
+
+	{
+		size_t len = strlen(exe);
+
+		if(len + strlen("/tmp") >= sizeof exe) {
+			return;
+		}
+
+		memcpy(exe + len, "/tmp", strlen("/tmp") + 1);
+	}
+
+	if(!mkdir_tmp(exe) && chdir(exe) != 0) {
+		return;
+	}
+}
 
 #define RELAY_MAX_CONNS 64
 

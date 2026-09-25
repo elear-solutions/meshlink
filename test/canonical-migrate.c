@@ -365,10 +365,12 @@ static void stream_send(meshlink_handle_t *a, meshlink_channel_t *channel, size_
 		assert(sent == 0 || sent == -1);
 
 		/* The send buffer is full. Wait for the channel to report space instead
-		   of spinning on a fixed budget, which a loaded host runs out of. */
-		init_sync_flag(&stream_writable);
+		   of spinning on a fixed budget, which a loaded host runs out of.
+		   stream_writable is initialized once in main(); resetting it here
+		   is safe if a previous poll callback is still in set_sync_flag(). */
+		reset_sync_flag(&stream_writable);
 		meshlink_set_channel_poll_cb(a, channel, writable_cb);
-		wait_sync_flag(&stream_writable, 5);
+		assert(wait_sync_flag(&stream_writable, 5));
 	}
 
 	assert(!"channel send kept failing");
@@ -1268,6 +1270,7 @@ static void test_failover_after_promote(void) {
 }
 
 int main(void) {
+	init_sync_flag(&stream_writable);
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, capture_log_cb);
 	devtool_upgrade_probe = upgrade_probe_hook;
 	/* qemu-user 127.0.0.1 via the test relay misses the 250ms startup budget. */

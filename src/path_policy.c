@@ -3143,8 +3143,12 @@ static bool path_suspect_any_dependent_fallback(meshlink_handle_t *mesh, node_t 
 static void path_suspect_commit_fallback(meshlink_handle_t *mesh, node_t *n) {
 	path_target_t target;
 
-	if(!n || n->promotion_candidate.active) {
+	if(!n) {
 		return;
+	}
+
+	if(n->promotion_candidate.active) {
+		path_candidate_discard(mesh, n);
 	}
 
 	n->active_route.suspect = false;
@@ -3168,11 +3172,11 @@ static void path_suspect_expire_dependents(meshlink_handle_t *mesh, node_t *hop)
 			continue;
 		}
 
-		if(dest->promotion_candidate.active) {
-			continue;
-		}
-
 		if(path_has_live_fallback(mesh, dest)) {
+			if(dest->promotion_candidate.active) {
+				path_candidate_discard(mesh, dest);
+			}
+
 			path_suspect_commit_fallback(mesh, dest);
 		}
 	}
@@ -3211,19 +3215,19 @@ static void path_suspect_expire(meshlink_handle_t *mesh, node_t *n) {
 		return;
 	}
 
-	if(n->promotion_candidate.active) {
-		timeout_del(&mesh->loop, &s->timer);
-		return;
-	}
-
+	/* Suspect failure wins only when a fallback can take over. Discarding
+	   the candidate first would destroy the only rescue path on a route
+	   that has to reopen the epoch. */
 	if(path_has_live_fallback(mesh, n) || path_suspect_any_dependent_fallback(mesh, n)) {
+		/* Dependents first. Demoting this hop reranks them and would hide
+		   the relay route before their promotions are discarded. */
+		path_suspect_expire_dependents(mesh, n);
+
 		if(n->active_route.suspect) {
 			path_suspect_commit_fallback(mesh, n);
 		} else if(n->status.udp_confirmed) {
 			path_note_udp_demoted_reason(mesh, n, "suspect probes unanswered");
 		}
-
-		path_suspect_expire_dependents(mesh, n);
 
 		if(s->active) {
 			path_suspect_stop(mesh, n);
@@ -3980,8 +3984,6 @@ void path_record_active_route(meshlink_handle_t *mesh, node_t *n, const path_tar
 	if(!mesh || !n || !target) {
 		return;
 	}
-
-	n->last_application_traffic = mesh->loop.now.tv_sec;
 
 	if(target->temporary_fallback) {
 		return;

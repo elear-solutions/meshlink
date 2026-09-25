@@ -42,7 +42,9 @@ tags
 test/port
 test/req-external-port
 
-# Test leftovers (make check / ./test/* from repo root drops these at cwd)
+# Test leftovers. Unit tests chdir into test/tmp/; these catch a run
+# from before that, or a binary that did not link test/utils.c.
+test/tmp/
 *_conf
 *_conf.*
 /*.in

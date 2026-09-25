@@ -288,7 +288,7 @@ connection_policy_LDADD = $(top_builddir)/src/libmeshlink.la
 backbone_udp_SOURCES = backbone-udp.c utils.c utils.h
 backbone_udp_LDADD = $(top_builddir)/src/libmeshlink.la
 
-path_stability_SOURCES = path-stability.c utils.c utils.h
+path_stability_SOURCES = path-stability.c netns_utils.c netns_utils.h utils.c utils.h
 path_stability_LDADD = $(top_builddir)/src/libmeshlink.la
 
 transport_recent_SOURCES = transport-recent.c utils.c utils.h

@@ -113,5 +113,12 @@ interval. Relay forwarding does not accelerate probing.
   intent and a bounded LAN-resilience overlay of at most three
   authenticated local META adjacencies. Direct peer UDP punching stays
   channel-demand-driven (finding 9).
+- Backbone UDP relay reachability stays warm with no channel. Ordinary
+  peer UDP punching does not.
+- The global scheduler admits probe packets and transactions. Due times
+  stay on the per-node `promotion_timer`, `suspect_validation.timer`,
+  and `mtutimeout`.
+- `path_record_active_route()` records a temporary fallback and does
+  not commit it as the active route.
 - Per-address UDP and META health matrices, planned-route generations,
   and route-driven UTCP resizing are removed.

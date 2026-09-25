@@ -353,6 +353,8 @@ static void devtool_get_reset_node_status(meshlink_handle_t *mesh, meshlink_node
 		status->active_route_carrier = (int)internal->active_route.relay_carrier;
 		status->active_route_suspect = internal->active_route.suspect;
 		status->active_route_local = internal->active_route.local;
+		status->active_route_first_hop = internal->active_route.first_hop
+		                                 ? internal->active_route.first_hop->name : NULL;
 		status->candidate_active = internal->promotion_candidate.active;
 		status->candidate_rounds = internal->promotion_candidate.successful_rounds;
 		status->candidate_failures = internal->candidate_retry.failures;
@@ -1680,6 +1682,30 @@ void devtool_age_route(meshlink_handle_t *mesh, meshlink_node_t *node, int secon
 	pthread_mutex_unlock(&mesh->mutex);
 }
 
+void devtool_disarm_suspect_timer(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	node_t *n;
+
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	n = (node_t *)node;
+	timeout_del(&mesh->loop, &n->suspect_validation.timer);
+
+	if(n->active_route.kind == DATA_ROUTE_RELAY
+	                && n->active_route.relay_carrier == RELAY_CARRIER_UDP
+	                && n->active_route.first_hop) {
+		timeout_del(&mesh->loop, &n->active_route.first_hop->suspect_validation.timer);
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
 void devtool_age_candidate(meshlink_handle_t *mesh, meshlink_node_t *node, int seconds) {
 	if(!mesh || !node) {
 		meshlink_errno = MESHLINK_EINVAL;
@@ -1770,6 +1796,24 @@ unsigned devtool_probe_minute_tokens(meshlink_handle_t *mesh) {
 	tokens = mesh->probe_budget.minute_tokens;
 	pthread_mutex_unlock(&mesh->mutex);
 	return tokens;
+}
+
+uint64_t devtool_probe_optional_packets_sent(meshlink_handle_t *mesh) {
+	uint64_t n;
+
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return 0;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	path_scheduler_init(mesh);
+	n = mesh->probe_budget.optional_packets_sent;
+	pthread_mutex_unlock(&mesh->mutex);
+	return n;
 }
 
 unsigned devtool_probe_active_transactions(meshlink_handle_t *mesh) {

@@ -167,6 +167,7 @@ struct devtool_node_status {
 	int active_route_carrier;             /// relay_carrier_t when the route is a relay
 	bool active_route_suspect;            /// a retransmission raised suspicion, probes pending
 	bool active_route_local;              /// the route's endpoint is on the local network
+	const char *active_route_first_hop;   /// first_hop->name when kind is RELAY; NULL otherwise (not owned)
 	bool candidate_active;                /// an endpoint is being validated for promotion
 	uint8_t candidate_rounds;             /// validation rounds this candidate has passed
 	uint8_t candidate_failures;           /// consecutive failures, drives the cooldown ladder
@@ -595,6 +596,12 @@ bool devtool_has_live_fallback(struct meshlink_handle *mesh, struct meshlink_nod
  */
 void devtool_age_route(struct meshlink_handle *mesh, struct meshlink_node *node, int seconds);
 
+/// Drop the suspect timer without aging the route. The epoch stays active.
+/** Tests that are not about suspect expiry use this so a one-second window
+ *  cannot discard an in-flight promotion while they wait on something else.
+ */
+void devtool_disarm_suspect_timer(struct meshlink_handle *mesh, struct meshlink_node *node);
+
 /// Age the promotion candidate's round gap, deadline and cooldown by `seconds`.
 void devtool_age_candidate(struct meshlink_handle *mesh, struct meshlink_node *node, int seconds);
 
@@ -604,6 +611,9 @@ bool devtool_liveness_probe_warranted(struct meshlink_handle *mesh, struct meshl
 unsigned devtool_probe_second_tokens(struct meshlink_handle *mesh);
 unsigned devtool_probe_minute_tokens(struct meshlink_handle *mesh);
 unsigned devtool_probe_active_transactions(struct meshlink_handle *mesh);
+
+/// Optional (non-backbone) packets the scheduler has emitted. Does not include the backbone bucket.
+uint64_t devtool_probe_optional_packets_sent(struct meshlink_handle *mesh);
 void devtool_set_probe_budget(struct meshlink_handle *mesh, unsigned second, unsigned minute, unsigned txns);
 unsigned devtool_candidate_requests_sent(struct meshlink_handle *mesh, struct meshlink_node *node);
 void devtool_scheduler_drain(struct meshlink_handle *mesh);

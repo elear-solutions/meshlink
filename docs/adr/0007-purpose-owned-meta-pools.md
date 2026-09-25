@@ -106,8 +106,9 @@ for 250 ms, then canonical. `BACKBONE_REQUIRED` does not walk
 `OUTGOING_KNOWN_INDIRECT`. Leftover trusted directs are make-before-break
 upgrade probes (`net_upgrade.c`), not a second outgoing. Discovery or a
 hint while canonical META is already up does not zero the retry timer.
-While a retry is armed, a duplicate discovery announcement fires the
-timer immediately and leaves `retry_step` alone.
+While a retry is armed, a materially new or upgraded discovery address
+fires the timer immediately and leaves `retry_step` alone. An unchanged
+duplicate announcement does not.
 
 The intent is created before the peer key is known and is kept when no
 endpoint is usable. Blacklist and `conflict_backbone` still drop it.

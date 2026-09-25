@@ -233,6 +233,7 @@ typedef struct path_probe_budget_t {
 	unsigned second_tokens;                 /* optional packet bucket */
 	unsigned minute_tokens;                 /* parked liveness / PMTU-increase */
 	unsigned backbone_second_tokens;        /* required-path packet bucket */
+	uint64_t optional_packets_sent;         /* non-backbone emits; observe only */
 	struct timespec second_refill_at;
 	struct timespec minute_refill_at;
 	struct timespec backbone_refill_at;

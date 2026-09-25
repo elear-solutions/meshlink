@@ -91,7 +91,10 @@ int main(void) {
 
 	// Set up relay, peer and NUT
 	peer_config_t *peers = setup_relay_peer_nut("metering-slowping");
-	set_peers_tcponly(peers, 3);
+	if(!set_peers_tcponly(peers, 3)) {
+		close_relay_peer_nut(peers);
+		return 77;
+	}
 
 	// Ensure DEV_CLASS_STATIONARY uses a 5 minute ping time
 	for(int i = 0; i < 3; i++) {

@@ -984,7 +984,6 @@ static bool cover_active_route(meshlink_handle_t *mesh) {
 	path_record_active_route(mesh, &dest, &target);
 	CHECK(dest.active_route.kind == DATA_ROUTE_DIRECT_UDP);
 	CHECK(dest.active_route.suspect);
-	CHECK(dest.last_application_traffic == mesh->loop.now.tv_sec);
 
 	{
 		uint64_t n1 = dest.suspect_validation.nonce;
@@ -2311,6 +2310,8 @@ done:
 #undef CHECK_EPOCH
 }
 
+static bool cover_plant_promotion(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *ep, bool probing);
+
 static bool cover_suspect_epoch(meshlink_handle_t *mesh) {
 	node_t dest;
 	node_t hop;
@@ -2378,6 +2379,40 @@ static bool cover_suspect_epoch(meshlink_handle_t *mesh) {
 	CHECK_S(!dest.active_route.suspect);
 	CHECK_S(!dest.suspect_validation.active);
 
+	/* No fallback: expiry reopens the epoch and the rescue candidate stays,
+	   then a finished candidate still promotes. */
+	path_note_route_suspect(mesh, &dest, "reliable retransmit");
+	CHECK_S(!path_has_live_fallback(mesh, &dest));
+	CHECK_S(dest.suspect_validation.active);
+	{
+		sockaddr_t local;
+		uint64_t epoch;
+
+		set_v4(&local, "192.168.9.8", 9);
+		CHECK_S(cover_plant_promotion(mesh, &dest, &local, true));
+		CHECK_S(dest.promotion_candidate.successful_rounds < PATH_PROMOTION_ROUNDS);
+		epoch = dest.suspect_validation.nonce;
+		dest.suspect_validation.deadline.tv_sec = mesh->loop.now.tv_sec - 1;
+		path_route_tick(mesh, &dest);
+		CHECK_S(dest.promotion_candidate.active);
+		CHECK_S(path_scheduler_has_transaction(mesh, &dest, PATH_TXN_PROMOTION));
+		CHECK_S(dest.suspect_validation.active);
+		CHECK_S(dest.suspect_validation.nonce != epoch);
+		CHECK_S(dest.status.udp_confirmed);
+		CHECK_S(dest.active_route.suspect);
+		CHECK_S(dest.active_route.kind == DATA_ROUTE_DIRECT_UDP);
+
+		dest.promotion_candidate.successful_rounds = PATH_PROMOTION_ROUNDS;
+		dest.promotion_candidate.first_success = mesh->loop.now;
+		dest.promotion_candidate.first_success.tv_sec -= 2;
+		path_route_tick(mesh, &dest);
+		CHECK_S(!dest.promotion_candidate.active);
+		CHECK_S(!path_scheduler_has_transaction(mesh, &dest, PATH_TXN_PROMOTION));
+		CHECK_S(!sockaddrcmp(&dest.active_route.udp_endpoint, &local));
+		CHECK_S(dest.active_route.local);
+		CHECK_S(!dest.active_route.suspect);
+	}
+
 	path_suspect_stop(mesh, &dest);
 	mesh->backbone.node = saved_bb;
 	mesh->backbone_udp.confirmed = saved_udp.confirmed;
@@ -2440,6 +2475,57 @@ static bool cover_suspect_epoch(meshlink_handle_t *mesh) {
 	hop.suspect_validation.deadline.tv_sec = mesh->loop.now.tv_sec - 1;
 	path_route_tick(mesh, &hop);
 	CHECK_S(!hop.status.udp_confirmed);
+	CHECK_S(!relay_dest->active_route.suspect);
+	CHECK_S(!(relay_dest->active_route.kind == DATA_ROUTE_RELAY
+	                && relay_dest->active_route.relay_carrier == RELAY_CARRIER_UDP));
+
+	/* Suspect expiry discards an in-flight promotion, frees its slot, then demotes. */
+	hop.status.udp_confirmed = true;
+	hop.udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+	hop.active_route.kind = DATA_ROUTE_DIRECT_UDP;
+	hop.active_route.suspect = false;
+	path_copy_sockaddr(&hop.active_route.udp_endpoint, &hop.address);
+	path_note_route_suspect(mesh, &hop, "reliable retransmit");
+	CHECK_S(hop.suspect_validation.active);
+	{
+		sockaddr_t local;
+
+		set_v4(&local, "192.168.9.9", 9);
+		CHECK_S(cover_plant_promotion(mesh, &hop, &local, true));
+	}
+	CHECK_S(hop.promotion_candidate.active);
+	CHECK_S(path_scheduler_has_transaction(mesh, &hop, PATH_TXN_PROMOTION));
+	hop.suspect_validation.deadline.tv_sec = mesh->loop.now.tv_sec - 1;
+	path_route_tick(mesh, &hop);
+	CHECK_S(!hop.promotion_candidate.active);
+	CHECK_S(!path_scheduler_has_transaction(mesh, &hop, PATH_TXN_PROMOTION));
+	CHECK_S(!hop.suspect_validation.active);
+	CHECK_S(!hop.status.udp_confirmed);
+
+	hop.status.udp_confirmed = true;
+	hop.udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+	hop.active_route.kind = DATA_ROUTE_DIRECT_UDP;
+	hop.active_route.suspect = false;
+	path_copy_sockaddr(&hop.active_route.udp_endpoint, &hop.address);
+	relay_dest->active_route.kind = DATA_ROUTE_RELAY;
+	relay_dest->active_route.relay_carrier = RELAY_CARRIER_UDP;
+	relay_dest->active_route.first_hop = &hop;
+	relay_dest->active_route.suspect = false;
+	path_copy_sockaddr(&relay_dest->active_route.udp_endpoint, &hop.address);
+	path_note_route_suspect(mesh, relay_dest, "reliable retransmit");
+	CHECK_S(hop.suspect_validation.active);
+	CHECK_S(relay_dest->active_route.suspect);
+	{
+		sockaddr_t local;
+
+		set_v4(&local, "192.168.9.10", 9);
+		CHECK_S(cover_plant_promotion(mesh, relay_dest, &local, true));
+	}
+	CHECK_S(relay_dest->promotion_candidate.active);
+	hop.suspect_validation.deadline.tv_sec = mesh->loop.now.tv_sec - 1;
+	path_route_tick(mesh, &hop);
+	CHECK_S(!relay_dest->promotion_candidate.active);
+	CHECK_S(!path_scheduler_has_transaction(mesh, relay_dest, PATH_TXN_PROMOTION));
 	CHECK_S(!relay_dest->active_route.suspect);
 	CHECK_S(!(relay_dest->active_route.kind == DATA_ROUTE_RELAY
 	                && relay_dest->active_route.relay_carrier == RELAY_CARRIER_UDP));

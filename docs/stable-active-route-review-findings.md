@@ -37,8 +37,8 @@ established by earlier findings.
 
 - Findings 1-2 are completed foundations.
 - Finding 3 persists backbone identity. Extra backbone-class nodes are
-  marked `conflict_backbone`. Finding 5 skips them in META pools;
-  finding 10 still owns relay-hop skip.
+  marked `conflict_backbone`. Findings 5 and 10 skip them in META pools
+  and when choosing the relay hop.
 - Finding 4 gates production invitation create/serve to the unique
   backbone.
 - Finding 5 replaced generic autoconnect with purpose-owned pools in
@@ -54,8 +54,9 @@ established by earlier findings.
   the 4 pkt/s burst cap only.
 - Finding 15 preserves pick/candidate/commit provenance. Finding 16
   rejects a channel whose node is not owned by the mesh passed to
-  `meshlink_channel_get_mss()`. Findings 17-20 finish remaining
-  interfaces, verification, and cleanup.
+  `meshlink_channel_get_mss()`. Finding 17 is the production-path
+  acceptance suite. Findings 18 and 20 are done. Finding 19 is
+  won't fix.
 
 Do not implement a later finding by adding a second competing state machine.
 Move ownership to the module introduced by the earliest relevant finding.
@@ -161,11 +162,11 @@ probe scheduler owns aggregate packet and transaction limits.
 ## 3. Define and persist the unique backbone identity
 
 **Priority:** P1  
-**Status:** Partially completed
+**Status:** Completed
 
-Identity is persisted. Conflicts are detected, not quarantined. Findings
-5 and 10 must skip `conflict_backbone` nodes when filling META pools and
-choosing the relay hop. See [ADR 0005](adr/0005-backbone-identity.md).
+Identity is persisted. Findings 5 and 10 skip `conflict_backbone` nodes
+in META pools and when choosing the relay hop. See
+[ADR 0005](adr/0005-backbone-identity.md).
 
 ### Issue Summary
 
@@ -214,16 +215,11 @@ Bootstrap:
 3. `start` commits self only if the name is still unset and self is
    `DEV_CLASS_BACKBONE`.
 4. Extra `DEV_CLASS_BACKBONE` nodes, and a stored name whose class is not
-   `DEV_CLASS_BACKBONE`, set `conflict_backbone`. Detection only — they
-   still participate in graph, gossip, and relay. Finding 5 skips them
-   in META pools.
+   `DEV_CLASS_BACKBONE`, set `conflict_backbone`. Finding 5 skips them in
+   META pools. Finding 10 skips them as the relay hop.
 5. Missing sidecar on an existing confbase migrates only when unambiguous:
    self-only BACKBONE, or exactly one other BACKBONE host. Two or more:
    do not guess.
-
-Still open under the original item 4: do not exclude `conflict_backbone`
-from routing decisions here. META-pool skip is finding 5; relay-hop skip
-is finding 10.
 
 ---
 
@@ -1035,7 +1031,7 @@ size_t mss = utcp_get_mss(n->utcp);
 ## 17. Add production-path topology, connection, and routing tests
 
 **Priority:** P2  
-**Status:** Open
+**Status:** Completed
 
 ### Issue Summary
 
@@ -1053,6 +1049,19 @@ called manually, but a portable device fills its connection quota with local
 peers and never creates the mandatory NMN outgoing intent.
 
 ### Suggested code change to fix
+
+Completed. Cases 1-16 and 19 are production-path acceptance tests in
+`test/backbone-identity.c`, `test/connection-policy.c`,
+`test/canonical-migrate.c`, `test/backbone-udp.c`, and
+`test/path-stability.c`. Case 17's six route classes are the same
+`path-stability` binary; the three netns cases skip only themselves when
+netns is unavailable. Case 18 covers suspect, cooldown, and fixed MSS on
+the production path. Stale-reply and same-class endpoint rejection stay
+on `devtool_observe_probe_reply` because a wrong-address or spent-nonce
+reply is not produced by the real UDP socket. Case 19 asserts the
+scheduler's optional emission counter (`devtool_probe_optional_packets_sent`),
+which counts promotion, PMTU, liveness, and suspect packets, not promotion
+alone.
 
 Add tests in dependency order:
 
@@ -1093,7 +1102,7 @@ acceptance test for a production invariant.
 ## 18. Stop reinitializing live synchronization objects in `canonical-migrate`
 
 **Priority:** P3  
-**Status:** Open
+**Status:** Completed
 
 ### Issue Summary
 
@@ -1127,7 +1136,7 @@ Destroy it once during teardown if required by the synchronization helper.
 ## 19. Version the exported devtool status interface
 
 **Priority:** P3  
-**Status:** Open
+**Status:** Won't fix
 
 ### Issue Summary
 
@@ -1136,68 +1145,52 @@ symbol. Appending route and candidate fields changes how much memory the library
 writes. An existing diagnostics binary built against an older header can pass a
 smaller allocation.
 
-### Example Real-world scenario failure
+### Resolution
 
-A deployed diagnostics utility is not rebuilt during a Meshlink library update.
-The new library writes beyond the old status structure and corrupts adjacent
-heap memory.
-
-### Suggested code change to fix
-
-Add a size-aware version:
-
-```c
-bool devtool_get_node_status_v2(meshlink_handle_t *mesh,
-                                meshlink_node_t *node,
-                                devtool_node_status_t *status,
-                                size_t status_size);
-```
-
-Write only `min(status_size, sizeof(*status))`. Preserve the old symbol with its
-old layout or deliberately bump the diagnostic ABI.
+Not a real consumer. `devtools.h` says these functions are for debugging and
+quality control, and that applications must not depend on them. Every caller
+of `devtool_get_node_status()` is an in-tree test or example rebuilt with the
+library. There is no separately shipped diagnostics binary that keeps an old
+status layout across a Meshlink update. Do not add a size-aware `v2` symbol
+or freeze the diagnostic struct layout.
 
 ---
 
 ## 20. Remove generated artifacts and stale policy state
 
 **Priority:** P3  
-**Status:** Open
+**Status:** Completed
 
 ### Issue Summary
 
 Generated test launchers can remain untracked in the source tree, and comments
-or fields can outlive the behavior they originally described.
+or fields can outlive the behavior they originally described. Unit tests also
+created `*_conf` directories in whichever directory they were started from, so
+the meshlink root and `test/` both filled with scratch trees.
 
-After the topology redesign, likely stale items include:
+### Resolution
 
-- generic `min_connects`/`max_connects` assumptions;
-- `udp_local_probe_next` if all promotion scheduling is centralized;
-- `PATH_SUSPECT_PROBES` unless consumed by finding 12;
-- comments claiming `last_application_traffic` owns behavior that moved to
-  explicit channel demand;
-- any per-node timers superseded by the global scheduler.
+`last_application_traffic` was only written and never read by production.
+Demand stays on `peer_udp`. The field, the write in `path_record_active_route()`,
+and the devtool check are gone.
 
-`test/backbone-identity` is gitignored with the other generated test
-launchers. Do not commit it.
+These stay, because they still own behavior:
 
-### Example Real-world scenario failure
+- `udp_local_probe_next` is the earliest next local-UDP probe while WAN is active.
+- `PATH_SUSPECT_PROBES` is the suspect-recovery probe count from finding 12.
+- `promotion_timer`, `suspect_validation.timer`, and `mtutimeout` still hold due
+  times. The scheduler only admits packets and transactions.
+- `min_connects` / `max_connects` were already gone (ADR 0004, ADR 0007).
 
-A generated `test/path-stability` launcher is accidentally committed with
-build-machine-specific paths. Later, a maintainer reads a stale field comment
-and adds behavior to a timer that no longer owns the transition.
+ADR 0004 now records the backbone-UDP exception, scheduler ownership, and that
+a temporary fallback is recorded without being committed.
 
-### Suggested code change to fix
-
-Before final commit:
-
-1. Remove generated `test/path-stability` artifacts from the source tree.
-2. Add exact generated paths to ignore rules or use out-of-tree builds.
-3. Run a symbol/reference audit for retired fields and constants.
-4. Update ADR 0004 to describe the final connection pools, channel demand, NMN
-   UDP exception, scheduler ownership, and route commitment rules.
-5. Remove compatibility shims once no production or test caller uses them.
-
-Delete dead state rather than retaining it as speculative future policy.
+Unit tests link `test/utils.c`, which `chdir`s into `test/tmp/` before `main`.
+`make check` and `./test/<name>` from the repo root both land there. Libtool
+binaries under `.libs/` use the parent directory. `MESHLINK_TEST_TMP` overrides
+the directory. Blackbox is unchanged. `test/tmp/` is gitignored. Generated
+launchers such as `test/path-stability` and `test/backbone-identity` were
+already gitignored.
 
 ---
 

@@ -18,6 +18,7 @@
 #include "meshlink.h"
 #include "devtools.h"
 #include "utils.h"
+#include "netns_utils.h"
 
 /* net.h is not includable from integration tests (transitive meshlink_internal.h). */
 #define MINMTU 527
@@ -48,6 +49,9 @@ typedef struct {
 #define PATH_HEALTHY_RESET_SEC 60
 #define PATH_PEER_UDP_GRACE_SEC 5
 #define PATH_PROMOTION_MAX_REQUESTS 8
+#define PATH_SCHED_MAX_TRANSACTIONS 2
+#define PATH_SCHED_PACKETS_PER_SEC 4
+#define PATH_BUDGET_PEERS 4
 
 static struct sync_flag accepted;
 static struct sync_flag received;
@@ -112,6 +116,14 @@ static bool udp_status_working(meshlink_handle_t *mesh, meshlink_node_t *node) {
 	bool working = st.udp_status == DEVTOOL_UDP_WORKING;
 	devtool_free_node_status(&st);
 	return working;
+}
+
+/* Per-node send_mtu_probe state for that peer only — not backbone keepalive. */
+static int node_mtuprobes(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	devtool_node_status_t st = snapshot(mesh, node);
+	int probes = st.mtuprobes;
+	devtool_free_node_status(&st);
+	return probes;
 }
 
 static bool pmtu_parked(meshlink_handle_t *mesh, meshlink_node_t *node) {
@@ -801,6 +813,22 @@ static void test_idle_peer_is_not_probed(void) {
 	assert(!devtool_liveness_probe_warranted(bb, bb_e1));
 	assert(!devtool_liveness_probe_warranted(bb, bb_e2));
 
+	/* Finding 17 item 12: idle ordinary peers emit zero UDP probes. mtuprobes on
+	   e1↔e2 is peer-specific (send_mtu_probe for that node); backbone warm uses e*_bb. */
+	assert(!devtool_liveness_probe_warranted(e1, e1_e2));
+	assert(!devtool_liveness_probe_warranted(e2, e2_e1));
+	assert(!udp_status_working(e1, e1_e2));
+	assert(!udp_status_working(e2, e2_e1));
+	assert(node_mtuprobes(e1, e1_e2) == 0);
+	assert(node_mtuprobes(e2, e2_e1) == 0);
+	sleep(5);
+	assert(!devtool_liveness_probe_warranted(e1, e1_e2));
+	assert(!devtool_liveness_probe_warranted(e2, e2_e1));
+	assert(!udp_status_working(e1, e1_e2));
+	assert(!udp_status_working(e2, e2_e1));
+	assert(node_mtuprobes(e1, e1_e2) == 0);
+	assert(node_mtuprobes(e2, e2_e1) == 0);
+
 	/* Backbone → camera rides META; backbone never starts ordinary-peer UDP. */
 	meshlink_channel_t *ch_bb = meshlink_channel_open(bb, bb_e1, 7, receive_cb, NULL, 0);
 	assert(ch_bb);
@@ -905,6 +933,64 @@ static void test_recorded_route(void) {
 	assert(meshlink_destroy("path_stability_t7_conf.1"));
 	assert(meshlink_destroy("path_stability_t7_conf.2"));
 	printf("path-stability T7 ok: one recorded route, no stray candidate\n");
+}
+
+/* --- T7b: relay first hop is always the configured backbone ---------------- */
+
+static void packet_receive_cb(meshlink_handle_t *mesh, meshlink_node_t *source, const void *data, size_t len) {
+	(void)mesh;
+	(void)source;
+	(void)data;
+
+	if(len) {
+		set_sync_flag(&received, true);
+	}
+}
+
+/* Finding 17 item 16: production meshlink_send between stationary peers with no
+   peer channel records a RELAY route whose first hop is connection_policy_backbone
+   (path_app_relay_hop), not a planted forced hop. */
+static void test_relay_carrier_is_backbone(void) {
+	printf("\n=== path-stability T7b: relay first hop is the configured backbone ===\n");
+
+	meshlink_handle_t *bb, *e1, *e2;
+	stability_open_trio("path_stability_t7b_conf", "path-stability-7b", &bb, &e1, &e2);
+
+	init_sync_flag(&received);
+	meshlink_set_receive_cb(e2, packet_receive_cb);
+
+	assert_after(meshlink_get_node(e1, "baz") && meshlink_get_node(e2, "bar"), 15);
+	meshlink_node_t *e1_e2 = meshlink_get_node(e1, "baz");
+	assert(e1_e2);
+	assert_after(node_is_reachable(e1, e1_e2), 15);
+	assert_after(node_is_keyed(e1, meshlink_get_node(e1, "foo")), 20);
+	assert_after(udp_status_working(e1, meshlink_get_node(e1, "foo")), 30);
+
+	assert(!devtool_liveness_probe_warranted(e1, e1_e2));
+	assert(!strcmp(devtool_get_backbone_name(e1), "foo"));
+
+	for(int i = 0; i < 30; i++) {
+		assert(meshlink_send(e1, e1_e2, "Hello", 5));
+
+		if(wait_sync_flag(&received, 1)) {
+			break;
+		}
+	}
+
+	assert(wait_sync_flag(&received, 15));
+
+	devtool_node_status_t st = snapshot(e1, e1_e2);
+	assert(st.active_route_kind == ROUTE_RELAY);
+	assert(st.active_route_first_hop);
+	assert(!strcmp(st.active_route_first_hop, "foo"));
+	assert(!strcmp(st.active_route_first_hop, devtool_get_backbone_name(e1)));
+	assert(st.active_route_carrier == CARRIER_UDP);
+	devtool_free_node_status(&st);
+
+	assert(!devtool_liveness_probe_warranted(e1, e1_e2));
+
+	stability_close_trio("path_stability_t7b_conf", bb, e1, e2);
+	printf("path-stability T7b ok: relay first hop is foo (configured backbone)\n");
 }
 
 /* --- T8: fallback records do not clear suspicion ---------------------------- */
@@ -1013,16 +1099,44 @@ static void test_parked_pmtu_promotes_local(void) {
 	assert(local.ss_family == AF_INET || local.ss_family == AF_INET6);
 	devtool_free_node_status(&st);
 
+	/* localhost is this node's canonical, so a 127.0.0.1 UDP socket cannot
+	   be learned as a promotion candidate. Point canonical at the blackhole
+	   before the hint. */
+	assert(meshlink_set_canonical_address(a, a_b, "203.0.113.50", "9"));
+
 	/* Both peers sit on WAN. A's probe is forced to B's local; B must reply
 	   to last_udp_from, not n->address, or the round never counts. */
 	struct sockaddr_in wan_b = v4("203.0.113.10", 9);
 	struct sockaddr_in wan_a = v4("203.0.113.11", 9);
+	bool candidate_up = false;
+
+	/* A blackhole WAN raises suspect and can sit next to the backbone
+	   transaction. This case is parked PMTU, so give the promotion its own
+	   slot, then disarm the suspect timer while the real rounds finish. */
 	assert(devtool_confirm_udp_from(a, a_b, (struct sockaddr *)&wan_b, 1));
 	assert(devtool_confirm_udp_from(b, b_a, (struct sockaddr *)&wan_a, 1));
-	meshlink_hint_address(a, a_b, (struct sockaddr *)&local);
+	devtool_set_probe_budget(a, 1000, 1000, PATH_SCHED_MAX_TRANSACTIONS + 2);
 
-	assert_after(candidate_is_active(a, a_b), 2);
-	assert_after(candidate_has_two_rounds(a, a_b), 6);
+	for(int i = 0; i < 80 && !candidate_up; i++) {
+		/* Expiry on a live META fallback drops the candidate. Hold the
+		   timer off before each hint so the check can observe it. */
+		devtool_disarm_suspect_timer(a, a_b);
+		meshlink_hint_address(a, a_b, (struct sockaddr *)&local);
+		candidate_up = candidate_is_active(a, a_b);
+
+		if(!candidate_up) {
+			usleep(50000);
+		}
+	}
+
+	assert(candidate_up);
+
+	for(int i = 0; i < 60 && !candidate_has_two_rounds(a, a_b); i++) {
+		devtool_disarm_suspect_timer(a, a_b);
+		usleep(100000);
+	}
+
+	assert(candidate_has_two_rounds(a, a_b));
 
 	st = snapshot(a, a_b);
 	assert(st.mtuprobes >= 31);
@@ -1258,11 +1372,475 @@ static void test_promotion_request_cap(void) {
 	assert(max_sent <= PATH_PROMOTION_MAX_REQUESTS);
 	assert(max_sent == PATH_PROMOTION_MAX_REQUESTS);
 	assert(candidate_is_active(a, a_b));
+	/* Production deadline retires the silent candidate — no age_candidate. */
 	assert_after(!candidate_is_active(a, a_b), 15);
+
+	devtool_node_status_t st = snapshot(a, a_b);
+	assert(st.candidate_failures >= 1);
+	assert(st.candidate_cooldown_remaining > 0);
+	devtool_free_node_status(&st);
 
 	meshlink_channel_abort(a, ch);
 	stability_close_trio("path_stability_t13_conf", bb, a, b);
-	printf("path-stability T13 ok: silent candidate stayed inside the eight-request cap\n");
+	printf("path-stability T13 ok: silent candidate capped then cooled down via deadline\n");
+}
+
+/* --- T18a: reliable retransmit raises suspect; later send does not clear it --- */
+
+static bool route_is_suspect(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	devtool_node_status_t st = snapshot(mesh, node);
+	bool suspect = st.active_route_suspect;
+	devtool_free_node_status(&st);
+	return suspect;
+}
+
+static struct sync_flag retransmit_suspect_log;
+
+static void t18a_log_cb(meshlink_handle_t *mesh, meshlink_log_level_t level, const char *text) {
+	(void)mesh;
+	(void)level;
+
+	if(text && strstr(text, "route-suspect") && strstr(text, "reliable retransmit")) {
+		set_sync_flag(&retransmit_suspect_log, true);
+	}
+}
+
+static void test_retransmit_raises_suspect(void) {
+	printf("\n=== path-stability T18a: channel retransmit raises suspect ===\n");
+
+	meshlink_handle_t *bb, *a, *b;
+	stability_open_trio("path_stability_t18a_conf", "path-stability-18a", &bb, &a, &b);
+
+	init_sync_flag(&accepted);
+	init_sync_flag(&received);
+	init_sync_flag(&retransmit_suspect_log);
+	meshlink_set_channel_accept_cb(b, accept_cb);
+	meshlink_set_log_cb(a, MESHLINK_INFO, t18a_log_cb);
+
+	assert_after(meshlink_get_node(a, "baz"), 15);
+	meshlink_node_t *a_b = meshlink_get_node(a, "baz");
+	assert(a_b);
+	assert_after(node_is_reachable(a, a_b), 15);
+	assert_after(node_is_keyed(a, meshlink_get_node(a, "foo")), 20);
+	assert(devtool_has_live_fallback(a, a_b));
+
+	/* Edge↔edge channel starts punching; wait until PMTU is parked so a
+	   blackhole redirect is not immediately demoted by probe failure. */
+	meshlink_channel_t *ch = meshlink_channel_open(a, a_b, 7, receive_cb, NULL, 0);
+	assert(ch);
+	assert(wait_sync_flag(&accepted, 15));
+	assert(meshlink_channel_send(a, ch, "hello", 5) == 5);
+	assert(wait_sync_flag(&received, 15));
+	assert_after(udp_status_working(a, a_b), 30);
+	assert_after(pmtu_parked(a, a_b), 60);
+
+	/* Blackhole plant only — must not itself mark suspect. */
+	struct sockaddr_in dead = v4("127.0.0.1", 1);
+	assert(devtool_confirm_udp_from(a, a_b, (struct sockaddr *)&dead, 0));
+	devtool_node_status_t st = snapshot(a, a_b);
+	assert(st.active_route_kind == ROUTE_DIRECT_UDP);
+	assert(!st.active_route_suspect);
+	assert(st.udp_status == DEVTOOL_UDP_WORKING);
+	devtool_free_node_status(&st);
+
+	/* Unacked reliable data → channel_retransmit → path_note_route_suspect. */
+	set_sync_flag(&received, false);
+	assert(meshlink_channel_send(a, ch, "blackhole", 9) == 9);
+	assert(wait_sync_flag(&retransmit_suspect_log, 15));
+	assert(route_is_suspect(a, a_b));
+
+	st = snapshot(a, a_b);
+	assert(st.active_route_suspect);
+	assert(st.active_route_kind == ROUTE_DIRECT_UDP);
+	assert(st.udp_status == DEVTOOL_UDP_WORKING);
+	devtool_free_node_status(&st);
+
+	/* Later production send must not clear suspicion (fallback may carry it). */
+	ssize_t nch = meshlink_channel_send(a, ch, "still", 5);
+	ssize_t ndg = meshlink_send(a, a_b, "meta", 4);
+	assert(nch >= 0 || ndg >= 0);
+	st = snapshot(a, a_b);
+	assert(st.active_route_suspect);
+	assert(st.active_route_kind == ROUTE_DIRECT_UDP);
+	assert(st.udp_status == DEVTOOL_UDP_WORKING);
+	devtool_free_node_status(&st);
+
+	meshlink_channel_abort(a, ch);
+	stability_close_trio("path_stability_t18a_conf", bb, a, b);
+	printf("path-stability T18a ok: retransmit raised suspect; later send left it set\n");
+}
+
+/* --- T19: many peers stay inside global txn + packet budgets -------------- */
+
+static unsigned count_active_candidates(meshlink_handle_t *mesh, meshlink_node_t **peers, int n) {
+	unsigned active = 0;
+
+	for(int i = 0; i < n; i++) {
+		if(candidate_is_active(mesh, peers[i])) {
+			active++;
+		}
+	}
+
+	return active;
+}
+
+static void test_many_peers_stay_in_budget(void) {
+	printf("\n=== path-stability T19: many peers stay inside scheduler budgets ===\n");
+
+	const char *prefix = "path_stability_t19_conf";
+	const char *names[] = {"foo", "cam", "p0", "p1", "p2", "p3"};
+	const int classes[] = {
+		DEV_CLASS_BACKBONE, DEV_CLASS_STATIONARY,
+		DEV_CLASS_STATIONARY, DEV_CLASS_STATIONARY,
+		DEV_CLASS_STATIONARY, DEV_CLASS_STATIONARY
+	};
+	meshlink_handle_t *m[6];
+	meshlink_channel_t *ch[PATH_BUDGET_PEERS];
+	meshlink_node_t *peers[PATH_BUDGET_PEERS];
+	uint64_t prev_optional;
+
+	stability_destroy_conf(prefix, 6);
+
+	for(int i = 0; i < 6; i++) {
+		char path[128];
+		snprintf(path, sizeof path, "%s.%d", prefix, i);
+		m[i] = meshlink_open(path, names[i], "path-stability-19", classes[i]);
+		assert(m[i]);
+		meshlink_enable_discovery(m[i], false);
+		assert(meshlink_set_canonical_address(m[i], meshlink_get_self(m[i]), "localhost", NULL));
+	}
+
+	meshlink_handle_t *bb = m[0];
+	meshlink_handle_t *cam = m[1];
+
+	for(int i = 1; i < 6; i++) {
+		join_meshlink_peer(bb, m[i]);
+	}
+
+	for(int i = 0; i < 6; i++) {
+		assert(meshlink_start(m[i]));
+	}
+
+	init_sync_flag(&accepted);
+
+	for(int i = 0; i < PATH_BUDGET_PEERS; i++) {
+		meshlink_set_channel_accept_cb(m[i + 2], accept_cb);
+	}
+
+	meshlink_node_t *cam_bb = meshlink_get_node(cam, "foo");
+	assert(cam_bb);
+	assert_after(node_is_reachable(cam, cam_bb), 15);
+	assert_after(node_is_keyed(cam, cam_bb), 20);
+
+	devtool_set_backbone_udp_keepalive(cam, 1);
+	assert_after(devtool_backbone_udp_confirmed(cam), 20);
+	assert(devtool_backbone_udp_timer_armed(cam));
+
+	/* 4 peers > PATH_SCHED_MAX_TRANSACTIONS: production channel + WAN plant +
+	   local hint starts promotion; the scheduler admits the transaction. */
+	for(int i = 0; i < PATH_BUDGET_PEERS; i++) {
+		assert_after(meshlink_get_node(cam, names[i + 2]), 15);
+		peers[i] = meshlink_get_node(cam, names[i + 2]);
+		assert(peers[i]);
+		assert_after(node_is_reachable(cam, peers[i]), 15);
+
+		reset_sync_flag(&accepted);
+		ch[i] = meshlink_channel_open(cam, peers[i], (uint16_t)(7 + i), receive_cb, NULL, 0);
+		assert(ch[i]);
+		assert(wait_sync_flag(&accepted, 20));
+		assert_after(node_is_keyed(cam, peers[i]), 20);
+
+		char wan_ip[32];
+		char lan_ip[32];
+		snprintf(wan_ip, sizeof wan_ip, "203.0.113.%d", 20 + i);
+		snprintf(lan_ip, sizeof lan_ip, "192.168.77.%d", 20 + i);
+		struct sockaddr_in wan = v4(wan_ip, 9);
+		struct sockaddr_in local = v4(lan_ip, (uint16_t)(7770 + i));
+		assert(devtool_confirm_udp_from(cam, peers[i], (struct sockaddr *)&wan, 1));
+		meshlink_hint_address(cam, peers[i], (struct sockaddr *)&local);
+	}
+
+	/* At least one candidate must start under the default txn cap (not forced). */
+	assert_after(count_active_candidates(cam, peers, PATH_BUDGET_PEERS) >= 1, 10);
+	assert(count_active_candidates(cam, peers, PATH_BUDGET_PEERS) <= PATH_SCHED_MAX_TRANSACTIONS);
+	assert(devtool_probe_active_transactions(cam) <= PATH_SCHED_MAX_TRANSACTIONS);
+
+	/* Freeze refill an hour out so one sleep cannot span two token windows. */
+	devtool_set_probe_budget(cam, PATH_SCHED_PACKETS_PER_SEC, 20, PATH_SCHED_MAX_TRANSACTIONS);
+	prev_optional = devtool_probe_optional_packets_sent(cam);
+
+	for(int sec = 0; sec < 10; sec++) {
+		sleep(1);
+
+		assert(devtool_probe_active_transactions(cam) <= PATH_SCHED_MAX_TRANSACTIONS);
+		assert(count_active_candidates(cam, peers, PATH_BUDGET_PEERS) <= PATH_SCHED_MAX_TRANSACTIONS);
+		assert(devtool_backbone_udp_confirmed(cam));
+		assert(devtool_backbone_udp_timer_armed(cam));
+	}
+
+	{
+		uint64_t sent = devtool_probe_optional_packets_sent(cam);
+		assert(sent >= prev_optional);
+		assert(sent - prev_optional <= PATH_SCHED_PACKETS_PER_SEC);
+	}
+
+	for(int i = 0; i < PATH_BUDGET_PEERS; i++) {
+		meshlink_channel_abort(cam, ch[i]);
+	}
+
+	for(int i = 0; i < 6; i++) {
+		meshlink_close(m[i]);
+	}
+
+	stability_destroy_conf(prefix, 6);
+	printf("path-stability T19 ok: txn<=%d pkt/s<=%d with %d peers; backbone stayed warm\n",
+	       PATH_SCHED_MAX_TRANSACTIONS, PATH_SCHED_PACKETS_PER_SEC, PATH_BUDGET_PEERS);
+}
+
+/* --- Finding 17 item 17: six route classes -------------------------------- */
+
+static bool node_meta_up(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	devtool_node_status_t st = snapshot(mesh, node);
+	bool up = st.meta_connected;
+	devtool_free_node_status(&st);
+	return up;
+}
+
+static bool route_kind_local_meta(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	devtool_node_status_t st = snapshot(mesh, node);
+	bool ok = st.active_route_kind == ROUTE_DIRECT_LOCAL_META && st.active_route_local;
+	devtool_free_node_status(&st);
+	return ok;
+}
+
+static bool route_relay_carrier(meshlink_handle_t *mesh, meshlink_node_t *node, int carrier, const char *hop) {
+	devtool_node_status_t st = snapshot(mesh, node);
+	bool ok = st.active_route_kind == ROUTE_RELAY
+	          && st.active_route_carrier == carrier
+	          && st.active_route_first_hop
+	          && hop && !strcmp(st.active_route_first_hop, hop);
+	devtool_free_node_status(&st);
+	return ok;
+}
+
+static bool candidate_validated(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	devtool_node_status_t st = snapshot(mesh, node);
+	bool ok = st.candidate_active && st.candidate_rounds >= 2;
+	devtool_free_node_status(&st);
+	return ok;
+}
+
+static void plant_lan_localhost(meshlink_handle_t *viewer, meshlink_handle_t *peer) {
+	meshlink_node_t *n = meshlink_get_node(viewer, meshlink_get_self(peer)->name);
+	struct sockaddr_in sa = ipv4("127.0.0.1", (uint16_t)meshlink_get_port(peer));
+
+	assert(n);
+	assert(devtool_learn_discovery_address(viewer, n, (struct sockaddr *)&sa));
+}
+
+/* Class 3: local peer META — discovery plant only; no channel so UDP cannot win. */
+static void test_local_peer_meta_route(void) {
+	printf("\n=== path-stability T17c: local peer META delivers ===\n");
+
+	meshlink_handle_t *bb, *e1, *e2;
+	stability_open_trio("path_stability_t17c_conf", "path-stability-17c", &bb, &e1, &e2);
+
+	init_sync_flag(&received);
+	meshlink_set_receive_cb(e2, packet_receive_cb);
+
+	assert_after(meshlink_get_node(e1, "baz") && meshlink_get_node(e2, "bar"), 15);
+	meshlink_node_t *e1_e2 = meshlink_get_node(e1, "baz");
+	assert(e1_e2);
+	assert_after(node_is_reachable(e1, e1_e2), 15);
+	assert_after(node_is_keyed(e1, meshlink_get_node(e1, "foo")), 20);
+
+	plant_lan_localhost(e1, e2);
+	plant_lan_localhost(e2, e1);
+	assert_after(node_meta_up(e1, e1_e2), 15);
+	assert(!devtool_liveness_probe_warranted(e1, e1_e2));
+
+	for(int i = 0; i < 30; i++) {
+		assert(meshlink_send(e1, e1_e2, "Hello", 5));
+
+		if(wait_sync_flag(&received, 1)) {
+			break;
+		}
+	}
+
+	assert(wait_sync_flag(&received, 15));
+	assert_after(route_kind_local_meta(e1, e1_e2), 5);
+
+	stability_close_trio("path_stability_t17c_conf", bb, e1, e2);
+	printf("path-stability T17c ok: DIRECT_LOCAL_META\n");
+}
+
+/* Class 2: WAN peer UDP — netns with 203.0.113 (not RFC1918), channel demand. */
+static void test_wan_peer_udp_route(void) {
+	printf("\n=== path-stability T17b: WAN peer UDP delivers ===\n");
+
+	peer_config_t *peers = setup_relay_peer_nut_wan("pathstab17b");
+
+	init_sync_flag(&accepted);
+	init_sync_flag(&received);
+	meshlink_set_channel_accept_cb(peers[2].mesh, accept_cb);
+
+	for(int i = 0; i < 3; i++) {
+		assert(meshlink_start(peers[i].mesh));
+	}
+
+	assert_after(meshlink_get_node(peers[1].mesh, "nut") && meshlink_get_node(peers[2].mesh, "peer"), 20);
+	meshlink_node_t *peer_nut = meshlink_get_node(peers[1].mesh, "nut");
+	meshlink_node_t *nut_peer = meshlink_get_node(peers[2].mesh, "peer");
+	assert(peer_nut && nut_peer);
+	assert_after(node_is_reachable(peers[1].mesh, peer_nut), 15);
+	assert_after(node_is_keyed(peers[1].mesh, meshlink_get_node(peers[1].mesh, "relay")), 20);
+
+	hint_address(peers[1].mesh, peer_nut, peers[2].ip, meshlink_get_port(peers[2].mesh));
+	hint_address(peers[2].mesh, nut_peer, peers[1].ip, meshlink_get_port(peers[1].mesh));
+
+	meshlink_channel_t *ch = meshlink_channel_open(peers[1].mesh, peer_nut, 7, receive_cb, NULL, 0);
+	assert(ch);
+	assert(wait_sync_flag(&accepted, 20));
+	assert(meshlink_channel_send(peers[1].mesh, ch, "Hello", 5) == 5);
+	assert(wait_sync_flag(&received, 15));
+	assert(devtool_liveness_probe_warranted(peers[1].mesh, peer_nut));
+	assert_after(udp_status_working(peers[1].mesh, peer_nut), 45);
+
+	/* A RELAY_UDP candidate can win first (backbone warm). Commit it, then wait
+	   for the better DIRECT_UDP candidate and commit that. */
+	for(int pass = 0; pass < 2; pass++) {
+		assert_after(candidate_validated(peers[1].mesh, peer_nut), 30);
+		devtool_age_route(peers[1].mesh, peer_nut, PATH_ROUTE_MIN_RESIDENCY_SEC + 1);
+		devtool_age_candidate(peers[1].mesh, peer_nut, 2);
+		devtool_path_route_tick(peers[1].mesh, peer_nut);
+
+		devtool_node_status_t st = snapshot(peers[1].mesh, peer_nut);
+		bool done = st.active_route_kind == ROUTE_DIRECT_UDP && !st.active_route_local;
+		devtool_free_node_status(&st);
+
+		if(done) {
+			break;
+		}
+	}
+
+	reset_sync_flag(&received);
+	assert(meshlink_channel_send(peers[1].mesh, ch, "Hello", 5) == 5);
+	assert(wait_sync_flag(&received, 15));
+
+	{
+		devtool_node_status_t st = snapshot(peers[1].mesh, peer_nut);
+		assert(st.active_route_kind == ROUTE_DIRECT_UDP);
+		assert(!st.active_route_local);
+		devtool_free_node_status(&st);
+	}
+
+	meshlink_channel_abort(peers[1].mesh, ch);
+	close_relay_peer_nut(peers);
+	printf("path-stability T17b ok: DIRECT_UDP WAN (!local)\n");
+}
+
+/* Class 5: backbone direct-META relay — UDP dropped, no camera LAN META. */
+static void test_relay_meta_direct_route(void) {
+	printf("\n=== path-stability T17e: backbone META_DIRECT relay delivers ===\n");
+
+	peer_config_t *peers = setup_relay_peer_nut_indirect("pathstab17e");
+
+	if(!set_peers_tcponly(peers, 3)) {
+		close_relay_peer_nut(peers);
+		printf("SKIP path-stability T17e: iptables UDP drop unavailable\n");
+		return;
+	}
+
+	init_sync_flag(&received);
+	meshlink_set_receive_cb(peers[2].mesh, packet_receive_cb);
+
+	for(int i = 0; i < 3; i++) {
+		assert(meshlink_start(peers[i].mesh));
+	}
+
+	assert_after(meshlink_get_node(peers[1].mesh, "nut") && meshlink_get_node(peers[2].mesh, "peer"), 20);
+	meshlink_node_t *peer_nut = meshlink_get_node(peers[1].mesh, "nut");
+	meshlink_node_t *peer_relay = meshlink_get_node(peers[1].mesh, "relay");
+	assert(peer_nut && peer_relay);
+	assert_after(node_is_reachable(peers[1].mesh, peer_nut), 15);
+	assert_after(node_meta_up(peers[1].mesh, peer_relay), 20);
+	assert(!devtool_liveness_probe_warranted(peers[1].mesh, peer_nut));
+
+	for(int i = 0; i < 40; i++) {
+		assert(meshlink_send(peers[1].mesh, peer_nut, "Hello", 5));
+
+		if(wait_sync_flag(&received, 1)) {
+			break;
+		}
+	}
+
+	assert(wait_sync_flag(&received, 20));
+	assert_after(route_relay_carrier(peers[1].mesh, peer_nut, CARRIER_META_DIRECT, "relay"), 10);
+
+	close_relay_peer_nut(peers);
+	printf("path-stability T17e ok: RELAY META_DIRECT via relay\n");
+}
+
+/* Class 6: backbone canonical-META relay — UDP dropped, META dialed via canonical. */
+static void test_relay_meta_canonical_route(void) {
+	printf("\n=== path-stability T17f: backbone META_CANONICAL relay delivers ===\n");
+
+	peer_config_t *peers = setup_relay_peer_nut_indirect("pathstab17f");
+
+	if(!set_peers_tcponly(peers, 3)) {
+		close_relay_peer_nut(peers);
+		printf("SKIP path-stability T17f: iptables UDP drop unavailable\n");
+		return;
+	}
+
+	char port_str[16];
+	snprintf(port_str, sizeof port_str, "%d", meshlink_get_port(peers[0].mesh));
+
+	/* Invite already joined; before start, pin the backbone META dial to canonical. */
+	meshlink_node_t *peer_relay = meshlink_get_node(peers[1].mesh, "relay");
+	meshlink_node_t *nut_relay = meshlink_get_node(peers[2].mesh, "relay");
+	assert(peer_relay && nut_relay);
+	assert(meshlink_set_canonical_address(peers[1].mesh, peer_relay, "192.168.1.1", port_str));
+	assert(meshlink_set_canonical_address(peers[2].mesh, nut_relay, "192.168.2.1", port_str));
+	forget_addresses(peers[1].mesh, peer_relay);
+	forget_addresses(peers[2].mesh, nut_relay);
+
+	init_sync_flag(&received);
+	meshlink_set_receive_cb(peers[2].mesh, packet_receive_cb);
+
+	for(int i = 0; i < 3; i++) {
+		assert(meshlink_start(peers[i].mesh));
+	}
+
+	assert_after(meshlink_get_node(peers[1].mesh, "nut") && meshlink_get_node(peers[2].mesh, "peer"), 20);
+	meshlink_node_t *peer_nut = meshlink_get_node(peers[1].mesh, "nut");
+	peer_relay = meshlink_get_node(peers[1].mesh, "relay");
+	assert(peer_nut && peer_relay);
+	assert_after(node_is_reachable(peers[1].mesh, peer_nut), 15);
+	assert_after(node_meta_up(peers[1].mesh, peer_relay), 30);
+
+	{
+		devtool_node_status_t st = snapshot(peers[1].mesh, peer_relay);
+		assert(st.meta_connected);
+		assert(st.meta_via_canonical);
+		devtool_free_node_status(&st);
+	}
+
+	assert(!devtool_liveness_probe_warranted(peers[1].mesh, peer_nut));
+
+	for(int i = 0; i < 40; i++) {
+		assert(meshlink_send(peers[1].mesh, peer_nut, "Hello", 5));
+
+		if(wait_sync_flag(&received, 1)) {
+			break;
+		}
+	}
+
+	assert(wait_sync_flag(&received, 20));
+	assert_after(route_relay_carrier(peers[1].mesh, peer_nut, CARRIER_META_CANONICAL, "relay"), 10);
+
+	close_relay_peer_nut(peers);
+	printf("path-stability T17f ok: RELAY META_CANONICAL via relay\n");
 }
 
 int main(void) {
@@ -1277,12 +1855,26 @@ int main(void) {
 	test_suspect_before_demote();
 	test_idle_peer_is_not_probed();
 	test_recorded_route();
+	test_relay_carrier_is_backbone();
+	test_local_peer_meta_route();
+
+	/* Netns setup calls exit(77). Skip only these cases so the rest of the binary still runs. */
+	if(netns_available()) {
+		test_wan_peer_udp_route();
+		test_relay_meta_direct_route();
+		test_relay_meta_canonical_route();
+	} else {
+		printf("SKIP path-stability T17b/T17e/T17f: netns unavailable\n");
+	}
+
 	test_fallback_keeps_suspect();
 	test_parked_pmtu_promotes_local();
 	test_half_open_keeps_demand();
 	test_release_after_reclassify();
 	test_backbone_not_starved();
 	test_promotion_request_cap();
+	test_retransmit_raises_suspect();
+	test_many_peers_stay_in_budget();
 
 	printf("\npath-stability: all checks passed\n");
 	return 0;

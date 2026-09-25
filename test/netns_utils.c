@@ -17,35 +17,46 @@
 
 static int ip = 1;
 
-/// SKIP (exit 77) when this environment cannot create netns.
-static void require_netns(void) {
-	if(getuid() != 0) {
-		fprintf(stderr, "SKIP: netns tests require root\n");
-		exit(77);
-	}
-
-	if(access("/bin/ip", X_OK) != 0) {
-		fprintf(stderr, "SKIP: /bin/ip not found (need iproute2)\n");
-		exit(77);
-	}
-
-	/* PID-unique name + delete-first so a leftover or parallel probe cannot false-SKIP. */
+bool netns_available(void) {
 	char *add_cmd = NULL;
 	char *del_cmd = NULL;
-	assert(asprintf(&add_cmd, "/bin/ip netns add meshlink-netns-probe-%d >/dev/null 2>&1", getpid()) > 0);
-	assert(asprintf(&del_cmd, "/bin/ip netns delete meshlink-netns-probe-%d >/dev/null 2>&1", getpid()) > 0);
-	(void)system(del_cmd);
+	int rc;
 
-	if(system(add_cmd) != 0) {
-		free(add_cmd);
-		free(del_cmd);
-		fprintf(stderr, "SKIP: cannot create netns (need CAP_SYS_ADMIN and shared /run/netns)\n");
-		exit(77);
+	if(getuid() != 0 || access("/bin/ip", X_OK) != 0) {
+		return false;
 	}
 
+	/* PID-unique name + delete-first so a leftover or parallel probe cannot false-negative. */
+	if(asprintf(&add_cmd, "/bin/ip netns add meshlink-netns-probe-%d >/dev/null 2>&1", getpid()) <= 0
+	                || asprintf(&del_cmd, "/bin/ip netns delete meshlink-netns-probe-%d >/dev/null 2>&1", getpid()) <= 0) {
+		free(add_cmd);
+		free(del_cmd);
+		return false;
+	}
+
+	(void)system(del_cmd);
+	rc = system(add_cmd);
 	(void)system(del_cmd);
 	free(add_cmd);
 	free(del_cmd);
+	return rc == 0;
+}
+
+/// SKIP (exit 77) when this environment cannot create netns.
+static void require_netns(void) {
+	if(netns_available()) {
+		return;
+	}
+
+	if(getuid() != 0) {
+		fprintf(stderr, "SKIP: netns tests require root\n");
+	} else if(access("/bin/ip", X_OK) != 0) {
+		fprintf(stderr, "SKIP: /bin/ip not found (need iproute2)\n");
+	} else {
+		fprintf(stderr, "SKIP: cannot create netns (need CAP_SYS_ADMIN and shared /run/netns)\n");
+	}
+
+	exit(77);
 }
 
 /// Create meshlink instances and network namespaces for a list of peers
@@ -164,6 +175,20 @@ void change_peer_ip(peer_config_t *peer) {
 	free(command);
 }
 
+void change_peer_ip_to(peer_config_t *peer, const char *ipv4) {
+	char *command = NULL;
+
+	assert(ipv4);
+	snprintf(peer->ip, sizeof peer->ip, "%s", ipv4);
+	assert(asprintf(&command,
+	                "/bin/ip netns exec %s ip addr flush dev eth0;"
+	                "/bin/ip netns exec %s ip addr add %s/24 dev eth0;",
+	                peer->netns_name, peer->netns_name, peer->ip));
+	assert(command);
+	assert(system(command) == 0);
+	free(command);
+}
+
 /// Let the first peer in a list invite all the subsequent peers
 static void invite_peers(peer_config_t *peers, int npeers) {
 	assert(meshlink_start(peers[0].mesh));
@@ -203,6 +228,24 @@ peer_config_t *setup_relay_peer_nut(const char *prefix) {
 	return peers;
 }
 
+/// Same LAN bridge, but 203.0.113/24 so path_address_is_local is false (WAN UDP).
+peer_config_t *setup_relay_peer_nut_wan(const char *prefix) {
+	static peer_config_t peers[] = {
+		{"relay", DEV_CLASS_BACKBONE, NULL, 0, NULL},
+		{"peer", DEV_CLASS_STATIONARY, NULL, 0, NULL},
+		{"nut", DEV_CLASS_STATIONARY, NULL, 0, NULL},
+	};
+
+	create_peers(peers, 3, prefix);
+	setup_lan_topology(peers, 3);
+	change_peer_ip_to(&peers[0], "203.0.113.1");
+	change_peer_ip_to(&peers[1], "203.0.113.2");
+	change_peer_ip_to(&peers[2], "203.0.113.3");
+	invite_peers(peers, 3);
+
+	return peers;
+}
+
 /// Set up relay, peer and NUT that are directly connected
 peer_config_t *setup_relay_peer_nut_indirect(const char *prefix) {
 	static peer_config_t peers[] = {
@@ -220,8 +263,9 @@ peer_config_t *setup_relay_peer_nut_indirect(const char *prefix) {
 	return peers;
 }
 
-/// Make all nodes only be able to communicate via TCP
-void set_peers_tcponly(peer_config_t *peers, int npeers) {
+/// Make all nodes only be able to communicate via TCP. False leaves the caller
+/// to skip only the case that needed the drop.
+bool set_peers_tcponly(peer_config_t *peers, int npeers) {
 	const char *ipt = (access("/usr/sbin/iptables-legacy", X_OK) == 0) ? "/usr/sbin/iptables-legacy" : "iptables";
 
 	for(int i = 0; i < npeers; i++) {
@@ -239,9 +283,11 @@ void set_peers_tcponly(peer_config_t *peers, int npeers) {
 
 		if(rc != 0) {
 			fprintf(stderr, "SKIP: iptables UDP drop not supported in this environment\n");
-			exit(77);
+			return false;
 		}
 	}
+
+	return true;
 }
 
 void close_relay_peer_nut(peer_config_t *peers) {
