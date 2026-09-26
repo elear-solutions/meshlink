@@ -238,6 +238,8 @@ struct meshlink_handle {
 		uint64_t addr_set_fingerprint; /* FNV-1a of ifaces + addresses; 0 until first commit */
 		bool addr_set_initialized;
 		bool addr_dump_complete;       /* Linux: GETADDR dump finished; later batches may advance epoch */
+		timeout_t lan_query_timeout;   /* one coalesced mDNS query when a dial target lacks presence */
+		unsigned lan_query_fires;      /* times that timer called discovery_refresh */
 #ifdef __APPLE__
 		pthread_t thread;
 		pthread_mutex_t stop_mutex;

@@ -237,6 +237,27 @@ bool devtool_learn_discovery_address(meshlink_handle_t *mesh, meshlink_node_t *n
  */
 void devtool_clear_lan_discovery_presence(meshlink_handle_t *mesh, meshlink_node_t *node);
 
+/// True while the coalesced LAN mDNS query timer is armed.
+bool devtool_lan_discovery_query_pending(meshlink_handle_t *mesh);
+
+/// Times discovery_refresh ran from that timer. A no-op fire does not increment.
+unsigned devtool_lan_discovery_query_fires(meshlink_handle_t *mesh);
+
+/// Remaining delay in ms, or -1 when the timer is not armed.
+int devtool_lan_discovery_query_delay_ms(meshlink_handle_t *mesh);
+
+/// Run the armed timer callback now. Does not send multicast by itself.
+bool devtool_fire_lan_discovery_query(meshlink_handle_t *mesh);
+
+/// Same hook the inbound mesh mDNS query branch uses after it answers.
+void devtool_note_inbound_mdns_query(meshlink_handle_t *mesh);
+
+/// Deliver one ADD_EDGE. A new from or to node arms the LAN query when it should.
+bool devtool_inject_add_edge(meshlink_handle_t *mesh, const char *from_name, int from_devclass, const char *to_name, int to_devclass);
+
+/// Run discovery_stop, which drops the LAN query timer.
+void devtool_discovery_stop(meshlink_handle_t *mesh);
+
 /// Number of LAN_RESILIENCE outgoings.
 unsigned devtool_lan_intent_count(meshlink_handle_t *mesh);
 

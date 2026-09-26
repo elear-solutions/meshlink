@@ -68,6 +68,10 @@ bool connection_policy_admit_incoming(struct meshlink_handle *mesh, struct conne
 void connection_policy_advance_network_epoch(struct meshlink_handle *mesh);
 void connection_policy_note_lan_drop(struct meshlink_handle *mesh, struct node_t *n);
 bool connection_policy_is_local_adjacency(const struct meshlink_handle *mesh, const struct node_t *n);
+
+/// True when this boot's mDNS observation is still current for the LAN epoch.
+/** A stored recent[] address does not count. Presence is runtime-only. */
+bool connection_policy_has_current_lan_discovery(const struct meshlink_handle *mesh, const struct node_t *n);
 const char *connection_policy_backbone_name(const struct meshlink_handle *mesh);
 struct node_t *connection_policy_backbone(struct meshlink_handle *mesh);
 bool connection_policy_is_backbone(const struct meshlink_handle *mesh, const struct node_t *n);

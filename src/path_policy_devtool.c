@@ -1657,6 +1657,7 @@ static bool cover_promotion(meshlink_handle_t *mesh, node_t *live) {
 
 	live->address = wan;
 	live->status.udp_confirmed = true;
+	memset(&live->catta_address, 0, sizeof live->catta_address);
 	path_clear_recent(live);
 	path_learn_address(mesh, live, &wan, ADDR_SRC_AUTH_DIRECT);
 	live->udp_tier = PATH_TIER_DIRECT_WAN_UDP;

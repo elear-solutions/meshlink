@@ -27,4 +27,8 @@ void discovery_stop(meshlink_handle_t *mesh);
 void discovery_refresh(meshlink_handle_t *mesh);
 void scan_ifaddrs(meshlink_handle_t *mesh);
 
+/// Arm one 200ms mDNS query when a peer we would dial has no current LAN presence.
+/** Resets the same timer. A stored recent[] address does not suppress it. */
+void discovery_consider_lan_query(meshlink_handle_t *mesh);
+
 #endif

@@ -589,6 +589,10 @@ static bool node_has_current_discovery(const meshlink_handle_t *mesh, const node
 	return n->lan_presence.network_epoch == mesh->lan_network_epoch;
 }
 
+bool connection_policy_has_current_lan_discovery(const meshlink_handle_t *mesh, const node_t *n) {
+	return node_has_current_discovery(mesh, n);
+}
+
 static bool node_has_auth_direct_grace(const meshlink_handle_t *mesh, const node_t *n) {
 	if(!mesh || !n || !n->lan_auth_direct_until) {
 		return false;

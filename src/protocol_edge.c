@@ -30,6 +30,7 @@
 #include "netutl.h"
 #include "node.h"
 #include "connection_policy.h"
+#include "discovery.h"
 #include "protocol.h"
 #include "utils.h"
 #include "xalloc.h"
@@ -159,6 +160,7 @@ bool add_edge_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		}
 
 		node_add(mesh, from);
+		discovery_consider_lan_query(mesh);
 	}
 
 	if(contradictions > 50) {
@@ -189,6 +191,7 @@ bool add_edge_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		}
 
 		node_add(mesh, to);
+		discovery_consider_lan_query(mesh);
 	}
 
 	to->devclass = to_devclass;

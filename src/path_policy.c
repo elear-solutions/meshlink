@@ -1016,6 +1016,7 @@ void path_clear_recent(node_t *n) {
 	memset(n->recent, 0, sizeof n->recent);
 	memset(n->recent_source, 0, sizeof n->recent_source);
 	memset(n->recent_cap, 0, sizeof n->recent_cap);
+	memset(&n->catta_address, 0, sizeof n->catta_address);
 	n->status.dirty = true;
 }
 
