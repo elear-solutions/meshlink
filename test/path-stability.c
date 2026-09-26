@@ -1921,6 +1921,129 @@ static void test_relay_meta_canonical_route(void) {
 	printf("path-stability T17f ok: RELAY META_CANONICAL via relay\n");
 }
 
+static void set_fast_pings(meshlink_handle_t *mesh) {
+	meshlink_set_dev_class_timeouts(mesh, DEV_CLASS_BACKBONE, 2, 1);
+	meshlink_set_dev_class_timeouts(mesh, DEV_CLASS_STATIONARY, 2, 1);
+	meshlink_set_dev_class_timeouts(mesh, DEV_CLASS_PORTABLE, 2, 1);
+}
+
+/* A received META request resets the peer's ping timer, so only one side pings. */
+static void test_meta_ping_is_one_sided(void) {
+	printf("\n=== path-stability T20: one META ping per interval ===\n");
+
+	assert(meshlink_destroy("path_stability_t18_conf.1"));
+	assert(meshlink_destroy("path_stability_t18_conf.2"));
+
+	meshlink_handle_t *a = meshlink_open("path_stability_t18_conf.1", "aaa", "path-stability-18", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *b = meshlink_open("path_stability_t18_conf.2", "bbb", "path-stability-18", DEV_CLASS_STATIONARY);
+	assert(a && b);
+	meshlink_enable_discovery(a, false);
+	meshlink_enable_discovery(b, false);
+	set_fast_pings(a);
+	set_fast_pings(b);
+	join_meshlink_peer(a, b);
+	assert(meshlink_start(a));
+	assert(meshlink_start(b));
+
+	meshlink_node_t *a_b = meshlink_get_node(a, "bbb");
+	meshlink_node_t *b_a = meshlink_get_node(b, "aaa");
+	assert(a_b && b_a);
+	assert_after(node_is_reachable(a, a_b), 15);
+	assert_after(node_meta_up(a, a_b) && node_meta_up(b, b_a), 15);
+
+	/* Let the first exchange pick a single pinger. */
+	sleep(3);
+
+	unsigned a0 = devtool_meta_pings_sent(a, a_b);
+	unsigned b0 = devtool_meta_pings_sent(b, b_a);
+	sleep(7);
+	unsigned a_sent = devtool_meta_pings_sent(a, a_b) - a0;
+	unsigned b_sent = devtool_meta_pings_sent(b, b_a) - b0;
+	unsigned lo = a_sent < b_sent ? a_sent : b_sent;
+	unsigned hi = a_sent > b_sent ? a_sent : b_sent;
+
+	assert(hi >= 2);
+	assert(lo <= 1);
+
+	meshlink_close(a);
+	meshlink_close(b);
+	assert(meshlink_destroy("path_stability_t18_conf.1"));
+	assert(meshlink_destroy("path_stability_t18_conf.2"));
+	printf("path-stability T20 ok: pings %u/%u\n", a_sent, b_sent);
+}
+
+/* Channel UDP liveness is one direction plus the echo. LAN META stays silent
+   while that UDP is healthy, and pings again once UDP is pinned off. A +8
+   PMTU reply parks instead of reopening discovery. */
+static void test_idle_channel_traffic(void) {
+	printf("\n=== path-stability T21: one-way liveness, quiet LAN META, parked PMTU ===\n");
+
+	meshlink_handle_t *bb, *e1, *e2;
+	stability_open_trio("path_stability_t19_conf", "path-stability-19", &bb, &e1, &e2);
+	set_fast_pings(bb);
+	set_fast_pings(e1);
+	set_fast_pings(e2);
+
+	init_sync_flag(&accepted);
+	meshlink_set_channel_accept_cb(e2, accept_cb);
+
+	assert_after(meshlink_get_node(e1, "baz") && meshlink_get_node(e2, "bar"), 15);
+	meshlink_node_t *e1_e2 = meshlink_get_node(e1, "baz");
+	meshlink_node_t *e2_e1 = meshlink_get_node(e2, "bar");
+	assert(e1_e2 && e2_e1);
+	assert_after(node_is_reachable(e1, e1_e2), 15);
+	assert_after(node_is_keyed(e1, meshlink_get_node(e1, "foo")), 20);
+
+	plant_lan_localhost(e1, e2);
+	plant_lan_localhost(e2, e1);
+	assert_after(node_meta_up(e1, e1_e2) && node_meta_up(e2, e2_e1), 15);
+	assert_after(devtool_local_adjacency_count(e1) >= 1 && devtool_local_adjacency_count(e2) >= 1, 10);
+
+	meshlink_channel_t *ch = meshlink_channel_open(e1, e1_e2, 7, receive_cb, NULL, 0);
+	assert(ch);
+	assert(wait_sync_flag(&accepted, 15));
+	assert_after(pmtu_parked(e1, e1_e2) && pmtu_parked(e2, e2_e1), 30);
+
+	unsigned live1 = devtool_liveness_probes_sent(e1, e1_e2);
+	unsigned live2 = devtool_liveness_probes_sent(e2, e2_e1);
+	unsigned ping1 = devtool_meta_pings_sent(e1, e1_e2);
+	unsigned ping2 = devtool_meta_pings_sent(e2, e2_e1);
+	sleep(10);
+
+	unsigned dlive1 = devtool_liveness_probes_sent(e1, e1_e2) - live1;
+	unsigned dlive2 = devtool_liveness_probes_sent(e2, e2_e1) - live2;
+	unsigned dping1 = devtool_meta_pings_sent(e1, e1_e2) - ping1;
+	unsigned dping2 = devtool_meta_pings_sent(e2, e2_e1) - ping2;
+	unsigned lo = dlive1 < dlive2 ? dlive1 : dlive2;
+	unsigned hi = dlive1 > dlive2 ? dlive1 : dlive2;
+
+	printf("path-stability T21 window: liveness %u/%u pings %u/%u\n", dlive1, dlive2, dping1, dping2);
+	assert(hi >= 1);
+	assert(lo <= 1);
+	assert(dping1 == 0 && dping2 == 0);
+
+	assert(devtool_accept_pmtu_increase(e1, e1_e2, 1000));
+	devtool_node_status_t st = snapshot(e1, e1_e2);
+	assert(st.mtuprobes >= 30);
+	assert(st.maxmtu == 1008);
+	assert(st.minmtu == 1008);
+	assert(st.maxmtu != MTU);
+	devtool_free_node_status(&st);
+
+	devtool_force_meta(e1, e1_e2, true);
+	devtool_force_meta(e2, e2_e1, true);
+	ping1 = devtool_meta_pings_sent(e1, e1_e2);
+	ping2 = devtool_meta_pings_sent(e2, e2_e1);
+	sleep(5);
+	dping1 = devtool_meta_pings_sent(e1, e1_e2) - ping1;
+	dping2 = devtool_meta_pings_sent(e2, e2_e1) - ping2;
+	assert(dping1 + dping2 >= 1);
+
+	meshlink_channel_abort(e1, ch);
+	stability_close_trio("path_stability_t19_conf", bb, e1, e2);
+	printf("path-stability T21 ok: liveness %u/%u, resumed pings %u/%u\n", dlive1, dlive2, dping1, dping2);
+}
+
 int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_WARNING, NULL);
 
@@ -1953,6 +2076,8 @@ int main(void) {
 	test_backbone_not_starved();
 	test_promotion_request_cap();
 	test_retransmit_raises_suspect();
+	test_meta_ping_is_one_sided();
+	test_idle_channel_traffic();
 	test_many_peers_stay_in_budget();
 
 	printf("\npath-stability: all checks passed\n");

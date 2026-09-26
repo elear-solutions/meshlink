@@ -1791,6 +1791,63 @@ void devtool_candidate_clear_cooldown(meshlink_handle_t *mesh, meshlink_node_t *
 	pthread_mutex_unlock(&mesh->mutex);
 }
 
+unsigned devtool_meta_pings_sent(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	unsigned count;
+
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return 0;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	node_t *n = (node_t *)node;
+	count = n->connection ? n->connection->pings_sent : 0;
+	pthread_mutex_unlock(&mesh->mutex);
+	return count;
+}
+
+unsigned devtool_liveness_probes_sent(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	unsigned count;
+
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return 0;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	count = ((node_t *)node)->liveness_probes_sent;
+	pthread_mutex_unlock(&mesh->mutex);
+	return count;
+}
+
+bool devtool_accept_pmtu_increase(meshlink_handle_t *mesh, meshlink_node_t *node, uint16_t settled) {
+	bool ok;
+
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	ok = net_devtool_accept_pmtu_increase(mesh, (node_t *)node, settled);
+	pthread_mutex_unlock(&mesh->mutex);
+
+	if(!ok) {
+		meshlink_errno = MESHLINK_EINVAL;
+	}
+
+	return ok;
+}
+
 bool devtool_liveness_probe_warranted(meshlink_handle_t *mesh, meshlink_node_t *node) {
 	if(!mesh || !node) {
 		meshlink_errno = MESHLINK_EINVAL;

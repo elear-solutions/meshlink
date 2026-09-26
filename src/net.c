@@ -43,6 +43,22 @@
 static const int default_timeout = 5;
 static const int default_interval = 60;
 
+/* LAN TCP has no NAT timeout. While that peer's direct UDP is up and a
+   channel still wants it, a META ping only duplicates the UDP liveness probe. */
+static bool lan_meta_quiet_ok(meshlink_handle_t *mesh, connection_t *c) {
+	node_t *n = c->node;
+
+	if(!n || !connection_policy_is_local_adjacency(mesh, n)) {
+		return false;
+	}
+
+	if(!path_peer_udp_demanded(mesh, n) || !n->status.udp_confirmed) {
+		return false;
+	}
+
+	return !n->active_route.suspect;
+}
+
 /* An outgoing connection that dies this soon after it activated did not really work:
    the peer dropped it on purpose (simultaneous-connect tie-break, connection limit) and
    will do so again, so reconnecting at once only produces a handshake per round trip. */
@@ -245,6 +261,10 @@ static void timeout_handler(event_loop_t *loop, void *data) {
 				if(c->status.pinged) {
 					logger(mesh, MESHLINK_INFO, "%s didn't respond to PING in %ld seconds", c->name, (long)mesh->loop.now.tv_sec - c->last_ping_time);
 				} else if(c->last_ping_time + pinginterval <= mesh->loop.now.tv_sec) {
+					if(lan_meta_quiet_ok(mesh, c)) {
+						continue;
+					}
+
 					send_ping(mesh, c);
 					continue;
 				} else {

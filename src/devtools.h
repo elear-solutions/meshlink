@@ -620,6 +620,15 @@ void devtool_age_candidate(struct meshlink_handle *mesh, struct meshlink_node *n
 /// True when this peer currently warrants a liveness probe.
 bool devtool_liveness_probe_warranted(struct meshlink_handle *mesh, struct meshlink_node *node);
 
+/// How many times send_ping() has run on the META socket to this node. 0 if none.
+unsigned devtool_meta_pings_sent(struct meshlink_handle *mesh, struct meshlink_node *node);
+
+/// Parked 64-byte liveness probes this node has emitted toward `node`.
+unsigned devtool_liveness_probes_sent(struct meshlink_handle *mesh, struct meshlink_node *node);
+
+/// Plant `settled` as the PMTU and accept a reply of settled+8 without restarting discovery.
+bool devtool_accept_pmtu_increase(struct meshlink_handle *mesh, struct meshlink_node *node, uint16_t settled);
+
 unsigned devtool_probe_second_tokens(struct meshlink_handle *mesh);
 unsigned devtool_probe_minute_tokens(struct meshlink_handle *mesh);
 unsigned devtool_probe_active_transactions(struct meshlink_handle *mesh);

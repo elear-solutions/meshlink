@@ -119,6 +119,7 @@ static void meshlink_logger(meshlink_handle_t *mesh, meshlink_log_level_t level,
 	int probe_len;
 	int mtu_len;
 	int probes;
+	int raised_mtu;
 	char node_name[100];
 	int i = -1;
 
@@ -197,7 +198,7 @@ static void meshlink_logger(meshlink_handle_t *mesh, meshlink_log_level_t level,
 		memset(&node_pmtu[i].mtu_ping, 0, sizeof(struct pmtu_attr_para));
 		memset(&node_pmtu[i].mtu_increase, 0, sizeof(struct pmtu_attr_para));
 
-	} else if(sscanf(text, "Increase in PMTU to %s detected, restarting PMTU discovery", node_name) == 1) {
+	} else if(sscanf(text, "Increase in PMTU to %s detected, raising MTU to %d", node_name, &raised_mtu) == 2) {
 		find_node_index(i, node_name);
 		node_pmtu[i].mtu_increase.time = cur_time - node_pmtu[i].mtu_start.time;
 		node_pmtu[i].mtu_increase.count += 1;

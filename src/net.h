@@ -147,6 +147,7 @@ void send_mtu_probe(struct meshlink_handle *mesh, struct node_t *);
 void send_candidate_probe(struct meshlink_handle *mesh, struct node_t *n);
 void send_suspect_probe(struct meshlink_handle *mesh, struct node_t *n);
 void send_backbone_udp_probe(struct meshlink_handle *mesh);
+bool net_devtool_accept_pmtu_increase(struct meshlink_handle *mesh, struct node_t *n, uint16_t settled);
 void choose_udp_address(struct meshlink_handle *mesh, struct node_t *n, const sockaddr_t **sa, int *sock, sockaddr_t *sa_buf);
 bool host_port_to_sockaddr(const char *host, const char *port, sockaddr_t *out) __attribute__((__warn_unused_result__));
 bool self_external_sockaddr(struct meshlink_handle *mesh, sockaddr_t *out) __attribute__((__warn_unused_result__));
