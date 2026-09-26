@@ -636,6 +636,12 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		send_everything(mesh, c);
 	}
 
+	/* Snapshot listen-port familiarity before AUTH_DIRECT / graph() seed the
+	   new hisport into address/recent[] — otherwise warm+port_known is always
+	   true on non-INDIRECT edges and the force-rekey branch never runs. */
+	uint16_t ack_port = (uint16_t)atoi(hisport);
+	bool port_known_before_edge = node_has_known_listen_port(n, ack_port);
+
 	/* Create an edge_t for this connection */
 
 	c->edge = new_connection_edge(mesh, c, n, hisport, devclass);
@@ -663,50 +669,19 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 
 	/* Jump-start UDP after META activate. Backbone initiator used to always
 	   send_req_key (cleared warm SPTPS on every META flap). When warm and the
-	   ACK listen port is already known, refresh addresses only. If the peer
-	   changed listen port while our validkey survived, force send_req_key.
-	   Warm acceptors push canonical/external so a reconnecting initiator that
-	   skipped rekey still learns a fresh EXTERNAL advertisement. */
+	   ACK listen port was already known before this edge, refresh addresses
+	   only. If the peer changed listen port while our validkey survived, force
+	   send_req_key. Warm acceptors push canonical/external so a reconnecting
+	   initiator that skipped rekey still learns a fresh EXTERNAL advertisement. */
 
 	if(c->status.initiator) {
 		if(upgrade_should_preserve_node_session(mesh, n, was_upgrade_probe, old_was_canonical)) {
 			send_canonical_address(mesh, n);
 			send_external_ip_address(mesh, n);
 		} else if(connection_policy_backbone_udp_required(mesh, n)) {
-			uint16_t ack_port = (uint16_t)atoi(hisport);
 			bool warm = n->status.validkey || n->status.waitingforkey;
-			bool port_known = false;
 
-			if(ack_port) {
-				char *aport = NULL;
-
-				if(n->address.sa.sa_family) {
-					sockaddr2str(&n->address, NULL, &aport);
-
-					if(aport && (uint16_t)atoi(aport) == ack_port) {
-						port_known = true;
-					}
-
-					free(aport);
-				}
-
-				for(int i = 0; !port_known && i < MAX_RECENT; i++) {
-					if(!n->recent[i].sa.sa_family) {
-						continue;
-					}
-
-					aport = NULL;
-					sockaddr2str(&n->recent[i], NULL, &aport);
-
-					if(aport && (uint16_t)atoi(aport) == ack_port) {
-						port_known = true;
-					}
-
-					free(aport);
-				}
-			}
-
-			if(warm && port_known) {
+			if(warm && port_known_before_edge) {
 				send_canonical_address(mesh, n);
 				send_external_ip_address(mesh, n);
 			} else {

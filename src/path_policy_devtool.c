@@ -1486,7 +1486,33 @@ static bool cover_route_usability_and_promotion(meshlink_handle_t *mesh) {
 }
 
 static bool cover_preserve(meshlink_handle_t *mesh) {
-	return upgrade_preserve_cover_unit(mesh);
+	node_t n;
+	sockaddr_t sa;
+
+	if(!upgrade_preserve_cover_unit(mesh)) {
+		return false;
+	}
+
+	/* Round-4 N2: node_has_known_listen_port used by ack_h() pre-graph snapshot. */
+	memset(&n, 0, sizeof n);
+	CHECK(!node_has_known_listen_port(NULL, 1234));
+	CHECK(!node_has_known_listen_port(&n, 0));
+	CHECK(!node_has_known_listen_port(&n, 1234));
+
+	memset(&sa, 0, sizeof sa);
+	sa.in.sin_family = AF_INET;
+	sa.in.sin_addr.s_addr = htonl(0x7f000001);
+	sa.in.sin_port = htons(1234);
+	n.address = sa;
+	CHECK(node_has_known_listen_port(&n, 1234));
+	CHECK(!node_has_known_listen_port(&n, 9999));
+
+	memset(&n.address, 0, sizeof n.address);
+	n.recent[0] = sa;
+	CHECK(node_has_known_listen_port(&n, 1234));
+	CHECK(!node_has_known_listen_port(&n, 4321));
+
+	return true;
 }
 
 static bool cover_demand(meshlink_handle_t *mesh) {

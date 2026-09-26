@@ -127,6 +127,43 @@ void node_set_validkey(meshlink_handle_t *mesh, node_t *n, bool valid) {
 	path_note_selected_route(mesh, n, valid ? "key recovered" : "key invalidated");
 }
 
+bool node_has_known_listen_port(const node_t *n, uint16_t port) {
+	char *aport = NULL;
+
+	if(!n || !port) {
+		return false;
+	}
+
+	if(n->address.sa.sa_family) {
+		sockaddr2str(&n->address, NULL, &aport);
+
+		if(aport && (uint16_t)atoi(aport) == port) {
+			free(aport);
+			return true;
+		}
+
+		free(aport);
+	}
+
+	for(int i = 0; i < MAX_RECENT; i++) {
+		if(!n->recent[i].sa.sa_family) {
+			continue;
+		}
+
+		aport = NULL;
+		sockaddr2str(&n->recent[i], NULL, &aport);
+
+		if(aport && (uint16_t)atoi(aport) == port) {
+			free(aport);
+			return true;
+		}
+
+		free(aport);
+	}
+
+	return false;
+}
+
 void free_node(node_t *n) {
 	n->status.destroyed = true;
 

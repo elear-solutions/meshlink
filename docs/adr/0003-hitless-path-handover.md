@@ -49,9 +49,14 @@ validation and META socket migration use `Path UDP` and `Path META`.
 
 ## Consequences
 
-- `ack_h()` snapshots `upgrade_probe` before the flag is cleared and
-  skips `send_req_key()` only when `upgrade_should_preserve_node_session()`
-  is true.
+- `ack_h()` snapshots `upgrade_probe` before the flag is cleared. It skips
+  `send_req_key()` when `upgrade_should_preserve_node_session()` is true, or
+  when a backbone initiator already has warm SPTPS (`validkey` /
+  `waitingforkey`) and the ACK listen port was known in `address`/`recent[]`
+  *before* this edge is seeded into the graph. Otherwise a backbone initiator
+  still `send_req_key()`s (including listen-port changes). Warm acceptors
+  push canonical/external advertisements without starting a rekey, so a
+  reconnecting initiator that skipped rekey still learns a fresh EXTERNAL.
 - `recent[]` sanitation drops untrusted hybrids and persists the result.
 - The outgoing walk no longer serializes leftover direct candidates
   before NLB. Those candidates are validated after a lower path is

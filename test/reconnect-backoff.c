@@ -548,6 +548,55 @@ static void test_meta_flap_preserves_sptps(void) {
 	assert(meshlink_destroy("reconnect_backoff_t24_conf.2"));
 }
 
+/* T25: Round-4 warm-acceptor EXTERNAL — after a same-port META reconnect the
+   warm peer must advertise EXTERNAL again so the initiator learns a fresh ad
+   even when it skipped send_req_key. Complements T24 (preserve-session skip)
+   and mirrors req-external-recent T9a next to the reconnect-backoff suite. */
+static void test_warm_acceptor_external_on_reconnect(void) {
+	printf("\n=== T25: warm acceptor re-advertises EXTERNAL on same-port reconnect ===\n");
+
+	assert(meshlink_destroy("reconnect_backoff_t25_conf.1"));
+	assert(meshlink_destroy("reconnect_backoff_t25_conf.2"));
+
+	meshlink_handle_t *a = meshlink_open("reconnect_backoff_t25_conf.1", "a", "reconnect_backoff_t25", DEV_CLASS_PORTABLE);
+	meshlink_handle_t *b = meshlink_open("reconnect_backoff_t25_conf.2", "b", "reconnect_backoff_t25", DEV_CLASS_BACKBONE);
+	assert(a && b);
+	meshlink_enable_discovery(a, false);
+	meshlink_enable_discovery(b, false);
+
+	int b_port = meshlink_get_port(b);
+	assert(b_port > 0);
+	devtool_set_external_ip_address(b, meshlink_get_self(b), "203.0.113.25");
+	join_meshlink_peer(b, a);
+
+	meshlink_node_t *a_b = meshlink_get_node(a, "b");
+	assert(a_b);
+	forget_addresses(a, a_b);
+	hint_address(a, a_b, "127.0.0.1", b_port);
+
+	assert(meshlink_start(b));
+	assert(meshlink_start(a));
+	wait_up(a, a_b);
+
+	assert_after(log_count("a: Got REQ_EXTERNAL from b") >= 1, 10);
+	int got_before = log_count("a: Got REQ_EXTERNAL from b");
+
+	meshlink_stop(a);
+	assert(meshlink_start(a));
+	wait_up(a, a_b);
+
+	assert_after(log_count("a: Got REQ_EXTERNAL from b") > got_before, 15);
+	printf("T25 ok: warm acceptor EXTERNAL count %d -> %d\n",
+	       got_before, log_count("a: Got REQ_EXTERNAL from b"));
+
+	meshlink_stop(a);
+	meshlink_stop(b);
+	meshlink_close(a);
+	meshlink_close(b);
+	assert(meshlink_destroy("reconnect_backoff_t25_conf.1"));
+	assert(meshlink_destroy("reconnect_backoff_t25_conf.2"));
+}
+
 int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, capture_log_cb);
 
@@ -560,6 +609,7 @@ int main(void) {
 	test_stable_canonical_resets();
 	test_key_renewal_does_not_restamp();
 	test_meta_flap_preserves_sptps();
+	test_warm_acceptor_external_on_reconnect();
 
 	free_captured_log();
 	return 0;

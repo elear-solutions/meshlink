@@ -186,5 +186,7 @@ bool node_add_recent_address_cap_ex(struct meshlink_handle *mesh, node_t *n, con
 bool node_append_recent_address(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *addr, address_source_t src);
 bool node_append_recent_address_cap(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *addr, address_source_t src, path_cap_t cap);
 bool graph_may_seed_udp(const node_t *n, const sockaddr_t *edge_addr);
+/* True when n->address or recent[] already carries listen port (pre-graph snapshot). */
+bool node_has_known_listen_port(const node_t *n, uint16_t port) __attribute__((__warn_unused_result__));
 
 #endif
