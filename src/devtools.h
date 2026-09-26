@@ -199,7 +199,7 @@ unsigned devtool_outgoing_count(meshlink_handle_t *mesh);
 
 /// Purpose of the BACKBONE_REQUIRED outgoing, or -1 if none.
 /** Values match meta_connection_purpose_t: NONE=0, BACKBONE_REQUIRED=1,
- *  LAN_RESILIENCE=2, HANDOVER_SPARE=3.
+ *  LAN_RESILIENCE=2. Handover spare was removed — ADR 0007 keeps handover in net_upgrade.
  */
 int devtool_backbone_intent_purpose(meshlink_handle_t *mesh);
 

@@ -12,6 +12,7 @@
 */
 
 #include "event.h"
+#include "path_types.h"
 #include "sockaddr.h"
 
 #include <stdbool.h>
@@ -22,26 +23,6 @@ struct meshlink_handle;
 struct node_t;
 struct connection_t;
 struct addrinfo;
-
-/* How an address was learned. Persisted next to recent[]. */
-typedef enum address_source_t {
-	ADDR_SRC_UNKNOWN = 0,       /* legacy load or unclassified */
-	ADDR_SRC_AUTH_DIRECT,       /* authenticated TCP from the peer itself */
-	ADDR_SRC_DISCOVERY,         /* local mDNS / Catta */
-	ADDR_SRC_HINT,              /* application or invitation hint */
-	ADDR_SRC_EXTERNAL,          /* peer-vouched REQ_EXTERNAL */
-	ADDR_SRC_EDGE_DIRECT,       /* graph edge that is not OPTION_INDIRECT */
-	ADDR_SRC_CANONICAL,         /* canonical / NLB endpoint (never stored in recent[]) */
-	ADDR_SRC_INDIRECT,          /* forwarded or OPTION_INDIRECT */
-	ADDR_SRC_UDP_REFLEXIVE      /* ANS_KEY / inbound remap / NAT-mapped UDP confirm */
-} address_source_t;
-
-/* Which transports may consume a recent[] slot. Independent of provenance. */
-typedef uint8_t path_cap_t;
-#define PATH_CAP_NONE 0x00
-#define PATH_CAP_META 0x01
-#define PATH_CAP_UDP  0x02
-#define PATH_CAP_BOTH (PATH_CAP_META | PATH_CAP_UDP)
 
 /* One learned UDP/META dest: address plus the recent[] slot it came from. */
 typedef struct path_endpoint_t {
@@ -176,68 +157,6 @@ typedef struct path_target_t {
 #define PATH_BACKBONE_UDP_KEEPALIVE_MISS  2
 #define PATH_BACKBONE_UDP_ESTABLISH_BACKOFF_MAX 30
 #define PATH_PEER_UDP_GRACE_SEC           5
-/* Fleet probe budget (finding 13). active_transactions counts live validation
-   state machines (promotion, suspect, PMTU discovery), not packets.
-   PATH_SCHED_PARKED_PACKETS_PER_MIN is the parked-probe cap: liveness and
-   PMTU-increase only. Admitted validation (promotion, suspect, PMTU discovery)
-   shares PATH_SCHED_PACKETS_PER_SEC and skips the parked minute bucket so a
-   search can finish (~18 PMTU probes) and a second admitted search does not
-   wait 60s. Worst-case optional validation traffic is therefore
-   4 pkt/s × 60s = 240 packets/minute while both slots stay admitted. Parked
-   probes add at most 20/min when second tokens remain. Required backbone
-   traffic uses a separate 1 pkt/s bucket (60/min). */
-#define PATH_SCHED_MAX_TRANSACTIONS            2
-#define PATH_SCHED_PACKETS_PER_SEC             4
-#define PATH_SCHED_PARKED_PACKETS_PER_MIN     20
-#define PATH_SCHED_PACKETS_PER_MIN PATH_SCHED_PARKED_PACKETS_PER_MIN
-#define PATH_SCHED_BACKBONE_RESERVE_PPS        1
-#define PATH_PROMOTION_MAX_REQUESTS         8
-
-typedef enum path_transaction_priority_t {
-	PATH_TX_BACKBONE_REQUIRED = 0,
-	PATH_TX_ACTIVE_ROUTE_RECOVERY,
-	PATH_TX_CHANNEL_PROMOTION,
-	PATH_TX_LIVENESS,
-	PATH_TX_PMTU_INCREASE
-} path_transaction_priority_t;
-
-typedef enum path_transaction_type_t {
-	PATH_TXN_PROMOTION = 0,
-	PATH_TXN_SUSPECT,
-	PATH_TXN_PMTU_DISCOVERY,
-	PATH_TXN_META_UPGRADE
-} path_transaction_type_t;
-
-typedef enum path_sched_admit_t {
-	PATH_SCHED_DENIED = 0,
-	PATH_SCHED_QUEUED,
-	PATH_SCHED_SENT
-} path_sched_admit_t;
-
-typedef struct path_sched_txn path_sched_txn_t;
-typedef struct path_probe_request_t path_probe_request_t;
-typedef void (*path_probe_send_fn)(struct meshlink_handle *mesh, const path_probe_request_t *req);
-typedef void (*path_transaction_preempt_fn)(struct meshlink_handle *mesh, struct node_t *node, path_transaction_type_t type);
-
-struct path_probe_request_t {
-	struct node_t *node;
-	uint16_t length;
-	bool broadcast;
-	bool skip_minute;                       /* admitted validation: 4/s only, not parked 20/min */
-	path_transaction_priority_t priority;
-	path_probe_send_fn send;
-};
-
-typedef struct path_probe_budget_t {
-	unsigned active_transactions;           /* live begin() slots, not queued packets */
-	unsigned second_tokens;                 /* optional packet bucket */
-	unsigned minute_tokens;                 /* parked liveness / PMTU-increase */
-	unsigned backbone_second_tokens;        /* required-path packet bucket */
-	uint64_t optional_packets_sent;         /* non-backbone emits; observe only */
-	struct timespec second_refill_at;
-	struct timespec minute_refill_at;
-	struct timespec backbone_refill_at;
-} path_probe_budget_t;
 
 /* Ordinary-peer UDP punching is refcounted from channels. Backbone UDP is not. */
 typedef struct peer_path_demand_t {
@@ -492,31 +411,10 @@ void path_log_meta(struct meshlink_handle *mesh, const struct node_t *n, const s
 void path_log_udp_tier(struct meshlink_handle *mesh, const struct node_t *n, path_tier_t from, path_tier_t to, const char *reason);
 void path_log_transition(struct meshlink_handle *mesh, const struct node_t *n, path_tier_t from, path_tier_t to, const char *reason);
 
-/* Mesh-wide probe admission. Due-time stays on per-node timers; this is the gate.
-   Validation state machines hold a slot from begin() until end(); keepalive
-   packets only consume packet tokens. Promotion and suspect may preempt the
-   globally lowest-priority live slot, including other nodes. Preemption drops
-   that victim's queued packets and runs the owner callback so the state
-   machine cannot keep emitting or committing outside the cap. */
-void path_scheduler_init(struct meshlink_handle *mesh);
-void path_scheduler_stop(struct meshlink_handle *mesh);
-path_sched_txn_t *path_scheduler_begin_transaction(struct meshlink_handle *mesh, struct node_t *node, path_transaction_type_t type, path_transaction_priority_t priority, path_transaction_preempt_fn preempt);
-bool path_scheduler_has_transaction(struct meshlink_handle *mesh, const struct node_t *node, path_transaction_type_t type);
-void path_scheduler_end_transaction(struct meshlink_handle *mesh, path_sched_txn_t *txn);
-void path_scheduler_end_type(struct meshlink_handle *mesh, struct node_t *node, path_transaction_type_t type);
-path_sched_admit_t path_scheduler_emit_packet(struct meshlink_handle *mesh, path_sched_txn_t *txn, const path_probe_request_t *pkt);
-void path_scheduler_cancel_packets(struct meshlink_handle *mesh, struct node_t *node, path_transaction_priority_t priority);
-void path_scheduler_cancel(struct meshlink_handle *mesh, struct node_t *node, path_transaction_priority_t priority);
-void path_scheduler_cancel_node(struct meshlink_handle *mesh, struct node_t *node);
-void path_scheduler_drain(struct meshlink_handle *mesh);
-void path_scheduler_refill(struct meshlink_handle *mesh);
-void path_scheduler_set_budget(struct meshlink_handle *mesh, unsigned second, unsigned minute, unsigned txns);
-
-/* Owner hook passed to begin(). Probing promotion discards; a validated
-   candidate stays parked so tick can reacquire and commit. PMTU pauses. */
-void path_transaction_preempt(struct meshlink_handle *mesh, struct node_t *node, path_transaction_type_t type);
-
 /* One promotion-timer turn. Cover fires this after preemption; production uses the timeout. */
 void path_promotion_timer_tick(struct meshlink_handle *mesh, struct node_t *n);
+
+/* Scheduler APIs remain visible through path_policy.h for existing callers. */
+#include "path_scheduler.h"
 
 #endif

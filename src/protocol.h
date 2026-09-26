@@ -111,7 +111,6 @@ bool send_raw_packet(struct meshlink_handle *mesh, struct connection_t *, const 
 
 bool id_h(struct meshlink_handle *mesh, struct connection_t *, const char *);
 bool ack_h(struct meshlink_handle *mesh, struct connection_t *, const char *);
-bool ack_replace_if_admitted(struct meshlink_handle *mesh, struct connection_t *c, int announced_devclass, bool drain_old);
 bool status_h(struct meshlink_handle *mesh, struct connection_t *, const char *);
 bool error_h(struct meshlink_handle *mesh, struct connection_t *, const char *);
 bool termreq_h(struct meshlink_handle *mesh, struct connection_t *, const char *);

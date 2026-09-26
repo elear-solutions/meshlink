@@ -32,7 +32,6 @@ typedef enum meta_connection_purpose_t {
 	META_PURPOSE_NONE = 0,
 	META_PURPOSE_BACKBONE_REQUIRED,
 	META_PURPOSE_LAN_RESILIENCE,
-	META_PURPOSE_HANDOVER_SPARE,
 } meta_connection_purpose_t;
 
 static inline bool meta_purpose_is_persistent(meta_connection_purpose_t purpose) {

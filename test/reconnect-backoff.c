@@ -460,6 +460,94 @@ static void test_key_renewal_does_not_restamp(void) {
 	close_pair(a, b, "reconnect_backoff_t23_conf.1", "reconnect_backoff_t23_conf.2");
 }
 
+/* T24: same-session META upgrade (relay→direct) must not restart SPTPS when
+   validkey already survives — covers ACK initiator gate (M1 / path_peer_ensure_udp_key). */
+static void test_meta_flap_preserves_sptps(void) {
+	printf("\n=== T24: META upgrade with same session_id keeps sptps_restart_count ===\n");
+
+	assert(meshlink_destroy("reconnect_backoff_t24_conf.1"));
+	assert(meshlink_destroy("reconnect_backoff_t24_conf.2"));
+
+	meshlink_handle_t *a = meshlink_open("reconnect_backoff_t24_conf.1", "a", "reconnect_backoff_t24", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *b = meshlink_open("reconnect_backoff_t24_conf.2", "b", "reconnect_backoff_t24", DEV_CLASS_PORTABLE);
+	assert(a && b);
+	meshlink_enable_discovery(a, false);
+	meshlink_enable_discovery(b, false);
+
+	int a_port = meshlink_get_port(a);
+	int hole_port = 0;
+	int hole_fd = start_black_hole("127.0.0.1", &hole_port);
+	int relay_port = 0;
+	tcp_relay_t *relay = start_tcp_relay("127.0.0.1", &relay_port, "127.0.0.1", a_port);
+	char relay_port_str[16];
+	snprintf(relay_port_str, sizeof relay_port_str, "%d", relay_port);
+
+	devtool_set_external_ip_address(a, meshlink_get_self(a), "127.0.0.1");
+	join_meshlink_peer(a, b);
+	meshlink_node_t *b_a = meshlink_get_node(b, "a");
+	meshlink_node_t *a_b = meshlink_get_node(a, "b");
+	assert(b_a && a_b);
+	forget_addresses(b, b_a);
+	forget_addresses(a, a_b);
+	hint_address(b, b_a, "127.0.0.1", hole_port);
+	assert(meshlink_set_canonical_address(b, b_a, "127.0.0.1", relay_port_str));
+
+	assert(meshlink_start(a));
+	assert(meshlink_start(b));
+	wait_up(b, b_a);
+
+	devtool_node_status_t st;
+	bool keyed = false;
+	uint32_t restarts = 0;
+
+	for(int i = 0; i < 40; i++) {
+		devtool_get_node_status(b, b_a, &st);
+		keyed = st.validkey;
+		restarts = st.sptps_restart_count;
+		devtool_free_node_status(&st);
+
+		if(keyed) {
+			break;
+		}
+
+		usleep(100000);
+	}
+
+	assert(keyed);
+
+	bool direct = false;
+
+	for(int i = 0; i < 30; i++) {
+		devtool_get_node_status(b, b_a, &st);
+		direct = st.meta_connected && !st.meta_via_canonical && port_of(&st.meta_address) == a_port;
+		devtool_free_node_status(&st);
+
+		if(direct) {
+			break;
+		}
+
+		sleep(1);
+	}
+
+	assert(direct);
+
+	devtool_get_node_status(b, b_a, &st);
+	assert(st.validkey);
+	assert(!st.waitingforkey);
+	assert(st.sptps_restart_count == restarts);
+	devtool_free_node_status(&st);
+
+	printf("T24 ok: META upgrade left sptps_restart_count at %u\n", restarts);
+	meshlink_stop(a);
+	meshlink_stop(b);
+	meshlink_close(a);
+	meshlink_close(b);
+	close(hole_fd);
+	stop_tcp_relay(relay);
+	assert(meshlink_destroy("reconnect_backoff_t24_conf.1"));
+	assert(meshlink_destroy("reconnect_backoff_t24_conf.2"));
+}
+
 int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, capture_log_cb);
 
@@ -471,6 +559,7 @@ int main(void) {
 	test_stable_after_escalation_resets();
 	test_stable_canonical_resets();
 	test_key_renewal_does_not_restamp();
+	test_meta_flap_preserves_sptps();
 
 	free_captured_log();
 	return 0;

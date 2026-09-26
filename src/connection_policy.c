@@ -19,6 +19,7 @@
 #include "net.h"
 #include "node.h"
 #include "packmsg.h"
+#include "path_policy.h"
 #include "protocol.h"
 #include "splay_tree.h"
 #include "xalloc.h"

@@ -69,7 +69,9 @@ libmeshlink_la_SOURCES = \
 	node.c node.h \
 	path_policy.c path_policy.h \
 	path_policy_devtool.c path_policy_devtool.h \
-	path_scheduler.c \
+	path_scheduler.c path_scheduler.h \
+	path_types.h \
+	path_backbone_udp.c \
 	submesh.c submesh.h \
 	packmsg.h \
 	prf.c prf.h \

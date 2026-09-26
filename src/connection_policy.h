@@ -13,7 +13,7 @@
 
 #include <stdbool.h>
 
-#include "path_policy.h"
+#include "path_types.h"
 
 struct meshlink_handle;
 struct node_t;
@@ -24,7 +24,6 @@ typedef enum meta_connection_purpose_t {
 	META_PURPOSE_NONE = 0,
 	META_PURPOSE_BACKBONE_REQUIRED,
 	META_PURPOSE_LAN_RESILIENCE,
-	META_PURPOSE_HANDOVER_SPARE,
 } meta_connection_purpose_t;
 
 #define META_LAN_RESILIENCE_MAX 3

@@ -15,6 +15,7 @@
 #include "meshlink_internal.h"
 #include "node.h"
 #include "path_policy.h"
+#include "path_scheduler.h"
 #include "xalloc.h"
 
 #include <string.h>

@@ -324,6 +324,9 @@ void handle_network_change(meshlink_handle_t *mesh, bool online);
 void call_error_cb(meshlink_handle_t *mesh, meshlink_errno_t meshlink_errno);
 void channel_receive(meshlink_handle_t *mesh, meshlink_node_t *node, const void *data, size_t len);
 
+/* Internal: META admit+replace (protocol_auth). Not part of the public protocol.h surface. */
+bool ack_replace_if_admitted(struct meshlink_handle *mesh, struct connection_t *c, int announced_devclass, bool drain_old);
+
 /// Per-instance PRNG
 static inline int prng(meshlink_handle_t *mesh, uint64_t max) {
 	return xoshiro(mesh->prng_state) % max;
