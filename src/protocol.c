@@ -182,8 +182,7 @@ bool receive_request(meshlink_handle_t *mesh, connection_t *c, const char *reque
 		if(c->status.active) {
 			c->last_ping_time = mesh->loop.now.tv_sec;
 
-			if(mesh->self && c->node && c->node->name && mesh->self->name
-			                && strcmp(mesh->self->name, c->node->name) > 0) {
+			if(mesh->self && c->node && mesh_self_name_is_greater(mesh->self->name, c->node->name)) {
 				c->last_ping_time++;
 			}
 

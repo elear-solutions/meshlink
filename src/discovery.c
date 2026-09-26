@@ -58,6 +58,7 @@
 #define MESHLINK_MDNS_SERVICE_TYPE "_%s._tcp"
 #define MESHLINK_MDNS_NAME_KEY "name"
 #define MESHLINK_MDNS_FINGERPRINT_KEY "fingerprint"
+#define DISCOVERY_LAN_QUERY_NS (200 * 1000 * 1000L)
 
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
@@ -140,8 +141,6 @@ static uint64_t discovery_address_set_fingerprint(const meshlink_handle_t *mesh)
 	return h;
 }
 
-#define DISCOVERY_LAN_QUERY_NS (200 * 1000 * 1000L)
-
 static bool discovery_peer_needs_lan_query(meshlink_handle_t *mesh, const node_t *peer) {
 	if(!mesh->self || !peer || peer == mesh->self) {
 		return false;
@@ -201,7 +200,7 @@ void discovery_consider_lan_query(meshlink_handle_t *mesh) {
 		0, DISCOVERY_LAN_QUERY_NS
 	};
 
-	if(!mesh || !discovery_lan_query_wanted(mesh)) {
+	if(!mesh || mesh->discovery.lan_query_hold || !discovery_lan_query_wanted(mesh)) {
 		return;
 	}
 
@@ -209,6 +208,12 @@ void discovery_consider_lan_query(meshlink_handle_t *mesh) {
 		timeout_add(&mesh->loop, &mesh->discovery.lan_query_timeout, discovery_lan_query_handler, mesh, &tv);
 	} else {
 		timeout_set(&mesh->loop, &mesh->discovery.lan_query_timeout, &tv);
+	}
+
+	/* Apple reachability and API callers are not the mesh thread. select
+	   stays asleep until something else wakes it. */
+	if(mesh->threadstarted && mesh->loop.pipefd[1] != -1 && !pthread_equal(mesh->thread, pthread_self())) {
+		signal_trigger(&mesh->loop, &mesh->datafromapp);
 	}
 }
 
@@ -1183,6 +1188,7 @@ bool discovery_start(meshlink_handle_t *mesh) {
 	logger(mesh, MESHLINK_DEBUG, "discovery_start called\n");
 
 	assert(mesh);
+	mesh->discovery.lan_query_hold = false;
 
 	// Set up multicast sockets for mDNS
 	static const int one = 1;
@@ -1310,6 +1316,7 @@ void discovery_stop(meshlink_handle_t *mesh) {
 		abort();
 	}
 
+	mesh->discovery.lan_query_hold = true;
 	timeout_del(&mesh->loop, &mesh->discovery.lan_query_timeout);
 
 	free(mesh->discovery.ifaces);

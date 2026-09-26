@@ -1008,6 +1008,14 @@ bool path_learn_address_fallback(meshlink_handle_t *mesh, node_t *n, const socka
 	return path_learn_address_fallback_cap(mesh, n, sa, src, path_default_cap(src));
 }
 
+void path_clear_catta_address(node_t *n) {
+	if(!n) {
+		return;
+	}
+
+	memset(&n->catta_address, 0, sizeof n->catta_address);
+}
+
 void path_clear_recent(node_t *n) {
 	if(!n) {
 		return;
@@ -1016,8 +1024,10 @@ void path_clear_recent(node_t *n) {
 	memset(n->recent, 0, sizeof n->recent);
 	memset(n->recent_source, 0, sizeof n->recent_source);
 	memset(n->recent_cap, 0, sizeof n->recent_cap);
-	memset(&n->catta_address, 0, sizeof n->catta_address);
 	n->status.dirty = true;
+	/* Catta is not a recent[] slot. Callers that used to lose it here
+	   still do, but the wipe lives next to the other address clears. */
+	path_clear_catta_address(n);
 }
 
 void path_plant_recent(node_t *n, const sockaddr_t *sa) {

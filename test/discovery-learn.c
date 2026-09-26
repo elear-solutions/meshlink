@@ -179,6 +179,12 @@ static void test_late_query_and_stop(void) {
 	devtool_discovery_stop(mesh);
 	assert_idle(mesh, 2);
 
+	/* A later peer must not re-arm the timer once discovery is stopped.
+	   meshlink_close asserts the loop has no timeouts left. */
+	devtool_note_inbound_mdns_query(mesh);
+	assert(inject_peer(mesh, "a", DEV_CLASS_PORTABLE, "p", DEV_CLASS_PORTABLE));
+	assert_idle(mesh, 2);
+
 	close_mesh(mesh);
 }
 

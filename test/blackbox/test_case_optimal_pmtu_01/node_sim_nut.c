@@ -201,6 +201,7 @@ static void meshlink_logger(meshlink_handle_t *mesh, meshlink_log_level_t level,
 	} else if(sscanf(text, "Increase in PMTU to %s detected, raising MTU to %d", node_name, &raised_mtu) == 2) {
 		find_node_index(i, node_name);
 		node_pmtu[i].mtu_increase.time = cur_time - node_pmtu[i].mtu_start.time;
+		node_pmtu[i].mtu_increase.probes_total_len += raised_mtu;
 		node_pmtu[i].mtu_increase.count += 1;
 
 	} else if(sscanf(text, "Trying to send MTU probe to unreachable or rekeying node %s", node_name) == 1) {

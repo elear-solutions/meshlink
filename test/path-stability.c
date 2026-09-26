@@ -1931,11 +1931,11 @@ static void set_fast_pings(meshlink_handle_t *mesh) {
 static void test_meta_ping_is_one_sided(void) {
 	printf("\n=== path-stability T20: one META ping per interval ===\n");
 
-	assert(meshlink_destroy("path_stability_t18_conf.1"));
-	assert(meshlink_destroy("path_stability_t18_conf.2"));
+	assert(meshlink_destroy("path_stability_t20_conf.1"));
+	assert(meshlink_destroy("path_stability_t20_conf.2"));
 
-	meshlink_handle_t *a = meshlink_open("path_stability_t18_conf.1", "aaa", "path-stability-18", DEV_CLASS_BACKBONE);
-	meshlink_handle_t *b = meshlink_open("path_stability_t18_conf.2", "bbb", "path-stability-18", DEV_CLASS_STATIONARY);
+	meshlink_handle_t *a = meshlink_open("path_stability_t20_conf.1", "aaa", "path-stability-20", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *b = meshlink_open("path_stability_t20_conf.2", "bbb", "path-stability-20", DEV_CLASS_STATIONARY);
 	assert(a && b);
 	meshlink_enable_discovery(a, false);
 	meshlink_enable_discovery(b, false);
@@ -1967,8 +1967,8 @@ static void test_meta_ping_is_one_sided(void) {
 
 	meshlink_close(a);
 	meshlink_close(b);
-	assert(meshlink_destroy("path_stability_t18_conf.1"));
-	assert(meshlink_destroy("path_stability_t18_conf.2"));
+	assert(meshlink_destroy("path_stability_t20_conf.1"));
+	assert(meshlink_destroy("path_stability_t20_conf.2"));
 	printf("path-stability T20 ok: pings %u/%u\n", a_sent, b_sent);
 }
 
@@ -1979,7 +1979,7 @@ static void test_idle_channel_traffic(void) {
 	printf("\n=== path-stability T21: one-way liveness, quiet LAN META, parked PMTU ===\n");
 
 	meshlink_handle_t *bb, *e1, *e2;
-	stability_open_trio("path_stability_t19_conf", "path-stability-19", &bb, &e1, &e2);
+	stability_open_trio("path_stability_t21_conf", "path-stability-21", &bb, &e1, &e2);
 	set_fast_pings(bb);
 	set_fast_pings(e1);
 	set_fast_pings(e2);
@@ -2004,11 +2004,15 @@ static void test_idle_channel_traffic(void) {
 	assert(wait_sync_flag(&accepted, 15));
 	assert_after(pmtu_parked(e1, e1_e2) && pmtu_parked(e2, e2_e1), 30);
 
+	/* Both timers can still fire once after park. That exchange is what
+	   makes the greater name yield; count probes only after it. */
+	sleep(4);
+
 	unsigned live1 = devtool_liveness_probes_sent(e1, e1_e2);
 	unsigned live2 = devtool_liveness_probes_sent(e2, e2_e1);
 	unsigned ping1 = devtool_meta_pings_sent(e1, e1_e2);
 	unsigned ping2 = devtool_meta_pings_sent(e2, e2_e1);
-	sleep(10);
+	sleep(8);
 
 	unsigned dlive1 = devtool_liveness_probes_sent(e1, e1_e2) - live1;
 	unsigned dlive2 = devtool_liveness_probes_sent(e2, e2_e1) - live2;
@@ -2017,8 +2021,11 @@ static void test_idle_channel_traffic(void) {
 	unsigned lo = dlive1 < dlive2 ? dlive1 : dlive2;
 	unsigned hi = dlive1 > dlive2 ? dlive1 : dlive2;
 
-	printf("path-stability T21 window: liveness %u/%u pings %u/%u\n", dlive1, dlive2, dping1, dping2);
+	fprintf(stderr, "path-stability T21 window: liveness %u/%u pings %u/%u\n", dlive1, dlive2, dping1, dping2);
+	/* One stray probe from the greater name can land before its park
+	   sticks when the host is busy. A tie (1/1, 2/2) is still a failure. */
 	assert(hi >= 1);
+	assert(hi > lo);
 	assert(lo <= 1);
 	assert(dping1 == 0 && dping2 == 0);
 
@@ -2027,6 +2034,7 @@ static void test_idle_channel_traffic(void) {
 	assert(st.mtuprobes >= 30);
 	assert(st.maxmtu == 1008);
 	assert(st.minmtu == 1008);
+	assert(st.mtu == 1008);
 	assert(st.maxmtu != MTU);
 	devtool_free_node_status(&st);
 
@@ -2040,11 +2048,13 @@ static void test_idle_channel_traffic(void) {
 	assert(dping1 + dping2 >= 1);
 
 	meshlink_channel_abort(e1, ch);
-	stability_close_trio("path_stability_t19_conf", bb, e1, e2);
+	stability_close_trio("path_stability_t21_conf", bb, e1, e2);
 	printf("path-stability T21 ok: liveness %u/%u, resumed pings %u/%u\n", dlive1, dlive2, dping1, dping2);
 }
 
 int main(void) {
+	setvbuf(stdout, NULL, _IOLBF, 0);
+	setvbuf(stderr, NULL, _IONBF, 0);
 	meshlink_set_log_cb(NULL, MESHLINK_WARNING, NULL);
 
 	test_fixed_channel_size();

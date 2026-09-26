@@ -63,6 +63,13 @@ bool send_meta(meshlink_handle_t *mesh, connection_t *c, const char *buffer, int
 
 	logger(mesh, MESHLINK_DEBUG, "Sending %d bytes of metadata to %s", length, c->name);
 
+	/* Synthetic inject peers (devtool_inject_add_edge) have no socket. A
+	   zeroed connection_t has allow_request == ID, and send_meta would
+	   buffer_add + io_set a stack io_t into the loop. */
+	if(c->socket < 0) {
+		return true;
+	}
+
 	if(c->allow_request == ID) {
 		buffer_add(&c->outbuf, buffer, length);
 		meta_watch_write(mesh, c);

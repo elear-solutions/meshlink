@@ -896,6 +896,7 @@ bool devtool_inject_add_edge(meshlink_handle_t *mesh, const char *from_name, int
 
 	id = ++seq;
 	memset(&c, 0, sizeof c);
+	c.socket = -1;
 	c.mesh = mesh;
 	c.name = cname;
 	snprintf(request, sizeof request, "%d %x %s %d %s %s %s %s %d %s %x %d %d %x",

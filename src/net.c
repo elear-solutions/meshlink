@@ -258,13 +258,18 @@ static void timeout_handler(event_loop_t *loop, void *data) {
 
 		if(c->last_ping_time + pingtimeout < mesh->loop.now.tv_sec) {
 			if(c->status.active) {
+				/* UDP liveness already covers this LAN peer. Do not tear
+				   down an outstanding PING, and stamp the timer so the
+				   next tick does not re-enter this arm. */
+				if(lan_meta_quiet_ok(mesh, c)) {
+					c->status.pinged = false;
+					c->last_ping_time = mesh->loop.now.tv_sec;
+					continue;
+				}
+
 				if(c->status.pinged) {
 					logger(mesh, MESHLINK_INFO, "%s didn't respond to PING in %ld seconds", c->name, (long)mesh->loop.now.tv_sec - c->last_ping_time);
 				} else if(c->last_ping_time + pinginterval <= mesh->loop.now.tv_sec) {
-					if(lan_meta_quiet_ok(mesh, c)) {
-						continue;
-					}
-
 					send_ping(mesh, c);
 					continue;
 				} else {
