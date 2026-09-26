@@ -661,18 +661,64 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		path_note_selected_route(mesh, n, "authenticated spare");
 	}
 
-	/* Request a session key to jump start UDP traffic, unless this is a
-	   hitless META migration that must keep the existing node SPTPS session.
-	   Warm SPTPS (validkey / waitingforkey) must survive a META flap — use the
-	   shared peer-UDP ensure so backbone and punch paths share the same guard. */
+	/* Jump-start UDP after META activate. Backbone initiator used to always
+	   send_req_key (cleared warm SPTPS on every META flap). When warm and the
+	   ACK listen port is already known, refresh addresses only. If the peer
+	   changed listen port while our validkey survived, force send_req_key.
+	   Warm acceptors push canonical/external so a reconnecting initiator that
+	   skipped rekey still learns a fresh EXTERNAL advertisement. */
 
 	if(c->status.initiator) {
 		if(upgrade_should_preserve_node_session(mesh, n, was_upgrade_probe, old_was_canonical)) {
 			send_canonical_address(mesh, n);
 			send_external_ip_address(mesh, n);
-		} else {
-			path_peer_ensure_udp_key(mesh, n);
+		} else if(connection_policy_backbone_udp_required(mesh, n)) {
+			uint16_t ack_port = (uint16_t)atoi(hisport);
+			bool warm = n->status.validkey || n->status.waitingforkey;
+			bool port_known = false;
+
+			if(ack_port) {
+				char *aport = NULL;
+
+				if(n->address.sa.sa_family) {
+					sockaddr2str(&n->address, NULL, &aport);
+
+					if(aport && (uint16_t)atoi(aport) == ack_port) {
+						port_known = true;
+					}
+
+					free(aport);
+				}
+
+				for(int i = 0; !port_known && i < MAX_RECENT; i++) {
+					if(!n->recent[i].sa.sa_family) {
+						continue;
+					}
+
+					aport = NULL;
+					sockaddr2str(&n->recent[i], NULL, &aport);
+
+					if(aport && (uint16_t)atoi(aport) == ack_port) {
+						port_known = true;
+					}
+
+					free(aport);
+				}
+			}
+
+			if(warm && port_known) {
+				send_canonical_address(mesh, n);
+				send_external_ip_address(mesh, n);
+			} else {
+				send_req_key(mesh, n);
+			}
+		} else if(path_peer_udp_punching_allowed(mesh, n)
+		                && !n->status.validkey && !n->status.waitingforkey) {
+			send_req_key(mesh, n);
 		}
+	} else if(n->status.validkey || n->status.waitingforkey) {
+		send_canonical_address(mesh, n);
+		send_external_ip_address(mesh, n);
 	}
 
 	return true;
