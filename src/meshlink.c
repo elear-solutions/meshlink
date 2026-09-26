@@ -21,6 +21,8 @@
 #include <pthread.h>
 
 #include "adns.h"
+#include "connection.h"
+#include "connection_policy.h"
 #include "crypto.h"
 #include "ecdsagen.h"
 #include "logger.h"
@@ -207,6 +209,22 @@ static bool getlocaladdr(const char *destaddr, sockaddr_t *sa, socklen_t *salen,
 	}
 
 	closesocket(sock);
+
+	/* A ULA or link-local source means this host has no global IPv6. macOS
+	   still picks the ULA for a connect() to a global address. Publishing
+	   that address makes peers dial something the probed host cannot reach. */
+	if(sa->sa.sa_family == AF_INET6) {
+		const uint8_t *a = sa->in6.sin6_addr.s6_addr;
+
+		if(IN6_IS_ADDR_UNSPECIFIED(&sa->in6.sin6_addr)
+		                || IN6_IS_ADDR_LOOPBACK(&sa->in6.sin6_addr)
+		                || IN6_IS_ADDR_LINKLOCAL(&sa->in6.sin6_addr)
+		                || IN6_IS_ADDR_MULTICAST(&sa->in6.sin6_addr)
+		                || (a[0] & 0xfe) == 0xfc) {
+			return false;
+		}
+	}
+
 	return true;
 }
 
@@ -396,7 +414,11 @@ static bool is_localaddr(sockaddr_t *sa) {
 		return *(uint8_t *)(&sa->in.sin_addr.s_addr) == 127;
 
 	case AF_INET6: {
-		uint16_t first = sa->in6.sin6_addr.s6_addr[0] << 8 | sa->in6.sin6_addr.s6_addr[1];
+		uint16_t first = (uint16_t)sa->in6.sin6_addr.s6_addr[0] << 8
+		                 | sa->in6.sin6_addr.s6_addr[1];
+
+		/* Unspecified and fe80::/10. ULA remains a valid local-address
+		   fallback for MESHLINK_INVITE_LOCAL. */
 		return first == 0 || (first & 0xffc0) == 0xfe80;
 	}
 
@@ -630,9 +652,20 @@ static char *get_my_hostname(meshlink_handle_t *mesh, uint32_t flags) {
 		}
 
 		/* Canonical-derived invitation endpoints stay in the URL and the
-		   canonical field. They are not direct recent[] candidates. */
+		   canonical field. They are not direct recent[] candidates.
+		   A ULA stays in the URL so a ULA-only network can join, and is
+		   not installed here: the global-route probe already refused to
+		   publish it, and planting it displaces the address peers dial. */
 		if(i != canonical_idx) {
 			for(struct addrinfo *aip = ai_in; aip; aip = aip->ai_next) {
+				if(aip->ai_addr->sa_family == AF_INET6) {
+					const struct sockaddr_in6 *in6 = (const struct sockaddr_in6 *)aip->ai_addr;
+
+					if((in6->sin6_addr.s6_addr[0] & 0xfe) == 0xfc) {
+						continue;
+					}
+				}
+
 				node_add_recent_address_cap(mesh, mesh->self, (sockaddr_t *)aip->ai_addr, ADDR_SRC_HINT, PATH_CAP_BOTH);
 			}
 		}
@@ -778,7 +811,7 @@ static bool write_main_config_files(meshlink_handle_t *mesh) {
 
 	config_t config = {buf, packmsg_output_size(&out, buf)};
 
-	if(!main_config_write(mesh, "current", &config, mesh->config_key)) {
+	if(!main_config_write(mesh, mesh_conf_write_subdir(mesh), &config, mesh->config_key)) {
 		return false;
 	}
 
@@ -806,140 +839,290 @@ typedef struct {
 	char *join_port;
 } join_state_t;
 
-static bool finalize_join(join_state_t *state, const void *buf, uint16_t len) {
-	meshlink_handle_t *mesh = state->mesh;
+typedef struct {
+	char *name;
+	char *submesh_name;
+	dev_class_t invitee_devclass;
+	char *backbone;
+	node_t **hosts;
+	uint32_t count;
+} invitation_contents_t;
+
+static void invitation_contents_free(invitation_contents_t *inv) {
+	if(!inv) {
+		return;
+	}
+
+	free(inv->name);
+	free(inv->submesh_name);
+	free(inv->backbone);
+
+	if(inv->hosts) {
+		for(uint32_t i = 0; i < inv->count; i++) {
+			if(inv->hosts[i]) {
+				free_node(inv->hosts[i]);
+			}
+		}
+
+		free(inv->hosts);
+	}
+
+	memset(inv, 0, sizeof *inv);
+}
+
+static bool parse_invitation(meshlink_handle_t *mesh, const void *buf, uint16_t len, invitation_contents_t *inv) {
 	packmsg_input_t in = {buf, len};
 	uint32_t version = packmsg_get_uint32(&in);
 
-	if(version != MESHLINK_INVITATION_VERSION) {
+	if(!packmsg_input_ok(&in) || version != MESHLINK_INVITATION_VERSION) {
 		logger(mesh, MESHLINK_ERROR, "Invalid invitation version!\n");
+		meshlink_errno = MESHLINK_EPEER;
 		return false;
 	}
 
-	char *name = packmsg_get_str_dup(&in);
-	char *submesh_name = packmsg_get_str_dup(&in);
-	dev_class_t devclass = packmsg_get_int32(&in);
+	inv->name = packmsg_get_str_dup(&in);
+	inv->submesh_name = packmsg_get_str_dup(&in);
+	inv->invitee_devclass = packmsg_get_int32(&in);
+	inv->backbone = packmsg_get_str_dup(&in);
+
+	if(!packmsg_input_ok(&in)
+	                || !inv->name || !check_id(inv->name)
+	                || !inv->submesh_name || (strcmp(inv->submesh_name, CORE_MESH) && !check_id(inv->submesh_name))
+	                || !inv->backbone || !check_id(inv->backbone)) {
+		logger(mesh, MESHLINK_ERROR, "Invalid invitation header!\n");
+		meshlink_errno = MESHLINK_EPEER;
+		return false;
+	}
+
 	uint32_t count = packmsg_get_array(&in);
 
-	if(!name || !check_id(name)) {
-		logger(mesh, MESHLINK_DEBUG, "No valid Name found in invitation!\n");
-		free(name);
-		free(submesh_name);
-		return false;
-	}
-
-	if(!submesh_name || (strcmp(submesh_name, CORE_MESH) && !check_id(submesh_name))) {
-		logger(mesh, MESHLINK_DEBUG, "No valid Submesh found in invitation!\n");
-		free(name);
-		free(submesh_name);
-		return false;
-	}
-
-	if(!count) {
+	if(!packmsg_input_ok(&in) || !count) {
 		logger(mesh, MESHLINK_ERROR, "Incomplete invitation file!\n");
-		free(name);
-		free(submesh_name);
+		meshlink_errno = MESHLINK_EPEER;
 		return false;
 	}
 
-	free(mesh->name);
-	free(mesh->self->name);
-	mesh->name = name;
-	mesh->self->name = xstrdup(name);
-	mesh->self->submesh = strcmp(submesh_name, CORE_MESH) ? lookup_or_create_submesh(mesh, submesh_name) : NULL;
-	free(submesh_name);
-	mesh->self->devclass = devclass == DEV_CLASS_UNKNOWN ? mesh->devclass : devclass;
+	inv->hosts = xzalloc(count * sizeof(node_t *));
 
-	// Initialize configuration directory
-	if(!config_init(mesh, "current")) {
-		return false;
-	}
-
-	if(!write_main_config_files(mesh)) {
-		return false;
-	}
-
-	// Write host config files
 	for(uint32_t i = 0; i < count; i++) {
 		const void *data;
 		uint32_t data_len = packmsg_get_bin_raw(&in, &data);
 
-		if(!data_len) {
+		if(!data || !data_len) {
 			logger(mesh, MESHLINK_ERROR, "Incomplete invitation file!\n");
-			return false;
-		}
-
-		packmsg_input_t in2 = {data, data_len};
-		uint32_t version2 = packmsg_get_uint32(&in2);
-		char *name2 = packmsg_get_str_dup(&in2);
-
-		if(!packmsg_input_ok(&in2) || version2 != MESHLINK_CONFIG_VERSION || !check_id(name2)) {
-			free(name2);
-			packmsg_input_invalidate(&in);
-			break;
-		}
-
-		if(!check_id(name2)) {
-			free(name2);
-			break;
-		}
-
-		if(!strcmp(name2, mesh->name)) {
-			logger(mesh, MESHLINK_ERROR, "Secondary chunk would overwrite our own host config file.\n");
-			free(name2);
 			meshlink_errno = MESHLINK_EPEER;
 			return false;
 		}
 
 		node_t *n = new_node();
-		n->name = name2;
-
 		config_t config = {data, data_len};
 
-		if(!node_read_from_config(mesh, n, &config)) {
+		if(!node_read_from_config(mesh, n, &config) || !n->name || !check_id(n->name)) {
 			free_node(n);
 			logger(mesh, MESHLINK_ERROR, "Invalid host config file in invitation file!\n");
 			meshlink_errno = MESHLINK_EPEER;
 			return false;
 		}
 
-		if(i == 0) {
-			/* The first host config file is of the inviter itself. */
-			sockaddr_t sa;
-			socklen_t salen = sizeof(sa);
-
-			if(getpeername(state->sock, &sa.sa, &salen) == 0) {
-				if(n->canonical_address) {
-					/* Seed the hostname canonical cache only when this join
-					   actually used that hostname (ADR 0002). LOCAL-first
-					   invitation URLs must not plant the TCP peer as NLB. */
-					if(path_canonical_is_hostname(n)
-					                && state->join_host && state->join_port
-					                && path_canonical_host_matches(n, state->join_host, state->join_port)) {
-						path_add_canonical_endpoint(n, &sa);
-					}
-
-					path_sanitize_recent(mesh, n);
-				} else {
-					node_add_recent_address_cap(mesh, n, &sa, ADDR_SRC_AUTH_DIRECT, PATH_CAP_BOTH);
-				}
-			}
-		}
-
-		/* Clear the reachability times, since we ourself have never seen these nodes yet */
-		n->last_reachable = 0;
-		n->last_unreachable = 0;
-
-		if(!node_write_config(mesh, n, true)) {
+		if(!strcmp(n->name, inv->name)) {
+			logger(mesh, MESHLINK_ERROR, "Secondary chunk would overwrite our own host config file.\n");
 			free_node(n);
+			meshlink_errno = MESHLINK_EPEER;
 			return false;
 		}
 
-		node_add(mesh, n);
+		for(uint32_t j = 0; j < inv->count; j++) {
+			if(!strcmp(inv->hosts[j]->name, n->name)) {
+				logger(mesh, MESHLINK_ERROR, "Duplicate host %s in invitation file!\n", n->name);
+				free_node(n);
+				meshlink_errno = MESHLINK_EPEER;
+				return false;
+			}
+		}
+
+		if(i == 0) {
+			if(n->devclass != DEV_CLASS_BACKBONE) {
+				logger(mesh, MESHLINK_ERROR, "Invitation inviter %s is not a backbone node\n", n->name);
+				free_node(n);
+				meshlink_errno = MESHLINK_EPEER;
+				return false;
+			}
+
+			if(strcmp(inv->backbone, n->name)) {
+				logger(mesh, MESHLINK_ERROR, "Invitation backbone identity %s does not match inviter %s\n", inv->backbone, n->name);
+				free_node(n);
+				meshlink_errno = MESHLINK_EPEER;
+				return false;
+			}
+		}
+
+		n->last_reachable = 0;
+		n->last_unreachable = 0;
+		inv->hosts[i] = n;
+		inv->count++;
 	}
 
-	/* Ensure the configuration directory metadata is on disk */
-	if(!config_sync(mesh, "current") || (mesh->confbase && !sync_path(mesh->confbase))) {
+	if(!packmsg_done(&in)) {
+		logger(mesh, MESHLINK_ERROR, "Invitation has trailing or truncated data!\n");
+		meshlink_errno = MESHLINK_EPEER;
+		return false;
+	}
+
+	return true;
+}
+
+static void seed_join_inviter_address(join_state_t *state, node_t *n) {
+	sockaddr_t sa;
+	socklen_t salen = sizeof(sa);
+
+	if(getpeername(state->sock, &sa.sa, &salen) != 0) {
+		return;
+	}
+
+	if(n->canonical_address) {
+		/* Seed the hostname canonical cache only when this join
+		   actually used that hostname (ADR 0002). LOCAL-first
+		   invitation URLs must not plant the TCP peer as NLB. */
+		if(path_canonical_is_hostname(n)
+		                && state->join_host && state->join_port
+		                && path_canonical_host_matches(n, state->join_host, state->join_port)) {
+			path_add_canonical_endpoint(n, &sa);
+		}
+
+		path_sanitize_recent(state->mesh, n);
+	} else {
+		node_add_recent_address_cap(state->mesh, n, &sa, ADDR_SRC_AUTH_DIRECT, PATH_CAP_BOTH);
+	}
+}
+
+static bool commit_join_invitation(join_state_t *state, invitation_contents_t *inv) {
+	meshlink_handle_t *mesh = state->mesh;
+	char *old_name = mesh->name;
+	char *old_self_name = mesh->self->name;
+	dev_class_t old_devclass = mesh->self->devclass;
+	submesh_t *old_submesh = mesh->self->submesh;
+	char *old_backbone = mesh->backbone.name ? xstrdup(mesh->backbone.name) : NULL;
+	bool saved_bootstrap = mesh->allow_peer_bootstrap;
+	bool swapped = false;
+
+	mesh->name = inv->name;
+	inv->name = NULL;
+	mesh->self->name = xstrdup(mesh->name);
+	mesh->self->submesh = (inv->submesh_name && strcmp(inv->submesh_name, CORE_MESH)) ? lookup_or_create_submesh(mesh, inv->submesh_name) : NULL;
+	mesh->self->devclass = inv->invitee_devclass == DEV_CLASS_UNKNOWN ? mesh->devclass : inv->invitee_devclass;
+
+	seed_join_inviter_address(state, inv->hosts[0]);
+
+	mesh->conf_write_subdir = "new";
+
+	if(mesh->confbase && (!config_destroy(mesh->confbase, "new") || !config_init(mesh, "new"))) {
+		goto rollback;
+	}
+
+	if(!write_main_config_files(mesh)) {
+		goto rollback;
+	}
+
+	for(uint32_t i = 0; i < inv->count; i++) {
+		if(!node_write_config(mesh, inv->hosts[i], true)) {
+			goto rollback;
+		}
+	}
+
+	connection_policy_exit(mesh);
+	connection_policy_init(mesh);
+	mesh->allow_peer_bootstrap = saved_bootstrap;
+
+	if(!connection_policy_set_backbone(mesh, inv->backbone)) {
+		logger(mesh, MESHLINK_ERROR, "Could not persist backbone identity %s\n", inv->backbone);
+		meshlink_errno = MESHLINK_EPEER;
+		goto rollback;
+	}
+
+	if(!connection_policy_backbone_name(mesh) || strcmp(connection_policy_backbone_name(mesh), inv->backbone)) {
+		logger(mesh, MESHLINK_ERROR, "Backbone identity %s was not stored after join\n", inv->backbone);
+		meshlink_errno = MESHLINK_EPEER;
+		goto rollback;
+	}
+
+	if(!config_sync(mesh, mesh_conf_write_subdir(mesh)) || (mesh->confbase && !sync_path(mesh->confbase))) {
+		goto rollback;
+	}
+
+	mesh->conf_write_subdir = NULL;
+
+	if(mesh->confbase) {
+		if(!config_destroy(mesh->confbase, "old") || !config_rename(mesh, "current", "old")) {
+			goto rollback;
+		}
+
+		if(!config_rename(mesh, "new", "current")) {
+			if(!config_rename(mesh, "old", "current")) {
+				logger(mesh, MESHLINK_ERROR, "Failed to restore current/ after a failed join commit\n");
+			}
+
+			goto rollback;
+		}
+
+		if(!config_destroy(mesh->confbase, "old")) {
+			logger(mesh, MESHLINK_ERROR, "Failed to remove leftover old/ after join\n");
+		}
+
+		swapped = true;
+	}
+
+	free(old_name);
+	free(old_self_name);
+	free(old_backbone);
+
+	for(uint32_t i = 0; i < inv->count; i++) {
+		node_add(mesh, inv->hosts[i]);
+		inv->hosts[i] = NULL;
+	}
+
+	return true;
+
+rollback:
+	mesh->conf_write_subdir = NULL;
+
+	if(mesh->confbase && !swapped) {
+		if(!config_destroy(mesh->confbase, "new")) {
+			logger(mesh, MESHLINK_ERROR, "Failed to remove leftover new/ after a failed join\n");
+		}
+	}
+
+	free(mesh->name);
+	free(mesh->self->name);
+	mesh->name = old_name;
+	mesh->self->name = old_self_name;
+	mesh->self->devclass = old_devclass;
+	mesh->self->submesh = old_submesh;
+
+	connection_policy_exit(mesh);
+	connection_policy_init(mesh);
+	mesh->allow_peer_bootstrap = saved_bootstrap;
+
+	if(old_backbone) {
+		(void)connection_policy_set_backbone(mesh, old_backbone);
+		free(old_backbone);
+	}
+
+	return false;
+}
+
+static bool finalize_join(join_state_t *state, const void *buf, uint16_t len) {
+	meshlink_handle_t *mesh = state->mesh;
+	invitation_contents_t inv = {0};
+
+	if(!parse_invitation(mesh, buf, len, &inv)) {
+		invitation_contents_free(&inv);
+		return false;
+	}
+
+	bool ok = commit_join_invitation(state, &inv);
+	invitation_contents_free(&inv);
+
+	if(!ok) {
 		return false;
 	}
 
@@ -1533,10 +1716,10 @@ void meshlink_open_params_free(meshlink_open_params_t *params) {
 
 /// Device class traits
 static const dev_class_traits_t default_class_traits[DEV_CLASS_COUNT] = {
-	{ .pingtimeout = 5, .pinginterval = 60, .maxtimeout = 900, .min_connects = 3, .max_connects = 10000, .edge_weight = 1 }, // DEV_CLASS_BACKBONE
-	{ .pingtimeout = 5, .pinginterval = 60, .maxtimeout = 900, .min_connects = 3, .max_connects = 100, .edge_weight = 3 },   // DEV_CLASS_STATIONARY
-	{ .pingtimeout = 5, .pinginterval = 60, .maxtimeout = 900, .min_connects = 3, .max_connects = 3, .edge_weight = 6 },     // DEV_CLASS_PORTABLE
-	{ .pingtimeout = 5, .pinginterval = 60, .maxtimeout = 900, .min_connects = 1, .max_connects = 1, .edge_weight = 9 },     // DEV_CLASS_UNKNOWN
+	{ .pingtimeout = 5, .pinginterval = 60, .maxtimeout = 900, .edge_weight = 1 }, // DEV_CLASS_BACKBONE
+	{ .pingtimeout = 5, .pinginterval = 60, .maxtimeout = 900, .edge_weight = 3 }, // DEV_CLASS_STATIONARY
+	{ .pingtimeout = 5, .pinginterval = 60, .maxtimeout = 900, .edge_weight = 6 }, // DEV_CLASS_PORTABLE
+	{ .pingtimeout = 5, .pinginterval = 60, .maxtimeout = 900, .edge_weight = 9 }, // DEV_CLASS_UNKNOWN
 };
 
 meshlink_handle_t *meshlink_open(const char *confbase, const char *name, const char *appname, dev_class_t devclass) {
@@ -1672,6 +1855,7 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 	}
 
 	meshlink_handle_t *mesh = xzalloc(sizeof(meshlink_handle_t));
+	connection_policy_init(mesh);
 
 	if(params->confbase) {
 		mesh->confbase = xstrdup(params->confbase);
@@ -1721,12 +1905,17 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 
 	pthread_mutex_init(&mesh->mutex, &attr);
 	pthread_cond_init(&mesh->cond, NULL);
+#ifdef __APPLE__
+	pthread_mutex_init(&mesh->discovery.stop_mutex, NULL);
+	pthread_cond_init(&mesh->discovery.stop_cond, NULL);
+#endif
 
 	pthread_cond_init(&mesh->adns_cond, NULL);
 
 	mesh->threadstarted = false;
 	event_loop_init(&mesh->loop);
 	mesh->loop.data = mesh;
+	path_scheduler_init(mesh);
 
 	meshlink_queue_init(&mesh->outpacketqueue);
 
@@ -1760,6 +1949,12 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 	} else {
 		if(!meshlink_read_config(mesh)) {
 			logger(NULL, MESHLINK_ERROR, "Cannot read main configuration\n");
+			meshlink_close(mesh);
+			return NULL;
+		}
+
+		if(!connection_policy_load(mesh)) {
+			logger(NULL, MESHLINK_ERROR, "Cannot read backbone identity\n");
 			meshlink_close(mesh);
 			return NULL;
 		}
@@ -1806,6 +2001,14 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 		meshlink_errno = MESHLINK_ENETWORK;
 		return NULL;
 	}
+
+	connection_policy_resolve(mesh);
+
+	if(!new_configuration && !connection_policy_backbone_name(mesh)) {
+		connection_policy_migrate(mesh);
+	}
+
+	(void)connection_policy_validate_topology(mesh);
 
 	/* Persist a redrawn port so the next start reuses it. */
 
@@ -1968,8 +2171,17 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 		return false;
 	}
 
+	if(!connection_policy_commit_self_if_creator(mesh)) {
+		logger(mesh, MESHLINK_ERROR, "Could not persist backbone identity\n");
+		meshlink_errno = MESHLINK_ESTORAGE;
+		pthread_mutex_unlock(&mesh->mutex);
+		return false;
+	}
+
 	init_outgoings(mesh);
 	init_adns(mesh);
+	event_loop_stamp_now(&mesh->loop);
+	connection_policy_tick(mesh);
 
 	for splay_each(node_t, n, mesh->nodes) {
 		path_request_canonical_resolve(mesh, n);
@@ -2026,6 +2238,14 @@ void meshlink_stop(meshlink_handle_t *mesh) {
 		if(getsockname(mesh->listen_socket[i].udp.fd, &sa.sa, &salen) == -1) {
 			logger(mesh, MESHLINK_ERROR, "System call `%s' failed: %s", "getsockname", sockstrerror(sockerrno));
 			continue;
+		}
+
+		/* A socket bound to the wildcard gets that address back. Darwin
+		   rejects sendto() of ::, so aim the kick at loopback instead. */
+		if(sa.sa.sa_family == AF_INET && sa.in.sin_addr.s_addr == htonl(INADDR_ANY)) {
+			sa.in.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		} else if(sa.sa.sa_family == AF_INET6 && IN6_IS_ADDR_UNSPECIFIED(&sa.in6.sin6_addr)) {
+			sa.in6.sin6_addr = in6addr_loopback;
 		}
 
 		if(sendto(mesh->listen_socket[i].udp.fd, "", 1, MSG_NOSIGNAL, &sa.sa, salen) == -1) {
@@ -2109,6 +2329,7 @@ void meshlink_close(meshlink_handle_t *mesh) {
 
 	logger(mesh, MESHLINK_INFO, "Terminating");
 
+	path_scheduler_stop(mesh);
 	event_loop_exit(&mesh->loop);
 
 #ifdef HAVE_MINGW
@@ -2131,6 +2352,8 @@ void meshlink_close(meshlink_handle_t *mesh) {
 
 	meshlink_queue_exit(&mesh->outpacketqueue);
 
+	connection_policy_exit(mesh);
+
 	free(mesh->name);
 	free(mesh->appname);
 	free(mesh->confbase);
@@ -2147,6 +2370,10 @@ void meshlink_close(meshlink_handle_t *mesh) {
 
 	pthread_mutex_unlock(&mesh->mutex);
 	pthread_mutex_destroy(&mesh->mutex);
+#ifdef __APPLE__
+	pthread_cond_destroy(&mesh->discovery.stop_cond);
+	pthread_mutex_destroy(&mesh->discovery.stop_mutex);
+#endif
 
 	memset(mesh, 0, sizeof(*mesh));
 
@@ -3300,6 +3527,20 @@ char *meshlink_invite_ex(meshlink_handle_t *mesh, meshlink_submesh_t *submesh, c
 		return NULL;
 	}
 
+	if(!connection_policy_can_invite(mesh)) {
+		logger(mesh, MESHLINK_ERROR, "Only the unique backbone may create invitations\n");
+		meshlink_errno = MESHLINK_ENOTSUP;
+		pthread_mutex_unlock(&mesh->mutex);
+		return NULL;
+	}
+
+	if(!connection_policy_commit_self_if_creator(mesh)) {
+		logger(mesh, MESHLINK_ERROR, "Could not persist backbone identity\n");
+		meshlink_errno = MESHLINK_ESTORAGE;
+		pthread_mutex_unlock(&mesh->mutex);
+		return NULL;
+	}
+
 	// Get the local address
 	char *address = get_my_hostname(mesh, flags);
 
@@ -3358,6 +3599,10 @@ char *meshlink_invite_ex(meshlink_handle_t *mesh, meshlink_submesh_t *submesh, c
 	packmsg_add_str(&inv, name);
 	packmsg_add_str(&inv, s ? s->name : CORE_MESH);
 	packmsg_add_int32(&inv, DEV_CLASS_UNKNOWN); /* TODO: allow this to be set by inviter? */
+	{
+		const char *backbone = connection_policy_backbone_name(mesh);
+		packmsg_add_str(&inv, backbone ? backbone : mesh->self->name);
+	}
 
 	/* TODO: Add several host config files to bootstrap connections.
 	 * Note: make sure we only add config files of nodes that are in the core mesh or the same submesh,
@@ -3860,6 +4105,9 @@ bool meshlink_import(meshlink_handle_t *mesh, const char *data) {
 		node_add(mesh, n);
 	}
 
+	connection_policy_resolve(mesh);
+	(void)connection_policy_validate_topology(mesh);
+
 	pthread_mutex_unlock(&mesh->mutex);
 
 	free(buf);
@@ -3891,12 +4139,20 @@ static bool blacklist(meshlink_handle_t *mesh, node_t *n) {
 
 	n->status.blacklisted = true;
 
+	if(mesh->outgoings) {
+		for list_each(outgoing_t, outgoing, mesh->outgoings) {
+			if(outgoing->node == n) {
+				outgoing_detach_startup(mesh, outgoing);
+			}
+		}
+	}
+
 	/* Immediately shut down any connections we have with the blacklisted node, including a
 	 * direct-upgrade probe that has not authenticated yet (it has no c->node until ack_h()).
 	 * We can't call terminate_connection(), because we might be called from a callback function.
 	 */
 	for list_each(connection_t, c, mesh->connections) {
-		if(c->node == n || c == n->upgrade_probe) {
+		if(c->node == n || c == n->upgrade_probe || (c->name && !strcmp(c->name, n->name))) {
 			if(c->status.active) {
 				send_error(mesh, c, BLACKLISTED, "blacklisted");
 			}
@@ -3913,7 +4169,6 @@ static bool blacklist(meshlink_handle_t *mesh, node_t *n) {
 	n->mtuprobes = 0;
 	n->status.udp_confirmed = false;
 	n->relay_budget = 0;
-	relay_recompute_dependents(mesh, n);
 
 	if(n->status.reachable) {
 		n->last_unreachable = time(NULL);
@@ -3928,6 +4183,8 @@ static bool blacklist(meshlink_handle_t *mesh, node_t *n) {
 
 	/* Remove any outstanding invitations */
 	invitation_purge_node(mesh, n->name);
+
+	connection_policy_tick(mesh);
 
 	return node_write_config(mesh, n, true) && config_sync(mesh, "current");
 }
@@ -4004,6 +4261,8 @@ static bool whitelist(meshlink_handle_t *mesh, node_t *n) {
 		n->last_reachable = time(NULL);
 		update_node_status(mesh, n);
 	}
+
+	connection_policy_tick(mesh);
 
 	return node_write_config(mesh, n, true) && config_sync(mesh, "current");
 }
@@ -4097,7 +4356,7 @@ bool meshlink_forget_node(meshlink_handle_t *mesh, meshlink_node_t *node) {
 	/* Check that we have no active connections to this node, nor a direct-upgrade probe in flight
 	   (its connection_t only knows the node by name until ack_h() and would recreate it) */
 	for list_each(connection_t, c, mesh->connections) {
-		if(c->node == n || c == n->upgrade_probe) {
+		if(c->node == n || c == n->upgrade_probe || (c->name && !strcmp(c->name, n->name))) {
 			pthread_mutex_unlock(&mesh->mutex);
 			logger(mesh, MESHLINK_WARNING, "Could not forget %s: active connection", n->name);
 			return false;
@@ -4147,7 +4406,10 @@ void meshlink_hint_address(meshlink_handle_t *mesh, meshlink_node_t *node, const
 
 	node_t *n = (node_t *)node;
 
-	if(node_add_recent_address_cap(mesh, n, (sockaddr_t *)addr, ADDR_SRC_HINT, PATH_CAP_BOTH)) {
+	bool material = false;
+	bool learned = node_add_recent_address_cap_ex(mesh, n, (sockaddr_t *)addr, ADDR_SRC_HINT, PATH_CAP_BOTH, &material);
+
+	if(learned) {
 		n->upgrade_recent_idx = 0;
 
 		if(!node_write_config(mesh, n, false)) {
@@ -4155,12 +4417,15 @@ void meshlink_hint_address(meshlink_handle_t *mesh, meshlink_node_t *node, const
 		}
 	}
 
+	path_consider_promotion(mesh, n, PATH_PROMOTION_HINT);
+
 	/* A fresh direct address for a peer we only reach via its canonical address is worth a probe right away. */
 	try_upgrade_probe(mesh, n);
+	connection_policy_on_discovery(mesh, n, (const sockaddr_t *)addr, ADDR_SRC_HINT, material);
 
 	/* We are on the caller's thread; the loop thread is parked in pselect() with a copy of the
-	   fd set, so wake it up to watch the probe socket instead of waiting for the next timer. */
-	if(n->upgrade_probe) {
+	   fd set, so wake it up to watch the probe socket or a zeroed retry timer. */
+	if(n->upgrade_probe || mesh->threadstarted) {
 		signal_trigger(&mesh->loop, &mesh->datafromapp);
 	}
 
@@ -4177,6 +4442,23 @@ static bool channel_pre_accept(struct utcp *utcp, uint16_t port) {
 	} else {
 		return mesh->channel_accept_cb;
 	}
+}
+
+static void channel_demand_hold(meshlink_handle_t *mesh, meshlink_channel_t *channel) {
+	if(!channel || channel->demand_held || !channel->node) {
+		return;
+	}
+
+	channel->demand_held = path_channel_acquire(mesh, channel->node);
+}
+
+static void channel_demand_drop(meshlink_handle_t *mesh, meshlink_channel_t *channel) {
+	if(!channel || !channel->demand_held) {
+		return;
+	}
+
+	channel->demand_held = false;
+	path_channel_release(mesh, channel->node);
 }
 
 /* Finish one AIO buffer, return true if the channel is still open. */
@@ -4200,6 +4482,7 @@ static bool aio_finish_one(meshlink_handle_t *mesh, meshlink_channel_t *channel,
 		channel->in_callback = false;
 
 		if(!channel->c) {
+			channel_demand_drop(mesh, channel);
 			free(aio);
 			free(channel);
 			return false;
@@ -4319,6 +4602,7 @@ static void channel_accept(struct utcp_connection *utcp_connection, uint16_t por
 	channel->c = utcp_connection;
 
 	if(mesh->channel_accept_cb(mesh, channel, port, NULL, 0)) {
+		channel_demand_hold(mesh, channel);
 		utcp_accept(utcp_connection, channel_recv, channel);
 	} else {
 		free(channel);
@@ -4329,21 +4613,20 @@ static void channel_retransmit(struct utcp_connection *utcp_connection) {
 	node_t *n = utcp_connection->utcp->priv;
 	meshlink_handle_t *mesh = n->mesh;
 
-	/* Established data retransmit means the selected direct UDP path did
-	   not deliver. SYN/handshake loss is not enough to demote a working path. */
-	if(utcp_connection_established(utcp_connection)
-	                && n->status.udp_confirmed && !n->status.temp_udp_confirmed) {
-		logger(mesh, MESHLINK_INFO, "Reliable channel retransmit to %s, invalidating direct UDP path", n->name);
-		path_note_udp_demoted(mesh, n);
-		update_node_pmtu(mesh, n);
-		relay_recompute_dependents(mesh, n);
-		relay_update_destination_transport(mesh, n);
+	/* Established data retransmit means the selected UDP path may not be
+	   delivering. One retransmission is not proof, so the path is marked
+	   suspect and probed; subsequent records take a live fallback meanwhile and
+	   the path is only demoted if those probes go unanswered (ADR 0004).
+	   Relay UDP probes the hop with that hop's SPTPS, not the destination. */
+	if(!utcp_connection_established(utcp_connection) || n->status.temp_udp_confirmed) {
+		return;
 	}
 
-	if(n->mtutimeout.cb) {
-		timeout_set(&mesh->loop, &n->mtutimeout, &(struct timespec) {
-			0, 0
-		});
+	if(n->active_route.kind == DATA_ROUTE_DIRECT_UDP && n->status.udp_confirmed) {
+		path_note_route_suspect(mesh, n, "reliable retransmit");
+	} else if(n->active_route.kind == DATA_ROUTE_RELAY
+	                && n->active_route.relay_carrier == RELAY_CARRIER_UDP) {
+		path_note_route_suspect(mesh, n, "reliable retransmit");
 	}
 }
 
@@ -4356,6 +4639,19 @@ static ssize_t channel_send(struct utcp *utcp, const void *data, size_t len) {
 
 	meshlink_handle_t *mesh = n->mesh;
 	return meshlink_send_immediate(mesh, (meshlink_node_t *)n, data, len) ? (ssize_t)len : -1;
+}
+
+/* The only place a node's UTCP is created, and the only place its MTU is set.
+   Every later path event leaves the packetization alone. */
+static void channel_utcp_init(meshlink_handle_t *mesh, node_t *n) {
+	n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, n);
+
+	if(!n->utcp) {
+		return;
+	}
+
+	utcp_set_mtu(n->utcp, relay_fixed_channel_mtu(mesh, n));
+	utcp_set_retransmit_cb(n->utcp, channel_retransmit);
 }
 
 void meshlink_set_channel_receive_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, meshlink_channel_receive_cb_t cb) {
@@ -4410,7 +4706,9 @@ static void channel_poll(struct utcp_connection *connection, size_t len) {
 		}
 
 		if(aio->data) {
+			path_send_guard_enter(mesh);
 			sent = utcp_send(connection, (char *)aio->data + aio->done, todo);
+			path_send_guard_leave(mesh);
 		} else {
 			/* Limit the amount we read at once to avoid stack overflows */
 			if(todo > 65536) {
@@ -4422,7 +4720,9 @@ static void channel_poll(struct utcp_connection *connection, size_t len) {
 
 			if(result > 0) {
 				todo = result;
+				path_send_guard_enter(mesh);
 				sent = utcp_send(connection, buf, todo);
+				path_send_guard_leave(mesh);
 			} else {
 				if(result < 0 && errno == EINTR) {
 					continue;
@@ -4526,10 +4826,7 @@ void meshlink_set_channel_accept_cb(meshlink_handle_t *mesh, meshlink_channel_ac
 
 	for splay_each(node_t, n, mesh->nodes) {
 		if(!n->utcp && n != mesh->self) {
-			n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, n);
-			utcp_set_mtu(n->utcp, MTU - sizeof(meshlink_packethdr_t));
-			utcp_set_retransmit_cb(n->utcp, channel_retransmit);
-			relay_update_destination_transport(mesh, n);
+			channel_utcp_init(mesh, n);
 		}
 	}
 
@@ -4615,10 +4912,7 @@ meshlink_channel_t *meshlink_channel_open_ex(meshlink_handle_t *mesh, meshlink_n
 	node_t *n = (node_t *)node;
 
 	if(!n->utcp) {
-		n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, n);
-		utcp_set_mtu(n->utcp, MTU - sizeof(meshlink_packethdr_t));
-		utcp_set_retransmit_cb(n->utcp, channel_retransmit);
-		relay_update_destination_transport(mesh, n);
+		channel_utcp_init(mesh, n);
 
 		if(!n->utcp) {
 			meshlink_errno = errno == ENOMEM ? MESHLINK_ENOMEM : MESHLINK_EINTERNAL;
@@ -4642,15 +4936,18 @@ meshlink_channel_t *meshlink_channel_open_ex(meshlink_handle_t *mesh, meshlink_n
 		channel->priv = (void *)data;
 	}
 
+	channel_demand_hold(mesh, channel);
 	channel->c = utcp_connect_ex(n->utcp, port, channel_recv, channel, flags);
 
-	pthread_mutex_unlock(&mesh->mutex);
-
 	if(!channel->c) {
+		channel_demand_drop(mesh, channel);
+		pthread_mutex_unlock(&mesh->mutex);
 		meshlink_errno = errno == ENOMEM ? MESHLINK_ENOMEM : MESHLINK_EINTERNAL;
 		free(channel);
 		return NULL;
 	}
+
+	pthread_mutex_unlock(&mesh->mutex);
 
 	return channel;
 }
@@ -4689,6 +4986,8 @@ void meshlink_channel_close(meshlink_handle_t *mesh, meshlink_channel_t *channel
 		abort();
 	}
 
+	channel_demand_drop(mesh, channel);
+
 	if(channel->c) {
 		utcp_close(channel->c);
 		channel->c = NULL;
@@ -4716,6 +5015,8 @@ void meshlink_channel_abort(meshlink_handle_t *mesh, meshlink_channel_t *channel
 	if(pthread_mutex_lock(&mesh->mutex) != 0) {
 		abort();
 	}
+
+	channel_demand_drop(mesh, channel);
 
 	if(channel->c) {
 		utcp_abort(channel->c);
@@ -4770,7 +5071,9 @@ ssize_t meshlink_channel_send(meshlink_handle_t *mesh, meshlink_channel_t *chann
 			meshlink_errno = MESHLINK_ENETWORK;
 			retval = -1;
 		} else {
+			path_send_guard_enter(mesh);
 			retval = utcp_send(channel->c, data, len);
+			path_send_guard_leave(mesh);
 		}
 	}
 
@@ -4962,7 +5265,14 @@ size_t meshlink_channel_get_sendq(meshlink_handle_t *mesh, meshlink_channel_t *c
 		return -1;
 	}
 
-	return utcp_get_sendq(channel->c);
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	size_t sendq = utcp_get_sendq(channel->c);
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return sendq;
 }
 
 size_t meshlink_channel_get_recvq(meshlink_handle_t *mesh, meshlink_channel_t *channel) {
@@ -4971,16 +5281,41 @@ size_t meshlink_channel_get_recvq(meshlink_handle_t *mesh, meshlink_channel_t *c
 		return -1;
 	}
 
-	return utcp_get_recvq(channel->c);
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	size_t recvq = utcp_get_recvq(channel->c);
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return recvq;
 }
 
+/* The fixed payload budget for this channel's destination. It is chosen when
+   the destination's UTCP is created and does not change with the route, so an
+   application may read it once and keep using it. */
 size_t meshlink_channel_get_mss(meshlink_handle_t *mesh, meshlink_channel_t *channel) {
 	if(!mesh || !channel) {
 		meshlink_errno = MESHLINK_EINVAL;
 		return -1;
 	}
 
-	return utcp_get_mss(channel->node->utcp);
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	node_t *n = channel->node;
+
+	if(!n || n->mesh != mesh || !n->utcp) {
+		meshlink_errno = MESHLINK_EINVAL;
+		pthread_mutex_unlock(&mesh->mutex);
+		return (size_t) - 1;
+	}
+
+	size_t mss = utcp_get_mss(n->utcp);
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return mss;
 }
 
 void meshlink_set_channel_timeout(meshlink_handle_t *mesh, meshlink_channel_t *channel, int timeout) {
@@ -5014,10 +5349,7 @@ void meshlink_set_node_channel_timeout(meshlink_handle_t *mesh, meshlink_node_t 
 	}
 
 	if(!n->utcp) {
-		n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, n);
-		utcp_set_mtu(n->utcp, MTU - sizeof(meshlink_packethdr_t));
-		utcp_set_retransmit_cb(n->utcp, channel_retransmit);
-		relay_update_destination_transport(mesh, n);
+		channel_utcp_init(mesh, n);
 	}
 
 	utcp_set_user_timeout(n->utcp, timeout);
@@ -5027,10 +5359,7 @@ void meshlink_set_node_channel_timeout(meshlink_handle_t *mesh, meshlink_node_t 
 
 void update_node_status(meshlink_handle_t *mesh, node_t *n) {
 	if(n->status.reachable && mesh->channel_accept_cb && !n->utcp) {
-		n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, n);
-		utcp_set_mtu(n->utcp, MTU - sizeof(meshlink_packethdr_t));
-		utcp_set_retransmit_cb(n->utcp, channel_retransmit);
-		relay_update_destination_transport(mesh, n);
+		channel_utcp_init(mesh, n);
 	}
 
 	if(mesh->node_status_cb) {
@@ -5042,16 +5371,14 @@ void update_node_status(meshlink_handle_t *mesh, node_t *n) {
 	}
 }
 
+/* Path-MTU discovery is endpoint validation and telemetry. It reports the
+   measurement and bounds what the send path may put on the wire; it never
+   repacketizes a live channel (see ADR 0004). */
 void update_node_pmtu(meshlink_handle_t *mesh, node_t *n) {
-	if(n->status.udp_confirmed) {
-		utcp_set_mtu(n->utcp, (n->minmtu > MINMTU ? n->minmtu : MINMTU) - sizeof(meshlink_packethdr_t));
-	}
-
 	if(mesh->node_pmtu_cb && !n->status.blacklisted) {
 		mesh->node_pmtu_cb(mesh, (meshlink_node_t *)n, n->minmtu);
 	}
 
-	relay_recompute_dependents(mesh, n);
 	relay_notify_minmtu_change(mesh, n);
 }
 
@@ -5084,7 +5411,33 @@ void meshlink_enable_discovery(meshlink_handle_t *mesh, bool enable) {
 		if(enable) {
 			discovery_start(mesh);
 		} else {
+			/* Clear enabled before dropping the lock so a concurrent
+			   enable(true) does not early-out on a stale true and lose
+			   the re-enable after we finish stopping. The reachability
+			   thread takes mesh->mutex; joining it while this lock is
+			   held deadlocks. */
+			mesh->discovery.enabled = false;
+			pthread_mutex_unlock(&mesh->mutex);
 			discovery_stop(mesh);
+
+			if(pthread_mutex_lock(&mesh->mutex) != 0) {
+				abort();
+			}
+
+			/* A concurrent enable(true) may have started discovery during
+			   the unlocked stop window; discovery_stop then tore those
+			   IOs down while leaving enabled==true. Restart if the flag
+			   says on but no discovery IOs remain. If enable(true) ran
+			   entirely after stop, sockets are already live — do not
+			   double-start. */
+			if(mesh->discovery.enabled
+			                && !mesh->discovery.sockets[0].cb
+			                && !mesh->discovery.sockets[1].cb
+			                && !mesh->discovery.pfroute_io.cb) {
+				discovery_start(mesh);
+			}
+
+			goto end;
 		}
 	}
 
@@ -5105,6 +5458,8 @@ void meshlink_hint_network_change(struct meshlink_handle *mesh) {
 	if(pthread_mutex_lock(&mesh->mutex) != 0) {
 		abort();
 	}
+
+	connection_policy_advance_network_epoch(mesh);
 
 	if(mesh->discovery.enabled) {
 		scan_ifaddrs(mesh);

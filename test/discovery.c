@@ -56,7 +56,7 @@ int main(void) {
 	mesh_a = meshlink_open("discovery_conf.1", "a", "discovery", DEV_CLASS_BACKBONE);
 	assert(mesh_a);
 	assert(meshlink_set_port(mesh_a, port_b));
-	mesh_b = meshlink_open("discovery_conf.2", "b", "discovery", DEV_CLASS_BACKBONE);
+	mesh_b = meshlink_open("discovery_conf.2", "b", "discovery", DEV_CLASS_STATIONARY);
 	assert(mesh_b);
 
 	assert(meshlink_get_port(mesh_a) == port_b);

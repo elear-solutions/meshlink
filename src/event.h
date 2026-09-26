@@ -96,6 +96,7 @@ void signal_del(event_loop_t *loop, signal_t *sig);
 void idle_set(event_loop_t *loop, idle_cb_t cb, void *data);
 
 void event_loop_init(event_loop_t *loop);
+void event_loop_stamp_now(event_loop_t *loop);
 void event_loop_exit(event_loop_t *loop);
 bool event_loop_run(event_loop_t *loop, struct meshlink_handle *mesh) __attribute__((__warn_unused_result__));
 void event_loop_flush_output(event_loop_t *loop);

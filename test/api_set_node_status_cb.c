@@ -32,7 +32,9 @@ int main(void) {
 	init_sync_flag(&b_reachable);
 
 	meshlink_handle_t *mesh1, *mesh2;
-	open_meshlink_pair_ephemeral(&mesh1, &mesh2, "api_set_node_status_cb");
+	open_meshlink_pair(&mesh1, &mesh2, "api_set_node_status_cb");
+	/* join_meshlink_peer starts the backbone. Stop it so start() can fire self-reachable. */
+	meshlink_stop(mesh1);
 
 	// Test case #1: check that setting a valid status callback will cause it to be called
 	//               when the node itself is started or stopped

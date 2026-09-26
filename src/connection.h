@@ -34,7 +34,7 @@ typedef struct connection_status_t {
 	uint16_t pinged: 1;                 /* sent ping */
 	uint16_t active: 1;                 /* 1 if active.. */
 	uint16_t connecting: 1;             /* 1 if we are waiting for a non-blocking connect() to finish */
-	uint16_t unused: 1;
+	uint16_t drain_only: 1;             /* 1 if retired after META promotion; flush then close */
 	uint16_t control: 1;                /* 1 if this is a control connection */
 	uint16_t pcap: 1;                   /* 1 if this is a control connection requesting packet capture */
 	uint16_t log: 1;                    /* 1 if this is a control connection requesting log dump */
@@ -73,8 +73,11 @@ typedef struct connection_t {
 	int allow_request;              /* defined if there's only one request possible */
 	time_t last_ping_time;          /* last time we saw some activity from the other end or pinged them */
 	time_t last_key_renewal;        /* last time we renewed the SPTPS key */
+	time_t activated_at;            /* first time this META socket became active; never restamped on key renewal */
 
 	struct outgoing_t *outgoing;    /* used to keep track of outgoing connections */
+	uint32_t outgoing_generation;   /* outgoing_t.generation when this socket was opened */
+	timeout_t drain_ev;             /* cleanup guard for drain_only sockets */
 
 	struct edge_t *edge;            /* edge associated with this connection */
 	struct submesh_t *submesh;      /* his submesh handle if available in invitation file */

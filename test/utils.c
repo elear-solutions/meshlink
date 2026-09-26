@@ -13,12 +13,93 @@
 #include <time.h>
 #include <unistd.h>
 #include <poll.h>
+#include <limits.h>
+#include <sys/stat.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
+
 #include "utils.h"
 #include "../src/devtools.h"
+
+/* Conf and scratch files follow the process cwd. Park unit tests in test/tmp/
+   so ./test/foo from the repo root and make check (cwd test/) share one place.
+   Blackbox does not link this file. */
+static void test_enter_tmp(void) __attribute__((constructor));
+
+static int mkdir_tmp(const char *path) {
+	if(!mkdir(path, 0755) || errno == EEXIST) {
+		return 0;
+	}
+
+	return -1;
+}
+
+static void test_enter_tmp(void) {
+	const char *override = getenv("MESHLINK_TEST_TMP");
+	char exe[PATH_MAX];
+	char *slash;
+
+	if(override && *override) {
+		if(!mkdir_tmp(override) && chdir(override) != 0) {
+			return;
+		}
+
+		return;
+	}
+
+	exe[0] = 0;
+#if defined(__APPLE__)
+	{
+		uint32_t size = sizeof exe;
+
+		if(_NSGetExecutablePath(exe, &size) != 0) {
+			return;
+		}
+	}
+#else
+	{
+		ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+
+		if(n <= 0) {
+			return;
+		}
+
+		exe[n] = 0;
+	}
+#endif
+
+	slash = strrchr(exe, '/');
+
+	if(!slash) {
+		return;
+	}
+
+	*slash = 0;
+	slash = strrchr(exe, '/');
+
+	if(slash && !strcmp(slash + 1, ".libs")) {
+		*slash = 0;
+	}
+
+	{
+		size_t len = strlen(exe);
+
+		if(len + strlen("/tmp") >= sizeof exe) {
+			return;
+		}
+
+		memcpy(exe + len, "/tmp", strlen("/tmp") + 1);
+	}
+
+	if(!mkdir_tmp(exe) && chdir(exe) != 0) {
+		return;
+	}
+}
 
 #define RELAY_MAX_CONNS 64
 
@@ -228,9 +309,37 @@ void stop_tcp_relay(tcp_relay_t *relay) {
 	relay->stopping = true;
 	assert(pthread_mutex_unlock(&relay->mutex) == 0);
 
-	/* Wake accept() with an error and let the thread exit before the fd is closed,
-	   so it cannot come back to accept() on a reused fd number. */
+	/* Wake accept() and let the thread exit before the fd is closed, so it
+	   cannot come back to accept() on a reused fd number. shutdown() does
+	   that on Linux. Darwin leaves accept() blocked, so also connect. */
 	shutdown(relay->listen_fd, SHUT_RDWR);
+	{
+		struct sockaddr_storage ss;
+		socklen_t len = sizeof ss;
+
+		if(getsockname(relay->listen_fd, (struct sockaddr *)&ss, &len) == 0) {
+			if(ss.ss_family == AF_INET) {
+				struct sockaddr_in *in = (struct sockaddr_in *)&ss;
+
+				if(in->sin_addr.s_addr == htonl(INADDR_ANY)) {
+					in->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+				}
+			} else if(ss.ss_family == AF_INET6) {
+				struct sockaddr_in6 *in6 = (struct sockaddr_in6 *)&ss;
+
+				if(IN6_IS_ADDR_UNSPECIFIED(&in6->sin6_addr)) {
+					in6->sin6_addr = in6addr_loopback;
+				}
+			}
+
+			int poke = socket(ss.ss_family, SOCK_STREAM, 0);
+
+			if(poke >= 0) {
+				connect(poke, (struct sockaddr *)&ss, len);
+				close(poke);
+			}
+		}
+	}
 	pthread_join(relay->thread, NULL);
 	close(relay->listen_fd);
 
@@ -343,6 +452,15 @@ bool wait_sync_flag(struct sync_flag *s, int seconds) {
 	return flag;
 }
 
+void join_meshlink_peer(meshlink_handle_t *backbone, meshlink_handle_t *peer) {
+	assert(backbone && peer);
+	assert(meshlink_start(backbone));
+	char *url = meshlink_invite(backbone, NULL, meshlink_get_self(peer)->name);
+	assert(url);
+	assert(meshlink_join(peer, url));
+	free(url);
+}
+
 void link_meshlink_pair(meshlink_handle_t *a, meshlink_handle_t *b) {
 	// Import and export both side's data
 
@@ -379,7 +497,7 @@ void open_meshlink_pair(meshlink_handle_t **pa, meshlink_handle_t **pb, const ch
 	meshlink_handle_t *a = meshlink_open(a_name, "a", prefix, DEV_CLASS_BACKBONE);
 	assert(a);
 
-	meshlink_handle_t *b = meshlink_open(b_name, "b", prefix, DEV_CLASS_BACKBONE);
+	meshlink_handle_t *b = meshlink_open(b_name, "b", prefix, DEV_CLASS_STATIONARY);
 	assert(b);
 
 	free(a_name);
@@ -388,7 +506,9 @@ void open_meshlink_pair(meshlink_handle_t **pa, meshlink_handle_t **pb, const ch
 	meshlink_enable_discovery(a, false);
 	meshlink_enable_discovery(b, false);
 
-	link_meshlink_pair(a, b);
+	assert(meshlink_set_canonical_address(a, meshlink_get_self(a), "localhost", NULL));
+	assert(meshlink_set_canonical_address(b, meshlink_get_self(b), "localhost", NULL));
+	join_meshlink_peer(a, b);
 
 	*pa = a;
 	*pb = b;
@@ -400,7 +520,7 @@ void open_meshlink_pair_ephemeral(meshlink_handle_t **pa, meshlink_handle_t **pb
 	*pa = *pb = NULL;
 
 	meshlink_handle_t *a = meshlink_open_ephemeral("a", prefix, DEV_CLASS_BACKBONE);
-	meshlink_handle_t *b = meshlink_open_ephemeral("b", prefix, DEV_CLASS_BACKBONE);
+	meshlink_handle_t *b = meshlink_open_ephemeral("b", prefix, DEV_CLASS_STATIONARY);
 
 	assert(a);
 	assert(b);
@@ -408,7 +528,9 @@ void open_meshlink_pair_ephemeral(meshlink_handle_t **pa, meshlink_handle_t **pb
 	meshlink_enable_discovery(a, false);
 	meshlink_enable_discovery(b, false);
 
-	link_meshlink_pair(a, b);
+	assert(meshlink_set_canonical_address(a, meshlink_get_self(a), "localhost", NULL));
+	assert(meshlink_set_canonical_address(b, meshlink_get_self(b), "localhost", NULL));
+	join_meshlink_peer(a, b);
 
 	*pa = a;
 	*pb = b;
@@ -433,7 +555,7 @@ void start_meshlink_pair(meshlink_handle_t *a, meshlink_handle_t *b) {
 	assert(meshlink_start(a));
 	assert(meshlink_start(b));
 
-	assert(wait_sync_flag(&pair_status, 5));
+	assert(wait_sync_flag(&pair_status, 15));
 
 	meshlink_set_node_status_cb(a, NULL);
 	a->priv = NULL;

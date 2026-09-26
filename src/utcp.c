@@ -436,6 +436,14 @@ static bool buffer_set_size(struct buffer *buf, uint32_t minsize, uint32_t maxsi
 }
 
 static void buffer_transfer(struct buffer *buf, char *newdata, size_t newsize) {
+	if(!buf->data) {
+		/* Nothing to carry over. Offsetting a null pointer is undefined even
+		   when the length is zero. */
+		buf->offset = 0;
+		buf->size = newsize;
+		return;
+	}
+
 	if(buffer_wraps(buf)) {
 		// Old situation:
 		// [345......012]
@@ -874,13 +882,8 @@ ssize_t utcp_send(struct utcp_connection *c, const void *data, size_t len) {
 	case SYN_SENT:
 	case SYN_RECEIVED:
 	case ESTABLISHED:
-		break;
-
 	case CLOSE_WAIT:
-		/* Remote side has closed, but we haven't closed yet */
-		debug(c, "send() called on connection where remote side has closed\n");
-		errno = EPIPE;
-		return -1;
+		break;
 
 	case FIN_WAIT_1:
 	case FIN_WAIT_2:

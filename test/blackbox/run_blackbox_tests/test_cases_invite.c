@@ -100,7 +100,7 @@ static bool test_invite_01(void) {
 	// Create meshlink instance
 
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
-	meshlink_handle_t *mesh = meshlink_open(nut_confbase, NUT, TEST_MESHLINK_INVITE, DEV_CLASS_STATIONARY);
+	meshlink_handle_t *mesh = meshlink_open(nut_confbase, NUT, TEST_MESHLINK_INVITE, DEV_CLASS_BACKBONE);
 	assert_non_null(mesh);
 
 	char *invitation = meshlink_invite(mesh, NULL, "new");
@@ -151,7 +151,7 @@ static bool test_invite_03(void) {
 	// Create meshlink instance
 
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
-	meshlink_handle_t *mesh = meshlink_open(nut_confbase, NUT, TEST_MESHLINK_INVITE, DEV_CLASS_STATIONARY);
+	meshlink_handle_t *mesh = meshlink_open(nut_confbase, NUT, TEST_MESHLINK_INVITE, DEV_CLASS_BACKBONE);
 	assert_non_null(mesh);
 
 	char *invitation = meshlink_invite(mesh, NULL, NULL);
@@ -185,7 +185,7 @@ static bool test_invite_04(void) {
 	// Create meshlink instance
 
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
-	meshlink_handle_t *mesh = meshlink_open(nut_confbase, NUT, TEST_MESHLINK_INVITE, DEV_CLASS_STATIONARY);
+	meshlink_handle_t *mesh = meshlink_open(nut_confbase, NUT, TEST_MESHLINK_INVITE, DEV_CLASS_BACKBONE);
 	assert_non_null(mesh);
 
 	assert_true(meshlink_add_invitation_address(mesh, "11.11.11.11", "2020"));
@@ -230,7 +230,7 @@ static bool test_invite_05(void) {
 	if(!pid) {
 		assert(!close(pipefd[0]));
 		meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
-		meshlink_handle_t *mesh = meshlink_open(nut_confbase, NUT, TEST_MESHLINK_INVITE, DEV_CLASS_STATIONARY);
+		meshlink_handle_t *mesh = meshlink_open(nut_confbase, NUT, TEST_MESHLINK_INVITE, DEV_CLASS_BACKBONE);
 		assert(mesh);
 
 		char *invitation = meshlink_invite(mesh, NULL, PEER);
@@ -251,7 +251,7 @@ static bool test_invite_05(void) {
 	// Reopen the NUT instance in the same test suite
 
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
-	meshlink_handle_t *mesh = meshlink_open(nut_confbase, NUT, TEST_MESHLINK_INVITE, DEV_CLASS_STATIONARY);
+	meshlink_handle_t *mesh = meshlink_open(nut_confbase, NUT, TEST_MESHLINK_INVITE, DEV_CLASS_BACKBONE);
 	assert_non_null(mesh);
 	meshlink_handle_t *mesh_peer = meshlink_open(peer_confbase, PEER, TEST_MESHLINK_INVITE, DEV_CLASS_STATIONARY);
 	assert_non_null(mesh);

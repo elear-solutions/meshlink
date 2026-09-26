@@ -58,7 +58,11 @@ typedef enum packet_type_t {
 } packet_type_t;
 
 #include "conf.h"
+#include "connection_policy.h"
 #include "list.h"
+
+/* TCP connect plus Meshlink authentication budget for the one startup direct attempt. */
+#define OUTGOING_STARTUP_MS 250
 
 typedef struct outgoing_t {
 	struct node_t *node;
@@ -74,19 +78,32 @@ typedef struct outgoing_t {
 	} state;
 	int timeout;
 	timeout_t ev;
+	timeout_t startup_ev;           /* outgoing_startup_ms budget for the one direct attempt */
 	struct addrinfo *ai;
 	struct addrinfo *aip;
 	bool ai_is_getaddrinfo;         /* true if ai came from getaddrinfo() (free with freeaddrinfo), false if built locally */
+	uint32_t generation;            /* starts at 1; bumped when a pending startup socket is canceled */
+	struct connection_t *pending;   /* the single in-flight startup socket, if any */
+	sockaddr_t startup_sa;          /* direct candidate that received the startup budget */
+	sockaddr_t skip_sa;             /* last failed startup candidate; skipped on the next pick */
+	bool startup_waiting_dns;       /* deadline expired but canonical DNS is still in flight */
+	uint8_t direct_tries;           /* no-canonical leftover directs; capped to avoid a refuse loop */
+	meta_connection_purpose_t purpose; /* persistence is meta_purpose_is_persistent(purpose) */
+	unsigned retry_step;            /* BACKBONE_REQUIRED ladder index; not cleared by reset_outgoing() */
 } outgoing_t;
 
 /* Yes, very strange placement indeed, but otherwise the typedefs get all tangled up */
 #include "connection.h"
 #include "node.h"
 
+/* leftover directs without a canonical fallback; +2 covers recent[] plus a known edge */
+#define OUTGOING_MAX_DIRECT_TRIES (MAX_RECENT + 2)
+
 void init_outgoings(struct meshlink_handle *mesh);
 void exit_outgoings(struct meshlink_handle *mesh);
 
 void retry_outgoing(struct meshlink_handle *mesh, outgoing_t *);
+void outgoing_arm_retry(struct meshlink_handle *mesh, outgoing_t *outgoing, int delay_sec);
 void handle_incoming_vpn_data(struct event_loop_t *loop, void *, int);
 void finish_connecting(struct meshlink_handle *mesh, struct connection_t *);
 bool connect_meta_socket(struct meshlink_handle *mesh, struct connection_t *) __attribute__((__warn_unused_result__));
@@ -105,7 +122,16 @@ void load_all_nodes(struct meshlink_handle *mesh);
 bool setup_myself_reloadable(struct meshlink_handle *mesh) __attribute__((__warn_unused_result__));
 bool setup_network(struct meshlink_handle *mesh) __attribute__((__warn_unused_result__));
 void reset_outgoing(struct outgoing_t *);
+/* Close the in-flight startup socket and record it as skip. Never call from a
+   list destructor that still holds the connection. */
+void outgoing_abort_startup(struct meshlink_handle *mesh, struct outgoing_t *);
+/* Untrack the startup socket without closing it. Today: blacklist. */
+void outgoing_detach_startup(struct meshlink_handle *mesh, struct outgoing_t *);
+/* Persist a failed startup dest on the outgoing walk and, if no META is active yet, on the node. */
+void outgoing_note_failed_dest(struct outgoing_t *outgoing, const sockaddr_t *sa);
 void setup_outgoing_connection(struct meshlink_handle *mesh, struct outgoing_t *);
+void outgoing_set_startup_ms(int ms);
+int outgoing_get_startup_ms(void);
 void close_network_connections(struct meshlink_handle *mesh);
 void main_loop(struct meshlink_handle *mesh);
 void terminate_connection(struct meshlink_handle *mesh, struct connection_t *, bool);
@@ -118,6 +144,9 @@ bool read_ecdsa_public_key(struct meshlink_handle *mesh, struct connection_t *) 
 bool read_ecdsa_private_key(struct meshlink_handle *mesh) __attribute__((__warn_unused_result__));
 bool node_write_config(struct meshlink_handle *mesh, struct node_t *, bool new_key) __attribute__((__warn_unused_result__));
 void send_mtu_probe(struct meshlink_handle *mesh, struct node_t *);
+void send_candidate_probe(struct meshlink_handle *mesh, struct node_t *n);
+void send_suspect_probe(struct meshlink_handle *mesh, struct node_t *n);
+void send_backbone_udp_probe(struct meshlink_handle *mesh);
 void choose_udp_address(struct meshlink_handle *mesh, struct node_t *n, const sockaddr_t **sa, int *sock, sockaddr_t *sa_buf);
 bool host_port_to_sockaddr(const char *host, const char *port, sockaddr_t *out) __attribute__((__warn_unused_result__));
 bool self_external_sockaddr(struct meshlink_handle *mesh, sockaddr_t *out) __attribute__((__warn_unused_result__));

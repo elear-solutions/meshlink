@@ -16,6 +16,7 @@
 #define SMALL_SIZE 512
 #define SMALL_COUNT 2500
 #define LARGE_SIZE 131072
+#define LARGE_ATTEMPTS 10
 
 static struct sync_flag accept_flag;
 
@@ -98,6 +99,7 @@ int main(void) {
 	meshlink_handle_t *server = meshlink_open("channels_udp_conf.0", "server", "channels-udp", DEV_CLASS_BACKBONE);
 	assert(server);
 	meshlink_enable_discovery(server, false);
+	assert(meshlink_set_canonical_address(server, meshlink_get_self(server), "localhost", NULL));
 	server->priv = channels;
 	meshlink_set_channel_accept_cb(server, accept_cb);
 	assert(meshlink_start(server));
@@ -111,7 +113,8 @@ int main(void) {
 		assert(clients[i].mesh);
 		clients[i].mesh->priv = &clients[i];
 		meshlink_enable_discovery(clients[i].mesh, false);
-		link_meshlink_pair(server, clients[i].mesh);
+		assert(meshlink_set_canonical_address(clients[i].mesh, meshlink_get_self(clients[i].mesh), "localhost", NULL));
+		join_meshlink_peer(server, clients[i].mesh);
 		meshlink_set_node_status_cb(clients[i].mesh, status_cb);
 		assert(meshlink_start(clients[i].mesh));
 	}
@@ -125,12 +128,33 @@ int main(void) {
 		assert(clients[i].channel);
 	}
 
-	// Check that we can send up to 65535 bytes without errors
+	// Check that we can send a datagram far larger than one packet without errors.
+	// The channel MSS is the fixed relay-safe floor, so this spans a few hundred
+	// fragments and an unreliable channel may lose the whole datagram if any one
+	// of them is dropped. Send it a few times: what is being checked is that the
+	// send succeeds and that a delivered datagram is reassembled whole, not that
+	// UDP never loses anything.
 
 	char large_data[LARGE_SIZE] = "";
 
-	for(int i = 0; i < 3; i++) {
-		assert(meshlink_channel_send(server, channels[i], large_data, sizeof(large_data)) == sizeof(large_data));
+	for(int attempt = 0; attempt < LARGE_ATTEMPTS; attempt++) {
+		bool all_large = true;
+
+		for(int i = 0; i < 3; i++) {
+			assert(meshlink_channel_send(server, channels[i], large_data, sizeof(large_data)) == sizeof(large_data));
+		}
+
+		nanosleep(&(struct timespec) {
+			0, 200000000L
+		}, NULL);
+
+		for(int i = 0; i < 3; i++) {
+			all_large = all_large && clients[i].got_large_packet;
+		}
+
+		if(all_large) {
+			break;
+		}
 	}
 
 	// Assert that packets larger than 16 MiB are not allowed
@@ -170,8 +194,8 @@ int main(void) {
 	}
 
 	for(int i = 0; i < 3; i++) {
-		size_t max_received = SMALL_SIZE * SMALL_COUNT + LARGE_SIZE;
-		assert(clients[i].received >= max_received / 2);
+		size_t max_received = SMALL_SIZE * SMALL_COUNT + (size_t)LARGE_SIZE * LARGE_ATTEMPTS;
+		assert(clients[i].received >= (SMALL_SIZE * SMALL_COUNT) / 2);
 		assert(clients[i].received <= max_received);
 		assert(clients[i].got_large_packet);
 	}

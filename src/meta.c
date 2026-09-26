@@ -29,6 +29,17 @@
 #include "utils.h"
 #include "xalloc.h"
 
+/* pselect() waits on a copy of the fd set. A write interest armed from
+   another thread stays invisible until some other event wakes the loop,
+   which on a quiet host is the 1s ping timer. */
+static void meta_watch_write(meshlink_handle_t *mesh, connection_t *c) {
+	io_set(&mesh->loop, &c->io, IO_READ | IO_WRITE);
+
+	if(mesh->threadstarted && mesh->loop.pipefd[1] != -1 && !pthread_equal(mesh->thread, pthread_self())) {
+		signal_trigger(&mesh->loop, &mesh->datafromapp);
+	}
+}
+
 bool send_meta_sptps(void *handle, uint8_t type, const void *buffer, size_t length) {
 	(void)type;
 
@@ -40,7 +51,7 @@ bool send_meta_sptps(void *handle, uint8_t type, const void *buffer, size_t leng
 	meshlink_handle_t *mesh = c->mesh;
 
 	buffer_add(&c->outbuf, (const char *)buffer, length);
-	io_set(&mesh->loop, &c->io, IO_READ | IO_WRITE);
+	meta_watch_write(mesh, c);
 
 	return true;
 }
@@ -54,7 +65,7 @@ bool send_meta(meshlink_handle_t *mesh, connection_t *c, const char *buffer, int
 
 	if(c->allow_request == ID) {
 		buffer_add(&c->outbuf, buffer, length);
-		io_set(&mesh->loop, &c->io, IO_READ | IO_WRITE);
+		meta_watch_write(mesh, c);
 		return true;
 	}
 
@@ -66,7 +77,7 @@ void broadcast_meta(meshlink_handle_t *mesh, connection_t *from, const char *buf
 	assert(length);
 
 	for list_each(connection_t, c, mesh->connections)
-		if(c != from && c->status.active && !(c->flags & PROTOCOL_TINY)) {
+		if(c != from && c->status.active && !c->status.drain_only && !(c->flags & PROTOCOL_TINY)) {
 			send_meta(mesh, c, buffer, length);
 		}
 }
@@ -76,7 +87,7 @@ void broadcast_submesh_meta(meshlink_handle_t *mesh, connection_t *from, const s
 	assert(length);
 
 	for list_each(connection_t, c, mesh->connections)
-		if(c != from && c->status.active && !(c->flags & PROTOCOL_TINY)) {
+		if(c != from && c->status.active && !c->status.drain_only && !(c->flags & PROTOCOL_TINY)) {
 			if(c->node && submesh_allows_node(s, c->node)) {
 				send_meta(mesh, c, buffer, length);
 			}
@@ -139,6 +150,24 @@ bool receive_meta_sptps(void *handle, uint8_t type, const void *data, uint16_t l
 bool receive_meta(meshlink_handle_t *mesh, connection_t *c) {
 	int inlen;
 	char inbuf[MAXBUFSIZE];
+
+	if(c->status.drain_only) {
+		inlen = recv(c->socket, inbuf, sizeof(inbuf), 0);
+
+		if(inlen <= 0) {
+			if(!inlen || !errno) {
+				logger(mesh, MESHLINK_INFO, "Connection closed by %s", c->name);
+			} else if(sockwouldblock(sockerrno)) {
+				return true;
+			} else {
+				logger(mesh, MESHLINK_ERROR, "Metadata socket read error for %s: %s", c->name, sockstrerror(sockerrno));
+			}
+
+			return false;
+		}
+
+		return true;
+	}
 
 	inlen = recv(c->socket, inbuf, sizeof(inbuf), 0);
 

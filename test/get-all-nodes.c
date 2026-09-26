@@ -67,21 +67,14 @@ int main(void) {
 	for(int i = 0; i < 3; i++) {
 		meshlink_enable_discovery(mesh[i], false);
 		assert(meshlink_set_canonical_address(mesh[i], meshlink_get_self(mesh[i]), "localhost", NULL));
-		char *data = meshlink_export(mesh[i]);
-		assert(data);
-
-		for(int j = 0; j < 3; j++) {
-			if(i == j) {
-				continue;
-			}
-
-			assert(meshlink_import(mesh[j], data));
-		}
-
-		free(data);
 	}
 
+	time_t foo_started = time(NULL);
+	join_meshlink_peer(mesh[0], mesh[1]);
+	join_meshlink_peer(mesh[0], mesh[2]);
+
 	// We should know about all nodes now, and their device class.
+	// Join starts foo, so self is already online; bar/baz have never been.
 
 	nodes = meshlink_get_all_nodes(mesh[0], nodes, &nnodes);
 	assert(nnodes == 3);
@@ -91,20 +84,9 @@ int main(void) {
 	assert(nodes[0] == meshlink_get_self(mesh[0]));
 
 	nodes = meshlink_get_all_nodes_by_dev_class(mesh[0], DEV_CLASS_STATIONARY, nodes, &nnodes);
-	assert(nnodes == 2);
-
-	// But no node should have been online.
-
-	nodes = meshlink_get_all_nodes_by_last_reachable(mesh[0], 0, -1, nodes, &nnodes);
-	assert(nnodes == 0);
-
-	nodes = meshlink_get_all_nodes_by_last_reachable(mesh[0], 0, 0, nodes, &nnodes);
-	assert(nnodes == 3);
-
-	// Start foo.
-
-	time_t foo_started = time(NULL);
-	assert(meshlink_start(mesh[0]));
+	size_t nstationary = nnodes;
+	nodes = meshlink_get_all_nodes_by_dev_class(mesh[0], DEV_CLASS_UNKNOWN, nodes, &nnodes);
+	assert(nstationary + nnodes == 2);
 
 	nodes = meshlink_get_all_nodes_by_last_reachable(mesh[0], 0, -1, nodes, &nnodes);
 	assert(nnodes == 1);
@@ -184,7 +166,9 @@ int main(void) {
 	assert(nodes[0] == meshlink_get_self(mesh[0]));
 
 	nodes = meshlink_get_all_nodes_by_dev_class(mesh[0], DEV_CLASS_STATIONARY, nodes, &nnodes);
-	assert(nnodes == 2);
+	size_t nstationary_reopen = nnodes;
+	nodes = meshlink_get_all_nodes_by_dev_class(mesh[0], DEV_CLASS_UNKNOWN, nodes, &nnodes);
+	assert(nstationary_reopen + nnodes == 2);
 
 	nodes = meshlink_get_all_nodes_by_last_reachable(mesh[0], 0, 0, nodes, &nnodes);
 	assert(nnodes == 1);

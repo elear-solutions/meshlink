@@ -36,7 +36,7 @@ int main(void) {
 	assert(meshlink_destroy("join_canonical_nlb_conf.1"));
 	assert(meshlink_destroy("join_canonical_nlb_conf.2"));
 
-	meshlink_handle_t *foo = meshlink_open("join_canonical_nlb_conf.1", "foo", "join-canonical-nlb", DEV_CLASS_STATIONARY);
+	meshlink_handle_t *foo = meshlink_open("join_canonical_nlb_conf.1", "foo", "join-canonical-nlb", DEV_CLASS_BACKBONE);
 	meshlink_handle_t *bar = meshlink_open("join_canonical_nlb_conf.2", "bar", "join-canonical-nlb", DEV_CLASS_PORTABLE);
 	assert(foo && bar);
 	meshlink_enable_discovery(foo, false);
@@ -103,7 +103,7 @@ int main(void) {
 	assert(meshlink_destroy("join_canonical_local_conf.1"));
 	assert(meshlink_destroy("join_canonical_local_conf.2"));
 
-	foo = meshlink_open("join_canonical_local_conf.1", "foo", "join-canonical-local", DEV_CLASS_STATIONARY);
+	foo = meshlink_open("join_canonical_local_conf.1", "foo", "join-canonical-local", DEV_CLASS_BACKBONE);
 	bar = meshlink_open("join_canonical_local_conf.2", "bar", "join-canonical-local", DEV_CLASS_PORTABLE);
 	assert(foo && bar);
 	meshlink_enable_discovery(foo, false);

@@ -29,6 +29,7 @@
 #include "net.h"
 #include "netutl.h"
 #include "node.h"
+#include "connection_policy.h"
 #include "protocol.h"
 #include "utils.h"
 #include "xalloc.h"
@@ -165,6 +166,7 @@ bool add_edge_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	}
 
 	from->devclass = from_devclass;
+	connection_policy_on_devclass(mesh, from);
 
 	if(!from->session_id) {
 		from->session_id = session_id;
@@ -190,6 +192,7 @@ bool add_edge_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	}
 
 	to->devclass = to_devclass;
+	connection_policy_on_devclass(mesh, to);
 
 	/* Convert addresses */
 

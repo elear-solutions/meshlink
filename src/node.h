@@ -43,11 +43,18 @@ typedef struct node_status_t {
 	uint16_t in_req_sptps: 1;           /* 1 while processing dest META REQ_SPTPS */
 	uint16_t temp_udp_confirmed: 1;     /* 1 while sending a probe reply */
 	uint16_t forced_relay: 1;           /* 1 if devtool pinned nexthop */
+	uint16_t conflict_backbone: 1;      /* 1 if this node conflicts with stored backbone identity. Finding 5 skips it in META pools; finding 10 skips it as relay. */
 } node_status_t;
 
 /* Size of node_t.recent[]. devtool_node_status_t.recent[] mirrors it as DEVTOOL_MAX_RECENT
    in the public header; devtools.c static-asserts the two agree. */
 #define MAX_RECENT 5
+
+typedef struct lan_presence_t {
+	uint64_t network_epoch;
+	time_t last_discovered_at;
+} lan_presence_t;
+
 
 typedef struct node_t {
 	// Public member variables
@@ -65,6 +72,9 @@ typedef struct node_t {
 	uint32_t session_id;                    /* Unique ID for this node's currently running process */
 	sptps_t sptps;
 	sockaddr_t address;                     /* his real (internet) ip to send UDP packets to */
+	address_source_t address_source;        /* provenance of the active UDP dest */
+	path_cap_t address_cap;                 /* transport eligibility of the active UDP dest */
+	uint32_t sptps_restart_count;           /* send_req_key() restarts of node SPTPS */
 
 	struct utcp *utcp;
 
@@ -104,6 +114,7 @@ typedef struct node_t {
 	time_t upgrade_next_try;                /* Earliest time for the next probe (0 = now) */
 	int upgrade_backoff;                    /* Current backoff in seconds; 0 until a probe fails */
 	uint8_t upgrade_recent_idx;             /* recent[] slot the next probe tries */
+	sockaddr_t startup_skip_sa;             /* dest the startup budget canceled; upgrade probes skip it until a META activates */
 
 	char *canonical_address;                /* The canonical address of this node, if known */
 	char *external_ip_address;              /* The external IP address of this node, if known */
@@ -111,6 +122,10 @@ typedef struct node_t {
 	sockaddr_t recent[MAX_RECENT];          /* Recently seen addresses */
 	address_source_t recent_source[MAX_RECENT]; /* Provenance aligned with recent[] */
 	path_cap_t recent_cap[MAX_RECENT];      /* Transport eligibility aligned with recent[] */
+
+	lan_presence_t lan_presence;            /* Runtime only; not persisted */
+	time_t lan_auth_direct_until;           /* AUTH_DIRECT reconnect grace; 0 if none */
+	uint64_t lan_admitted_epoch;            /* lan_network_epoch when this LAN META was admitted */
 	sockaddr_t catta_address;               /* Latest address seen by Catta */
 	sockaddr_t canonical_sa;                /* First resolved canonical endpoint, AF_UNSPEC if unknown */
 	sockaddr_t canonical_extra[MAX_CANONICAL_SA - 1]; /* Additional resolved canonical endpoints */
@@ -124,6 +139,22 @@ typedef struct node_t {
 	path_tier_t udp_tier;                   /* Validated UDP dest tier */
 	path_tier_t last_path_tier;             /* Last logged destination-wide tier */
 	time_t udp_local_probe_next;            /* Earliest local-UDP validation while WAN is active */
+	bool demote_deferred;                   /* UDP demotion seen inside a send, applied when it unwinds */
+	char demote_reason[32];                 /* Reason to log once the deferred demotion is applied */
+
+	// One active data route, at most one candidate being validated (ADR 0004)
+	data_route_t active_route;
+	route_candidate_t promotion_candidate;
+	path_candidate_retry_t candidate_retry; /* local-UDP endpoint cooldown; not wiped by carrier promotions */
+	timeout_t promotion_timer;
+	suspect_validation_t suspect_validation; /* nonce-epoch recovery; not PMTU */
+	peer_path_demand_t peer_udp;            /* Channel refcount + grace for ordinary-peer UDP */
+	time_t pmtu_increase_next;              /* Earliest next full-size "is the path bigger now" probe */
+	sockaddr_t probe_dest_override;          /* Dest for a PKT_PROBE while override is active */
+	bool probe_dest_override_active;        /* Armed around one send_udppacket, then cleared */
+	sockaddr_t app_udp_override;            /* Committed application UDP dest for one send */
+	bool app_udp_override_active;           /* Armed around one application/type-8 UDP send */
+	bool devtool_force_meta;                /* Test-only persistent application-route override */
 
 	// Graph-related member variables
 	time_t last_reachable;
@@ -147,11 +178,15 @@ void node_set_validkey(struct meshlink_handle *mesh, node_t *n, bool valid);
 node_t *lookup_node(struct meshlink_handle *mesh, const char *name) __attribute__((__warn_unused_result__));
 node_t *lookup_node_udp(struct meshlink_handle *mesh, const sockaddr_t *sa) __attribute__((__warn_unused_result__));
 void update_node_udp(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *sa);
+void update_node_udp_from(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *sa, address_source_t src);
 void node_udp_cache_alias(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *sa);
 bool node_add_recent_address(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *addr, address_source_t src);
 bool node_add_recent_address_cap(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *addr, address_source_t src, path_cap_t cap);
+bool node_add_recent_address_cap_ex(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *addr, address_source_t src, path_cap_t cap, bool *material);
 bool node_append_recent_address(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *addr, address_source_t src);
 bool node_append_recent_address_cap(struct meshlink_handle *mesh, node_t *n, const sockaddr_t *addr, address_source_t src, path_cap_t cap);
 bool graph_may_seed_udp(const node_t *n, const sockaddr_t *edge_addr);
+/* True when n->address or recent[] already carries listen port (pre-graph snapshot). */
+bool node_has_known_listen_port(const node_t *n, uint16_t port) __attribute__((__warn_unused_result__));
 
 #endif

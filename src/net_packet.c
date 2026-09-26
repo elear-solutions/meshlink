@@ -45,33 +45,100 @@ static void send_udppacket(meshlink_handle_t *mesh, node_t *, vpn_packet_t *);
 #define MAX_SEQNO 1073741824
 #define PROBE_OVERHEAD (SPTPS_DATAGRAM_OVERHEAD + 40)
 
+/* data[0] is the request/reply flag and data[14..] is random padding. Bytes
+   1..13 are zeroed on PMTU probes. Promotion, suspect, and backbone probes
+   stamp a nonce at offset 1 so the echo can be identified without a wire
+   format change. */
+#define PROBE_NONCE_OFFSET 1
+
 /* mtuprobes == 1..30: initial discovery, send bursts with 1 second interval
    mtuprobes ==    31: sleep pinginterval seconds
    mtuprobes ==    32: send 1 burst, sleep pingtimeout second
    mtuprobes ==    33: no response from other side, restart PMTU discovery process
 
-   Probes are sent in batches of at least three, with random sizes between the
-   lower and upper boundaries for the MTU thus far discovered.
+   Discovery sends at most three probes per tick so one search fits in the
+   4 pkt/s burst cap. The first sized probe is the midpoint of the remaining
+   range; another is random; a local-discovery broadcast is included while
+   mtuprobes <= 10 so LAN peers are not stuck on a canonical localhost dest.
 
-   After the initial discovery, a fourth packet is added to each batch with a
-   size larger than the currently known PMTU, to test if the PMTU has increased.
-
-   In case local discovery is enabled, another packet is added to each batch,
-   which will be broadcast to the local network.
+   After parking, liveness is one 64-byte probe plus an occasional increase.
 
 */
+
+static void path_mtu_send_request(meshlink_handle_t *mesh, const path_probe_request_t *req) {
+	node_t *n = req->node;
+	int len = req->length;
+	vpn_packet_t packet;
+	bool saved_broadcast;
+	uint16_t saved_len;
+
+	if(!n) {
+		return;
+	}
+
+	if(len < 64) {
+		len = 64;
+	}
+
+	saved_broadcast = n->status.broadcast;
+	saved_len = n->mtu_probe_request_len;
+	n->status.broadcast = req->broadcast;
+	n->mtu_probe_request_len = (uint16_t)len;
+
+	memset(&packet, 0, sizeof packet);
+	packet.probe = true;
+	memset(packet.data, 0, 14);
+	randomize(packet.data + 14, (size_t)len - 14);
+	packet.len = (uint16_t)len;
+	n->out_meta += packet.len + PROBE_OVERHEAD;
+	send_udppacket(mesh, n, &packet);
+
+	n->status.broadcast = saved_broadcast;
+	n->mtu_probe_request_len = saved_len;
+}
+
+static path_sched_admit_t path_mtu_emit(meshlink_handle_t *mesh, node_t *n, path_sched_txn_t *txn,
+                int len, bool broadcast, path_transaction_priority_t prio) {
+	path_probe_request_t req;
+
+	memset(&req, 0, sizeof req);
+	req.node = n;
+	req.length = (uint16_t)(len < 64 ? 64 : len);
+	req.broadcast = broadcast;
+	req.priority = prio;
+	req.send = path_mtu_send_request;
+	return path_scheduler_emit_packet(mesh, txn, &req);
+}
+
+/* Discovery ticks must not enqueue: a queued burst sits until the minute
+   bucket refills (60s) and still consumes tokens that the next tick needs. */
+static bool path_mtu_optional_ready(meshlink_handle_t *mesh, bool skip_minute) {
+	path_scheduler_refill(mesh);
+
+	if(!mesh->probe_budget.second_tokens) {
+		return false;
+	}
+
+	return skip_minute || mesh->probe_budget.minute_tokens > 0;
+}
 
 static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 	meshlink_handle_t *mesh = loop->data;
 	node_t *n = data;
 	int timeout = 1;
+	int prev = n->mtuprobes;
+	int sent = 0;
+	bool want_send;
+	path_sched_txn_t *txn = NULL;
 
 	n->mtuprobes++;
 
 	if(!n->status.reachable || !n->status.validkey) {
 		logger(mesh, MESHLINK_INFO, "Trying to send MTU probe to unreachable or rekeying node %s", n->name);
 		n->mtuprobes = 0;
-		return;
+		path_scheduler_end_type(mesh, n, PATH_TXN_PMTU_DISCOVERY);
+		timeout = 1;
+		goto end;
 	}
 
 	if(n->mtuprobes > 32) {
@@ -82,15 +149,10 @@ static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 		}
 
 		logger(mesh, MESHLINK_INFO, "%s did not respond to UDP ping, restarting PMTU discovery", n->name);
-		n->status.udp_confirmed = false;
-		n->udp_tier = PATH_TIER_NONE;
+		path_note_udp_demoted_reason(mesh, n, "probe give-up");
 		n->mtuprobes = 1;
-		n->minmtu = 0;
-		n->maxmtu = MTU;
 
 		update_node_pmtu(mesh, n);
-		relay_recompute_dependents(mesh, n);
-		relay_update_destination_transport(mesh, n);
 	}
 
 	if(n->mtuprobes >= 10 && n->mtuprobes < 32 && !n->minmtu) {
@@ -122,50 +184,228 @@ static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 		goto end;
 	} else if(n->mtuprobes == 32) {
 		timeout = mesh->dev_class_traits[n->devclass].pingtimeout;
+
+		/* Liveness only matters for a peer we are actually talking to. An idle
+		   peer is not probed at all, so a quiet mesh costs nothing (ADR 0004). */
+		if(!path_liveness_probe_warranted(mesh, n)) {
+			n->mtuprobes = 31;
+			timeout = mesh->dev_class_traits[n->devclass].pinginterval;
+			goto end;
+		}
+
+		if(path_mtu_optional_ready(mesh, false)
+		                && path_mtu_emit(mesh, n, NULL, 64, false, PATH_TX_LIVENESS) == PATH_SCHED_SENT) {
+			sent++;
+		}
+
+		if(n->maxmtu + 8 < MTU && mesh->loop.now.tv_sec >= n->pmtu_increase_next
+		                && path_mtu_optional_ready(mesh, false)) {
+			n->pmtu_increase_next = mesh->loop.now.tv_sec + PATH_PMTU_INCREASE_INTERVAL_SEC;
+			(void)path_mtu_emit(mesh, n, NULL, n->maxmtu + 8, false, PATH_TX_PMTU_INCREASE);
+		}
+
+		if(!sent) {
+			n->mtuprobes = 31;
+			timeout = 1;
+		}
+
+		goto end;
 	}
 
-	for(int i = 0; i < 5; i++) {
+	txn = path_scheduler_begin_transaction(mesh, n, PATH_TXN_PMTU_DISCOVERY, PATH_TX_LIVENESS, path_transaction_preempt);
+
+	if(!txn) {
+		n->mtuprobes = prev;
+		timeout = 1;
+		goto end;
+	}
+
+	want_send = n->mtuprobes < 31;
+
+	for(int i = 0; i < 4; i++) {
 		int len;
+		path_transaction_priority_t prio;
+		path_sched_admit_t admit;
+
+		if(sent >= 3) {
+			break;
+		}
 
 		if(i == 0) {
 			if(n->mtuprobes < 30 || n->maxmtu + 8 >= MTU) {
 				continue;
 			}
 
+			/* Looking for a bigger path is worth a full-size packet only
+			   occasionally; it is the most expensive probe there is. */
+			if(mesh->loop.now.tv_sec < n->pmtu_increase_next) {
+				continue;
+			}
+
+			n->pmtu_increase_next = mesh->loop.now.tv_sec + PATH_PMTU_INCREASE_INTERVAL_SEC;
 			len = n->maxmtu + 8;
+			prio = PATH_TX_PMTU_INCREASE;
+		} else if(i == 3) {
+			if(n->mtuprobes > 10 || !n->prevedge) {
+				continue;
+			}
+
+			len = n->minmtu ? n->minmtu : 64;
+			prio = PATH_TX_LIVENESS;
 		} else if(n->maxmtu <= n->minmtu) {
 			len = n->maxmtu;
+			prio = PATH_TX_LIVENESS;
+		} else if(i == 1) {
+			len = n->minmtu + 1 + (n->maxmtu - n->minmtu) / 2;
+			prio = PATH_TX_LIVENESS;
 		} else {
 			len = n->minmtu + 1 + prng(mesh, n->maxmtu - n->minmtu);
+			prio = PATH_TX_LIVENESS;
 		}
 
 		if(len < 64) {
 			len = 64;
 		}
 
-		vpn_packet_t packet;
-		packet.probe = true;
-		memset(packet.data, 0, 14);
-		randomize(packet.data + 14, len - 14);
-		packet.len = len;
-		n->status.broadcast = i >= 4 && n->mtuprobes <= 10 && n->prevedge;
-		n->out_meta += packet.len + PROBE_OVERHEAD;
-		send_udppacket(mesh, n, &packet);
+		if(!path_mtu_optional_ready(mesh, true)) {
+			break;
+		}
+
+		admit = path_mtu_emit(mesh, n, txn, len, i == 3, prio);
+
+		if(!path_scheduler_has_transaction(mesh, n, PATH_TXN_PMTU_DISCOVERY)) {
+			txn = NULL;
+			break;
+		}
+
+		if(admit == PATH_SCHED_SENT) {
+			sent++;
+		} else if(prio == PATH_TX_PMTU_INCREASE) {
+			continue;
+		} else {
+			break;
+		}
 	}
 
-	n->status.broadcast = false;
+	if(want_send && !sent) {
+		n->mtuprobes = prev;
+		timeout = 1;
+	}
 
 end:
-	timeout_set(&mesh->loop, &n->mtutimeout, &(struct timespec) {
-		timeout, prng(mesh, TIMER_FUDGE)
-	});
+	if(n->mtuprobes == 0 || n->mtuprobes == 31) {
+		path_scheduler_end_type(mesh, n, PATH_TXN_PMTU_DISCOVERY);
+	}
+
+	if(n->mtutimeout.cb) {
+		timeout_set(&mesh->loop, &n->mtutimeout, &(struct timespec) {
+			timeout, prng(mesh, TIMER_FUDGE)
+		});
+	}
 }
 
 void send_mtu_probe(meshlink_handle_t *mesh, node_t *n) {
+	if(n->devtool_force_meta) {
+		return;
+	}
+
 	timeout_add(&mesh->loop, &n->mtutimeout, send_mtu_probe_handler, n, &(struct timespec) {
 		1, 0
 	});
 	send_mtu_probe_handler(&mesh->loop, n);
+
+	/* channel_demand_hold can arm from an app thread; wake the mesh loop so
+	   the new timeout is not stuck until the next ping (~1s). */
+	if(mesh->threadstarted && mesh->loop.pipefd[1] != -1 && !pthread_equal(mesh->thread, pthread_self())) {
+		signal_trigger(&mesh->loop, &mesh->datafromapp);
+	}
+}
+
+static void send_probe_to(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet, const sockaddr_t *destination) {
+	if(!destination || destination->sa.sa_family == AF_UNSPEC) {
+		send_udppacket(mesh, n, packet);
+		return;
+	}
+
+	path_copy_sockaddr(&n->probe_dest_override, destination);
+	n->probe_dest_override_active = true;
+	send_udppacket(mesh, n, packet);
+	n->probe_dest_override_active = false;
+}
+
+void send_candidate_probe(meshlink_handle_t *mesh, node_t *n) {
+	if(!mesh || !n || !n->promotion_candidate.active || !n->promotion_candidate.nonce) {
+		return;
+	}
+
+	if(!n->status.reachable || !n->status.validkey) {
+		return;
+	}
+
+	vpn_packet_t packet;
+	memset(&packet, 0, sizeof packet);
+	packet.probe = true;
+	memcpy(packet.data + PROBE_NONCE_OFFSET, &n->promotion_candidate.nonce, sizeof n->promotion_candidate.nonce);
+	randomize(packet.data + 14, PATH_PROMOTION_PROBE_LEN - 14);
+	packet.len = PATH_PROMOTION_PROBE_LEN;
+	n->out_meta += packet.len + PROBE_OVERHEAD;
+	send_probe_to(mesh, n, &packet, &n->promotion_candidate.endpoint);
+}
+
+void send_suspect_probe(meshlink_handle_t *mesh, node_t *n) {
+	suspect_validation_t *s;
+
+	if(!mesh || !n) {
+		return;
+	}
+
+	s = &n->suspect_validation;
+
+	if(!s->active || !s->nonce) {
+		return;
+	}
+
+	if(!n->status.reachable || !n->status.validkey) {
+		return;
+	}
+
+	vpn_packet_t packet;
+	memset(&packet, 0, sizeof packet);
+	packet.probe = true;
+	memcpy(packet.data + PROBE_NONCE_OFFSET, &s->nonce, sizeof s->nonce);
+	randomize(packet.data + 14, PATH_PROMOTION_PROBE_LEN - 14);
+	packet.len = PATH_PROMOTION_PROBE_LEN;
+	n->out_meta += packet.len + PROBE_OVERHEAD;
+	send_probe_to(mesh, n, &packet, &s->endpoint);
+	s->probes_sent++;
+}
+
+void send_backbone_udp_probe(meshlink_handle_t *mesh) {
+	node_t *n;
+	vpn_packet_t packet;
+
+	if(!mesh || !mesh->backbone_udp.node || !mesh->backbone_udp.liveness_nonce) {
+		return;
+	}
+
+	n = mesh->backbone_udp.node;
+
+	if(!n->status.reachable || !n->status.validkey) {
+		return;
+	}
+
+	if(mesh->backbone_udp.endpoint.sa.sa_family == AF_UNSPEC
+	                || mesh->backbone_udp.endpoint.sa.sa_family == AF_UNKNOWN) {
+		return;
+	}
+
+	memset(&packet, 0, sizeof packet);
+	packet.probe = true;
+	memcpy(packet.data + PROBE_NONCE_OFFSET, &mesh->backbone_udp.liveness_nonce, sizeof mesh->backbone_udp.liveness_nonce);
+	randomize(packet.data + 14, PATH_PROMOTION_PROBE_LEN - 14);
+	packet.len = PATH_PROMOTION_PROBE_LEN;
+	n->out_meta += packet.len + PROBE_OVERHEAD;
+	send_probe_to(mesh, n, &packet, &mesh->backbone_udp.endpoint);
 }
 
 static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet, uint16_t len) {
@@ -191,7 +431,7 @@ static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet
 		n->status.udp_confirmed = true;
 		logger(mesh, MESHLINK_DEBUG, "Sending MTU probe reply %d to %s", packet->len, n->name);
 		n->out_meta += packet->len + PROBE_OVERHEAD;
-		send_udppacket(mesh, n, packet);
+		send_probe_to(mesh, n, packet, &n->last_udp_from);
 
 		if(n->status.udp_confirmed) {
 			n->status.udp_confirmed = udp_confirmed;
@@ -199,9 +439,31 @@ static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet
 
 		n->status.temp_udp_confirmed = false;
 	} else {
+		/* A test can pin application traffic to META. Requests are still
+		   answered, but delayed replies cannot silently re-enable UDP. */
+		if(n->devtool_force_meta) {
+			return;
+		}
+
 		/* It's a valid reply: now we know bidirectional communication
 		   is possible using the address and socket that the reply
 		   packet used. */
+
+		uint64_t nonce = 0;
+		memcpy(&nonce, packet->data + PROBE_NONCE_OFFSET, sizeof nonce);
+
+		if(n == mesh->backbone_udp.node) {
+			uint64_t want = mesh->backbone_udp.liveness_nonce;
+
+			if(want && nonce == want) {
+				path_backbone_udp_observe_reply(mesh, n, &n->last_udp_from, nonce);
+				return;
+			}
+
+			if(!mesh->backbone_udp.confirmed) {
+				return;
+			}
+		}
 
 		if(!n->status.udp_confirmed) {
 			char *address, *port;
@@ -226,11 +488,13 @@ static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet
 
 			path_note_udp_confirmed(mesh, n);
 			try_upgrade_probe(mesh, n);
-			relay_update_destination_transport(mesh, n);
-			relay_recompute_dependents(mesh, n);
-		} else if(path_promote_udp_if_better(mesh, n, &n->last_udp_from)) {
-			relay_update_destination_transport(mesh, n);
-			relay_recompute_dependents(mesh, n);
+		} else {
+			path_observe_probe_reply(mesh, n, &n->last_udp_from, nonce);
+		}
+
+		/* Nonce-bearing echoes (promotion, suspect, backbone) must not unpark or resize PMTU. */
+		if(nonce) {
+			return;
 		}
 
 		/* If we haven't established the PMTU yet, restart the discovery process. */
@@ -524,30 +788,6 @@ static bool try_recent(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **sa
 	return false;
 }
 
-static bool try_canonical(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **sa, int *sock, sockaddr_t *sa_buf) {
-	char *host = NULL;
-	const char *port = NULL;
-
-	if(!parse_host_port_field(n->canonical_address, NULL, &host, &port)) {
-		return false;
-	}
-
-	if(!host_port_to_sockaddr(host, port, sa_buf) || !udp_address_bound(sa_buf)) {
-		free(host);
-		return false;
-	}
-
-	logger(mesh, MESHLINK_DEBUG, "UDP dest for %s: canonical %s %s", n->name, host, port);
-	free(host);
-
-	if(!select_listen_socket(mesh, sa_buf, sock)) {
-		return false;
-	}
-
-	*sa = sa_buf;
-	return true;
-}
-
 /* LAN dest sources for an unconfirmed peer, one per rotation turn. */
 enum {
 	UDP_LAN_SLOT_RECENT,    /* n->recent[] */
@@ -606,7 +846,8 @@ void choose_udp_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **s
 		if(try_recent(mesh, n, sa, sock, self_ext, skip)) {
 			return;
 		}
-	} else if(lan_slot == UDP_LAN_SLOT_CATTA && lan_candidate(&n->catta_address, self_ext, skip)) {
+	} else if(lan_slot == UDP_LAN_SLOT_CATTA && lan_candidate(&n->catta_address, self_ext, skip)
+	                && path_is_udp_candidate(n, &n->catta_address, ADDR_SRC_DISCOVERY, PATH_CAP_BOTH)) {
 		*sa = &n->catta_address;
 	}
 
@@ -618,7 +859,15 @@ void choose_udp_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **s
 		int usable = 0;
 
 		for splay_each(edge_t, e, n->edge_tree) {
-			if(e->reverse && lan_candidate(&e->reverse->address, self_ext, skip)) {
+			if(!e->reverse || (e->reverse->options & OPTION_INDIRECT)) {
+				continue;
+			}
+
+			if(!path_is_udp_candidate(n, &e->reverse->address, ADDR_SRC_EDGE_DIRECT, PATH_CAP_BOTH)) {
+				continue;
+			}
+
+			if(lan_candidate(&e->reverse->address, self_ext, skip)) {
 				if(prng(mesh, ++usable) == 0) {
 					candidate = e->reverse;
 				}
@@ -627,11 +876,10 @@ void choose_udp_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **s
 
 		if(candidate) {
 			*sa = &candidate->address;
-		} else if(lan_candidate(&n->address, self_ext, skip)) {
+		} else if(lan_candidate(&n->address, self_ext, skip)
+		                && path_is_udp_candidate(n, &n->address, n->address_source, n->address_cap)) {
 			*sa = &n->address;
 		} else if(lan_slot != UDP_LAN_SLOT_RECENT && try_recent(mesh, n, sa, sock, self_ext, skip)) {
-			return;
-		} else if(try_canonical(mesh, n, sa, sock, sa_buf)) {
 			return;
 		}
 	}
@@ -676,9 +924,7 @@ static connection_t *meta_connection_for(node_t *to) {
 	return to->connection;
 }
 
-static bool send_sptps_via_meta(meshlink_handle_t *mesh, node_t *to, const void *data, size_t len) {
-	connection_t *c = meta_connection_for(to);
-
+static bool send_sptps_via_meta_conn(meshlink_handle_t *mesh, node_t *to, connection_t *c, const void *data, size_t len) {
 	if(!c) {
 		logger(mesh, MESHLINK_WARNING, "Unable to forward SPTPS packet to %s via %s", to->name, to->nexthop ? to->nexthop->name : to->name);
 		return false;
@@ -693,6 +939,10 @@ static bool send_sptps_via_meta(meshlink_handle_t *mesh, node_t *to, const void 
 	return relay_meta_req_sptps(mesh, c, mesh->self->name, to->name, data, len);
 }
 
+static bool send_sptps_via_meta(meshlink_handle_t *mesh, node_t *to, const void *data, size_t len) {
+	return send_sptps_via_meta_conn(mesh, to, meta_connection_for(to), data, len);
+}
+
 static bool send_sptps_via_udp(meshlink_handle_t *mesh, node_t *to, const void *data, size_t len) {
 	sockaddr_t sa_buf;
 	const sockaddr_t *sa = NULL;
@@ -700,6 +950,11 @@ static bool send_sptps_via_udp(meshlink_handle_t *mesh, node_t *to, const void *
 
 	if(to->status.broadcast) {
 		choose_broadcast_address(mesh, to, &sa, &sock);
+	} else if(to->app_udp_override_active) {
+		path_copy_sockaddr(&sa_buf, &to->app_udp_override);
+		sa = &sa_buf;
+		sock = to->sock;
+		finish_udp_dest(mesh, &sa, &sock);
 	} else {
 		choose_udp_address(mesh, to, &sa, &sock, &sa_buf);
 	}
@@ -760,46 +1015,51 @@ static bool send_relay_outer(meshlink_handle_t *mesh, node_t *hop, const void *d
 	const char *origin_name = hop->relay_send_origin;
 
 	/* Dest falls back to hop (first hop / dest==hop). Origin is unknown if not stashed. */
+	/* Forwarding does not accelerate probing: a parked path-MTU timer stays
+	   parked, otherwise a busy relay hop produces a continuous probe burst. */
 	logger(mesh, MESHLINK_DEBUG, "Relaying type-8 via UDP to %s for %s from %s",
 	       hop->name,
 	       dest_name && dest_name[0] ? dest_name : hop->name,
 	       origin_name && origin_name[0] ? origin_name : "?");
-	relay_wake_probes(mesh, hop);
 	return true;
 }
 
 static bool send_application_record(meshlink_handle_t *mesh, node_t *to, const void *data, size_t len) {
-	path_tier_t tier = path_select_destination_tier(to, false);
+	path_target_t target;
+	bool ok;
 
-	if(to->last_path_tier != tier) {
-		path_log_transition(mesh, to, to->last_path_tier, tier, "destination route");
-		to->last_path_tier = tier;
+	if(!path_active_send_target(mesh, to, &target)) {
+		return false;
 	}
 
-	/* Confirmed UDP does not compare (len-21) against minmtu. */
-	if(to->status.udp_confirmed) {
-		if(!send_sptps_via_udp(mesh, to, data, len)) {
-			return false;
-		}
+	path_record_active_route(mesh, to, &target);
 
-		relay_wake_probes(mesh, to);
-		return true;
+	if(target.kind == DATA_ROUTE_DIRECT_UDP) {
+		path_copy_sockaddr(&to->app_udp_override, &target.udp_endpoint);
+		to->app_udp_override_active = true;
+		ok = send_sptps_via_udp(mesh, to, data, len);
+		to->app_udp_override_active = false;
+		return ok;
 	}
 
-	if(relay_names_unusable(mesh->self->name, to->name)) {
-		return send_sptps_via_meta(mesh, to, data, len);
-	}
-
-	if(to->nexthop && relay_hop_udp_ready(to->nexthop)) {
+	if(target.kind == DATA_ROUTE_RELAY && target.relay_carrier == RELAY_CARRIER_UDP && target.first_hop) {
 		uint8_t wrapped[MAXSIZE];
 		size_t wlen = sizeof(wrapped);
 
 		if(relay_encode(mesh->self->name, to->name, data, len, wrapped, &wlen)) {
-			return relay_send_outer_record(mesh, to->nexthop, mesh->self->name, to->name, wrapped, wlen);
+			path_copy_sockaddr(&target.first_hop->app_udp_override, &target.udp_endpoint);
+			target.first_hop->app_udp_override_active = true;
+			ok = relay_send_outer_record(mesh, target.first_hop, mesh->self->name, to->name, wrapped, wlen);
+			target.first_hop->app_udp_override_active = false;
+			return ok;
 		}
 	}
 
-	return send_sptps_via_meta(mesh, to, data, len);
+	if(target.kind == DATA_ROUTE_RELAY && target.first_hop) {
+		return send_sptps_via_meta_conn(mesh, to, target.first_hop->connection, data, len);
+	}
+
+	return send_sptps_via_meta_conn(mesh, to, to->connection, data, len);
 }
 
 bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
@@ -820,27 +1080,23 @@ bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 	}
 
 	if(type == PKT_PROBE) {
-		sockaddr_t local;
-
-		if(path_udp_should_probe_local(mesh, to, &local)) {
+		/* Dest override is armed around send_udppacket and cleared by the
+		   caller even if SPTPS never reaches us. Do not consume it here. */
+		if(to->probe_dest_override_active) {
+			sockaddr_t dest = to->probe_dest_override;
 			int sock = to->sock;
 
-			if(select_listen_socket(mesh, &local, &sock)) {
-				node_udp_cache_alias(mesh, to, &local);
-				path_schedule_local_udp_probe(mesh, to);
-
-				if(mesh->log_level <= MESHLINK_INFO) {
-					char *hostname = sockaddr2hostname(&local);
-					logger(mesh, MESHLINK_INFO, "Path validation: %s probe-start %s local UDP", to->name, hostname);
-					free(hostname);
-				}
-
-				if(sendto(mesh->listen_socket[sock].udp.fd, data, len, 0, &local.sa, SALEN(local.sa)) < 0 && !sockwouldblock(sockerrno) && !sockmsgsize(sockerrno)) {
-					logger(mesh, MESHLINK_WARNING, "Error sending local UDP probe to %s: %s", to->name, sockstrerror(sockerrno));
-				}
-
+			if(!select_listen_socket(mesh, &dest, &sock)) {
 				return true;
 			}
+
+			node_udp_cache_alias(mesh, to, &dest);
+
+			if(sendto(mesh->listen_socket[sock].udp.fd, data, len, 0, &dest.sa, SALEN(dest.sa)) < 0 && !sockwouldblock(sockerrno) && !sockmsgsize(sockerrno)) {
+				logger(mesh, MESHLINK_WARNING, "Error sending local UDP probe to %s: %s", to->name, sockstrerror(sockerrno));
+			}
+
+			return true;
 		}
 
 		return send_sptps_via_udp(mesh, to, data, len);
@@ -915,6 +1171,12 @@ bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t
 
 	memcpy(inpkt.data, data, len); // TODO: get rid of memcpy
 	inpkt.len = len;
+
+	if(from->active_route.kind != DATA_ROUTE_DIRECT_UDP
+	                || (from->last_udp_from.sa.sa_family
+	                    && !sockaddrcmp(&from->last_udp_from, &from->active_route.udp_endpoint))) {
+		path_note_authenticated_route_success(mesh, from);
+	}
 
 	receive_packet(mesh, from, &inpkt);
 	return true;
@@ -1011,7 +1273,7 @@ void handle_incoming_vpn_data(event_loop_t *loop, void *data, int flags) {
 				node_udp_cache_alias(mesh, n, &from);
 			} else {
 				path_learn_address_cap(mesh, n, &from, ADDR_SRC_UDP_REFLEXIVE, PATH_CAP_UDP);
-				update_node_udp(mesh, n, &from);
+				update_node_udp_from(mesh, n, &from, ADDR_SRC_UDP_REFLEXIVE);
 			}
 		} else if(mesh->log_level <= MESHLINK_WARNING) {
 			hostname = sockaddr2hostname(&from);

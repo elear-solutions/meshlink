@@ -17,35 +17,46 @@
 
 static int ip = 1;
 
-/// SKIP (exit 77) when this environment cannot create netns.
-static void require_netns(void) {
-	if(getuid() != 0) {
-		fprintf(stderr, "SKIP: netns tests require root\n");
-		exit(77);
-	}
-
-	if(access("/bin/ip", X_OK) != 0) {
-		fprintf(stderr, "SKIP: /bin/ip not found (need iproute2)\n");
-		exit(77);
-	}
-
-	/* PID-unique name + delete-first so a leftover or parallel probe cannot false-SKIP. */
+bool netns_available(void) {
 	char *add_cmd = NULL;
 	char *del_cmd = NULL;
-	assert(asprintf(&add_cmd, "/bin/ip netns add meshlink-netns-probe-%d >/dev/null 2>&1", getpid()) > 0);
-	assert(asprintf(&del_cmd, "/bin/ip netns delete meshlink-netns-probe-%d >/dev/null 2>&1", getpid()) > 0);
-	(void)system(del_cmd);
+	int rc;
 
-	if(system(add_cmd) != 0) {
-		free(add_cmd);
-		free(del_cmd);
-		fprintf(stderr, "SKIP: cannot create netns (need CAP_SYS_ADMIN and shared /run/netns)\n");
-		exit(77);
+	if(getuid() != 0 || access("/bin/ip", X_OK) != 0) {
+		return false;
 	}
 
+	/* PID-unique name + delete-first so a leftover or parallel probe cannot false-negative. */
+	if(asprintf(&add_cmd, "/bin/ip netns add meshlink-netns-probe-%d >/dev/null 2>&1", getpid()) <= 0
+	                || asprintf(&del_cmd, "/bin/ip netns delete meshlink-netns-probe-%d >/dev/null 2>&1", getpid()) <= 0) {
+		free(add_cmd);
+		free(del_cmd);
+		return false;
+	}
+
+	(void)system(del_cmd);
+	rc = system(add_cmd);
 	(void)system(del_cmd);
 	free(add_cmd);
 	free(del_cmd);
+	return rc == 0;
+}
+
+/// SKIP (exit 77) when this environment cannot create netns.
+static void require_netns(void) {
+	if(netns_available()) {
+		return;
+	}
+
+	if(getuid() != 0) {
+		fprintf(stderr, "SKIP: netns tests require root\n");
+	} else if(access("/bin/ip", X_OK) != 0) {
+		fprintf(stderr, "SKIP: /bin/ip not found (need iproute2)\n");
+	} else {
+		fprintf(stderr, "SKIP: cannot create netns (need CAP_SYS_ADMIN and shared /run/netns)\n");
+	}
+
+	exit(77);
 }
 
 /// Create meshlink instances and network namespaces for a list of peers
@@ -56,10 +67,10 @@ static void create_peers(peer_config_t *peers, int npeers, const char *prefix) {
 		assert(asprintf(&peers[i].netns_name, "%s%d", prefix, i) > 0);
 		char *command = NULL;
 		assert(asprintf(&command,
-		                "/bin/ip netns delete %1$s 2>/dev/null || true;"
-		                "/bin/ip netns add %1$s;"
-		                "/bin/ip netns exec %1$s ip link set dev lo up;",
-		                peers[i].netns_name));
+		                "/bin/ip netns delete %s 2>/dev/null || true;"
+		                "/bin/ip netns add %s;"
+		                "/bin/ip netns exec %s ip link set dev lo up;",
+		                peers[i].netns_name, peers[i].netns_name, peers[i].netns_name));
 		assert(command);
 		assert(system(command) == 0);
 		free(command);
@@ -95,9 +106,9 @@ static void setup_lan_topology(peer_config_t *peers, int npeers) {
 	{
 		char *command = NULL;
 		assert(asprintf(&command,
-		                "/bin/ip netns exec %1$s /bin/ip link add eth0 type bridge;"
-		                "/bin/ip netns exec %1$s /bin/ip link set eth0 up;",
-		                peers[0].netns_name));
+		                "/bin/ip netns exec %s /bin/ip link add eth0 type bridge;"
+		                "/bin/ip netns exec %s /bin/ip link set eth0 up;",
+		                peers[0].netns_name, peers[0].netns_name));
 		assert(command);
 		assert(system(command) == 0);
 	}
@@ -106,10 +117,12 @@ static void setup_lan_topology(peer_config_t *peers, int npeers) {
 	for(int i = 1; i < npeers; i++) {
 		char *command = NULL;
 		assert(asprintf(&command,
-		                "/bin/ip netns exec %1$s /bin/ip link add eth0 type veth peer eth%3$d netns %2$s;"
-		                "/bin/ip netns exec %1$s /bin/ip link set dev eth0 up;"
-		                "/bin/ip netns exec %2$s /bin/ip link set dev eth%3$d master eth0 up;",
-		                peers[i].netns_name, peers[0].netns_name, i));
+		                "/bin/ip netns exec %s /bin/ip link add eth0 type veth peer eth%d netns %s;"
+		                "/bin/ip netns exec %s /bin/ip link set dev eth0 up;"
+		                "/bin/ip netns exec %s /bin/ip link set dev eth%d master eth0 up;",
+		                peers[i].netns_name, i, peers[0].netns_name,
+		                peers[i].netns_name,
+		                peers[0].netns_name, i));
 		assert(command);
 		assert(system(command) == 0);
 		free(command);
@@ -127,14 +140,20 @@ static void setup_indirect_topology(peer_config_t *peers, int npeers) {
 	for(int i = 1; i < npeers; i++) {
 		char *command = NULL;
 		assert(asprintf(&command,
-		                "/bin/ip netns exec %1$s /bin/ip link add eth0 type veth peer eth%3$d netns %2$s;"
-		                "/bin/ip netns exec %1$s ip addr flush dev eth0;"
-		                "/bin/ip netns exec %1$s ip addr add 192.168.%3$d.2/24 dev eth0;"
-		                "/bin/ip netns exec %1$s /bin/ip link set dev eth0 up;"
-		                "/bin/ip netns exec %2$s ip addr flush dev eth%3$d;"
-		                "/bin/ip netns exec %2$s ip addr add 192.168.%3$d.1/24 dev eth%3$d;"
-		                "/bin/ip netns exec %2$s /bin/ip link set dev eth%3$d up;",
-		                peers[i].netns_name, peers[0].netns_name, i));
+		                "/bin/ip netns exec %s /bin/ip link add eth0 type veth peer eth%d netns %s;"
+		                "/bin/ip netns exec %s ip addr flush dev eth0;"
+		                "/bin/ip netns exec %s ip addr add 192.168.%d.2/24 dev eth0;"
+		                "/bin/ip netns exec %s /bin/ip link set dev eth0 up;"
+		                "/bin/ip netns exec %s ip addr flush dev eth%d;"
+		                "/bin/ip netns exec %s ip addr add 192.168.%d.1/24 dev eth%d;"
+		                "/bin/ip netns exec %s /bin/ip link set dev eth%d up;",
+		                peers[i].netns_name, i, peers[0].netns_name,
+		                peers[i].netns_name,
+		                peers[i].netns_name, i,
+		                peers[i].netns_name,
+		                peers[0].netns_name, i,
+		                peers[0].netns_name, i, i,
+		                peers[0].netns_name, i));
 		assert(command);
 		assert(system(command) == 0);
 		free(command);
@@ -144,11 +163,27 @@ static void setup_indirect_topology(peer_config_t *peers, int npeers) {
 /// Give a peer a unique IP address
 void change_peer_ip(peer_config_t *peer) {
 	char *command = NULL;
-	assert(asprintf(&command,
-	                "/bin/ip netns exec %1$s ip addr flush dev eth0;"
-	                "/bin/ip netns exec %1$s ip addr add 203.0.113.%2$d/24 dev eth0;",
-	                peer->netns_name, ip));
+
+	snprintf(peer->ip, sizeof peer->ip, "10.0.113.%d", ip);
 	ip++;
+	assert(asprintf(&command,
+	                "/bin/ip netns exec %s ip addr flush dev eth0;"
+	                "/bin/ip netns exec %s ip addr add %s/24 dev eth0;",
+	                peer->netns_name, peer->netns_name, peer->ip));
+	assert(command);
+	assert(system(command) == 0);
+	free(command);
+}
+
+void change_peer_ip_to(peer_config_t *peer, const char *ipv4) {
+	char *command = NULL;
+
+	assert(ipv4);
+	snprintf(peer->ip, sizeof peer->ip, "%s", ipv4);
+	assert(asprintf(&command,
+	                "/bin/ip netns exec %s ip addr flush dev eth0;"
+	                "/bin/ip netns exec %s ip addr add %s/24 dev eth0;",
+	                peer->netns_name, peer->netns_name, peer->ip));
 	assert(command);
 	assert(system(command) == 0);
 	free(command);
@@ -193,6 +228,24 @@ peer_config_t *setup_relay_peer_nut(const char *prefix) {
 	return peers;
 }
 
+/// Same LAN bridge, but 203.0.113/24 so path_address_is_local is false (WAN UDP).
+peer_config_t *setup_relay_peer_nut_wan(const char *prefix) {
+	static peer_config_t peers[] = {
+		{"relay", DEV_CLASS_BACKBONE, NULL, 0, NULL},
+		{"peer", DEV_CLASS_STATIONARY, NULL, 0, NULL},
+		{"nut", DEV_CLASS_STATIONARY, NULL, 0, NULL},
+	};
+
+	create_peers(peers, 3, prefix);
+	setup_lan_topology(peers, 3);
+	change_peer_ip_to(&peers[0], "203.0.113.1");
+	change_peer_ip_to(&peers[1], "203.0.113.2");
+	change_peer_ip_to(&peers[2], "203.0.113.3");
+	invite_peers(peers, 3);
+
+	return peers;
+}
+
 /// Set up relay, peer and NUT that are directly connected
 peer_config_t *setup_relay_peer_nut_indirect(const char *prefix) {
 	static peer_config_t peers[] = {
@@ -210,18 +263,31 @@ peer_config_t *setup_relay_peer_nut_indirect(const char *prefix) {
 	return peers;
 }
 
-/// Make all nodes only be able to communicate via TCP
-void set_peers_tcponly(peer_config_t *peers, int npeers) {
+/// Make all nodes only be able to communicate via TCP. False leaves the caller
+/// to skip only the case that needed the drop.
+bool set_peers_tcponly(peer_config_t *peers, int npeers) {
+	const char *ipt = (access("/usr/sbin/iptables-legacy", X_OK) == 0) ? "/usr/sbin/iptables-legacy" : "iptables";
+
 	for(int i = 0; i < npeers; i++) {
 		char *command = NULL;
+		int rc;
+
 		assert(asprintf(&command,
-		                "/bin/ip netns exec %1$s iptables -A INPUT -p udp -j DROP;"
-		                "/bin/ip netns exec %1$s iptables -A OUTPUT -p udp -j DROP;",
-		                peers[i].netns_name));
+		                "/bin/ip netns exec %s %s -A INPUT -p udp -j DROP;"
+		                "/bin/ip netns exec %s %s -A OUTPUT -p udp -j DROP;",
+		                peers[i].netns_name, ipt,
+		                peers[i].netns_name, ipt));
 		assert(command);
-		assert(system(command) == 0);
+		rc = system(command);
 		free(command);
+
+		if(rc != 0) {
+			fprintf(stderr, "SKIP: iptables UDP drop not supported in this environment\n");
+			return false;
+		}
 	}
+
+	return true;
 }
 
 void close_relay_peer_nut(peer_config_t *peers) {

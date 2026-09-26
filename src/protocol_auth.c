@@ -34,6 +34,7 @@
 #include "node.h"
 #include "packmsg.h"
 #include "path_policy.h"
+#include "connection_policy.h"
 #include "prf.h"
 #include "protocol.h"
 #include "sptps.h"
@@ -55,13 +56,31 @@ static void transfer_outgoing(meshlink_handle_t *mesh, connection_t *from, conne
 	}
 
 	if(to->outgoing) {
-		logger(mesh, MESHLINK_WARNING, "Two outgoing connections to the same node!");
-		list_delete(mesh->outgoings, from->outgoing);
+		outgoing_t *keep;
+		outgoing_t *drop;
+
+		if(meta_purpose_is_persistent(from->outgoing->purpose) && !meta_purpose_is_persistent(to->outgoing->purpose)) {
+			keep = from->outgoing;
+			drop = to->outgoing;
+			to->outgoing = keep;
+			to->outgoing_generation = from->outgoing_generation;
+		} else {
+			keep = to->outgoing;
+			drop = from->outgoing;
+		}
+
 		from->outgoing = NULL;
+
+		if(drop && drop != keep) {
+			logger(mesh, MESHLINK_WARNING, "Two outgoing connections to the same node!");
+			list_delete(mesh->outgoings, drop);
+		}
+
 		return;
 	}
 
 	to->outgoing = from->outgoing;
+	to->outgoing_generation = from->outgoing_generation;
 	from->outgoing = NULL;
 }
 
@@ -122,6 +141,11 @@ static bool commit_invitation(meshlink_handle_t *mesh, connection_t *c, const vo
 }
 
 static bool process_invitation(meshlink_handle_t *mesh, connection_t *c, const void *data) {
+	if(!connection_policy_can_invite(mesh)) {
+		logger(mesh, MESHLINK_ERROR, "Refusing to serve invitation; not the unique backbone");
+		return false;
+	}
+
 	// Recover the filename from the cookie and the key
 	char *fingerprint = ecdsa_get_base64_public_key(mesh->invitation_key);
 	char hash[64];
@@ -235,6 +259,11 @@ bool id_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	/* Check if this is an invitation  */
 
 	if(name[0] == '?') {
+		if(!connection_policy_can_invite(mesh)) {
+			logger(mesh, MESHLINK_ERROR, "Refusing to serve invitation; not the unique backbone");
+			return false;
+		}
+
 		if(!mesh->invitation_key) {
 			logger(mesh, MESHLINK_ERROR, "Got invitation from %s but we don't have an invitation key", c->name);
 			return false;
@@ -387,13 +416,14 @@ static void send_everything(meshlink_handle_t *mesh, connection_t *c) {
    A spare held behind the old connection must go first, otherwise
    terminate_connection() would promote it and we would end up with two self->n
    edges (see upgrade_connection_closing). Leaves n->connection NULL for the
-   caller to install c. */
-static void replace_existing_connection(meshlink_handle_t *mesh, node_t *n, connection_t *c) {
+   caller to install c. When drain_old is set, the old socket stays in the
+   connection list so queued META bytes can flush. */
+static void replace_existing_connection(meshlink_handle_t *mesh, node_t *n, connection_t *c, bool drain_old) {
 	connection_t *old = n->connection;
 
 	upgrade_drop_spare(mesh, n);
 
-	logger(mesh, MESHLINK_INFO, "Established a second connection with %s, closing old connection", old->name);
+	logger(mesh, MESHLINK_INFO, "Established a second connection with %s, %s old connection", old->name, drain_old ? "draining" : "closing");
 	transfer_outgoing(mesh, old, c);
 
 	if(old->edge) {
@@ -401,8 +431,40 @@ static void replace_existing_connection(meshlink_handle_t *mesh, node_t *n, conn
 		old->edge = NULL;
 	}
 
-	terminate_connection(mesh, old, false);
-	assert(!n->connection);
+	n->connection = NULL;
+
+	if(!drain_old) {
+		terminate_connection(mesh, old, false);
+		assert(!n->connection);
+	}
+}
+
+bool ack_replace_if_admitted(meshlink_handle_t *mesh, connection_t *c, int announced_devclass, bool drain_old) {
+	node_t *n = c->node ? c->node : (c->name ? lookup_node(mesh, c->name) : NULL);
+
+	if(!n) {
+		return false;
+	}
+
+	/* Side-effect-free first: a WAN/non-local duplicate must not close the existing adjacency. */
+	if(!connection_policy_may_accept_incoming(mesh, c, announced_devclass)) {
+		return false;
+	}
+
+	/* Admit (with side effects) before any drain/close so a refuse cannot leave n->connection NULL. */
+	if(!connection_policy_admit_incoming(mesh, c, announced_devclass)) {
+		return false;
+	}
+
+	if(n->connection && n->connection != c) {
+		if(drain_old) {
+			n->connection->status.drain_only = true;
+		}
+
+		replace_existing_connection(mesh, n, c, drain_old);
+	}
+
+	return true;
 }
 
 bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
@@ -446,7 +508,7 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	/* Simultaneous connect: keep the TCP session initiated by the smaller name.
 	   Last-ACK-wins picks different sockets on each side; both get RST, then a 5s retry. */
 	for list_each(connection_t, other, mesh->connections) {
-		if(other == c || !other->name || strcmp(other->name, c->name)) {
+		if(other == c || !other->name || strcmp(other->name, c->name) || other->status.drain_only) {
 			continue;
 		}
 
@@ -460,31 +522,56 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		}
 	}
 
+	if(c->outgoing_generation && (!c->outgoing || c->outgoing_generation != c->outgoing->generation)) {
+		logger(mesh, MESHLINK_INFO, "Ignoring stale startup connection with %s", c->name);
+		return false;
+	}
+
 	/* The peer is replacing its canonical connection to us with this direct one. Keep the
 	   old one until the peer closes it (it does so once it has our ACK), then
 	   terminate_connection() promotes this one so the node never leaves the graph. */
 
 	bool deferred_ack = upgrade_defers_ack(c);
+	bool was_upgrade_probe = c->status.upgrade_probe;
+	connection_t *old = (n->connection && n->connection != c) ? n->connection : NULL;
+	bool old_was_canonical = old && old->status.active && path_meta_is_canonical(n, old);
+	bool drain_old = was_upgrade_probe && old_was_canonical;
 
 	if(deferred_ack && n->connection && n->connection != c && n->connection->status.active) {
 		upgrade_hold_spare(mesh, c, n, hisport, devclass);
 		return send_ack(mesh, c);
 	}
 
-	if(n->connection && n->connection != c) {
-		replace_existing_connection(mesh, n, c);
-	}
-
-	/* A probe that got this far replaces the canonical connection it was opened next to. */
-
-	if(c->status.upgrade_probe) {
+	/* Bind node before admit so probe bypass and conflict checks see the peer.
+	   Keep upgrade_probe set through admit (cleared only after replace succeeds). */
+	if(was_upgrade_probe) {
 		c->node = n;
-		upgrade_probe_succeeded(mesh, c);
 	}
 
 	n->devclass = devclass;
 	n->status.dirty = true;
 	n->status.tiny = c->flags & PROTOCOL_TINY;
+
+	/* Conflict before replace: refuse must not tear down the existing META. */
+	(void)connection_policy_validate_topology(mesh);
+
+	if(n->status.conflict_backbone) {
+		logger(mesh, MESHLINK_WARNING, "Refusing META connection with conflicted backbone node %s", n->name);
+		return false;
+	}
+
+	if(!ack_replace_if_admitted(mesh, c, devclass, drain_old)) {
+		logger(mesh, MESHLINK_INFO, "Refusing excess or non-local META from %s", c->name);
+		return false;
+	}
+
+	/* Probe succeeded only after admit+replace — flag stayed set for admit bypass. */
+	if(was_upgrade_probe) {
+		upgrade_probe_succeeded(mesh, c);
+	}
+
+	/* Tick after replace; backbone_outgoing_in_flight covers upgrade/drain sockets. */
+	connection_policy_on_devclass(mesh, n);
 
 	install_node_connection(mesh, n, c);
 
@@ -495,13 +582,27 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		reset_outgoing(c->outgoing);
 	}
 
+	connection_policy_bind_connection(mesh, c);
+
 	/* Activate this connection */
 
 	c->allow_request = ALL;
 	c->last_key_renewal = mesh->loop.now.tv_sec;
 	c->status.active = true;
 
+	if(!c->activated_at) {
+		c->activated_at = mesh->loop.now.tv_sec;
+	}
+
 	logger(mesh, MESHLINK_INFO, "Connection with %s activated", c->name);
+
+	if(connection_policy_is_local_adjacency(mesh, n)) {
+		path_consider_route_promotion(mesh, n, PATH_PROMOTION_LOCAL_META);
+	}
+
+	if(connection_policy_is_backbone(mesh, n) && !path_meta_is_canonical(n, c)) {
+		path_consider_route_promotion(mesh, NULL, PATH_PROMOTION_META_DIRECT);
+	}
 
 	/* No connection to hold this one behind, so we did not ACK during the handshake. */
 
@@ -509,25 +610,37 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		return false;
 	}
 
-	if(mesh->meta_status_cb) {
+	/* Socket replacement is not node unreachability. A META upgrade must
+	   not emit a second up (or a down) through meta_status_cb. */
+	if(mesh->meta_status_cb && !was_upgrade_probe) {
 		mesh->meta_status_cb(mesh, (meshlink_node_t *)n, true);
 	}
 
 	/*  Terminate any connections to this node that are not activated yet */
 
 	for list_each(connection_t, other, mesh->connections) {
-		if(!other->status.active && other->name && !strcmp(other->name, c->name)) {
+		if(!other->status.active && !other->status.drain_only && other->name && !strcmp(other->name, c->name)) {
 			transfer_outgoing(mesh, other, c);
 			logger(mesh, MESHLINK_DEBUG, "Terminating pending second connection with %s", n->name);
 			terminate_connection(mesh, other, false);
 		}
 	}
 
+	/* Skip expires on a live path. Do this after leftover terminate so a
+	   pending sibling cannot restamp n->startup_skip_sa. */
+	memset(&n->startup_skip_sa, 0, sizeof n->startup_skip_sa);
+
 	/* Send him everything we know */
 
 	if(!(c->flags & PROTOCOL_TINY)) {
 		send_everything(mesh, c);
 	}
+
+	/* Snapshot listen-port familiarity before AUTH_DIRECT / graph() seed the
+	   new hisport into address/recent[] — otherwise warm+port_known is always
+	   true on non-INDIRECT edges and the force-rekey branch never runs. */
+	uint16_t ack_port = (uint16_t)atoi(hisport);
+	bool port_known_before_edge = node_has_known_listen_port(n, ack_port);
 
 	/* Create an edge_t for this connection */
 
@@ -546,10 +659,41 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 
 	add_connection_edge(mesh, c);
 
-	/* Request a session key to jump start UDP traffic */
+	if(drain_old && old) {
+		upgrade_begin_drain(mesh, old);
+	}
+
+	if(was_upgrade_probe) {
+		path_note_selected_route(mesh, n, "authenticated spare");
+	}
+
+	/* Jump-start UDP after META activate. Backbone initiator used to always
+	   send_req_key (cleared warm SPTPS on every META flap). When warm and the
+	   ACK listen port was already known before this edge, refresh addresses
+	   only. If the peer changed listen port while our validkey survived, force
+	   send_req_key. Warm acceptors push canonical/external so a reconnecting
+	   initiator that skipped rekey still learns a fresh EXTERNAL advertisement. */
 
 	if(c->status.initiator) {
-		send_req_key(mesh, n);
+		if(upgrade_should_preserve_node_session(mesh, n, was_upgrade_probe, old_was_canonical)) {
+			send_canonical_address(mesh, n);
+			send_external_ip_address(mesh, n);
+		} else if(connection_policy_backbone_udp_required(mesh, n)) {
+			bool warm = n->status.validkey || n->status.waitingforkey;
+
+			if(warm && port_known_before_edge) {
+				send_canonical_address(mesh, n);
+				send_external_ip_address(mesh, n);
+			} else {
+				send_req_key(mesh, n);
+			}
+		} else if(path_peer_udp_punching_allowed(mesh, n)
+		                && !n->status.validkey && !n->status.waitingforkey) {
+			send_req_key(mesh, n);
+		}
+	} else if(n->status.validkey || n->status.waitingforkey) {
+		send_canonical_address(mesh, n);
+		send_external_ip_address(mesh, n);
 	}
 
 	return true;

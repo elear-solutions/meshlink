@@ -30,6 +30,7 @@
 #include "hash.h"
 #include "meshlink.h"
 #include "meshlink_queue.h"
+#include "path_policy.h"
 #include "sockaddr.h"
 #include "sptps.h"
 #include "xoshiro.h"
@@ -38,12 +39,17 @@
 
 #define MAXSOCKETS 4    /* Probably overkill... */
 
+/* A single datagram can only ever demote its destination and that destination's
+   first hop. Anything beyond that falls back to a full node walk. */
+#define ROUTE_GUARD_DEFERRED_MAX 4
+
 static const char meshlink_invitation_label[] = "MeshLink invitation";
 static const char meshlink_tcp_label[] = "MeshLink TCP";
 static const char meshlink_udp_label[] = "MeshLink UDP";
 
 #define MESHLINK_CONFIG_VERSION 2
-#define MESHLINK_INVITATION_VERSION 2
+#define MESHLINK_INVITATION_VERSION 3
+#define MESHLINK_BACKBONE_FILE_VERSION 1
 
 typedef struct listen_socket_t {
 	struct io_t tcp;
@@ -69,14 +75,32 @@ struct meshlink_open_params {
 	uint16_t port_range_hi;
 };
 
+/// Persistent unique backbone identity. The name survives node deletion; the pointer is a cache.
+typedef struct backbone_identity_t {
+	char *name;
+	struct node_t *node;
+} backbone_identity_t;
+
+/// Required UDP relay mapping to the stored backbone. One per mesh; cameras originate.
+typedef struct backbone_udp_path_t {
+	struct node_t *node;
+	sockaddr_t endpoint;
+	address_source_t source;
+	bool confirmed;
+	sockaddr_t failed_endpoint;
+	uint8_t unanswered;
+	uint8_t establish_step;               /* Telescopic no-dest / exhausted-dest delay */
+	uint64_t liveness_nonce;
+	struct timespec last_authenticated_reply;
+	timeout_t timer;                      /* due-time owner; packets admit through path_scheduler_emit_packet() */
+} backbone_udp_path_t;
+
 /// Device class traits
 typedef struct {
 	int pinginterval;
 	int pingtimeout;
 	int fast_retry_period;
 	int maxtimeout;
-	unsigned int min_connects;
-	unsigned int max_connects;
 	int edge_weight;
 } dev_class_traits_t;
 
@@ -105,12 +129,24 @@ struct meshlink_handle {
 
 	hash_t *node_udp_cache;
 
+	/* One utcp_send() is one application datagram. While it is unwinding, a
+	   path demotion is recorded instead of applied, so every fragment leaves
+	   on the carrier the first one chose (ADR 0004). */
+	unsigned route_guard_depth;
+	struct node_t *route_guard_deferred[ROUTE_GUARD_DEFERRED_MAX];
+	unsigned route_guard_deferred_count;
+	bool route_guard_overflow;
+
 	struct splay_tree_t *nodes;
 	struct splay_tree_t *edges;
 
 	struct list_t *connections;
 	struct list_t *outgoings;
 	struct list_t *submeshes;
+	bool retiring_outgoing;                 /* drop_outgoing is in progress; skip recursive tick/retry */
+	bool connection_policy_busy;            /* tick is on the stack; skip nested fill/setup */
+	bool lan_epoch_retiring;                /* epoch advance is closing LAN sockets; no AUTH_DIRECT grace */
+	struct connection_t *protocol_connection; /* META socket whose IO handler is on the stack */
 
 	// Meta-connection-related members
 	struct splay_tree_t *past_request_tree;
@@ -155,6 +191,15 @@ struct meshlink_handle {
 	struct ecdsa *invitation_key;
 
 	dev_class_t devclass;
+	backbone_identity_t backbone;
+	backbone_udp_path_t backbone_udp;
+	int backbone_udp_keepalive_sec;       /* Default PATH_BACKBONE_UDP_KEEPALIVE_SEC; tests may shorten */
+	uint64_t lan_network_epoch;           /* Bumped on interface/network change; 0 is never current */
+	path_probe_budget_t probe_budget;
+	struct list_t *probe_queue;
+	struct list_t *probe_txns;
+	timeout_t probe_scheduler;
+	unsigned probe_max_transactions;      /* 0 = PATH_SCHED_MAX_TRANSACTIONS */
 
 	int invitation_timeout;
 
@@ -164,6 +209,7 @@ struct meshlink_handle {
 
 	bool default_blacklist;
 	bool inviter_commits_first;
+	bool allow_peer_bootstrap;        /* tests only: permit non-backbone invite create/serve */
 
 	// Configuration
 	char *confbase;
@@ -172,6 +218,7 @@ struct meshlink_handle {
 	char *external_address_url;
 	struct list_t *invitation_addresses;
 	meshlink_storage_policy_t storage_policy;
+	const char *conf_write_subdir;    /* NULL means "current"; join commit writes "new" */
 
 	// Thread management
 	pthread_t thread;
@@ -188,9 +235,18 @@ struct meshlink_handle {
 		int address_count;
 		io_t sockets[2];
 		time_t last_update;
+		uint64_t addr_set_fingerprint; /* FNV-1a of ifaces + addresses; 0 until first commit */
+		bool addr_set_initialized;
+		bool addr_dump_complete;       /* Linux: GETADDR dump finished; later batches may advance epoch */
 #ifdef __APPLE__
 		pthread_t thread;
+		pthread_mutex_t stop_mutex;
+		pthread_cond_t stop_cond;
 		void *runloop;
+		bool thread_started;
+		bool joining;
+		bool stopping;
+		bool stopped;
 #endif
 	} discovery;
 
@@ -207,6 +263,10 @@ struct meshlink_handle {
 	signal_t adns_signal;
 	uint32_t canonical_resolve_seq;       /* Monotonic cookie; 0 is never assigned */
 };
+
+static inline const char *mesh_conf_write_subdir(const struct meshlink_handle *mesh) {
+	return (mesh && mesh->conf_write_subdir) ? mesh->conf_write_subdir : "current";
+}
 
 /// A handle for a MeshLink node.
 struct meshlink_node {
@@ -241,6 +301,7 @@ struct meshlink_channel {
 	bool in_callback;
 
 	struct utcp_connection *c;
+	bool demand_held;
 	meshlink_aio_buffer_t *aio_send;
 	meshlink_aio_buffer_t *aio_receive;
 	meshlink_channel_receive_cb_t receive_cb;
@@ -262,6 +323,9 @@ void handle_duplicate_node(meshlink_handle_t *mesh, struct node_t *n);
 void handle_network_change(meshlink_handle_t *mesh, bool online);
 void call_error_cb(meshlink_handle_t *mesh, meshlink_errno_t meshlink_errno);
 void channel_receive(meshlink_handle_t *mesh, meshlink_node_t *node, const void *data, size_t len);
+
+/* Internal: META admit+replace (protocol_auth). Not part of the public protocol.h surface. */
+bool ack_replace_if_admitted(struct meshlink_handle *mesh, struct connection_t *c, int announced_devclass, bool drain_old);
 
 /// Per-instance PRNG
 static inline int prng(meshlink_handle_t *mesh, uint64_t max) {

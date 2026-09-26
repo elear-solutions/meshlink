@@ -99,27 +99,6 @@ static bool wait_external_known(meshlink_handle_t *mesh, meshlink_node_t *node, 
 	return false;
 }
 
-/* Poll until mesh has finished PMTU discovery towards node (mtuprobes >= 31, the
-   pinginterval sleep), or timeout seconds pass. Until then every probe reply may
-   flip udp_confirmed and every ANS_KEY may rewrite n->address underneath a test
-   that pins them; afterwards the next burst is pinginterval (60 s) away. */
-static bool wait_pmtu_settled(meshlink_handle_t *mesh, meshlink_node_t *node, int timeout) {
-	for(int i = 0; i < timeout * 10; i++) {
-		devtool_node_status_t st;
-		devtool_get_node_status(mesh, node, &st);
-		bool settled = st.mtuprobes >= 31;
-		devtool_free_node_status(&st);
-
-		if(settled) {
-			return true;
-		}
-
-		usleep(100000);
-	}
-
-	return false;
-}
-
 static void status_cb(meshlink_handle_t *mesh, meshlink_node_t *node, bool reachable) {
 	(void)mesh;
 
@@ -140,15 +119,15 @@ int main(void) {
 	assert(meshlink_destroy("req_external_conf.1"));
 	assert(meshlink_destroy("req_external_conf.2"));
 
-	// === SCENARIO 1: BACKBONE + BACKBONE (both send REQ_EXTERNAL) ===
-	printf("=== SCENARIO 1: BACKBONE + BACKBONE ===\n");
-	printf("Both nodes send REQ_EXTERNAL messages\n");
+	// === SCENARIO 1: BACKBONE + STATIONARY ===
+	printf("=== SCENARIO 1: BACKBONE + STATIONARY ===\n");
+	printf("Camera dials the backbone; both send REQ_EXTERNAL\n");
 
-	// Open two meshlink instances (both backbone)
+	// Open two meshlink instances
 	meshlink_handle_t *mesh_foo = meshlink_open("req_external_conf.1", "foo", "req-external", DEV_CLASS_BACKBONE);
 	assert(mesh_foo);
 
-	meshlink_handle_t *mesh_bar = meshlink_open("req_external_conf.2", "bar", "req-external", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *mesh_bar = meshlink_open("req_external_conf.2", "bar", "req-external", DEV_CLASS_STATIONARY);
 	assert(mesh_bar);
 
 	// Disable local discovery
@@ -163,16 +142,7 @@ int main(void) {
 	assert(meshlink_set_canonical_address(mesh_foo, meshlink_get_self(mesh_foo), "localhost", NULL));
 	assert(meshlink_set_canonical_address(mesh_bar, meshlink_get_self(mesh_bar), "localhost", NULL));
 
-	// Import and export both side's data
-	char *data = meshlink_export(mesh_foo);
-	assert(data);
-	assert(meshlink_import(mesh_bar, data));
-	free(data);
-
-	data = meshlink_export(mesh_bar);
-	assert(data);
-	assert(meshlink_import(mesh_foo, data));
-	free(data);
+	join_meshlink_peer(mesh_foo, mesh_bar);
 
 	// Set up status callback for mesh_foo
 	meshlink_set_node_status_cb(mesh_foo, status_cb);
@@ -205,46 +175,29 @@ int main(void) {
 	meshlink_node_t *node_bar = meshlink_get_node(mesh_foo, "bar");
 	assert(node_foo && node_bar);
 
-	// Wait for REQ_EXTERNAL to be exchanged in both directions
+	// Camera learns the backbone's REQ_EXTERNAL. Stationary does not send one back.
 	assert(wait_external_known(mesh_bar, node_foo, 20));
-	assert(wait_external_known(mesh_foo, node_bar, 20));
 
-	printf("✅ Verifying REQ_EXTERNAL bidirectional learning...\n");
-	
-	// Test bidirectional learning: bar should learn foo's external info
+	printf("✅ Verifying REQ_EXTERNAL learning...\n");
+
 	devtool_node_status_t bar_view_of_foo;
 	devtool_get_node_status(mesh_bar, node_foo, &bar_view_of_foo);
-	
-	// Test bidirectional learning: foo should learn bar's external info  
-	devtool_node_status_t foo_view_of_bar;
-	devtool_get_node_status(mesh_foo, node_bar, &foo_view_of_bar);
-	
-	// Verify that REQ_EXTERNAL data was received and parsed correctly
+
 	assert(bar_view_of_foo.external_ip_address != NULL);
-	assert(foo_view_of_bar.external_ip_address != NULL);
-	
-	// Parse and verify the external IP addresses
+
 	char foo_ip[64], foo_port_str[16];
-	char bar_ip[64], bar_port_str[16];
-	
+
 	assert(sscanf(bar_view_of_foo.external_ip_address, "%s %s", foo_ip, foo_port_str) == 2);
-	assert(sscanf(foo_view_of_bar.external_ip_address, "%s %s", bar_ip, bar_port_str) == 2);
-	
+
 	int foo_port_learned = atoi(foo_port_str);
-	int bar_port_learned = atoi(bar_port_str);
-	
-	// Verify the learned ports match the actual assigned ports
+
 	assert(foo_port_learned == foo_port);
-	assert(bar_port_learned > 0);  // bar should have a valid port
-	
-	printf("✅ REQ_EXTERNAL bidirectional learning verified:\n");
+
+	printf("✅ REQ_EXTERNAL learning verified:\n");
 	printf("   bar learned foo's external address: %s %s\n", foo_ip, foo_port_str);
-	printf("   foo learned bar's external address: %s %s\n", bar_ip, bar_port_str);
 	printf("   foo's learned port (%d) matches actual port (%d)\n", foo_port_learned, foo_port);
-	
-	// Clean up allocated strings
+
 	devtool_free_node_status(&bar_view_of_foo);
-	devtool_free_node_status(&foo_view_of_bar);
 
 	// Clean up scenario 1
 	printf("\n=== Cleaning Up Scenario 1 ===\n");
@@ -283,16 +236,7 @@ int main(void) {
 	assert(meshlink_set_canonical_address(mesh_foo, meshlink_get_self(mesh_foo), "localhost", NULL));
 	assert(meshlink_set_canonical_address(mesh_bar, meshlink_get_self(mesh_bar), "localhost", NULL));
 
-	// Import and export both side's data
-	char *data2 = meshlink_export(mesh_foo);
-	assert(data2);
-	assert(meshlink_import(mesh_bar, data2));
-	free(data2);
-
-	data2 = meshlink_export(mesh_bar);
-	assert(data2);
-	assert(meshlink_import(mesh_foo, data2));
-	free(data2);
+	join_meshlink_peer(mesh_foo, mesh_bar);
 
 	// Set up status callback
 	meshlink_set_node_status_cb(mesh_foo, status_cb);
@@ -381,7 +325,7 @@ int main(void) {
 	assert(meshlink_destroy("req_external_conf.2"));
 
 	printf("\n=== REQ_EXTERNAL Port 0 Test Complete ===\n");
-	printf("✅ Tested both BACKBONE+BACKBONE and BACKBONE+PORTABLE scenarios\n");
+	printf("✅ Tested BACKBONE+STATIONARY and BACKBONE+PORTABLE scenarios\n");
 	printf("✅ Bug fix verified in both scenarios\n");
 
 	printf("\n=== Dest pick: REQ_EXTERNAL first, RFC1918 does not win ===\n");
@@ -389,7 +333,7 @@ int main(void) {
 	assert(meshlink_destroy("req_external_conf.1"));
 	assert(meshlink_destroy("req_external_conf.2"));
 
-	mesh_foo = meshlink_open("req_external_conf.1", "foo", "req-external", DEV_CLASS_STATIONARY);
+	mesh_foo = meshlink_open("req_external_conf.1", "foo", "req-external", DEV_CLASS_BACKBONE);
 	mesh_bar = meshlink_open("req_external_conf.2", "bar", "req-external", DEV_CLASS_STATIONARY);
 	assert(mesh_foo && mesh_bar);
 
@@ -398,14 +342,7 @@ int main(void) {
 	assert(meshlink_set_canonical_address(mesh_foo, meshlink_get_self(mesh_foo), "localhost", NULL));
 	assert(meshlink_set_canonical_address(mesh_bar, meshlink_get_self(mesh_bar), "localhost", NULL));
 
-	char *data3 = meshlink_export(mesh_foo);
-	assert(data3);
-	assert(meshlink_import(mesh_bar, data3));
-	free(data3);
-	data3 = meshlink_export(mesh_bar);
-	assert(data3);
-	assert(meshlink_import(mesh_foo, data3));
-	free(data3);
+	join_meshlink_peer(mesh_foo, mesh_bar);
 
 	init_sync_flag(&bar_reachable);
 	meshlink_set_node_status_cb(mesh_foo, status_cb);
@@ -445,14 +382,13 @@ int main(void) {
 	assert(inet_pton(AF_INET6, "fd00::1", &ula.sin6_addr) == 1);
 
 	/* Both meshes stay live for the graph_may_seed_udp() checks below, which need
-	   bar reachable. Let PMTU discovery finish on both sides first: until then a
-	   late probe reply re-confirms UDP and the reflexive ANS_KEY it triggers
-	   rewrites n->address, undoing the state pinned here. */
+	   bar reachable. Park UDP probes so a late reply cannot re-confirm UDP or
+	   rewrite n->address under the dests pinned here. Waiting for organic PMTU
+	   to reach mtuprobes >= 31 is load-sensitive under qemu. */
 	meshlink_node_t *bar_view_of_foo3 = meshlink_get_node(mesh_bar, "foo");
 	assert(bar_view_of_foo3);
-	assert(wait_pmtu_settled(mesh_foo, peer, 60));
-	assert(wait_pmtu_settled(mesh_bar, bar_view_of_foo3, 60));
-	sleep(1);
+	devtool_force_meta(mesh_foo, peer, true);
+	devtool_force_meta(mesh_bar, bar_view_of_foo3, true);
 
 	/* Stationary nodes never resolve their own public IP; pin one that differs
 	   from the peer's so the REQ_EXTERNAL dest is provably on another NAT and

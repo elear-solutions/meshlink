@@ -26,12 +26,14 @@ TESTS = \
 	metering \
 	metering-relayed \
 	metering-slowping \
-	metering-tcponly \		
+	metering-tcponly \
 	meta-connections \
 	get-external-address \
 	mtu-probe-log \
 	outgoing-order \
+	outgoing-bounded \
 	canonical-migrate \
+	hybrid-udp-probe \
 	req-external-recent \
 	port \
 	port-range \
@@ -45,6 +47,10 @@ TESTS = \
 	udp-relay \
 	relay-coverage \
 	path-policy-coverage \
+	backbone-identity \
+	connection-policy \
+	backbone-udp \
+	path-stability \
 	transport-recent \
 	utcp-benchmark \
 	utcp-benchmark-stream
@@ -57,6 +63,11 @@ SUBDIRS = blackbox
 endif
 
 dist_check_SCRIPTS = $(TESTS)
+
+# utcp-benchmark scripts invoke src/utcp-test (EXTRA_PROGRAMS — not built by default).
+utcp-benchmark.log utcp-benchmark-stream.log: $(top_builddir)/src/utcp-test$(EXEEXT)
+$(top_builddir)/src/utcp-test$(EXEEXT):
+	$(MAKE) $(AM_MAKEFLAGS) -C $(top_builddir)/src utcp-test
 
 AM_CPPFLAGS = $(PTHREAD_CFLAGS) -I${top_srcdir}/src -iquote. -Wall
 AM_LDFLAGS = $(PTHREAD_LIBS)
@@ -96,7 +107,9 @@ check_PROGRAMS = \
 	get-external-address \
 	mtu-probe-log \
 	outgoing-order \
+	outgoing-bounded \
 	canonical-migrate \
+	hybrid-udp-probe \
 	req-external-recent \
 	port \
 	port-range \
@@ -111,6 +124,10 @@ check_PROGRAMS = \
 	udp-relay \
 	relay-coverage \
 	path-policy-coverage \
+	backbone-identity \
+	connection-policy \
+	backbone-udp \
+	path-stability \
 	transport-recent
 
 if INSTALL_TESTS
@@ -219,8 +236,14 @@ mtu_probe_log_LDADD = $(top_builddir)/src/libmeshlink.la
 outgoing_order_SOURCES = outgoing-order.c utils.c utils.h
 outgoing_order_LDADD = $(top_builddir)/src/libmeshlink.la
 
+outgoing_bounded_SOURCES = outgoing-bounded.c utils.c utils.h
+outgoing_bounded_LDADD = $(top_builddir)/src/libmeshlink.la
+
 canonical_migrate_SOURCES = canonical-migrate.c utils.c utils.h
 canonical_migrate_LDADD = $(top_builddir)/src/libmeshlink.la
+
+hybrid_udp_probe_SOURCES = hybrid-udp-probe.c utils.c utils.h
+hybrid_udp_probe_LDADD = $(top_builddir)/src/libmeshlink.la
 
 req_external_recent_SOURCES = req-external-recent.c utils.c utils.h
 req_external_recent_LDADD = $(top_builddir)/src/libmeshlink.la
@@ -260,6 +283,18 @@ relay_coverage_LDADD = $(top_builddir)/src/libmeshlink.la
 
 path_policy_coverage_SOURCES = path-policy-coverage.c utils.c utils.h
 path_policy_coverage_LDADD = $(top_builddir)/src/libmeshlink.la
+
+backbone_identity_SOURCES = backbone-identity.c utils.c utils.h
+backbone_identity_LDADD = $(top_builddir)/src/libmeshlink.la
+
+connection_policy_SOURCES = connection-policy.c utils.c utils.h
+connection_policy_LDADD = $(top_builddir)/src/libmeshlink.la
+
+backbone_udp_SOURCES = backbone-udp.c utils.c utils.h
+backbone_udp_LDADD = $(top_builddir)/src/libmeshlink.la
+
+path_stability_SOURCES = path-stability.c netns_utils.c netns_utils.h utils.c utils.h
+path_stability_LDADD = $(top_builddir)/src/libmeshlink.la
 
 transport_recent_SOURCES = transport-recent.c utils.c utils.h
 transport_recent_LDADD = $(top_builddir)/src/libmeshlink.la

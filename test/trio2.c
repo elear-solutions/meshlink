@@ -58,32 +58,29 @@ int main(void) {
 
 	const char *name[3] = {"foo", "bar", "baz"};
 	meshlink_handle_t *mesh[3];
-	char *data[3];
 
 	for(int i = 0; i < 3; i++) {
 		char *path = NULL;
 		assert(asprintf(&path, "trio2_conf.%d", i) != -1 && path);
 
 		assert(meshlink_destroy(path));
-		mesh[i] = meshlink_open(path, name[i], "trio2", DEV_CLASS_BACKBONE);
+		mesh[i] = meshlink_open(path, name[i], "trio2", i ? DEV_CLASS_STATIONARY : DEV_CLASS_BACKBONE);
 		assert(mesh[i]);
 		free(path);
 
+		if(!i) {
+			devtool_set_external_ip_address(mesh[i], meshlink_get_self(mesh[i]), "127.0.0.1");
+		}
+
 		assert(meshlink_set_canonical_address(mesh[i], meshlink_get_self(mesh[i]), "localhost", NULL));
-
-		data[i] = meshlink_export(mesh[i]);
-		assert(data[i]);
+		meshlink_enable_discovery(mesh[i], false);
 	}
 
-	// first node knows the two other nodes
+	join_meshlink_peer(mesh[0], mesh[1]);
+	join_meshlink_peer(mesh[0], mesh[2]);
 
-	for(int i = 1; i < 3; i++) {
-		assert(meshlink_import(mesh[i], data[0]));
-		assert(meshlink_import(mesh[0], data[i]));
-
-		assert(meshlink_get_node(mesh[i], name[0]));
-		assert(meshlink_get_node(mesh[0], name[i]));
-	}
+	assert(meshlink_get_node(mesh[1], name[0]));
+	assert(meshlink_get_node(mesh[2], name[0]));
 
 	// second and third node should not know each other yet
 
@@ -96,7 +93,6 @@ int main(void) {
 	meshlink_set_node_status_cb(mesh[2], baz_status_cb);
 
 	for(int i = 0; i < 3; i++) {
-		free(data[i]);
 		assert(meshlink_start(mesh[i]));
 	}
 
@@ -105,29 +101,11 @@ int main(void) {
 	assert(wait_sync_flag(&bar_learned_baz, 5));
 	assert(wait_sync_flag(&baz_learned_bar, 5));
 
-	// Check that the second and third node autoconnect to each other
-
-	devtool_edge_t *edges = NULL;
-	size_t nedges = 0;
-	assert_after((edges = devtool_get_all_edges(mesh[1], edges, &nedges), nedges == 3), 15);
-	free(edges);
-
-	// Stop the nodes nodes
-
-	for(int i = 0; i < 3; i++) {
-		meshlink_stop(mesh[i]);
-	}
-
-	// Start just the other two nodes
-
-	for(int i = 1; i < 3; i++) {
-		assert(meshlink_start(mesh[i]));
-	}
-
-	assert(meshlink_get_node(mesh[1], name[2]));
-	assert(meshlink_get_node(mesh[2], name[1]));
-
-	// Communication should still be possible
+	assert_after(count_edge_pairs(mesh[1], "foo", "bar") == 1 && count_edge_pairs(mesh[1], "foo", "baz") == 1, 15);
+	assert(count_edge_pairs(mesh[1], "bar", "baz") == 0);
+	assert(devtool_outgoing_count(mesh[0]) == 0);
+	assert(devtool_outgoing_count(mesh[1]) == 1);
+	assert(devtool_outgoing_count(mesh[2]) == 1);
 
 	meshlink_set_receive_cb(mesh[1], receive_cb);
 
@@ -139,7 +117,9 @@ int main(void) {
 		}
 	}
 
-	assert(wait_sync_flag(&received, 1));
+	assert(wait_sync_flag(&received, 15));
+	assert(meshlink_get_node(mesh[1], name[2]));
+	assert(meshlink_get_node(mesh[2], name[1]));
 
 	// Clean up.
 

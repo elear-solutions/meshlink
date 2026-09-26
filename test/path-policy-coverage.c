@@ -38,6 +38,8 @@
  *   P9  Hostname canonical does not strip unrelated numeric recent[]
  *   P10 HINT persists across close/reopen
  *   P11 Planted NLB is stripped on reload
+ *   P12 Planted NLB-IP/NMN-port hybrid is stripped on reload
+ *   P13 Pick returns recent[] source+cap; catta fallback is DISCOVERY/BOTH
 
  * META classification
  *   M1  via_canonical, meta_dial_tier, or address match => canonical META
@@ -53,6 +55,7 @@
  *   U4  WAN stays selected while an unvalidated local candidate exists
  *   U5  Local probe reply promotes WAN -> LOCAL
  *   U6  Cover-unit: NONE -> WAN, WAN -> LOCAL via path_promote_udp_if_better
+ *   U7  Cover-unit: WAN->local commit keeps AUTH_DIRECT/HINT/DISCOVERY class
 
  * Downgrade / refuse
  *   D1  Unconfirm dest while hop UDP is up => RELAY_UDP, not a silent WAN keep
@@ -61,6 +64,12 @@
  *   D4  Promote refuses: not confirmed, same address, canonical, same-tier WAN, worse WAN-vs-LOCAL
  *   D5  Fail local does not invent a WAN dest; WAN only after re-confirm
  *   D6  Rate-limited local probe while WAN is active
+
+ * Candidate cooldown
+ *   R1  Duplicate DISCOVERY/HINT of a cooling endpoint does not clear
+ *   R2  New lan_network_epoch plus DISCOVERY/HINT clears once, keeps failures
+ *   R3  AUTH_DIRECT of that sockaddr clears once per stamp; TICK/UDP/EXTERNAL never
+ *   R4  Duplicate already-front AUTH_DIRECT still reaches the promotion gate
  */
 
 enum {
@@ -148,7 +157,15 @@ static void confirm_v4(meshlink_handle_t *mesh, const char *name, const char *ip
 
 static void send_hello(meshlink_handle_t *from, const char *dest) {
 	set_sync_flag(&received, false);
-	assert(meshlink_send(from, meshlink_get_node(from, dest), "Hello", 5));
+
+	for(int i = 0; i < 15; i++) {
+		assert(meshlink_send(from, meshlink_get_node(from, dest), "Hello", 5));
+
+		if(wait_sync_flag(&received, 1)) {
+			return;
+		}
+	}
+
 	assert(wait_sync_flag(&received, 10));
 }
 
@@ -164,16 +181,21 @@ static void test_einval(void) {
 static void test_live_transitions(meshlink_handle_t **mesh) {
 	printf("=== live upgrade / downgrade matrix ===\n");
 
-	struct sockaddr_in local = {
+	struct sockaddr_in planted_local = {
 		.sin_family = AF_INET,
-		.sin_port = htons((uint16_t)meshlink_get_port(mesh[1])),
+		.sin_port = htons(7777),
 	};
-	assert(inet_pton(AF_INET, "127.0.0.1", &local.sin_addr) == 1);
+	assert(inet_pton(AF_INET, "192.168.77.10", &planted_local.sin_addr) == 1);
 
-	/* U1: pin dest via hop. force_relay_path stops dest probes so dest stays unconfirmed. */
-	devtool_set_udp_confirmed(mesh[2], meshlink_get_node(mesh[2], "foo"), true);
+	meshlink_node_t *bar = meshlink_get_node(mesh[2], "bar");
+	meshlink_node_t *foo = meshlink_get_node(mesh[2], "foo");
+	assert(bar && foo);
+
+	/* U1: pin dest via hop. The pin and the read need one lock, otherwise a probe
+	   reply already in flight can re-confirm dest before the tier is sampled. */
+	devtool_set_udp_confirmed(mesh[2], foo, true);
 	pin(mesh[2], "bar", "foo");
-	assert(dest_tier(mesh[2], "bar", false) == TIER_RELAY);
+	assert(devtool_select_dest_with_udp(mesh[2], bar, false, foo, true, false) == TIER_RELAY);
 	assert(hop_tier(mesh[2], "foo", false) == TIER_RELAY);
 	printf("U1 dest RELAY_UDP\n");
 
@@ -192,7 +214,7 @@ static void test_live_transitions(meshlink_handle_t **mesh) {
 	printf("M4 dest META-in ignores dest WAN UDP\n");
 
 	/* U4: unvalidated local stays off the dest while WAN is confirmed */
-	meshlink_hint_address(mesh[2], meshlink_get_node(mesh[2], "bar"), (struct sockaddr *)&local);
+	meshlink_hint_address(mesh[2], meshlink_get_node(mesh[2], "bar"), (struct sockaddr *)&planted_local);
 	devtool_node_status_t st;
 	devtool_get_node_status(mesh[2], meshlink_get_node(mesh[2], "bar"), &st);
 	assert(st.udp_tier == TIER_WAN);
@@ -205,11 +227,11 @@ static void test_live_transitions(meshlink_handle_t **mesh) {
 	assert(addr_is(&chosen, "203.0.113.10", 9));
 	printf("U4 WAN stays while local is unvalidated\n");
 
-	/* U5 / U3: validated local replaces WAN via the production promote path */
-	assert(devtool_promote_udp_if_better(mesh[2], meshlink_get_node(mesh[2], "bar"), (struct sockaddr *)&local));
+	/* U5 / U3: validated local replaces WAN. */
+	assert(devtool_confirm_udp_from(mesh[2], meshlink_get_node(mesh[2], "bar"), (struct sockaddr *)&planted_local, TIER_LOCAL));
 	assert(dest_tier(mesh[2], "bar", false) == TIER_LOCAL);
 	assert(devtool_choose_udp_address(mesh[2], meshlink_get_node(mesh[2], "bar"), &chosen, &sock));
-	assert(addr_is(&chosen, "127.0.0.1", meshlink_get_port(mesh[1])));
+	assert(addr_is(&chosen, "192.168.77.10", 7777));
 	printf("U5 dest LOCAL after probe reply\n");
 
 	/* D3: forced WAN after local */
@@ -219,8 +241,6 @@ static void test_live_transitions(meshlink_handle_t **mesh) {
 
 	/* D1 / D5: dest UDP down, hop UDP up, one lock so inbound probes cannot
 	   re-confirm dest before we read the tier. Must be RELAY, not leftover WAN. */
-	meshlink_node_t *bar = meshlink_get_node(mesh[2], "bar");
-	meshlink_node_t *foo = meshlink_get_node(mesh[2], "foo");
 	assert(devtool_select_dest_with_udp(mesh[2], bar, false, foo, true, false) == TIER_RELAY);
 	printf("D1/D5 dest RELAY after dest UDP fail (WAN not invented)\n");
 
@@ -235,8 +255,14 @@ static void test_live_transitions(meshlink_handle_t **mesh) {
 	assert(dest_tier(mesh[2], "bar", false) == TIER_WAN);
 	printf("D5 WAN only after re-confirm\n");
 
-	/* Restore a working local dest so later hello still works */
-	assert(devtool_confirm_udp_from(mesh[2], meshlink_get_node(mesh[2], "bar"), (struct sockaddr *)&local, TIER_LOCAL));
+	/* Restore a working dest so the follow-up hello still works. 127.0.0.1 is
+	   canonical-equivalent and is not a promotion candidate, but it is reachable. */
+	struct sockaddr_in reachable = {
+		.sin_family = AF_INET,
+		.sin_port = htons((uint16_t)meshlink_get_port(mesh[1])),
+	};
+	assert(inet_pton(AF_INET, "127.0.0.1", &reachable.sin_addr) == 1);
+	assert(devtool_confirm_udp_from(mesh[2], meshlink_get_node(mesh[2], "bar"), (struct sockaddr *)&reachable, TIER_LOCAL));
 	devtool_set_udp_confirmed(mesh[2], meshlink_get_node(mesh[2], "foo"), true);
 	assert(dest_tier(mesh[2], "bar", false) == TIER_LOCAL);
 	send_hello(mesh[2], "bar");
@@ -301,11 +327,31 @@ static void test_persist_hint_and_nlb(void) {
 	assert(saw_hint);
 	devtool_free_node_status(&st);
 
+	struct sockaddr_in hybrid = {
+		.sin_family = AF_INET,
+		.sin_port = htons(23349),
+	};
+	assert(inet_pton(AF_INET, "198.51.100.20", &hybrid.sin_addr) == 1);
+	assert(devtool_plant_recent_address(a, node_b, (struct sockaddr *)&hybrid));
+	meshlink_close(a);
+	a = meshlink_open("path_policy_persist_a", "a", "path-policy", DEV_CLASS_BACKBONE);
+	assert(a);
+	meshlink_enable_discovery(a, false);
+	node_b = meshlink_get_node(a, "b");
+	assert(node_b);
+	devtool_get_node_status(a, node_b, &st);
+
+	for(size_t i = 0; i < st.recent_count; i++) {
+		assert(!addr_is(&st.recent[i], "198.51.100.20", 23349));
+	}
+
+	devtool_free_node_status(&st);
+
 	meshlink_close(a);
 	meshlink_close(b);
 	assert(meshlink_destroy("path_policy_persist_a"));
 	assert(meshlink_destroy("path_policy_persist_b"));
-	printf("P10/P11 ok\n");
+	printf("P10/P11/P12 ok\n");
 }
 
 static void test_canonical_learn_rejected(meshlink_handle_t **mesh) {
@@ -344,31 +390,19 @@ int main(void) {
 
 	const char *name[3] = {"foo", "bar", "baz"};
 	meshlink_handle_t *mesh[3];
-	char *data[3];
 
 	for(int i = 0; i < 3; i++) {
 		char *path = NULL;
 		assert(asprintf(&path, "path_policy_conf.%d", i) != -1 && path);
 		assert(meshlink_destroy(path));
-		mesh[i] = meshlink_open(path, name[i], "path-policy", DEV_CLASS_BACKBONE);
+		mesh[i] = meshlink_open(path, name[i], "path-policy", i ? DEV_CLASS_STATIONARY : DEV_CLASS_BACKBONE);
 		assert(mesh[i]);
 		free(path);
-		assert(meshlink_set_canonical_address(mesh[i], meshlink_get_self(mesh[i]), "localhost", "9"));
-		data[i] = meshlink_export(mesh[i]);
-		assert(data[i]);
+		assert(meshlink_set_canonical_address(mesh[i], meshlink_get_self(mesh[i]), "localhost", NULL));
 	}
 
-	for(int i = 0; i < 3; i++) {
-		for(int j = 0; j < 3; j++) {
-			if(i != j) {
-				assert(meshlink_import(mesh[i], data[j]));
-			}
-		}
-	}
-
-	for(int i = 0; i < 3; i++) {
-		free(data[i]);
-	}
+	join_meshlink_peer(mesh[0], mesh[1]);
+	join_meshlink_peer(mesh[0], mesh[2]);
 
 	meshlink_set_log_cb(mesh[0], MESHLINK_DEBUG, any_log);
 	meshlink_set_log_cb(mesh[1], MESHLINK_DEBUG, any_log);
@@ -383,9 +417,9 @@ int main(void) {
 
 	assert(wait_sync_flag(&bar_learned, 10));
 	assert(wait_sync_flag(&baz_learned, 10));
-	assert_after(mtu_fixed(mesh[2], "foo") && mtu_fixed(mesh[0], "baz")
-	             && mtu_fixed(mesh[0], "bar") && mtu_fixed(mesh[1], "foo")
-	             && mtu_fixed(mesh[1], "baz") && mtu_fixed(mesh[2], "bar"), 25);
+	assert_after(mtu_fixed(mesh[2], "foo") && mtu_fixed(mesh[1], "foo"), 25);
+	assert(!mtu_fixed(mesh[0], "bar"));
+	assert(!mtu_fixed(mesh[0], "baz"));
 
 	send_hello(mesh[2], "bar");
 

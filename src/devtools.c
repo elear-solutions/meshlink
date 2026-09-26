@@ -21,12 +21,15 @@
 #include <assert.h>
 
 #include "connection.h"
+#include "list.h"
 #include "logger.h"
 #include "meshlink_internal.h"
 #include "net.h"
 #include "node.h"
+#include "connection_policy.h"
 #include "path_policy.h"
 #include "path_policy_devtool.h"
+#include "protocol.h"
 #include "relay.h"
 #include "relay_devtool.h"
 #include "sptps.h"
@@ -176,6 +179,18 @@ bool devtool_export_json_all_edges_state(meshlink_handle_t *mesh, FILE *stream) 
 		goto fail;
 	}
 
+	if(!fstrwrite("\t\"backbone\": ", stream)) {
+		goto fail;
+	}
+
+	if(mesh->backbone.name) {
+		if(!fstrwrite("\"", stream) || !fstrwrite(mesh->backbone.name, stream) || !fstrwrite("\",\n", stream)) {
+			goto fail;
+		}
+	} else if(!fstrwrite("null,\n", stream)) {
+		goto fail;
+	}
+
 	// export nodes
 	if(!fstrwrite("\t\"nodes\": {\n", stream)) {
 		goto fail;
@@ -309,6 +324,8 @@ static void devtool_get_reset_node_status(meshlink_handle_t *mesh, meshlink_node
 		status->meta_connected = c && c->status.active;
 		status->meta_via_canonical = c && c->status.via_canonical;
 		status->meta_is_outgoing = c && c->outgoing;
+		status->meta_activated_at = c ? c->activated_at : 0;
+		status->meta_last_key_renewal = c ? c->last_key_renewal : 0;
 
 		if(c) {
 			memcpy(&status->meta_address, &c->address, sizeof status->meta_address);
@@ -330,6 +347,34 @@ static void devtool_get_reset_node_status(meshlink_handle_t *mesh, meshlink_node
 		memset(status->canonical_resolved, 0, sizeof status->canonical_resolved);
 		status->canonical_resolved_count = 0;
 		memset(&status->upgrade_target, 0, sizeof status->upgrade_target);
+		memset(&status->startup_skip, 0, sizeof status->startup_skip);
+
+		status->active_route_kind = (int)internal->active_route.kind;
+		status->active_route_carrier = (int)internal->active_route.relay_carrier;
+		status->active_route_suspect = internal->active_route.suspect;
+		status->active_route_local = internal->active_route.local;
+		status->active_route_first_hop = internal->active_route.first_hop
+		                                 ? internal->active_route.first_hop->name : NULL;
+		status->candidate_active = internal->promotion_candidate.active;
+		status->candidate_rounds = internal->promotion_candidate.successful_rounds;
+		status->candidate_failures = internal->candidate_retry.failures;
+		status->candidate_nonce = internal->promotion_candidate.active ? internal->promotion_candidate.nonce : 0;
+		status->channel_mtu = internal->utcp ? utcp_get_mtu(internal->utcp) : 0;
+		memset(&status->candidate_endpoint, 0, sizeof status->candidate_endpoint);
+
+		if(internal->promotion_candidate.active) {
+			memcpy(&status->candidate_endpoint, &internal->promotion_candidate.endpoint, sizeof status->candidate_endpoint);
+		}
+
+		status->candidate_cooldown_remaining = 0;
+
+		if(internal->candidate_retry.cooldown_until.tv_sec > mesh->loop.now.tv_sec) {
+			status->candidate_cooldown_remaining = (int)(internal->candidate_retry.cooldown_until.tv_sec - mesh->loop.now.tv_sec);
+		}
+
+		if(internal->startup_skip_sa.sa.sa_family) {
+			memcpy(&status->startup_skip, &internal->startup_skip_sa, sizeof status->startup_skip);
+		}
 
 		for(int i = 0; i < MAX_RECENT && internal->recent[i].sa.sa_family; i++) {
 			memcpy(&status->recent[i], &internal->recent[i], sizeof status->recent[i]);
@@ -346,8 +391,23 @@ static void devtool_get_reset_node_status(meshlink_handle_t *mesh, meshlink_node
 			memcpy(&status->canonical_resolved[status->canonical_resolved_count++], &internal->canonical_extra[i - 1], sizeof status->canonical_resolved[0]);
 		}
 
-		status->active_meta_tier = (int)path_select_hop_tier(internal, true);
+		path_tier_t hop_tier = path_select_hop_tier(internal, true);
+		status->active_meta_tier = (int)hop_tier;
 		status->upgrade_ineligible_reason = path_upgrade_ineligible_reason(mesh, internal);
+		status->validkey = internal->status.validkey;
+		status->waitingforkey = internal->status.waitingforkey;
+		status->sptps_state = internal->sptps.state;
+		status->sptps_outseqno = internal->sptps.outseqno;
+		status->sptps_restart_count = internal->sptps_restart_count;
+		status->connection_generation = c && c->outgoing ? c->outgoing->generation : 0;
+		status->meta_drain_active = false;
+
+		for list_each(connection_t, other, mesh->connections) {
+			if(other->status.drain_only && other->name && !strcmp(other->name, internal->name)) {
+				status->meta_drain_active = true;
+				break;
+			}
+		}
 
 		sockaddr_t target;
 		memset(&target, 0, sizeof target);
@@ -460,6 +520,10 @@ void devtool_force_sptps_renewal(meshlink_handle_t *mesh, meshlink_node_t *node)
 		return;
 	}
 
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
 	node_t *n = (node_t *)node;
 	connection_t *c = n->connection;
 
@@ -468,6 +532,336 @@ void devtool_force_sptps_renewal(meshlink_handle_t *mesh, meshlink_node_t *node)
 	if(c) {
 		c->last_key_renewal = -3600;
 	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+const char *devtool_get_backbone_name(meshlink_handle_t *mesh) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return NULL;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	const char *name = connection_policy_backbone_name(mesh);
+	pthread_mutex_unlock(&mesh->mutex);
+	return name;
+}
+
+meshlink_node_t *devtool_get_backbone(meshlink_handle_t *mesh) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return NULL;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	meshlink_node_t *node = (meshlink_node_t *)connection_policy_backbone(mesh);
+	pthread_mutex_unlock(&mesh->mutex);
+	return node;
+}
+
+void devtool_set_allow_peer_bootstrap(meshlink_handle_t *mesh, bool allow) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	mesh->allow_peer_bootstrap = allow;
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+bool devtool_node_has_conflict_backbone(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	bool conflict = ((node_t *)node)->status.conflict_backbone;
+	pthread_mutex_unlock(&mesh->mutex);
+	return conflict;
+}
+
+unsigned devtool_outgoing_count(meshlink_handle_t *mesh) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return 0;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	unsigned count = mesh->outgoings ? mesh->outgoings->count : 0;
+	pthread_mutex_unlock(&mesh->mutex);
+	return count;
+}
+
+int devtool_backbone_intent_purpose(meshlink_handle_t *mesh) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return -1;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	int purpose = -1;
+
+	if(mesh->outgoings) {
+		for list_each(outgoing_t, outgoing, mesh->outgoings) {
+			if(outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED) {
+				purpose = (int)outgoing->purpose;
+				break;
+			}
+		}
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return purpose;
+}
+
+const char *devtool_backbone_intent_name(meshlink_handle_t *mesh) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return NULL;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	const char *name = NULL;
+
+	if(mesh->outgoings) {
+		for list_each(outgoing_t, outgoing, mesh->outgoings) {
+			if(outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED && outgoing->node) {
+				name = outgoing->node->name;
+				break;
+			}
+		}
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return name;
+}
+
+int devtool_backbone_intent_retry_step(meshlink_handle_t *mesh) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return -1;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	int step = -1;
+
+	if(mesh->outgoings) {
+		for list_each(outgoing_t, outgoing, mesh->outgoings) {
+			if(outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED) {
+				step = (int)outgoing->retry_step;
+				break;
+			}
+		}
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return step;
+}
+
+bool devtool_backbone_intent_retry_deadline(meshlink_handle_t *mesh, struct timespec *deadline) {
+	if(!mesh || !deadline) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	bool armed = false;
+
+	if(mesh->outgoings) {
+		for list_each(outgoing_t, outgoing, mesh->outgoings) {
+			if(outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED && outgoing->ev.cb) {
+				*deadline = outgoing->ev.tv;
+				armed = true;
+				break;
+			}
+		}
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return armed;
+}
+
+bool devtool_self_initiates_meta(meshlink_handle_t *mesh) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	bool initiates = mesh->self && mesh->self->devclass != DEV_CLASS_BACKBONE
+	                 && !connection_policy_is_backbone(mesh, mesh->self);
+	pthread_mutex_unlock(&mesh->mutex);
+	return initiates;
+}
+
+bool devtool_learn_discovery_address(meshlink_handle_t *mesh, meshlink_node_t *node,
+                                     const struct sockaddr *addr) {
+	sockaddr_t sa;
+
+	if(!mesh || !node || !addr) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	path_copy_sockaddr(&sa, (const sockaddr_t *)addr);
+
+	if(sa.sa.sa_family == AF_UNSPEC) {
+		pthread_mutex_unlock(&mesh->mutex);
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	bool material = false;
+
+	path_learn_address_cap_ex(mesh, (node_t *)node, &sa, ADDR_SRC_DISCOVERY, PATH_CAP_BOTH, &material);
+	connection_policy_on_discovery(mesh, (node_t *)node, &sa, ADDR_SRC_DISCOVERY, material);
+	pthread_mutex_unlock(&mesh->mutex);
+	return true;
+}
+
+void devtool_clear_lan_discovery_presence(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	node_t *n = (node_t *)node;
+	n->lan_presence.last_discovered_at = 0;
+	n->lan_presence.network_epoch = 0;
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+unsigned devtool_lan_intent_count(meshlink_handle_t *mesh) {
+	unsigned count = 0;
+
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return 0;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	if(mesh->outgoings) {
+		for list_each(outgoing_t, outgoing, mesh->outgoings) {
+			if(outgoing->purpose == META_PURPOSE_LAN_RESILIENCE) {
+				count++;
+			}
+		}
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return count;
+}
+
+unsigned devtool_local_adjacency_count(meshlink_handle_t *mesh) {
+	unsigned count = 0;
+
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return 0;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	if(mesh->nodes) {
+		for splay_each(node_t, n, mesh->nodes) {
+			if(n != mesh->self && connection_policy_is_local_adjacency(mesh, n)) {
+				count++;
+			}
+		}
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return count;
+}
+
+bool devtool_try_ack_replace(meshlink_handle_t *mesh, meshlink_node_t *node,
+                             const struct sockaddr *from, int announced_devclass) {
+	connection_t fake;
+	node_t *n;
+	bool ok;
+
+	if(!mesh || !node || !from || announced_devclass < 0 || announced_devclass >= DEV_CLASS_COUNT) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	n = (node_t *)node;
+	memset(&fake, 0, sizeof fake);
+	fake.name = n->name;
+	fake.mesh = mesh;
+	path_copy_sockaddr(&fake.address, (const sockaddr_t *)from);
+
+	ok = ack_replace_if_admitted(mesh, &fake, announced_devclass, false);
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return ok;
+}
+
+void devtool_set_node_devclass(meshlink_handle_t *mesh, meshlink_node_t *node, int devclass) {
+	if(!mesh || !node || devclass < 0 || devclass >= DEV_CLASS_COUNT) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	node_t *n = (node_t *)node;
+	n->devclass = (dev_class_t)devclass;
+	n->status.dirty = true;
+	connection_policy_on_devclass(mesh, n);
+	pthread_mutex_unlock(&mesh->mutex);
 }
 
 void devtool_free_node_status(devtool_node_status_t *status) {
@@ -529,8 +923,8 @@ void devtool_update_node_udp(meshlink_handle_t *mesh, meshlink_node_t *node, con
 
 	if(n != mesh->self && sa && sa->sa.sa_family == AF_UNSPEC) {
 		/* Forget every learned dest: cache entry, n->address and recent[].
-		   update_node_udp() cannot take the address itself, it would log it
-		   through sockaddr2hostname(), which aborts on AF_UNSPEC at DEBUG level.
+		   update_node_udp() must not take the address itself: it would install
+		   AF_UNSPEC as a real dest and log it as an unknown address.
 		   n->address may own AF_UNKNOWN strings; recent[] only holds shallow
 		   copies of them, so free once and zero both. recent[] is persisted,
 		   so mark the node dirty like node_add_recent_address() does. Self is
@@ -606,6 +1000,15 @@ bool devtool_graph_may_seed_udp(meshlink_handle_t *mesh, meshlink_node_t *node, 
 	return ok;
 }
 
+/* Test pins and planted UDP proofs are commit points: rank once and record. */
+static void commit_ranked_route(meshlink_handle_t *mesh, node_t *n) {
+	path_target_t target;
+
+	if(path_select_fallback(mesh, n, &target)) {
+		path_record_active_route(mesh, n, &target);
+	}
+}
+
 bool devtool_force_relay_path(meshlink_handle_t *mesh, meshlink_node_t *dest, meshlink_node_t *nexthop) {
 	if(!mesh || !dest || !nexthop) {
 		meshlink_errno = MESHLINK_EINVAL;
@@ -633,8 +1036,7 @@ bool devtool_force_relay_path(meshlink_handle_t *mesh, meshlink_node_t *dest, me
 	timeout_del(&mesh->loop, &d->mtutimeout);
 	d->mtuprobes = 0;
 	d->relay_budget = 0;
-	relay_update_destination_transport(mesh, d);
-	relay_recompute_dependents(mesh, h);
+	commit_ranked_route(mesh, d);
 	pthread_mutex_unlock(&mesh->mutex);
 	return true;
 }
@@ -650,18 +1052,82 @@ void devtool_set_udp_confirmed(meshlink_handle_t *mesh, meshlink_node_t *node, b
 	}
 
 	node_t *n = (node_t *)node;
-	bool was = n->status.udp_confirmed;
-	n->status.udp_confirmed = confirmed;
 
-	if(was != confirmed) {
-		relay_recompute_dependents(mesh, n);
-		relay_update_destination_transport(mesh, n);
+	if(n == mesh->backbone_udp.node) {
+		if(confirmed) {
+			n->status.udp_confirmed = true;
+			n->status.forced_relay = false;
+			mesh->backbone_udp.confirmed = true;
+
+			if(n->address.sa.sa_family) {
+				path_copy_sockaddr(&mesh->backbone_udp.endpoint, &n->address);
+				mesh->backbone_udp.source = n->address_source;
+			}
+
+			commit_ranked_route(mesh, n);
+		} else {
+			path_note_udp_demoted_reason(mesh, n, "devtool");
+		}
+
+		pthread_mutex_unlock(&mesh->mutex);
+		return;
 	}
 
-	if(!confirmed && n->status.validkey && n->status.reachable && !n->mtutimeout.cb) {
+	n->status.udp_confirmed = confirmed;
+
+	if(confirmed) {
+		n->status.forced_relay = false;
+		commit_ranked_route(mesh, n);
+	} else if(n->active_route.kind == DATA_ROUTE_DIRECT_UDP) {
+		commit_ranked_route(mesh, n);
+	} else if(!n->devtool_force_meta && n->status.validkey && n->status.reachable && !n->mtutimeout.cb
+	                && path_peer_udp_punching_allowed(mesh, n)) {
 		send_mtu_probe(mesh, n);
 	}
 
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+void devtool_force_meta(meshlink_handle_t *mesh, meshlink_node_t *node, bool enabled) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	node_t *n = (node_t *)node;
+
+	n->devtool_force_meta = enabled;
+
+	if(enabled) {
+		timeout_del(&mesh->loop, &n->mtutimeout);
+		timeout_del(&mesh->loop, &n->promotion_timer);
+		path_suspect_stop(mesh, n);
+		n->mtuprobes = 31;
+		n->status.udp_confirmed = false;
+		n->status.want_udp = false;
+		n->udp_tier = PATH_TIER_NONE;
+		n->probe_dest_override_active = false;
+		memset(&n->promotion_candidate, 0, sizeof n->promotion_candidate);
+
+		if(n == mesh->backbone_udp.node) {
+			mesh->backbone_udp.confirmed = false;
+			mesh->backbone_udp.liveness_nonce = 0;
+		}
+	} else if(n->status.validkey && n->status.reachable && !n->mtutimeout.cb) {
+		n->mtuprobes = 0;
+
+		if(n == mesh->backbone_udp.node || connection_policy_backbone_udp_required(mesh, n)) {
+			path_backbone_udp_start(mesh, n);
+		} else if(path_peer_udp_punching_allowed(mesh, n)) {
+			send_mtu_probe(mesh, n);
+		}
+	}
+
+	commit_ranked_route(mesh, n);
 	pthread_mutex_unlock(&mesh->mutex);
 }
 
@@ -687,7 +1153,40 @@ bool devtool_plant_recent_address(meshlink_handle_t *mesh, meshlink_node_t *node
 	}
 
 	path_plant_recent(n, &sa);
-	(void)node_write_config(mesh, n, false);
+
+	if(!node_write_config(mesh, n, false)) {
+		pthread_mutex_unlock(&mesh->mutex);
+		return false;
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return true;
+}
+
+bool devtool_plant_meta_hybrid_address(meshlink_handle_t *mesh, meshlink_node_t *node, const struct sockaddr *addr) {
+	if(!mesh || !node || !addr) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	node_t *n = (node_t *)node;
+	sockaddr_t sa;
+
+	path_copy_sockaddr(&sa, (const sockaddr_t *)addr);
+
+	if(sa.sa.sa_family == AF_UNSPEC) {
+		meshlink_errno = MESHLINK_EINVAL;
+		pthread_mutex_unlock(&mesh->mutex);
+		return false;
+	}
+
+	path_plant_recent(n, &sa);
+	n->recent_cap[0] = PATH_CAP_BOTH;
+
 	pthread_mutex_unlock(&mesh->mutex);
 	return true;
 }
@@ -721,10 +1220,17 @@ bool devtool_confirm_udp_from(meshlink_handle_t *mesh, meshlink_node_t *node, co
 
 	update_node_udp(mesh, n, &sa);
 	n->status.udp_confirmed = true;
+	n->status.forced_relay = false;
 	n->udp_tier = (path_tier_t)tier;
 	n->udp_local_probe_next = 0;
-	relay_recompute_dependents(mesh, n);
-	relay_update_destination_transport(mesh, n);
+
+	if(n == mesh->backbone_udp.node) {
+		mesh->backbone_udp.confirmed = true;
+		path_copy_sockaddr(&mesh->backbone_udp.endpoint, &sa);
+		mesh->backbone_udp.source = n->address_source;
+	}
+
+	commit_ranked_route(mesh, n);
 	pthread_mutex_unlock(&mesh->mutex);
 	return true;
 }
@@ -753,12 +1259,6 @@ bool devtool_promote_udp_if_better(meshlink_handle_t *mesh, meshlink_node_t *nod
 	}
 
 	ok = path_promote_udp_if_better(mesh, n, &sa);
-
-	if(ok) {
-		relay_recompute_dependents(mesh, n);
-		relay_update_destination_transport(mesh, n);
-	}
-
 	pthread_mutex_unlock(&mesh->mutex);
 	return ok;
 }
@@ -799,7 +1299,6 @@ bool devtool_set_minmtu(meshlink_handle_t *mesh, meshlink_node_t *node, uint16_t
 	node_t *n = (node_t *)node;
 	n->minmtu = mtu;
 	update_node_pmtu(mesh, n);
-	relay_update_destination_transport(mesh, n);
 	pthread_mutex_unlock(&mesh->mutex);
 	return true;
 }
@@ -1049,6 +1548,489 @@ int devtool_select_dest_with_udp(meshlink_handle_t *mesh, meshlink_node_t *dest,
 	return (int)selected;
 }
 
+void devtool_path_route_tick(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	path_route_tick(mesh, (node_t *)node);
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+bool devtool_apply_send_target(meshlink_handle_t *mesh, meshlink_node_t *node, int *chosen_kind) {
+	if(!mesh || !node || !chosen_kind) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	path_target_t target;
+	bool ok = path_active_send_target(mesh, (node_t *)node, &target);
+
+	if(ok) {
+		*chosen_kind = (int)target.kind;
+		path_record_active_route(mesh, (node_t *)node, &target);
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return ok;
+}
+
+bool devtool_candidate_probe_target(meshlink_handle_t *mesh, meshlink_node_t *node, struct sockaddr_storage *addr, uint64_t *nonce) {
+	if(!mesh || !node || !addr || !nonce) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	sockaddr_t sa;
+	memset(&sa, 0, sizeof sa);
+	bool ok = path_candidate_probe_target(mesh, (node_t *)node, &sa, nonce);
+
+	memset(addr, 0, sizeof *addr);
+
+	if(ok) {
+		memcpy(addr, &sa, sizeof sa < sizeof *addr ? sizeof sa : sizeof *addr);
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return ok;
+}
+
+void devtool_observe_probe_reply(meshlink_handle_t *mesh, meshlink_node_t *node, const struct sockaddr *addr, uint64_t nonce) {
+	if(!mesh || !node || !addr) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	path_observe_probe_reply(mesh, (node_t *)node, (const sockaddr_t *)addr, nonce);
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+bool devtool_suspect_probe_target(meshlink_handle_t *mesh, meshlink_node_t *node, struct sockaddr_storage *addr, uint64_t *nonce) {
+	if(!mesh || !node || !addr || !nonce) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	sockaddr_t sa;
+	memset(&sa, 0, sizeof sa);
+	bool ok = path_suspect_probe_target(mesh, (node_t *)node, &sa, nonce);
+
+	memset(addr, 0, sizeof *addr);
+
+	if(ok) {
+		memcpy(addr, &sa, sizeof sa < sizeof *addr ? sizeof sa : sizeof *addr);
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return ok;
+}
+
+void devtool_note_route_suspect(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	path_note_route_suspect(mesh, (node_t *)node, "reliable retransmit");
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+bool devtool_has_live_fallback(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	bool live = path_has_live_fallback(mesh, (node_t *)node);
+	pthread_mutex_unlock(&mesh->mutex);
+	return live;
+}
+
+void devtool_age_route(meshlink_handle_t *mesh, meshlink_node_t *node, int seconds) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	node_t *n = (node_t *)node;
+
+	if(n->active_route.selected_at.tv_sec) {
+		n->active_route.selected_at.tv_sec -= seconds;
+	}
+
+	if(n->active_route.suspect_at.tv_sec) {
+		n->active_route.suspect_at.tv_sec -= seconds;
+	}
+
+	if(n->suspect_validation.deadline.tv_sec || n->suspect_validation.deadline.tv_nsec) {
+		n->suspect_validation.deadline.tv_sec -= seconds;
+	}
+
+	if(n->active_route.kind == DATA_ROUTE_RELAY
+	                && n->active_route.relay_carrier == RELAY_CARRIER_UDP
+	                && n->active_route.first_hop) {
+		suspect_validation_t *hs = &n->active_route.first_hop->suspect_validation;
+
+		if(hs->deadline.tv_sec || hs->deadline.tv_nsec) {
+			hs->deadline.tv_sec -= seconds;
+		}
+	}
+
+	if(n->active_route.healthy_since.tv_sec) {
+		n->active_route.healthy_since.tv_sec -= seconds;
+	}
+
+	/* Time travel must not race the wall-clock suspect timer: tick owns the
+	   expire after age_route, matching the tests that then observe/tick. */
+	timeout_del(&mesh->loop, &n->suspect_validation.timer);
+
+	if(n->active_route.kind == DATA_ROUTE_RELAY
+	                && n->active_route.relay_carrier == RELAY_CARRIER_UDP
+	                && n->active_route.first_hop) {
+		timeout_del(&mesh->loop, &n->active_route.first_hop->suspect_validation.timer);
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+void devtool_disarm_suspect_timer(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	node_t *n;
+
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	n = (node_t *)node;
+	timeout_del(&mesh->loop, &n->suspect_validation.timer);
+
+	if(n->active_route.kind == DATA_ROUTE_RELAY
+	                && n->active_route.relay_carrier == RELAY_CARRIER_UDP
+	                && n->active_route.first_hop) {
+		timeout_del(&mesh->loop, &n->active_route.first_hop->suspect_validation.timer);
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+void devtool_age_candidate(meshlink_handle_t *mesh, meshlink_node_t *node, int seconds) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	node_t *n = (node_t *)node;
+
+	if(n->promotion_candidate.first_success.tv_sec) {
+		n->promotion_candidate.first_success.tv_sec -= seconds;
+	}
+
+	if(n->promotion_candidate.deadline.tv_sec) {
+		n->promotion_candidate.deadline.tv_sec -= seconds;
+	}
+
+	if(n->candidate_retry.cooldown_until.tv_sec) {
+		n->candidate_retry.cooldown_until.tv_sec -= seconds;
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+void devtool_candidate_clear_cooldown(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	path_candidate_clear_cooldown(mesh, (node_t *)node);
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+bool devtool_liveness_probe_warranted(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	bool warranted = path_liveness_probe_warranted(mesh, (node_t *)node);
+	pthread_mutex_unlock(&mesh->mutex);
+	return warranted;
+}
+
+unsigned devtool_probe_second_tokens(meshlink_handle_t *mesh) {
+	unsigned tokens;
+
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return 0;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	path_scheduler_init(mesh);
+	tokens = mesh->probe_budget.second_tokens;
+	pthread_mutex_unlock(&mesh->mutex);
+	return tokens;
+}
+
+unsigned devtool_probe_minute_tokens(meshlink_handle_t *mesh) {
+	unsigned tokens;
+
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return 0;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	path_scheduler_init(mesh);
+	tokens = mesh->probe_budget.minute_tokens;
+	pthread_mutex_unlock(&mesh->mutex);
+	return tokens;
+}
+
+uint64_t devtool_probe_optional_packets_sent(meshlink_handle_t *mesh) {
+	uint64_t n;
+
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return 0;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	path_scheduler_init(mesh);
+	n = mesh->probe_budget.optional_packets_sent;
+	pthread_mutex_unlock(&mesh->mutex);
+	return n;
+}
+
+unsigned devtool_probe_active_transactions(meshlink_handle_t *mesh) {
+	unsigned n;
+
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return 0;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	path_scheduler_init(mesh);
+	n = mesh->probe_budget.active_transactions;
+	pthread_mutex_unlock(&mesh->mutex);
+	return n;
+}
+
+void devtool_set_probe_budget(meshlink_handle_t *mesh, unsigned second, unsigned minute, unsigned txns) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	path_scheduler_set_budget(mesh, second, minute, txns);
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+unsigned devtool_candidate_requests_sent(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	unsigned n;
+
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return 0;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	n = ((node_t *)node)->promotion_candidate.requests_sent;
+	pthread_mutex_unlock(&mesh->mutex);
+	return n;
+}
+
+void devtool_scheduler_drain(meshlink_handle_t *mesh) {
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	path_scheduler_drain(mesh);
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+void devtool_set_backbone_udp_keepalive(meshlink_handle_t *mesh, int seconds) {
+	if(!mesh || seconds < 1) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	mesh->backbone_udp_keepalive_sec = seconds;
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+bool devtool_backbone_udp_confirmed(meshlink_handle_t *mesh) {
+	bool confirmed;
+
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	confirmed = mesh->backbone_udp.confirmed && mesh->backbone_udp.node
+	            && mesh->backbone_udp.node->status.udp_confirmed;
+	pthread_mutex_unlock(&mesh->mutex);
+	return confirmed;
+}
+
+bool devtool_backbone_udp_timer_armed(meshlink_handle_t *mesh) {
+	bool armed;
+
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	armed = mesh->backbone_udp.timer.cb != NULL;
+	pthread_mutex_unlock(&mesh->mutex);
+	return armed;
+}
+
+bool devtool_backbone_udp_endpoint(meshlink_handle_t *mesh, struct sockaddr_storage *addr) {
+	if(!mesh || !addr) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	if(mesh->backbone_udp.endpoint.sa.sa_family == AF_UNSPEC
+	                || mesh->backbone_udp.endpoint.sa.sa_family == AF_UNKNOWN) {
+		pthread_mutex_unlock(&mesh->mutex);
+		return false;
+	}
+
+	path_copy_sockaddr((sockaddr_t *)addr, &mesh->backbone_udp.endpoint);
+	pthread_mutex_unlock(&mesh->mutex);
+	return true;
+}
+
+bool devtool_backbone_udp_failed_endpoint(meshlink_handle_t *mesh, struct sockaddr_storage *addr) {
+	if(!mesh || !addr) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	if(mesh->backbone_udp.failed_endpoint.sa.sa_family == AF_UNSPEC
+	                || mesh->backbone_udp.failed_endpoint.sa.sa_family == AF_UNKNOWN) {
+		pthread_mutex_unlock(&mesh->mutex);
+		return false;
+	}
+
+	path_copy_sockaddr((sockaddr_t *)addr, &mesh->backbone_udp.failed_endpoint);
+	pthread_mutex_unlock(&mesh->mutex);
+	return true;
+}
+
+unsigned devtool_backbone_udp_establish_step(meshlink_handle_t *mesh) {
+	unsigned step;
+
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return 0;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	step = mesh->backbone_udp.establish_step;
+	pthread_mutex_unlock(&mesh->mutex);
+	return step;
+}
+
 bool devtool_relay_cover_unit(meshlink_handle_t *mesh, meshlink_node_t *from, meshlink_node_t *dest, meshlink_node_t *hop) {
 	if(!mesh || !from || !dest || !hop) {
 		meshlink_errno = MESHLINK_EINVAL;
@@ -1175,4 +2157,8 @@ void devtool_fill_bcast_ipv4(struct sockaddr_storage *dst) {
 
 	relay_fill_bcast_ipv4(&out);
 	*dst = out.storage;
+}
+
+void devtool_set_outgoing_startup_ms(int ms) {
+	outgoing_set_startup_ms(ms);
 }

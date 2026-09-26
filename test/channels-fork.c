@@ -12,6 +12,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <errno.h>
+#include <signal.h>
 
 #ifdef __linux__
 #include <sys/prctl.h>
@@ -23,6 +24,7 @@
 static struct sync_flag bar_responded;
 static struct sync_flag foo_connected;
 static struct sync_flag foo_gone;
+static struct sync_flag bar_reachable;
 
 static void foo_receive_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, const void *data, size_t len) {
 	(void)mesh;
@@ -31,6 +33,14 @@ static void foo_receive_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel,
 
 	if(len == 5 && !memcmp(data, "Hello", 5)) {
 		set_sync_flag(&bar_responded, true);
+	}
+}
+
+static void foo_status_cb(meshlink_handle_t *mesh, meshlink_node_t *node, bool reachable) {
+	(void)mesh;
+
+	if(reachable && !strcmp(node->name, "bar")) {
+		set_sync_flag(&bar_reachable, true);
 	}
 }
 
@@ -43,7 +53,6 @@ static void bar_status_cb(meshlink_handle_t *mesh, meshlink_node_t *node, bool r
 }
 
 static void bar_receive_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, const void *data, size_t len) {
-	// Echo the data back.
 	if(len) {
 		assert(meshlink_channel_send(mesh, channel, data, len) == (ssize_t)len);
 	} else {
@@ -77,35 +86,28 @@ static void poll_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, size_t
 	}
 }
 
-static int main1(int rfd, int wfd) {
+static int main1(int rfd) {
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
 
 	assert(meshlink_destroy("channels_fork_conf.1"));
-	meshlink_handle_t *mesh = meshlink_open("channels_fork_conf.1", "foo", "channels-fork", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *mesh = meshlink_open("channels_fork_conf.1", "foo", "channels-fork", DEV_CLASS_STATIONARY);
 	assert(mesh);
 
 	meshlink_enable_discovery(mesh, false);
-
 	assert(meshlink_set_canonical_address(mesh, meshlink_get_self(mesh), "localhost", NULL));
 
-	char *data = meshlink_export(mesh);
-	assert(data);
-
-	ssize_t len = strlen(data);
-	assert(write(wfd, &len, sizeof(len)) == sizeof(len));
-	assert(write(wfd, data, len) == len);
-	free(data);
-
+	ssize_t len;
 	assert(read(rfd, &len, sizeof(len)) == sizeof(len));
-	char indata[len + 1];
-	assert(read(rfd, indata, len) == len);
-	indata[len] = 0;
+	assert(len > 0 && len < 4096);
+	char url[len + 1];
+	assert(read(rfd, url, len) == len);
+	url[len] = 0;
 
-	assert(meshlink_import(mesh, indata));
+	assert(meshlink_join(mesh, url));
 
+	meshlink_set_node_status_cb(mesh, foo_status_cb);
 	assert(meshlink_start(mesh));
-
-	// Open a channel from foo to bar.
+	assert(wait_sync_flag(&bar_reachable, 20));
 
 	meshlink_node_t *bar = meshlink_get_node(mesh, "bar");
 	assert(bar);
@@ -119,15 +121,13 @@ static int main1(int rfd, int wfd) {
 
 	meshlink_channel_close(mesh, channel);
 
-	// Clean up.
-
 	meshlink_close(mesh);
 
 	return 0;
 }
 
 
-static int main2(int rfd, int wfd) {
+static int main2(int wfd) {
 #ifdef __linux__
 	prctl(PR_SET_PDEATHSIG, SIGTERM);
 #endif
@@ -139,27 +139,17 @@ static int main2(int rfd, int wfd) {
 	assert(mesh);
 
 	meshlink_enable_discovery(mesh, false);
-
 	assert(meshlink_set_canonical_address(mesh, meshlink_get_self(mesh), "localhost", NULL));
 
-	char *data = meshlink_export(mesh);
-	assert(data);
-
-	ssize_t len = strlen(data);
-	assert(write(wfd, &len, sizeof(len)) == sizeof(len));
-	assert(write(wfd, data, len) == len);
-	free(data);
-
-	assert(read(rfd, &len, sizeof(len)) == sizeof(len));
-	char indata[len + 1];
-	assert(read(rfd, indata, len) == len);
-	indata[len] = 0;
-
-	assert(meshlink_import(mesh, indata));
-
 	meshlink_set_channel_accept_cb(mesh, accept_cb);
-
 	assert(meshlink_start(mesh));
+	char *url = meshlink_invite(mesh, NULL, "foo");
+	assert(url);
+
+	ssize_t len = strlen(url);
+	assert(write(wfd, &len, sizeof(len)) == sizeof(len));
+	assert(write(wfd, url, len) == len);
+	free(url);
 
 	assert(wait_sync_flag(&foo_connected, 20));
 	assert(wait_sync_flag(&foo_gone, 20));
@@ -178,19 +168,21 @@ int main(void) {
 	init_sync_flag(&bar_responded);
 	init_sync_flag(&foo_connected);
 	init_sync_flag(&foo_gone);
+	init_sync_flag(&bar_reachable);
 
-	int fda[2], fdb[2];
+	int fd[2];
 
-	assert(pipe(fda) != -1);
-	assert(pipe(fdb) != -1);
+	assert(pipe(fd) != -1);
 
 	if(!fork()) {
-		return main2(fdb[0], fda[1]);
+		close(fd[0]);
+		return main2(fd[1]);
 	}
 
+	close(fd[1]);
 	signal(SIGALRM, alarm_handler);
 	alarm(30);
-	assert(main1(fda[0], fdb[1]) == 0);
+	assert(main1(fd[0]) == 0);
 
 	int wstatus;
 	assert(wait(&wstatus) != -1 || errno == ECHILD);

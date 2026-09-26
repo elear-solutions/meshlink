@@ -1,3 +1,5 @@
+#define _GNU_SOURCE
+
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
@@ -85,9 +87,9 @@ static void open_pair(meshlink_handle_t **a, meshlink_handle_t **b, const char *
 	assert(meshlink_destroy(conf_a));
 	assert(meshlink_destroy(conf_b));
 
-	/* a (PORTABLE) is the only side that autoconnects to b (STATIONARY). */
+	/* a (PORTABLE) is the only side that dials; b is the stored backbone. */
 	*a = meshlink_open(conf_a, "a", prefix, DEV_CLASS_PORTABLE);
-	*b = meshlink_open(conf_b, "b", prefix, DEV_CLASS_STATIONARY);
+	*b = meshlink_open(conf_b, "b", prefix, DEV_CLASS_BACKBONE);
 	assert(*a && *b);
 
 	meshlink_enable_discovery(*a, false);
@@ -122,7 +124,7 @@ static void test_recent_wins(void) {
 	snprintf(relay_port_str, sizeof relay_port_str, "%d", relay_port);
 
 	assert(meshlink_set_canonical_address(b, meshlink_get_self(b), "127.0.0.1", relay_port_str));
-	exchange_meshlink_pair(a, b);
+	join_meshlink_peer(b, a);
 
 	meshlink_node_t *node_b = meshlink_get_node(a, "b");
 	assert(node_b);
@@ -133,11 +135,14 @@ static void test_recent_wins(void) {
 	init_sync_flag(&peer_reachable);
 	memset(&status_at_reachable, 0, sizeof status_at_reachable);
 	meshlink_set_node_status_cb(a, status_cb);
+	/* Preference test, not the 250 ms bound. qemu-user localhost TCP can miss 250 ms. */
+	devtool_set_outgoing_startup_ms(2000);
 
 	assert(meshlink_start(b));
 	assert(meshlink_start(a));
 	assert(wait_sync_flag(&peer_reachable, 15));
 	meshlink_set_node_status_cb(a, NULL);
+	devtool_set_outgoing_startup_ms(0);
 
 	assert(status_at_reachable.meta_connected);
 	assert(status_at_reachable.meta_is_outgoing);
@@ -171,7 +176,7 @@ static void test_fallback_to_canonical_and_recent_stays_direct(void) {
 	assert(closed_port != b_port && closed_port != relay_port);
 
 	assert(meshlink_set_canonical_address(b, meshlink_get_self(b), "127.0.0.1", relay_port_str));
-	exchange_meshlink_pair(a, b);
+	join_meshlink_peer(b, a);
 
 	meshlink_node_t *node_b = meshlink_get_node(a, "b");
 	assert(node_b);
@@ -228,14 +233,12 @@ static void test_fallback_to_canonical_and_recent_stays_direct(void) {
 }
 
 static void test_known_path(void) {
-	printf("\n=== T3: no canonical, no recent[]: KNOWN (edge) path connects ===\n");
+	printf("\n=== T3: portable and stationary both dial the backbone only ===\n");
 
 	assert(meshlink_destroy("outgoing_order_t3_conf.1"));
 	assert(meshlink_destroy("outgoing_order_t3_conf.2"));
 	assert(meshlink_destroy("outgoing_order_t3_conf.3"));
 
-	/* a (PORTABLE) autoconnects to b (BACKBONE) first, then to c (STATIONARY).
-	   c autoconnects to b only. b initiates nothing. */
 	meshlink_handle_t *a = meshlink_open("outgoing_order_t3_conf.1", "a", "outgoing_order_t3", DEV_CLASS_PORTABLE);
 	meshlink_handle_t *b = meshlink_open("outgoing_order_t3_conf.2", "b", "outgoing_order_t3", DEV_CLASS_BACKBONE);
 	meshlink_handle_t *c = meshlink_open("outgoing_order_t3_conf.3", "c", "outgoing_order_t3", DEV_CLASS_STATIONARY);
@@ -246,91 +249,54 @@ static void test_known_path(void) {
 	meshlink_enable_discovery(c, false);
 
 	int b_port = meshlink_get_port(b);
-	int c_port = meshlink_get_port(c);
-	assert(b_port > 0 && c_port > 0);
+	assert(b_port > 0);
 
-	exchange_meshlink_pair(a, b);
-	exchange_meshlink_pair(a, c);
-	exchange_meshlink_pair(b, c);
-
-	/* The edge b->c carries the address b saw c connect from, plus c's port. The graph
-	   seeds that as a META candidate even on RFC1918 (UDP still will not). a therefore
-	   dials c from RECENT, not KNOWN. */
-	char *local = meshlink_get_local_address_for_family(c, AF_INET);
-	const char *b_ip = local && is_rfc1918(local) ? local : "127.0.0.1";
-	printf("c connects to b at %s\n", b_ip);
+	join_meshlink_peer(b, a);
+	join_meshlink_peer(b, c);
 
 	meshlink_node_t *a_b = meshlink_get_node(a, "b");
 	meshlink_node_t *a_c = meshlink_get_node(a, "c");
 	meshlink_node_t *c_b = meshlink_get_node(c, "b");
-	assert(a_b && a_c && c_b);
+	assert(a_b && c_b);
 
 	forget_addresses(a, a_b);
 	hint_address(a, a_b, "127.0.0.1", b_port);
-	forget_addresses(a, a_c);
 	forget_addresses(c, c_b);
-	hint_address(c, c_b, b_ip, b_port);
-
-	devtool_node_status_t st;
-	devtool_get_node_status(a, a_c, &st);
-	assert(st.recent_count == 0);
-	assert(!st.canonical_address);
-	devtool_free_node_status(&st);
+	hint_address(c, c_b, "127.0.0.1", b_port);
 
 	watched_peer = "c";
 	init_sync_flag(&peer_reachable);
 	memset(&status_at_reachable, 0, sizeof status_at_reachable);
 	meshlink_set_node_status_cb(b, status_cb);
 
-	assert(meshlink_start(b));
 	assert(meshlink_start(c));
 	assert(wait_sync_flag(&peer_reachable, 15));
 	meshlink_set_node_status_cb(b, NULL);
 	devtool_free_node_status(&status_at_reachable);
 
-	size_t mark = log_mark();
+	watched_peer = "a";
+	init_sync_flag(&peer_reachable);
+	memset(&status_at_reachable, 0, sizeof status_at_reachable);
+	meshlink_set_node_status_cb(b, status_cb);
 	assert(meshlink_start(a));
+	assert(wait_sync_flag(&peer_reachable, 15));
+	meshlink_set_node_status_cb(b, NULL);
+	devtool_free_node_status(&status_at_reachable);
 
-	/* a must end up with its own meta connection to c, made from the edge address. */
-	devtool_node_status_t a_view_c;
-	memset(&a_view_c, 0, sizeof a_view_c);
+	assert(devtool_outgoing_count(b) == 0);
+	assert(devtool_outgoing_count(a) == 1);
+	assert(!strcmp(devtool_backbone_intent_name(a), "b"));
+	assert(devtool_outgoing_count(c) == 1);
+	assert(!strcmp(devtool_backbone_intent_name(c), "b"));
 
-	for(int i = 0; i < 30; i++) {
-		devtool_get_node_status(a, a_c, &a_view_c);
-
-		if(a_view_c.meta_connected && a_view_c.meta_is_outgoing) {
-			break;
-		}
-
-		devtool_free_node_status(&a_view_c);
-		sleep(1);
+	if(a_c) {
+		devtool_node_status_t st;
+		devtool_get_node_status(a, a_c, &st);
+		assert(!st.meta_connected);
+		devtool_free_node_status(&st);
 	}
 
-	assert(a_view_c.meta_connected);
-	assert(a_view_c.meta_is_outgoing);
-	assert(!a_view_c.meta_via_canonical);
-	assert(port_of(&a_view_c.meta_address) == c_port);
-	devtool_free_node_status(&a_view_c);
-
-	char known_needle[128], recent_needle[128];
-	snprintf(known_needle, sizeof known_needle, "a: Trying to connect to c at %s port %d (known)", b_ip, c_port);
-	snprintf(recent_needle, sizeof recent_needle, "a: Trying to connect to c at %s port %d (recent)", b_ip, c_port);
-
-	assert(log_find(mark, recent_needle) >= 0);
-	assert(log_find(mark, known_needle) < 0);
-
-	devtool_get_node_status(a, a_c, &st);
-	bool seeded = false;
-
-	for(size_t i = 0; i < st.recent_count; i++) {
-		seeded |= addr_is(&st.recent[i], b_ip, c_port);
-	}
-
-	assert(seeded);
-	devtool_free_node_status(&st);
-	printf("T3 ok: a connected to c at %s port %d from the graph-seeded RECENT entry\n", b_ip, c_port);
-
-	free(local);
+	printf("T3 ok: a and c each have one BACKBONE_REQUIRED intent to b, no a↔c META\n");
 
 	meshlink_stop(a);
 	meshlink_stop(b);
@@ -343,21 +309,10 @@ static void test_known_path(void) {
 	assert(meshlink_destroy("outgoing_order_t3_conf.3"));
 }
 
-/* T5: b sits behind a relay on a second loopback address and a reaches it through that
-   relay, so a's edge to b carries the relay's IP with b's port and OPTION_INDIRECT
-   (canonical-migrate T15 pins the wire format). d learns b only from that edge: no
-   recent[] (indirect edges are never seeded), no canonical address, so its walk ends in
-   the KNOWN stage, where the relay's address is all there is. Connecting there must
-	count as canonical: the address stays out of d's recent[], d's own edge to b is
-	   indirect, and the upgrade probe replaces the connection with a direct one as soon as
-	   REQ_EXTERNAL advertises b's listen address as META-capable.
-
-   Left alone a would migrate to b's direct address within a second and replace the
-   indirect edge before d gets to use it. Like canonical-migrate T6, a is handed a
-   black-hole address the moment b comes up: the probe started from that hint hangs for
-   its 5 s timeout and then backs off, which keeps a's edge indirect long enough. */
+/* T5: camera reaches the backbone through a canonical relay, then upgrades.
+   Portable-to-portable META is finding 7. */
 static void test_known_indirect_counts_as_canonical(void) {
-	printf("\n=== T5: KNOWN address from an indirect edge is treated as canonical ===\n");
+	printf("\n=== T5: camera→backbone canonical META upgrades to direct ===\n");
 
 	const char *relay_ip = "127.0.0.2";
 
@@ -368,21 +323,16 @@ static void test_known_indirect_counts_as_canonical(void) {
 
 	assert(meshlink_destroy("outgoing_order_t5_conf.1"));
 	assert(meshlink_destroy("outgoing_order_t5_conf.2"));
-	assert(meshlink_destroy("outgoing_order_t5_conf.3"));
 
-	/* a and d (PORTABLE) autoconnect to everyone, b (STATIONARY) initiates nothing. */
 	meshlink_handle_t *a = meshlink_open("outgoing_order_t5_conf.1", "a", "outgoing_order_t5", DEV_CLASS_PORTABLE);
-	meshlink_handle_t *b = meshlink_open("outgoing_order_t5_conf.2", "b", "outgoing_order_t5", DEV_CLASS_STATIONARY);
-	meshlink_handle_t *d = meshlink_open("outgoing_order_t5_conf.3", "d", "outgoing_order_t5", DEV_CLASS_PORTABLE);
-	assert(a && b && d);
+	meshlink_handle_t *b = meshlink_open("outgoing_order_t5_conf.2", "b", "outgoing_order_t5", DEV_CLASS_BACKBONE);
+	assert(a && b);
 
 	meshlink_enable_discovery(a, false);
 	meshlink_enable_discovery(b, false);
-	meshlink_enable_discovery(d, false);
 
-	int a_port = meshlink_get_port(a);
 	int b_port = meshlink_get_port(b);
-	assert(a_port > 0 && b_port > 0);
+	assert(b_port > 0);
 
 	int relay_port = 0;
 	tcp_relay_t *relay = start_tcp_relay(relay_ip, &relay_port, "127.0.0.1", b_port);
@@ -391,170 +341,63 @@ static void test_known_indirect_counts_as_canonical(void) {
 	assert(meshlink_set_canonical_address(b, meshlink_get_self(b), relay_ip, relay_port_str));
 	devtool_set_external_ip_address(b, meshlink_get_self(b), "127.0.0.1");
 
-	int hole_port = 0;
-	int hole_fd = start_black_hole("127.0.0.1", &hole_port);
-
-	exchange_meshlink_pair(a, b);
-	exchange_meshlink_pair(a, d);
-	exchange_meshlink_pair(b, d);
+	join_meshlink_peer(b, a);
 
 	meshlink_node_t *a_b = meshlink_get_node(a, "b");
-	meshlink_node_t *d_a = meshlink_get_node(d, "a");
-	meshlink_node_t *d_b = meshlink_get_node(d, "b");
-	assert(a_b && d_a && d_b);
-
-	/* a reaches b only through the relay. */
+	assert(a_b);
 	forget_addresses(a, a_b);
 
-	/* d knows where a is and nothing about b: no addresses, no canonical address. b stays
-	   blacklisted until d has heard a's edge to it; autoconnect tries STATIONARY nodes
-	   before PORTABLE ones, so d would otherwise go for b first, find no address at all
-	   and put b on a long retry timer. */
-	forget_addresses(d, d_a);
-	hint_address(d, d_a, "127.0.0.1", a_port);
-	forget_addresses(d, d_b);
-	assert(meshlink_clear_canonical_address(d, d_b));
-	assert(meshlink_blacklist(d, d_b));
-
-	devtool_node_status_t st;
-	devtool_get_node_status(d, d_b, &st);
-	assert(st.recent_count == 0);
-	assert(!st.canonical_address);
-	devtool_free_node_status(&st);
-
 	watched_peer = "b";
-	hint_port_on_reachable = hole_port;
+	hint_port_on_reachable = 0;
 	init_sync_flag(&peer_reachable);
 	memset(&status_at_reachable, 0, sizeof status_at_reachable);
 	meshlink_set_node_status_cb(a, status_cb);
 
-	init_sync_flag(&peer_meta_up);
-	memset(&status_at_meta_up, 0, sizeof status_at_meta_up);
-	devtool_set_meta_status_cb(d, meta_status_cb);
-
-	/* d is attached to a before b comes up, so it hears a's relay edge the moment a
-	   authenticates with b. */
 	assert(meshlink_start(a));
-	assert(meshlink_start(d));
-	assert_after(meshlink_get_node_reachability(d, d_a, NULL, NULL), 15);
-
-	size_t mark = log_mark();
-	assert(meshlink_start(b));
 	assert(wait_sync_flag(&peer_reachable, 30));
 	meshlink_set_node_status_cb(a, NULL);
-	hint_port_on_reachable = 0;
 
 	assert(status_at_reachable.meta_connected);
+	assert(status_at_reachable.meta_is_outgoing);
 	assert(status_at_reachable.meta_via_canonical);
 	assert(port_of(&status_at_reachable.meta_address) == relay_port);
 	devtool_free_node_status(&status_at_reachable);
 
-	/* b accepted a's relayed session: ID carried PROTOCOL_VIA_CANONICAL, so the
-	   reverse edge is indirect and the relay source is not in recent[]. */
-	meshlink_node_t *b_a = meshlink_get_node(b, "a");
-	assert(b_a);
-	devtool_get_node_status(b, b_a, &st);
-	assert(st.meta_connected);
-	assert(st.meta_via_canonical);
-	assert(!st.meta_is_outgoing);
-
-	for(size_t i = 0; i < st.recent_count; i++) {
-		assert(!addr_is(&st.recent[i], relay_ip, a_port));
-		assert(!addr_is(&st.recent[i], relay_ip, b_port));
-	}
-
-	devtool_free_node_status(&st);
-
-	/* a's edge to b, relay address plus OPTION_INDIRECT, reaches d. Poll fast: a stays on
-	   the relay for the black hole's 5 s probe timeout plus a 5 s backoff, and d must have
-	   its connection to b up before that. */
-	char needle[128];
-	snprintf(needle, sizeof needle, " a %d . b %s %d %d . %x ", DEV_CLASS_PORTABLE, relay_ip, b_port, DEV_CLASS_STATIONARY, EDGE_OPTION_INDIRECT | EDGE_OPTION_PMTU_DISCOVERY);
-
-	for(int i = 0; i < 100 && count_edge_pairs(d, "a", "b") != 1; i++) {
-		usleep(100000);
-	}
-
-	assert(count_edge_pairs(d, "a", "b") == 1);
-	assert(log_find(mark, needle) >= 0);
-
-	/* Now let d go for b. Its only lead is the relay's address from a's edge. */
-	assert(meshlink_whitelist(d, d_b));
-	assert(wait_sync_flag(&peer_meta_up, 15));
-
-	assert(status_at_meta_up.meta_connected);
-	assert(status_at_meta_up.meta_is_outgoing);
-	assert(status_at_meta_up.meta_via_canonical);
-	assert(addr_is(&status_at_meta_up.meta_address, relay_ip, b_port));
-	devtool_free_node_status(&status_at_meta_up);
-
-	/* That was the KNOWN_INDIRECT stage, and the only address d ever dialled for b. */
-	snprintf(needle, sizeof needle, "d: Trying to connect to b at %s port %d (known-indirect)", relay_ip, b_port);
-	assert(log_find(mark, needle) >= 0);
-	assert(log_count_from(mark, "d: Trying to connect to b at ") == 1);
-
-	/* d broadcasts its edge to b as indirect, just like a did. */
-	snprintf(needle, sizeof needle, " d %d . b %s %d %d . %x ", DEV_CLASS_PORTABLE, relay_ip, b_port, DEV_CLASS_STATIONARY, EDGE_OPTION_INDIRECT | EDGE_OPTION_PMTU_DISCOVERY);
-	assert_after(log_find(mark, needle) >= 0, 5);
-
-	/* Counting as canonical, the connection is eligible for the upgrade probe: once
-	   REQ_EXTERNAL has taught d b's META-capable listen address, d migrates onto it. */
-	devtool_node_status_t d_view_b;
-	memset(&d_view_b, 0, sizeof d_view_b);
+	devtool_node_status_t st;
+	memset(&st, 0, sizeof st);
 
 	for(int i = 0; i < 30; i++) {
-		devtool_get_node_status(d, d_b, &d_view_b);
+		devtool_get_node_status(a, a_b, &st);
 
-		if(d_view_b.meta_connected && !d_view_b.meta_via_canonical) {
+		if(st.meta_connected && !st.meta_via_canonical) {
 			break;
 		}
 
-		devtool_free_node_status(&d_view_b);
+		devtool_free_node_status(&st);
 		sleep(1);
 	}
 
-	assert(d_view_b.meta_connected);
-	assert(!d_view_b.meta_via_canonical);
-	assert(port_of(&d_view_b.meta_address) == b_port);
-	assert(!addr_is(&d_view_b.meta_address, relay_ip, b_port));
-	devtool_free_node_status(&d_view_b);
-
-	/* Whatever recent[] holds for b by now (learned over UDP, or seeded once a migrated
-	   too), the relay's address is not part of it. */
-	devtool_get_node_status(d, d_b, &st);
-	assert(st.recent_count >= 1);
+	assert(st.meta_connected);
+	assert(!st.meta_via_canonical);
+	assert(port_of(&st.meta_address) == b_port);
+	assert(!addr_is(&st.meta_address, relay_ip, b_port));
 
 	for(size_t i = 0; i < st.recent_count; i++) {
-		char ip[INET6_ADDRSTRLEN] = "?";
-		const struct sockaddr_in *sin = (const struct sockaddr_in *)&st.recent[i];
-
-		if(sin->sin_family == AF_INET) {
-			inet_ntop(AF_INET, &sin->sin_addr, ip, sizeof ip);
-		}
-
-		printf("d recent[%zu] for b: %s port %d\n", i, ip, port_of(&st.recent[i]));
 		assert(!addr_is(&st.recent[i], relay_ip, b_port));
 	}
 
-	printf("T5 ok: d reached b at the relay address from a's indirect edge as canonical, then migrated to port %d; %zu recent[] entries, none the relay's\n", b_port, st.recent_count);
+	printf("T5 ok: camera reached backbone via canonical relay port %d, then migrated to %d\n", relay_port, b_port);
 	devtool_free_node_status(&st);
 
-	devtool_set_meta_status_cb(d, NULL);
 	meshlink_stop(a);
 	meshlink_stop(b);
-	meshlink_stop(d);
 	meshlink_close(a);
 	meshlink_close(b);
-	meshlink_close(d);
 	assert(meshlink_destroy("outgoing_order_t5_conf.1"));
 	assert(meshlink_destroy("outgoing_order_t5_conf.2"));
-	assert(meshlink_destroy("outgoing_order_t5_conf.3"));
-	close(hole_fd);
 	stop_tcp_relay(relay);
 }
 
-/* T6: an old install persisted the NLB address in recent[] as an unclassified
-   entry. Load must strip it, and the next dial must not treat it as direct. */
 static void test_persisted_nlb_sanitized(void) {
 	printf("\n=== T6: persisted NLB-in-recent[] is sanitized and not dialled as direct ===\n");
 
@@ -570,7 +413,7 @@ static void test_persisted_nlb_sanitized(void) {
 	snprintf(relay_port_str, sizeof relay_port_str, "%d", relay_port);
 
 	assert(meshlink_set_canonical_address(b, meshlink_get_self(b), "127.0.0.1", relay_port_str));
-	exchange_meshlink_pair(a, b);
+	join_meshlink_peer(b, a);
 
 	meshlink_node_t *node_b = meshlink_get_node(a, "b");
 	assert(node_b);
@@ -656,7 +499,7 @@ static void test_hostname_canonical_skips_unknown_nlb(void) {
 	snprintf(relay_port_str, sizeof relay_port_str, "%d", relay_port);
 
 	assert(meshlink_set_canonical_address(b, meshlink_get_self(b), "localhost", relay_port_str));
-	exchange_meshlink_pair(a, b);
+	join_meshlink_peer(b, a);
 
 	meshlink_node_t *node_b = meshlink_get_node(a, "b");
 	assert(node_b);
@@ -714,7 +557,7 @@ static void test_failed_canonical_resolve_falls_through(void) {
 	assert(b_port > 0);
 
 	assert(meshlink_set_canonical_address(b, meshlink_get_self(b), "nxdomain.invalid", "9"));
-	exchange_meshlink_pair(a, b);
+	join_meshlink_peer(b, a);
 
 	meshlink_node_t *node_b = meshlink_get_node(a, "b");
 	assert(node_b);
@@ -778,7 +621,7 @@ static void test_hostname_canonical_skips_hint_nlb(void) {
 	snprintf(relay_port_str, sizeof relay_port_str, "%d", relay_port);
 
 	assert(meshlink_set_canonical_address(b, meshlink_get_self(b), "localhost", relay_port_str));
-	exchange_meshlink_pair(a, b);
+	join_meshlink_peer(b, a);
 
 	meshlink_node_t *node_b = meshlink_get_node(a, "b");
 	assert(node_b);
@@ -856,7 +699,7 @@ static void test_reset_while_canonical_resolve_pending(void) {
 	snprintf(b_port_str, sizeof b_port_str, "%d", b_port);
 
 	assert(meshlink_set_canonical_address(b, meshlink_get_self(b), "localhost", "9"));
-	exchange_meshlink_pair(a, b);
+	join_meshlink_peer(b, a);
 
 	meshlink_node_t *node_b = meshlink_get_node(a, "b");
 	assert(node_b);
@@ -919,21 +762,18 @@ static void test_graph_seeds_through_canonical_hop(void) {
 	snprintf(b_port_str, sizeof b_port_str, "%d", b_port);
 	assert(meshlink_set_canonical_address(b, meshlink_get_self(b), "127.0.0.1", b_port_str));
 
-	exchange_meshlink_pair(a, b);
-	exchange_meshlink_pair(a, c);
-	exchange_meshlink_pair(b, c);
+	join_meshlink_peer(b, a);
+	join_meshlink_peer(b, c);
 
 	char *local = meshlink_get_local_address_for_family(c, AF_INET);
 	const char *b_ip = local && is_rfc1918(local) ? local : "127.0.0.1";
 
 	meshlink_node_t *a_b = meshlink_get_node(a, "b");
-	meshlink_node_t *a_c = meshlink_get_node(a, "c");
 	meshlink_node_t *c_b = meshlink_get_node(c, "b");
-	assert(a_b && a_c && c_b);
+	assert(a_b && c_b);
 
 	forget_addresses(a, a_b);
 	hint_address(a, a_b, "127.0.0.1", b_port);
-	forget_addresses(a, a_c);
 	forget_addresses(c, c_b);
 	hint_address(c, c_b, b_ip, b_port);
 
@@ -942,7 +782,6 @@ static void test_graph_seeds_through_canonical_hop(void) {
 	memset(&status_at_reachable, 0, sizeof status_at_reachable);
 	meshlink_set_node_status_cb(b, status_cb);
 
-	assert(meshlink_start(b));
 	assert(meshlink_start(c));
 	assert(wait_sync_flag(&peer_reachable, 15));
 	meshlink_set_node_status_cb(b, NULL);
@@ -968,6 +807,9 @@ static void test_graph_seeds_through_canonical_hop(void) {
 	assert(a_view_b.meta_via_canonical);
 	devtool_free_node_status(&a_view_b);
 
+	meshlink_node_t *a_c = NULL;
+	assert_after((a_c = meshlink_get_node(a, "c")) != NULL, 15);
+
 	devtool_node_status_t st;
 	bool seeded = false;
 
@@ -988,8 +830,9 @@ static void test_graph_seeds_through_canonical_hop(void) {
 	}
 
 	assert(seeded);
+	assert(!st.meta_connected);
 	devtool_free_node_status(&st);
-	printf("T11 ok: hop META is canonical, still seeded c at %s port %d\n", b_ip, c_port);
+	printf("T11 ok: hop META is canonical, still seeded c at %s port %d; a does not META to c\n", b_ip, c_port);
 
 	free(local);
 	meshlink_stop(a);

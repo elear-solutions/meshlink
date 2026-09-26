@@ -137,8 +137,19 @@ void sockaddr2str(const sockaddr_t *sa, char **addrstr, char **portstr) {
 	err = getnameinfo(&sa->sa, SALEN(sa->sa), address, sizeof(address), port, sizeof(port), NI_NUMERICHOST | NI_NUMERICSERV);
 
 	if(err) {
-		logger(NULL, MESHLINK_ERROR, "Error while translating addresses: %s", err == EAI_SYSTEM ? strerror(errno) : gai_strerror(err));
-		abort();
+		/* Diagnostics must never end the process: an unset or unexpected family
+		   reaching a log site is a bug to report, not a reason to abort. */
+		logger(NULL, MESHLINK_ERROR, "Error while translating addresses (family %d): %s", sa->sa.sa_family, err == EAI_SYSTEM ? strerror(errno) : gai_strerror(err));
+
+		if(addrstr) {
+			*addrstr = xstrdup("unknown");
+		}
+
+		if(portstr) {
+			*portstr = xstrdup("unknown");
+		}
+
+		return;
 	}
 
 	scopeid = strchr(address, '%');
@@ -170,8 +181,8 @@ char *sockaddr2hostname(const sockaddr_t *sa) {
 	err = getnameinfo(&sa->sa, SALEN(sa->sa), address, sizeof(address), port, sizeof(port), NI_NUMERICHOST | NI_NUMERICSERV);
 
 	if(err) {
-		logger(NULL, MESHLINK_ERROR, "Error while looking up hostname: %s", err == EAI_SYSTEM ? strerror(errno) : gai_strerror(err));
-		abort();
+		/* address/port keep their "unknown" initialisers; see sockaddr2str(). */
+		logger(NULL, MESHLINK_ERROR, "Error while looking up hostname (family %d): %s", sa->sa.sa_family, err == EAI_SYSTEM ? strerror(errno) : gai_strerror(err));
 	}
 
 	xasprintf(&str, "%s port %s", address, port);

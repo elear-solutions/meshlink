@@ -11,6 +11,7 @@ if ! ip netns add "$PROBE" >/dev/null 2>&1; then
 	exit 77
 fi
 ip netns delete "$PROBE" >/dev/null 2>&1 || true
+test -x ../src/utcp-test || { echo "SKIP: ../src/utcp-test not built (make -C src utcp-test)" >&2; exit 77; }
 
 # Configuration
 LOG_PREFIX=/dev/shm/utcp-benchmark-log
@@ -49,19 +50,22 @@ ip netns add utcp-left
 ip link add name utcp-left type veth peer name utcp-right
 ip link set utcp-left netns utcp-left
 
-ip netns exec utcp-left ethtool -K utcp-left tso off
+ip netns exec utcp-left ethtool -K utcp-left tso off || true
 ip netns exec utcp-left ip link set dev lo up
 ip netns exec utcp-left ip addr add dev utcp-left 192.168.1.1/24
 ip netns exec utcp-left ip link set utcp-left up
 
 #ip netns exec utcp-left tc qdisc del dev utcp-left root
-ip netns exec utcp-left tc qdisc add dev utcp-left root netem rate $RATE delay $DELAY $JITTER loss random $LOSS
+if ! ip netns exec utcp-left tc qdisc add dev utcp-left root netem rate $RATE delay $DELAY $JITTER loss random $LOSS; then
+	echo "SKIP: tc netem not supported in this environment" >&2
+	exit 77
+fi
 
 # Set up the right namespace
 ip netns add utcp-right
 ip link set utcp-right netns utcp-right
 
-ip netns exec utcp-right ethtool -K utcp-right tso off
+ip netns exec utcp-right ethtool -K utcp-right tso off || true
 ip netns exec utcp-right ip link set dev lo up
 ip netns exec utcp-right ip addr add dev utcp-right 192.168.1.2/24
 ip netns exec utcp-right ip link set utcp-right up

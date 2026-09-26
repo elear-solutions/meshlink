@@ -25,6 +25,7 @@
 #include "list.h"
 #include "logger.h"
 #include "meshlink_internal.h"
+#include "event.h"
 #include "utils.h"
 #include "xalloc.h"
 
@@ -56,6 +57,10 @@ connection_t *new_connection(void) {
 
 void free_connection(connection_t *c) {
 	assert(c);
+
+	if(c->mesh) {
+		timeout_del(&c->mesh->loop, &c->drain_ev);
+	}
 
 	sptps_stop(&c->sptps);
 	ecdsa_free(c->ecdsa);

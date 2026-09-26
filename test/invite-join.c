@@ -66,7 +66,7 @@ int main(void) {
 	meshlink_handle_t *mesh1 = meshlink_open("invite_join_conf.1", "foo", "invite-join", DEV_CLASS_BACKBONE);
 	assert(mesh1);
 
-	meshlink_handle_t *mesh2 = meshlink_open("invite_join_conf.2", "bar", "invite-join", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *mesh2 = meshlink_open("invite_join_conf.2", "bar", "invite-join", DEV_CLASS_STATIONARY);
 	assert(mesh2);
 
 	meshlink_handle_t *mesh3 = meshlink_open("invite_join_conf.3", "quux", "invite-join", DEV_CLASS_BACKBONE);
@@ -224,9 +224,9 @@ int main(void) {
 
 	assert(!meshlink_get_node_submesh(mesh1, meshlink_get_self(mesh1)));
 
-	meshlink_handle_t *mesh4 = meshlink_open("invite_join_conf.4", "four", "invite-join", DEV_CLASS_BACKBONE);
-	meshlink_handle_t *mesh5 = meshlink_open("invite_join_conf.5", "five", "invite-join", DEV_CLASS_BACKBONE);
-	meshlink_handle_t *mesh6 = meshlink_open("invite_join_conf.6", "six", "invite-join", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *mesh4 = meshlink_open("invite_join_conf.4", "four", "invite-join", DEV_CLASS_STATIONARY);
+	meshlink_handle_t *mesh5 = meshlink_open("invite_join_conf.5", "five", "invite-join", DEV_CLASS_STATIONARY);
+	meshlink_handle_t *mesh6 = meshlink_open("invite_join_conf.6", "six", "invite-join", DEV_CLASS_STATIONARY);
 	assert(mesh4);
 	assert(mesh5);
 	assert(mesh6);
@@ -255,6 +255,12 @@ int main(void) {
 	free(five_url);
 	free(six_url);
 
+	char newport_str[16];
+	snprintf(newport_str, sizeof newport_str, "%d", newport);
+	meshlink_node_t *foo_on_mesh2 = meshlink_get_node(mesh2, "foo");
+	assert(foo_on_mesh2);
+	assert(meshlink_set_canonical_address(mesh2, foo_on_mesh2, "localhost", newport_str));
+
 	assert(meshlink_start(mesh2));
 	assert(meshlink_start(mesh4));
 	assert(meshlink_start(mesh5));
@@ -272,10 +278,8 @@ int main(void) {
 	assert(!strcmp(mesh5_submesh->name, "submesh1"));
 	assert(!strcmp(mesh6_submesh->name, "submesh2"));
 
-	// Wait for nodes to connect, and check that foo sees the right submeshes.
-	// foo changed its listen port above, so baz only knows a stale address and the mesh
-	// can only heal from foo's side, gated by retry_outgoing's 5s-step backoff. A fixed
-	// sleep races that timer; poll for full convergence instead.
+	// foo changed its listen port above. The backbone no longer dials, so
+	// mesh2 must be told the new canonical before it restarts.
 
 	assert_after(meshlink_get_node(mesh1, mesh4->name)
 	             && meshlink_get_node(mesh1, mesh6->name)
@@ -338,7 +342,7 @@ int main(void) {
 
 	// Test case #2: check invalid parameters
 
-	meshlink_handle_t *mesh7 = meshlink_open("invite_join_conf.7", "seven", "invite-join", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *mesh7 = meshlink_open("invite_join_conf.7", "seven", "invite-join", DEV_CLASS_STATIONARY);
 	assert(mesh7);
 	meshlink_enable_discovery(mesh7, false);
 	char *seven_url = meshlink_invite(mesh1, NULL, "seven");
@@ -380,7 +384,7 @@ int main(void) {
 	meshlink_stop(mesh6);
 	meshlink_close(mesh7);
 	mesh1 = meshlink_open("invite_join_conf.1", "foo", "invite-join", DEV_CLASS_BACKBONE);
-	mesh7 = meshlink_open("invite_join_conf.7", "seven", "invite-join", DEV_CLASS_BACKBONE);
+	mesh7 = meshlink_open("invite_join_conf.7", "seven", "invite-join", DEV_CLASS_STATIONARY);
 	assert(mesh1);
 	assert(mesh7);
 	meshlink_enable_discovery(mesh1, false);
@@ -393,7 +397,7 @@ int main(void) {
 
 	// Test case #6 and #7: check invalid inviter_commits_first combinations
 
-	meshlink_handle_t *mesh8 = meshlink_open("invite_join_conf.8", "eight", "invite-join", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *mesh8 = meshlink_open("invite_join_conf.8", "eight", "invite-join", DEV_CLASS_STATIONARY);
 	assert(mesh8);
 	meshlink_enable_discovery(mesh8, false);
 	char *eight_url = meshlink_invite(mesh1, NULL, "eight");
@@ -421,7 +425,7 @@ int main(void) {
 
 	// Test case #6: test inviter committing first scenario
 
-	meshlink_handle_t *mesh9 = meshlink_open("invite_join_conf.9", "nine", "invite-join", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *mesh9 = meshlink_open("invite_join_conf.9", "nine", "invite-join", DEV_CLASS_STATIONARY);
 	assert(mesh9);
 	meshlink_enable_discovery(mesh9, false);
 	char *nine_url = meshlink_invite(mesh1, NULL, "nine");

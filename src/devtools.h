@@ -24,6 +24,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <time.h>
 
 
 /// \file devtools.h
@@ -133,6 +134,8 @@ struct devtool_node_status {
 	struct sockaddr_storage meta_address; /// Remote address of the meta connection (AF_UNSPEC if none)
 	bool meta_via_canonical;              /// True if the meta connection went via a relay (we dialled canonical/indirect-edge, or the peer reached us that way)
 	bool meta_is_outgoing;                /// True if we initiated the meta connection and own its outgoing_t
+	time_t meta_activated_at;             /// connection_t.activated_at (0 if no META)
+	time_t meta_last_key_renewal;         /// connection_t.last_key_renewal (0 if no META)
 	bool upgrade_probe_active;            /// True if a direct-upgrade probe is in flight
 	int upgrade_backoff;                  /// Current probe backoff in seconds (0 = none)
 
@@ -149,7 +152,29 @@ struct devtool_node_status {
 	bool would_probe_local_udp;           /// WAN UDP is active and a local candidate is waiting
 	int active_meta_tier;                 /// path_select_hop_tier of the node itself
 	struct sockaddr_storage upgrade_target; /// next META-capable direct candidate
+	struct sockaddr_storage startup_skip; /// dest the bounded startup cancelled; upgrade probes skip it (AF_UNSPEC once a META activates)
 	const char *upgrade_ineligible_reason; /// NULL if an upgrade probe may start
+	bool validkey;                        /// node SPTPS has a valid key
+	bool waitingforkey;                   /// node is waiting for a key exchange
+	int sptps_state;                      /// node_t.sptps.state
+	uint32_t sptps_outseqno;              /// node SPTPS outbound sequence
+	uint32_t sptps_restart_count;         /// send_req_key() restarts
+	bool meta_drain_active;               /// a retired META socket is still flushing
+	uint32_t connection_generation;       /// outgoing generation of the active META
+
+	// One active route and at most one candidate (ADR 0004)
+	int active_route_kind;                /// data_route_kind_t currently carrying application records
+	int active_route_carrier;             /// relay_carrier_t when the route is a relay
+	bool active_route_suspect;            /// a retransmission raised suspicion, probes pending
+	bool active_route_local;              /// the route's endpoint is on the local network
+	const char *active_route_first_hop;   /// first_hop->name when kind is RELAY; NULL otherwise (not owned)
+	bool candidate_active;                /// an endpoint is being validated for promotion
+	uint8_t candidate_rounds;             /// validation rounds this candidate has passed
+	uint8_t candidate_failures;           /// consecutive failures, drives the cooldown ladder
+	uint64_t candidate_nonce;             /// nonce the current round must echo (0 if none)
+	struct sockaddr_storage candidate_endpoint; /// endpoint under validation (AF_UNSPEC if none)
+	int candidate_cooldown_remaining;     /// seconds until this endpoint may be tried again
+	uint16_t channel_mtu;                 /// fixed UTCP MTU chosen when the node's utcp was created
 };
 
 /// Get the status of a node.
@@ -164,6 +189,66 @@ struct devtool_node_status {
  *                      the current status of the node.
  */
 void devtool_get_node_status(meshlink_handle_t *mesh, meshlink_node_t *node, devtool_node_status_t *status);
+
+const char *devtool_get_backbone_name(meshlink_handle_t *mesh);
+meshlink_node_t *devtool_get_backbone(meshlink_handle_t *mesh);
+bool devtool_node_has_conflict_backbone(meshlink_handle_t *mesh, meshlink_node_t *node);
+
+/// Number of entries in mesh->outgoings (logical META intents).
+unsigned devtool_outgoing_count(meshlink_handle_t *mesh);
+
+/// Purpose of the BACKBONE_REQUIRED outgoing, or -1 if none.
+/** Values match meta_connection_purpose_t: NONE=0, BACKBONE_REQUIRED=1,
+ *  LAN_RESILIENCE=2. Handover spare was removed — ADR 0007 keeps handover in net_upgrade.
+ */
+int devtool_backbone_intent_purpose(meshlink_handle_t *mesh);
+
+/// Name of the BACKBONE_REQUIRED target, or NULL if none.
+const char *devtool_backbone_intent_name(meshlink_handle_t *mesh);
+
+/// Ladder index of the BACKBONE_REQUIRED outgoing, or -1 if none.
+int devtool_backbone_intent_retry_step(meshlink_handle_t *mesh);
+
+/// Absolute deadline of the armed BACKBONE_REQUIRED retry, or false if none is armed.
+bool devtool_backbone_intent_retry_deadline(meshlink_handle_t *mesh, struct timespec *deadline);
+
+/// True when this instance is allowed to initiate META (not a BACKBONE-class node).
+bool devtool_self_initiates_meta(meshlink_handle_t *mesh);
+
+/// Overwrite a node's device class and re-run topology + META-pool policy.
+/** Tests only. Does not persist. Used to reclassify a live stored backbone as
+ *  wrong-class/conflicted and assert the reserved intent and its sockets die.
+ */
+void devtool_set_node_devclass(meshlink_handle_t *mesh, meshlink_node_t *node, int devclass);
+
+/// Allow this instance to create and serve invitations even when it is not the unique backbone.
+/** Production invite/join stay gated. Tests use this only to plant a non-production invitation blob.
+ *  It does not weaken meshlink_join().
+ */
+void devtool_set_allow_peer_bootstrap(meshlink_handle_t *mesh, bool allow);
+
+/// Plant a local DISCOVERY address and run connection-policy discovery (LAN overlay tests).
+bool devtool_learn_discovery_address(meshlink_handle_t *mesh, meshlink_node_t *node,
+                                     const struct sockaddr *addr);
+
+/// Clear runtime DISCOVERY presence for a peer without touching recent[] or AUTH_DIRECT grace.
+/** Setup only: isolates LAN_AUTH_DIRECT_GRACE_SEC after a live local META drop.
+ *  Does not advance the network epoch and does not clear lan_auth_direct_until.
+ */
+void devtool_clear_lan_discovery_presence(meshlink_handle_t *mesh, meshlink_node_t *node);
+
+/// Number of LAN_RESILIENCE outgoings.
+unsigned devtool_lan_intent_count(meshlink_handle_t *mesh);
+
+/// Number of authenticated local META adjacencies (in+out, unique peers, excluding backbone).
+unsigned devtool_local_adjacency_count(meshlink_handle_t *mesh);
+
+/// Run ack_h's admit-then-replace sequence for a synthetic socket to node.
+/** Does not mutate node state when the candidate is refused. Used to prove a
+ *  rejected WAN duplicate cannot disturb an existing local adjacency.
+ */
+bool devtool_try_ack_replace(meshlink_handle_t *mesh, meshlink_node_t *node,
+                             const struct sockaddr *from, int announced_devclass);
 
 /// Free the memory allocated by devtool_get_node_status.
 /** This function frees the dynamically allocated strings in a devtool_node_status_t struct.
@@ -342,7 +427,8 @@ bool devtool_choose_udp_address(struct meshlink_handle *mesh, struct meshlink_no
 bool devtool_choose_udp_address_advance(struct meshlink_handle *mesh, struct meshlink_node *node, struct sockaddr_storage *addr, int *sock);
 
 /// Pin or clear node_t.status.udp_confirmed for dest-pick tests.
-/** Relay-aware: a change recomputes dependents. Clearing confirmation restarts dest probes.
+/** Relay-aware: a change recomputes dependents. Clearing confirmation restarts dest
+ *  probes unless `devtool_force_meta` is set on the node.
  *
  *  @param mesh       Mesh handle.
  *  @param node       Node to update.
@@ -350,11 +436,23 @@ bool devtool_choose_udp_address_advance(struct meshlink_handle *mesh, struct mes
  */
 void devtool_set_udp_confirmed(struct meshlink_handle *mesh, struct meshlink_node *node, bool confirmed);
 
+/// Persistently force a node's application records onto META.
+/** Used by tests that are not about UDP. Enabling stops UDP probes and ignores
+ *  delayed probe replies without clearing recent[]; disabling resumes probing.
+ */
+void devtool_force_meta(struct meshlink_handle *mesh, struct meshlink_node *node, bool enabled);
+
 /// Plant an address in recent[] as ADDR_SRC_UNKNOWN, bypassing canonical rejection.
 /** Used to reconstruct a persisted NLB-in-recent[] entry from an old install.
  *  Marks the node dirty and writes its host config.
  */
 bool devtool_plant_recent_address(struct meshlink_handle *mesh, struct meshlink_node *node, const struct sockaddr *addr);
+
+/// Plant UNKNOWN hybrid with META+UDP caps without sanitizing (live META-walk tests).
+/** Unlike plant_recent_address (UDP-only), this leaves a META-capable hybrid in
+ *  recent[] so the outgoing walk can prove it skips the address.
+ */
+bool devtool_plant_meta_hybrid_address(struct meshlink_handle *mesh, struct meshlink_node *node, const struct sockaddr *addr);
 
 /// Force a confirmed UDP dest and tier without waiting for a probe reply.
 bool devtool_confirm_udp_from(struct meshlink_handle *mesh, struct meshlink_node *node, const struct sockaddr *addr, int tier);
@@ -473,6 +571,86 @@ int devtool_select_hop_tier(struct meshlink_handle *mesh, struct meshlink_node *
  */
 int devtool_select_dest_with_udp(struct meshlink_handle *mesh, struct meshlink_node *dest, bool dest_udp, struct meshlink_node *hop, bool hop_udp, bool meta_in);
 
+/// Run one periodic route tick for this node without waiting for the timer.
+/** Expires a stale candidate, resolves a suspect route and resets failures
+ *  from healthy_since (never selected_at, never while cooldown is live),
+ *  so tests do not depend on wall-clock timing.
+ */
+void devtool_path_route_tick(struct meshlink_handle *mesh, struct meshlink_node *node);
+
+/// Resolve and record the send target as send_application_record() does.
+/** @param chosen_kind  Filled with the data_route_kind_t that would carry this record.
+ *  @return             false if there is no usable target.
+ */
+bool devtool_apply_send_target(struct meshlink_handle *mesh, struct meshlink_node *node, int *chosen_kind);
+
+/// Start or fetch the endpoint under validation, and the nonce its probe carries.
+/** @return false when there is nothing to validate right now.
+ */
+bool devtool_candidate_probe_target(struct meshlink_handle *mesh, struct meshlink_node *node, struct sockaddr_storage *addr, uint64_t *nonce);
+
+/// Feed an authenticated probe reply into the promotion/suspect state machines.
+void devtool_observe_probe_reply(struct meshlink_handle *mesh, struct meshlink_node *node, const struct sockaddr *addr, uint64_t nonce);
+
+/// Mark the active route suspect, as a reliable retransmission would.
+void devtool_note_route_suspect(struct meshlink_handle *mesh, struct meshlink_node *node);
+
+/// Query the in-flight suspect endpoint and nonce. False if none.
+bool devtool_suspect_probe_target(struct meshlink_handle *mesh, struct meshlink_node *node, struct sockaddr_storage *addr, uint64_t *nonce);
+
+/// True when a lower-ranked route is already live for this node.
+bool devtool_has_live_fallback(struct meshlink_handle *mesh, struct meshlink_node *node);
+
+/// Age the active route's residency, suspicion, suspect deadline and healthy_since by `seconds`.
+/** Lets a test reach the residency, suspect-window and healthy-reset
+ *  boundaries immediately. A negative value moves them away, so a test can
+ *  hold a route inside its residency for as long as it needs.
+ */
+void devtool_age_route(struct meshlink_handle *mesh, struct meshlink_node *node, int seconds);
+
+/// Drop the suspect timer without aging the route. The epoch stays active.
+/** Tests that are not about suspect expiry use this so a one-second window
+ *  cannot discard an in-flight promotion while they wait on something else.
+ */
+void devtool_disarm_suspect_timer(struct meshlink_handle *mesh, struct meshlink_node *node);
+
+/// Age the promotion candidate's round gap, deadline and cooldown by `seconds`.
+void devtool_age_candidate(struct meshlink_handle *mesh, struct meshlink_node *node, int seconds);
+
+/// True when this peer currently warrants a liveness probe.
+bool devtool_liveness_probe_warranted(struct meshlink_handle *mesh, struct meshlink_node *node);
+
+unsigned devtool_probe_second_tokens(struct meshlink_handle *mesh);
+unsigned devtool_probe_minute_tokens(struct meshlink_handle *mesh);
+unsigned devtool_probe_active_transactions(struct meshlink_handle *mesh);
+
+/// Optional (non-backbone) packets the scheduler has emitted. Does not include the backbone bucket.
+uint64_t devtool_probe_optional_packets_sent(struct meshlink_handle *mesh);
+void devtool_set_probe_budget(struct meshlink_handle *mesh, unsigned second, unsigned minute, unsigned txns);
+unsigned devtool_candidate_requests_sent(struct meshlink_handle *mesh, struct meshlink_node *node);
+void devtool_scheduler_drain(struct meshlink_handle *mesh);
+
+/// Shorten the backbone UDP keepalive interval for tests. Seconds must be >= 1.
+void devtool_set_backbone_udp_keepalive(struct meshlink_handle *mesh, int seconds);
+
+/// True when this mesh has a confirmed backbone UDP mapping.
+bool devtool_backbone_udp_confirmed(struct meshlink_handle *mesh);
+
+/// True when the backbone UDP keepalive/establish timer is armed.
+bool devtool_backbone_udp_timer_armed(struct meshlink_handle *mesh);
+
+/// Copy the in-flight backbone UDP endpoint. False if none.
+bool devtool_backbone_udp_endpoint(struct meshlink_handle *mesh, struct sockaddr_storage *addr);
+
+/// Copy the last failed backbone UDP endpoint. False if none.
+bool devtool_backbone_udp_failed_endpoint(struct meshlink_handle *mesh, struct sockaddr_storage *addr);
+
+/// Current telescopic establishment backoff step (0 at start / after a new dest).
+unsigned devtool_backbone_udp_establish_step(struct meshlink_handle *mesh);
+
+/// Force-clear a candidate cooldown. Production eligibility is the observation epoch gate.
+void devtool_candidate_clear_cooldown(struct meshlink_handle *mesh, struct meshlink_node *node);
+
 /// Simulate a hard UDP send failure on `hop`'s confirmed address.
 void devtool_relay_hard_send_error(struct meshlink_handle *mesh, struct meshlink_node *hop);
 
@@ -509,5 +687,8 @@ void devtool_fill_mcast_ff02_1(struct sockaddr_storage *dst);
 
 /// Build IPv4 `255.255.255.255`.
 void devtool_fill_bcast_ipv4(struct sockaddr_storage *dst);
+
+/// Override the bounded-startup budget (milliseconds). 0 or negative restores 250.
+void devtool_set_outgoing_startup_ms(int ms);
 
 #endif

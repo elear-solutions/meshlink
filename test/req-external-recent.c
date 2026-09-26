@@ -72,7 +72,7 @@ static void open_direct_pair(struct pair *p, const char *prefix, const char *sel
 	assert(meshlink_destroy(p->conf_b));
 
 	p->a = meshlink_open(p->conf_a, "a", prefix, DEV_CLASS_PORTABLE);
-	p->b = meshlink_open(p->conf_b, "b", prefix, DEV_CLASS_STATIONARY);
+	p->b = meshlink_open(p->conf_b, "b", prefix, DEV_CLASS_BACKBONE);
 	assert(p->a && p->b);
 
 	meshlink_enable_discovery(p->a, false);
@@ -87,7 +87,7 @@ static void open_direct_pair(struct pair *p, const char *prefix, const char *sel
 		devtool_set_external_ip_address(p->a, meshlink_get_self(p->a), self_ext);
 	}
 
-	exchange_meshlink_pair(p->a, p->b);
+	join_meshlink_peer(p->b, p->a);
 
 	p->a_b = meshlink_get_node(p->a, "b");
 	assert(p->a_b);
@@ -221,14 +221,16 @@ static void test_own_external_not_added(void) {
 static bool poke_and_saw_empty_reject(meshlink_handle_t *a, meshlink_node_t *a_b,
 		meshlink_handle_t *b, meshlink_node_t *b_a, size_t mark) {
 	forget_addresses(a, a_b);
-	meshlink_send(b, b_a, "ping", 4);
+	bool poked = meshlink_send(b, b_a, "ping", 4);
+	(void)poked;
 	return log_count_from(mark, "a: Not remembering forwarded REQ_EXTERNAL address of b: no proven address to rank it behind") >= 1;
 }
 
 /* T9c: a learns b only through c. A forwarded REQ_EXTERNAL must not land at
    recent[0] when a has no proven address for b — that would make the next
    outgoing walk dial the untrusted address first. a and b are UNKNOWN
-   (min_connects=1) so each stays on c and never dials the other; no a↔b invite. */
+   so each stays on c and never dials the other; no a↔b invite. Finding 5
+   gives UNKNOWN the same one-backbone-intent rule. */
 static void test_forwarded_empty_recent(void) {
 	printf("\n=== T9c: forwarded REQ_EXTERNAL is not remembered when recent[] is empty ===\n");
 
@@ -251,8 +253,8 @@ static void test_forwarded_empty_recent(void) {
 
 	devtool_set_external_ip_address(b, meshlink_get_self(b), EXT_IP);
 
-	exchange_meshlink_pair(a, c);
-	exchange_meshlink_pair(b, c);
+	join_meshlink_peer(c, a);
+	join_meshlink_peer(c, b);
 
 	meshlink_node_t *a_c = meshlink_get_node(a, "c");
 	meshlink_node_t *b_c = meshlink_get_node(b, "c");

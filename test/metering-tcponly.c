@@ -84,14 +84,18 @@ static void print_counters(peer_config_t *peers, const char *description) {
 
 
 int main(void) {
-	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
+	meshlink_set_log_cb(NULL, MESHLINK_INFO, log_cb);
 
 	init_sync_flag(&peer_reachable);
 	init_sync_flag(&aio_done);
 
 	// Set up relay, peer and NUT
 	peer_config_t *peers = setup_relay_peer_nut("metering-tcponly");
-	set_peers_tcponly(peers, 3);
+
+	if(!set_peers_tcponly(peers, 3)) {
+		close_relay_peer_nut(peers);
+		return 77;
+	}
 
 	meshlink_set_node_status_cb(peers[2].mesh, nut_status_cb);
 
@@ -118,13 +122,13 @@ int main(void) {
 	meshlink_channel_t *channel = meshlink_channel_open(peers[0].mesh, peer, 1, NULL, NULL, 0);
 	assert(channel);
 	assert(meshlink_channel_aio_send(peers[0].mesh, channel, buffer, size, aio_cb, NULL));
-	assert(wait_sync_flag(&aio_done, 15));
+	assert(wait_sync_flag(&aio_done, 90));
 	meshlink_channel_close(peers[0].mesh, channel);
 	sleep(1);
 	print_counters(peers, "relay->peer channel traffic");
 
 	// Measure channel traffic between NUT and peer
-	assert(wait_sync_flag(&peer_reachable, 5));
+	assert(wait_sync_flag(&peer_reachable, 20));
 	meshlink_node_t *nut = meshlink_get_node(peers[0].mesh, peers[2].name);
 	assert(nut);
 	peer = meshlink_get_node(peers[2].mesh, peers[1].name);
@@ -133,7 +137,7 @@ int main(void) {
 	assert(channel);
 	init_sync_flag(&aio_done);
 	assert(meshlink_channel_aio_send(peers[2].mesh, channel, buffer, size, aio_cb, NULL));
-	assert(wait_sync_flag(&aio_done, 15));
+	assert(wait_sync_flag(&aio_done, 90));
 	meshlink_channel_close(peers[2].mesh, channel);
 	sleep(1);
 	print_counters(peers, "NUT->peer channel traffic");

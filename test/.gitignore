@@ -1,5 +1,6 @@
 *.log
 *.trs
+/tmp/
 /basic
 /basicpp
 /channels
@@ -13,6 +14,8 @@
 /invite-join
 /sign-verify
 /trio
+/connection-policy
+/backbone-udp
 /*.[0123456789]
 /*.in
 /*.out*

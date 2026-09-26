@@ -22,6 +22,7 @@
 #include "utils.h"
 #include "conf.h"
 #include "connection.h"
+#include "connection_policy.h"
 #include "devtools.h"
 #include "graph.h"
 #include "logger.h"
@@ -31,18 +32,13 @@
 #include "net_upgrade.h"
 #include "netutl.h"
 #include "node.h"
+#include "path_policy.h"
 #include "protocol.h"
 #include "relay.h"
 #include "sptps.h"
 #include "xalloc.h"
 
 #include <assert.h>
-
-#if !defined(min)
-static inline int min(int a, int b) {
-	return a < b ? a : b;
-}
-#endif
 
 static const int default_timeout = 5;
 static const int default_interval = 60;
@@ -96,11 +92,15 @@ void add_connection_edge(meshlink_handle_t *mesh, connection_t *c) {
   - Check if we need to retry making an outgoing connection
 */
 void terminate_connection(meshlink_handle_t *mesh, connection_t *c, bool report) {
-	/* last_key_renewal is set when the connection activates (and again on every hourly
-	   key renewal, so a drop right after one of those costs one extra backoff step). */
-	bool flapped = c->status.active && mesh->loop.now.tv_sec - c->last_key_renewal < min_connection_lifetime;
+	/* last_key_renewal is restamped hourly; do not use it for backbone
+	   stability. Non-backbone flap detection still uses it. */
+	bool was_active = c->status.active && !c->status.drain_only;
+	bool flapped = was_active && mesh->loop.now.tv_sec - c->last_key_renewal < min_connection_lifetime;
+	time_t activated_at = c->activated_at;
 
-	if(c->status.active) {
+	timeout_del(&mesh->loop, &c->drain_ev);
+
+	if(c->status.active && !c->status.drain_only) {
 		logger(mesh, MESHLINK_INFO, "Closing connection with %s", c->name);
 	}
 
@@ -109,6 +109,10 @@ void terminate_connection(meshlink_handle_t *mesh, connection_t *c, bool report)
 	upgrade_connection_closing(mesh, c);
 
 	if(c->node && c->node->connection == c) {
+		if(was_active && connection_policy_is_local_adjacency(mesh, c->node)) {
+			connection_policy_note_lan_drop(mesh, c->node);
+		}
+
 		if(c->status.active && mesh->meta_status_cb) {
 			mesh->meta_status_cb(mesh, (meshlink_node_t *)c->node, false);
 		}
@@ -143,20 +147,50 @@ void terminate_connection(meshlink_handle_t *mesh, connection_t *c, bool report)
 		}
 	}
 
+	if(mesh->outgoings) {
+		for list_each(outgoing_t, o, mesh->outgoings) {
+			if(o->pending == c) {
+				outgoing_note_failed_dest(o, &c->address);
+				o->pending = NULL;
+				timeout_del(&mesh->loop, &o->startup_ev);
+			}
+		}
+	}
+
 	outgoing_t *outgoing = c->outgoing;
+	node_t *peer = c->node;
+	meta_connection_purpose_t purpose = outgoing ? outgoing->purpose : META_PURPOSE_NONE;
+	c->outgoing = NULL;
 	connection_del(mesh, c);
 
 	/* Check if this was our outgoing connection. ack_h() reset the address walk when it
-	   activated, so either path starts over at recent[]; a connection that flapped goes
-	   through retry_outgoing()'s backoff first instead of reconnecting straight away. */
+	   activated, so either path starts over at recent[]. A refused/timeout startup
+	   socket continues the epoch (direct then canonical). An authenticated
+	   BACKBONE_REQUIRED drop always waits on the telescopic ladder, and only
+	   a session that lived BACKBONE_STABLE_RESET_SEC clears retry_step first.
+	   LAN_RESILIENCE always waits on the generic retry; immediate redial plus
+	   tick resetting skip_sa busy-loops. Other outgoings that flapped go through
+	   retry_outgoing(); a stable drop of a non-persistent intent redials
+	   immediately. Persistent outgoings stay on the list
+	   (meta_purpose_is_persistent). Retiring an intent must not redial it. */
 
-	if(outgoing) {
-		if(flapped) {
+	if(outgoing && !mesh->retiring_outgoing) {
+		if(outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED && was_active) {
+			if(activated_at && mesh->loop.now.tv_sec - activated_at >= BACKBONE_STABLE_RESET_SEC) {
+				connection_policy_reset_backbone_retry(outgoing);
+			}
+
+			retry_outgoing(mesh, outgoing);
+		} else if(outgoing->purpose == META_PURPOSE_LAN_RESILIENCE) {
+			retry_outgoing(mesh, outgoing);
+		} else if(flapped) {
 			retry_outgoing(mesh, outgoing);
 		} else {
 			do_outgoing_connection(mesh, outgoing);
 		}
 	}
+
+	connection_policy_on_connection_closed(mesh, peer, purpose);
 }
 
 /*
@@ -177,13 +211,19 @@ static void timeout_handler(event_loop_t *loop, void *data) {
 		int pingtimeout = c->node ? mesh->dev_class_traits[c->node->devclass].pingtimeout : default_timeout;
 		int pinginterval = c->node ? mesh->dev_class_traits[c->node->devclass].pinginterval : default_interval;
 
+		if(c->status.drain_only) {
+			continue;
+		}
+
 		if(c->outgoing && !c->status.active && c->outgoing->timeout < 5) {
 			pingtimeout = 1;
 		}
 
 		// Also make sure that if outstanding key requests for the UDP counterpart of a connection has timed out, we restart it.
 		if(c->node) {
-			if(c->node->status.waitingforkey && c->node->last_req_key + pingtimeout < mesh->loop.now.tv_sec) {
+			if(c->node->status.waitingforkey && c->node->last_req_key + pingtimeout < mesh->loop.now.tv_sec
+			                && (connection_policy_backbone_udp_required(mesh, c->node)
+			                    || path_peer_udp_punching_allowed(mesh, c->node))) {
 				send_req_key(mesh, c->node);
 			}
 		}
@@ -227,186 +267,6 @@ static void timeout_handler(event_loop_t *loop, void *data) {
 	});
 }
 
-// devclass asc, last_successfull_connection desc
-static int node_compare_devclass_asc_lsc_desc(const void *a, const void *b) {
-	const node_t *na = a, *nb = b;
-
-	if(na->devclass < nb->devclass) {
-		return -1;
-	}
-
-	if(na->devclass > nb->devclass) {
-		return 1;
-	}
-
-	if(na->last_successfull_connection == nb->last_successfull_connection) {
-		return 0;
-	}
-
-	if(na->last_successfull_connection == 0 || na->last_successfull_connection > nb->last_successfull_connection) {
-		return -1;
-	}
-
-	if(nb->last_successfull_connection == 0 || na->last_successfull_connection < nb->last_successfull_connection) {
-		return 1;
-	}
-
-	if(na < nb) {
-		return -1;
-	}
-
-	if(na > nb) {
-		return 1;
-	}
-
-	return 0;
-}
-
-// last_successfull_connection desc
-static int node_compare_lsc_desc(const void *a, const void *b) {
-	const node_t *na = a, *nb = b;
-
-	if(na->last_successfull_connection == nb->last_successfull_connection) {
-		return 0;
-	}
-
-	if(na->last_successfull_connection == 0 || na->last_successfull_connection > nb->last_successfull_connection) {
-		return -1;
-	}
-
-	if(nb->last_successfull_connection == 0 || na->last_successfull_connection < nb->last_successfull_connection) {
-		return 1;
-	}
-
-	if(na < nb) {
-		return -1;
-	}
-
-	if(na > nb) {
-		return 1;
-	}
-
-	return 0;
-}
-
-// devclass desc
-static int node_compare_devclass_desc(const void *a, const void *b) {
-	const node_t *na = a, *nb = b;
-
-	if(na->devclass < nb->devclass) {
-		return -1;
-	}
-
-	if(na->devclass > nb->devclass) {
-		return 1;
-	}
-
-	if(na < nb) {
-		return -1;
-	}
-
-	if(na > nb) {
-		return 1;
-	}
-
-	return 0;
-}
-
-
-/*
-
-autoconnect()
-{
-        timeout = 5
-
-        // find the best one for initial connect
-
-        if cur < min
-                newcon =
-                        first from nodes
-                                where dclass <= my.dclass and !connection and (timestamp - last_retry) > retry_timeout
-                                order by dclass asc, last_connection desc
-                if newcon
-                        timeout = 0
-                        goto connect
-
-
-        // find better nodes to connect to: in case we have less than min connections within [BACKBONE, i] and there are nodes which we are not connected to within the range
-
-        if min <= cur < max
-                j = 0
-                for i = BACKBONE to my.dclass
-                        j += count(from connections where node.dclass = i)
-                        if j < min
-                                newcon =
-                                        first from nodes
-                                                where dclass = i and !connection and (timestamp - last_retry) > retry_timeout
-                                                order by last_connection desc
-                                if newcon
-                                        goto connect
-                        else
-                                break
-
-
-        // heal partitions
-
-        if min <= cur < max
-                newcon =
-                        first from nodes
-                                where dclass <= my.dclass and !reachable and (timestamp - last_retry) > retry_timeout
-                                order by dclass asc, last_connection desc
-                if newcon
-                        goto connect
-
-
-        // connect
-
-connect:
-        if newcon
-                connect newcon
-
-
-        // disconnect outgoing connections in case we have more than min connections within [BACKBONE, i] and there are nodes which we are connected to within the range [i, PORTABLE]
-
-        if min < cur <= max
-                j = 0
-                for i = BACKBONE to my.dclass
-                        j += count(from connections where node.dclass = i)
-                        if min < j
-                                delcon =
-                                        first from nodes
-                                                where dclass >= i and outgoing_connection
-                                                order by dclass desc
-                                if disconnect
-                                        goto disconnect
-                                else
-                                        break
-
-
-        // disconnect connections in case we have more than enough connections
-
-        if max < cur
-                delcon =
-                        first from nodes
-                                where outgoing_connection
-                                order by dclass desc
-                goto disconnect
-
-        // disconnect
-
-disconnect
-        if delcon
-                disconnect delcon
-
-
-        // next iteration
-        next (timeout, autoconnect)
-
-}
-
-*/
-
-
 static void periodic_handler(event_loop_t *loop, void *data) {
 	meshlink_handle_t *mesh = loop->data;
 
@@ -435,248 +295,18 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 	mesh->contradicting_add_edge = 0;
 	mesh->contradicting_del_edge = 0;
 
+	/* Expire stale candidates, resolve suspect routes and reset failures
+	   from healthy_since, never selected_at, never while cooldown is live. */
+	for splay_each(node_t, n, mesh->nodes) {
+		if(n != mesh->self) {
+			path_route_tick(mesh, n);
+		}
+	}
+
 	int timeout = default_timeout;
 
-	/* Check if we need to make or break connections. */
+	connection_policy_tick(mesh);
 
-	if(mesh->nodes->count > 1) {
-
-		logger(mesh, MESHLINK_DEBUG, "--- autoconnect begin ---");
-
-		int retry_timeout = min(mesh->nodes->count * default_timeout, 60);
-
-		logger(mesh, MESHLINK_DEBUG, "* devclass = %d", mesh->devclass);
-		logger(mesh, MESHLINK_DEBUG, "* nodes = %d", mesh->nodes->count);
-		logger(mesh, MESHLINK_DEBUG, "* retry_timeout = %d", retry_timeout);
-
-
-		// connect disconnect nodes
-
-		node_t *connect_to = NULL;
-		node_t *disconnect_from = NULL;
-
-
-		// get cur_connects
-
-		unsigned int cur_connects = 0;
-
-		for list_each(connection_t, c, mesh->connections) {
-			if(c->status.active && !c->status.spare) {
-				cur_connects += 1;
-			}
-		}
-
-		logger(mesh, MESHLINK_DEBUG, "* cur_connects = %d", cur_connects);
-		logger(mesh, MESHLINK_DEBUG, "* outgoings = %d", mesh->outgoings->count);
-
-		// get min_connects and max_connects
-
-		unsigned int min_connects = mesh->dev_class_traits[mesh->devclass].min_connects;
-		unsigned int max_connects = mesh->dev_class_traits[mesh->devclass].max_connects;
-
-		logger(mesh, MESHLINK_DEBUG, "* min_connects = %d", min_connects);
-		logger(mesh, MESHLINK_DEBUG, "* max_connects = %d", max_connects);
-
-		// find the best one for initial connect
-
-		if(cur_connects < min_connects) {
-			splay_tree_t *nodes = splay_alloc_tree(node_compare_devclass_asc_lsc_desc, NULL);
-
-			for splay_each(node_t, n, mesh->nodes) {
-				logger(mesh, MESHLINK_DEBUG, "* %s->devclass = %d", n->name, n->devclass);
-
-				if(n != mesh->self && n->devclass <= mesh->devclass && !n->connection && !n->status.blacklisted && (n->last_connect_try == 0 || (mesh->loop.now.tv_sec - n->last_connect_try) > retry_timeout)) {
-					splay_insert(nodes, n);
-				}
-			}
-
-			if(nodes->head) {
-				//timeout = 0;
-				connect_to = (node_t *)nodes->head->data;
-
-				logger(mesh, MESHLINK_DEBUG, "* found best one for initial connect: %s", connect_to->name);
-			} else {
-				logger(mesh, MESHLINK_DEBUG, "* could not find node for initial connect");
-			}
-
-			splay_delete_tree(nodes);
-		}
-
-
-		// find better nodes to connect to
-
-		if(!connect_to && min_connects <= cur_connects && cur_connects < max_connects) {
-			unsigned int connects = 0;
-
-			for(dev_class_t devclass = 0; devclass <= mesh->devclass; ++devclass) {
-				for list_each(connection_t, c, mesh->connections) {
-					if(c->status.active && !c->status.spare && c->node && c->node->devclass == devclass) {
-						connects += 1;
-					}
-				}
-
-				if(connects < min_connects) {
-					splay_tree_t *nodes = splay_alloc_tree(node_compare_lsc_desc, NULL);
-
-					for splay_each(node_t, n, mesh->nodes) {
-						if(n != mesh->self && n->devclass == devclass && !n->connection && !n->status.blacklisted && (n->last_connect_try == 0 || (mesh->loop.now.tv_sec - n->last_connect_try) > retry_timeout)) {
-							splay_insert(nodes, n);
-						}
-					}
-
-					if(nodes->head) {
-						logger(mesh, MESHLINK_DEBUG, "* found better node");
-						connect_to = (node_t *)nodes->head->data;
-
-						splay_delete_tree(nodes);
-						break;
-					}
-
-					splay_delete_tree(nodes);
-				} else {
-					break;
-				}
-			}
-
-			if(!connect_to) {
-				logger(mesh, MESHLINK_DEBUG, "* could not find better nodes");
-			}
-		}
-
-
-		// heal partitions
-
-		if(!connect_to && min_connects <= cur_connects && cur_connects < max_connects) {
-			splay_tree_t *nodes = splay_alloc_tree(node_compare_devclass_asc_lsc_desc, NULL);
-
-			for splay_each(node_t, n, mesh->nodes) {
-				if(n != mesh->self && n->devclass <= mesh->devclass && !n->status.reachable && !n->status.blacklisted && (n->last_connect_try == 0 || (mesh->loop.now.tv_sec - n->last_connect_try) > retry_timeout)) {
-					splay_insert(nodes, n);
-				}
-			}
-
-			if(nodes->head) {
-				logger(mesh, MESHLINK_DEBUG, "* try to heal partition");
-				connect_to = (node_t *)nodes->head->data;
-			} else {
-				logger(mesh, MESHLINK_DEBUG, "* could not find nodes for partition healing");
-			}
-
-			splay_delete_tree(nodes);
-		}
-
-
-		// perform connect
-
-		if(connect_to && !connect_to->connection) {
-			connect_to->last_connect_try = mesh->loop.now.tv_sec;
-			logger(mesh, MESHLINK_DEBUG, "Autoconnect trying to connect to %s", connect_to->name);
-
-			/* check if there is already a connection attempt to this node */
-			bool skip = false;
-
-			for list_each(outgoing_t, outgoing, mesh->outgoings) {
-				if(outgoing->node == connect_to) {
-					logger(mesh, MESHLINK_DEBUG, "* skip autoconnect since it is an outgoing connection already");
-					skip = true;
-					break;
-				}
-			}
-
-			if(!connect_to->status.reachable && !node_read_public_key(mesh, connect_to)) {
-				logger(mesh, MESHLINK_DEBUG, "* skip autoconnect since we don't know this node's public key");
-				skip = true;
-			}
-
-			if(!skip) {
-				logger(mesh, MESHLINK_DEBUG, "Autoconnecting to %s", connect_to->name);
-				outgoing_t *outgoing = xzalloc(sizeof(outgoing_t));
-				outgoing->node = connect_to;
-				list_insert_tail(mesh->outgoings, outgoing);
-				setup_outgoing_connection(mesh, outgoing);
-			}
-		}
-
-
-		// disconnect suboptimal outgoing connections
-
-		if(min_connects < cur_connects /*&& cur_connects <= max_connects*/) {
-			unsigned int connects = 0;
-
-			for(dev_class_t devclass = 0; devclass <= mesh->devclass; ++devclass) {
-				for list_each(connection_t, c, mesh->connections) {
-					if(c->status.active && !c->status.spare && c->node && c->node->devclass == devclass) {
-						connects += 1;
-					}
-				}
-
-				if(min_connects < connects) {
-					splay_tree_t *nodes = splay_alloc_tree(node_compare_devclass_desc, NULL);
-
-					for list_each(connection_t, c, mesh->connections) {
-						if(c->outgoing && !c->status.spare && c->node && c->node->devclass >= devclass) {
-							splay_insert(nodes, c->node);
-						}
-					}
-
-					if(nodes->head) {
-						logger(mesh, MESHLINK_DEBUG, "* disconnect suboptimal outgoing connection");
-						disconnect_from = (node_t *)nodes->head->data;
-					}
-
-					splay_delete_tree(nodes);
-					break;
-				}
-			}
-
-			if(!disconnect_from) {
-				logger(mesh, MESHLINK_DEBUG, "* no suboptimal outgoing connections");
-			}
-		}
-
-
-		// disconnect connections (too many connections)
-
-		if(!disconnect_from && max_connects < cur_connects) {
-			splay_tree_t *nodes = splay_alloc_tree(node_compare_devclass_desc, NULL);
-
-			for list_each(connection_t, c, mesh->connections) {
-				if(c->status.active && !c->status.spare && c->node) {
-					splay_insert(nodes, c->node);
-				}
-			}
-
-			if(nodes->head) {
-				logger(mesh, MESHLINK_DEBUG, "* disconnect connection (too many connections)");
-
-				//timeout = 0;
-				disconnect_from = (node_t *)nodes->head->data;
-			} else {
-				logger(mesh, MESHLINK_DEBUG, "* no node we want to disconnect, even though we have too many connections");
-			}
-
-			splay_delete_tree(nodes);
-		}
-
-
-		// perform disconnect
-
-		if(disconnect_from && disconnect_from->connection) {
-			logger(mesh, MESHLINK_DEBUG, "Autodisconnecting from %s", disconnect_from->connection->name);
-			list_delete(mesh->outgoings, disconnect_from->connection->outgoing);
-			disconnect_from->connection->outgoing = NULL;
-			terminate_connection(mesh, disconnect_from->connection, disconnect_from->connection->status.active);
-		}
-
-		// reduce timeout if we don't have enough connections + outgoings
-		if(cur_connects + mesh->outgoings->count < 3) {
-			timeout = 1;
-		}
-
-		// done!
-
-		logger(mesh, MESHLINK_DEBUG, "--- autoconnect end ---");
-	}
 
 	/* Retry canonical -> direct upgrades whose backoff expired. */
 
@@ -720,12 +350,26 @@ void handle_meta_connection_data(meshlink_handle_t *mesh, connection_t *c) {
 void retry(meshlink_handle_t *mesh) {
 	/* Reset the reconnection timers for all outgoing connections */
 	for list_each(outgoing_t, outgoing, mesh->outgoings) {
-		outgoing->timeout = 0;
+		if(outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED) {
+			connection_policy_reset_backbone_retry(outgoing);
+		} else {
+			outgoing->timeout = 0;
+		}
 
+		/* Arm the retry before dialling: do_outgoing_connection() can run out
+		   of addresses and delete this entry, and free_outgoing() takes the
+		   timer with it. Touching outgoing afterwards would be a use after
+		   free. */
 		if(outgoing->ev.cb) {
 			timeout_set(&mesh->loop, &outgoing->ev, &(struct timespec) {
 				0, 0
 			});
+		}
+
+		if(outgoing->pending && !outgoing->pending->status.active) {
+			outgoing_abort_startup(mesh, outgoing);
+			outgoing->state = OUTGOING_START;
+			do_outgoing_connection(mesh, outgoing);
 		}
 	}
 
@@ -786,12 +430,14 @@ void retry(meshlink_handle_t *mesh) {
   this is where it all happens...
 */
 void main_loop(meshlink_handle_t *mesh) {
+	event_loop_stamp_now(&mesh->loop);
 	timeout_add(&mesh->loop, &mesh->pingtimer, timeout_handler, &mesh->pingtimer, &(struct timespec) {
 		1, prng(mesh, TIMER_FUDGE)
 	});
 	timeout_add(&mesh->loop, &mesh->periodictimer, periodic_handler, &mesh->periodictimer, &(struct timespec) {
 		0, 0
 	});
+	path_scheduler_init(mesh);
 
 	//Add signal handler
 	mesh->datafromapp.signum = 0;
@@ -805,4 +451,5 @@ void main_loop(meshlink_handle_t *mesh) {
 	signal_del(&mesh->loop, &mesh->datafromapp);
 	timeout_del(&mesh->loop, &mesh->periodictimer);
 	timeout_del(&mesh->loop, &mesh->pingtimer);
+	path_scheduler_stop(mesh);
 }

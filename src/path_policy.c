@@ -12,16 +12,21 @@
 
 #include "adns.h"
 #include "connection.h"
+#include "crypto.h"
 #include "edge.h"
 #include "graph.h"
 #include "logger.h"
 #include "meshlink_internal.h"
+#include "event.h"
 #include "net.h"
 #include "net_upgrade.h"
 #include "netutl.h"
 #include "node.h"
+#include "connection_policy.h"
 #include "path_policy.h"
 #include "protocol.h"
+#include "relay.h"
+#include "splay_tree.h"
 #include "xalloc.h"
 
 /* source_trust ranks: AUTH_DIRECT is highest, UNKNOWN is legacy-weak, others 0. */
@@ -40,6 +45,18 @@ typedef struct canonical_adns_req {
 
 static void path_note_canonical_resolve_failed(meshlink_handle_t *mesh, node_t *n);
 static void path_on_canonical_resolved(meshlink_handle_t *mesh, node_t *n);
+static uint64_t path_fresh_nonce(void);
+static void path_commit_active_route(node_t *n, const path_target_t *target, const struct timespec *now);
+static bool hop_udp_ready(const node_t *hop);
+static bool path_fill_direct_udp(meshlink_handle_t *mesh, const node_t *n, path_target_t *out);
+static bool path_fill_local_meta(meshlink_handle_t *mesh, const node_t *n, path_target_t *out);
+static bool path_fill_relay_udp(meshlink_handle_t *mesh, const node_t *n, path_target_t *out);
+static bool path_fill_relay_meta(meshlink_handle_t *mesh, const node_t *n, path_target_t *out);
+static void path_consider_demanded_route_promotions(meshlink_handle_t *mesh, path_route_promotion_t which);
+static path_promotion_reason_t path_promotion_reason_for_source(address_source_t src);
+
+/* path_backbone_udp.c — re-arm establish after demotion. */
+void path_backbone_udp_arm(meshlink_handle_t *mesh, int sec, long nsec);
 
 /* Split "host port" into host and port. copy is xstrdup'd; caller frees it. */
 static bool split_canonical_address(const char *canonical, char **copy, char **host, char **port) {
@@ -176,6 +193,24 @@ void path_copy_sockaddr(sockaddr_t *dst, const sockaddr_t *src) {
 	}
 
 	memcpy(dst, src, len);
+
+	/* The UDP node cache hashes the whole sockaddr_t. Darwin's sin_len is
+	   part of that, and a caller-built address leaves it 0 while recvfrom()
+	   fills it in, so the same host:port misses. sin_zero is padding. */
+	if(dst->sa.sa_family == AF_INET) {
+		memset(dst->in.sin_zero, 0, sizeof dst->in.sin_zero);
+#ifdef __APPLE__
+		dst->in.sin_len = sizeof dst->in;
+#endif
+	}
+
+#ifdef __APPLE__
+
+	if(dst->sa.sa_family == AF_INET6) {
+		dst->in6.sin6_len = sizeof dst->in6;
+	}
+
+#endif
 }
 
 bool path_source_is_direct(address_source_t src) {
@@ -251,24 +286,43 @@ bool path_is_direct_candidate(const node_t *n, const sockaddr_t *sa, address_sou
 		return false;
 	}
 
-	/* HINT/UNKNOWN cannot stand in for a hostname canonical that has not been
-	   tried yet (or is still in flight). After a resolve failure, backoff is
-	   set and a later application hint is allowed to fall through. AUTH_DIRECT
-	   and DISCOVERY stay eligible so a real local peer is not blocked. */
-	if((src == ADDR_SRC_UNKNOWN || src == ADDR_SRC_HINT)
+	/* HINT/UNKNOWN/EDGE_DIRECT cannot stand in for a hostname canonical that
+	   has not been tried yet (or is still in flight). EDGE must wait too: an
+	   unresolved hostname means hybrid NLB-IP+other-port cannot be detected
+	   yet and would burn the 250ms startup budget (ADR 0003). After a resolve
+	   failure, backoff is set and a later application hint is allowed to fall
+	   through. AUTH_DIRECT and DISCOVERY stay eligible so a real local peer is
+	   not blocked. */
+	if((src == ADDR_SRC_UNKNOWN || src == ADDR_SRC_HINT || src == ADDR_SRC_EDGE_DIRECT)
 	                && path_canonical_is_hostname(n)
 	                && n->canonical_sa_count == 0
 	                && n->canonical_resolve_backoff == 0) {
 		return false;
 	}
 
-	/* EDGE_DIRECT + NLB-IP + another port is the hybrid hole. Peer-advertised
-	   AUTH/EXTERNAL/DISCOVERY on the same public IP is allowed. */
-	if(src == ADDR_SRC_EDGE_DIRECT && path_address_shares_canonical_ip(n, sa)) {
+	/* Graph-derived NLB-IP + another port is the hybrid hole. Peer-vouched
+	   AUTH/EXTERNAL/DISCOVERY/HINT/UDP_REFLEXIVE on the same public IP is allowed. */
+	if(path_is_untrusted_hybrid(n, sa, src)) {
 		return false;
 	}
 
 	return true;
+}
+
+bool path_is_untrusted_hybrid(const node_t *n, const sockaddr_t *sa, address_source_t src) {
+	if(!n || !sa) {
+		return false;
+	}
+
+	if(src != ADDR_SRC_EDGE_DIRECT && src != ADDR_SRC_UNKNOWN) {
+		return false;
+	}
+
+	if(path_address_matches_canonical(n, sa)) {
+		return false;
+	}
+
+	return path_address_shares_canonical_ip(n, sa);
 }
 
 bool path_is_meta_candidate(const node_t *n, const sockaddr_t *sa, address_source_t src, path_cap_t cap) {
@@ -295,6 +349,10 @@ bool path_is_udp_candidate(const node_t *n, const sockaddr_t *sa, address_source
 	}
 
 	if(path_address_matches_canonical(n, sa)) {
+		return false;
+	}
+
+	if(path_is_untrusted_hybrid(n, sa, src)) {
 		return false;
 	}
 
@@ -810,13 +868,28 @@ static void recent_store_front(node_t *n, int i, const sockaddr_t *sa, address_s
 		memmove(n->recent_cap + 1, n->recent_cap, (size_t)i * sizeof(*n->recent_cap));
 	}
 
-	memcpy(n->recent, sa, SALEN(sa->sa));
+	/* SALEN() is sa_len on Darwin. A parsed address often has sa_len 0, and
+	   memcpy of that length stores nothing, so a discovery result never
+	   becomes dialable. */
+	path_copy_sockaddr(&n->recent[0], sa);
 	n->recent_source[0] = keep;
 	n->recent_cap[0] = keep_cap;
 	n->status.dirty = true;
 }
 
+static void learn_set_material(bool *material, bool value) {
+	if(material) {
+		*material = value;
+	}
+}
+
 bool path_learn_address_cap(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa, address_source_t src, path_cap_t cap) {
+	return path_learn_address_cap_ex(mesh, n, sa, src, cap, NULL);
+}
+
+bool path_learn_address_cap_ex(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa, address_source_t src, path_cap_t cap, bool *material) {
+	learn_set_material(material, false);
+
 	if(!n || !sa || sa->sa.sa_family == AF_UNSPEC || sa->sa.sa_family == AF_UNKNOWN) {
 		return false;
 	}
@@ -825,24 +898,54 @@ bool path_learn_address_cap(meshlink_handle_t *mesh, node_t *n, const sockaddr_t
 		return false;
 	}
 
+	if(path_is_untrusted_hybrid(n, sa, src)) {
+		path_log_candidate(mesh, n, sa, src, cap, "rejected hybrid");
+		return false;
+	}
+
 	int i;
+	bool upgraded;
 
 	for(i = 0; i < MAX_RECENT && n->recent[i].sa.sa_family; i++) {
 		if(!sockaddrcmp(&n->recent[i], sa)) {
 			path_cap_t merged = (path_cap_t)(n->recent_cap[i] | cap);
 
-			if(i == 0 && source_trust(src) <= source_trust(n->recent_source[0]) && merged == n->recent_cap[0]) {
+			upgraded = source_trust(src) > source_trust(n->recent_source[i]) || merged != n->recent_cap[i];
+
+			if(i == 0 && !upgraded) {
+				if((merged & PATH_CAP_UDP) && path_address_is_local(sa)) {
+					path_consider_promotion(mesh, n, path_promotion_reason_for_source(src));
+				}
+
 				return false;
 			}
 
 			recent_store_front(n, i, sa, src, cap);
 			path_log_candidate(mesh, n, sa, n->recent_source[0], n->recent_cap[0], "updated");
+
+			if((n->recent_cap[0] & PATH_CAP_UDP) && path_address_is_local(sa)) {
+				path_consider_promotion(mesh, n, path_promotion_reason_for_source(src));
+			}
+
+			if(upgraded) {
+				path_backbone_udp_note_direct(mesh, n, sa, n->recent_source[0], n->recent_cap[0]);
+			}
+
+			/* An unchanged address moving forward is persistence/LRU, not a new fact. */
+			learn_set_material(material, upgraded);
 			return true;
 		}
 	}
 
 	recent_store_front(n, -1, sa, src, cap);
 	path_log_candidate(mesh, n, sa, src, cap, "learned");
+
+	if((cap & PATH_CAP_UDP) && path_address_is_local(sa)) {
+		path_consider_promotion(mesh, n, path_promotion_reason_for_source(src));
+	}
+
+	path_backbone_udp_note_direct(mesh, n, sa, src, cap);
+	learn_set_material(material, true);
 	return true;
 }
 
@@ -856,6 +959,11 @@ bool path_learn_address_fallback_cap(meshlink_handle_t *mesh, node_t *n, const s
 	}
 
 	if(reject_canonical(mesh, n, sa, src)) {
+		return false;
+	}
+
+	if(path_is_untrusted_hybrid(n, sa, src)) {
+		path_log_candidate(mesh, n, sa, src, cap, "rejected hybrid");
 		return false;
 	}
 
@@ -888,7 +996,7 @@ bool path_learn_address_fallback_cap(meshlink_handle_t *mesh, node_t *n, const s
 		return false;
 	}
 
-	memcpy(&n->recent[i], sa, SALEN(sa->sa));
+	path_copy_sockaddr(&n->recent[i], sa);
 	n->recent_source[i] = src;
 	n->recent_cap[i] = cap;
 	n->status.dirty = true;
@@ -952,7 +1060,8 @@ bool path_sanitize_recent(meshlink_handle_t *mesh, node_t *n) {
 	memset(kept_cap, 0, sizeof kept_cap);
 
 	for(int i = 0; i < MAX_RECENT && n->recent[i].sa.sa_family; i++) {
-		if(path_address_matches_canonical(n, &n->recent[i]) || n->recent_source[i] == ADDR_SRC_CANONICAL) {
+		if(path_address_matches_canonical(n, &n->recent[i]) || n->recent_source[i] == ADDR_SRC_CANONICAL
+		                || path_is_untrusted_hybrid(n, &n->recent[i], n->recent_source[i])) {
 			path_log_candidate(mesh, n, &n->recent[i], n->recent_source[i], n->recent_cap[i], "sanitized");
 			changed = true;
 			continue;
@@ -992,6 +1101,94 @@ bool path_best_direct_meta(const node_t *n, const sockaddr_t *skip, sockaddr_t *
 
 		if(src_out) {
 			*src_out = n->recent_source[i];
+		}
+
+		return true;
+	}
+
+	return false;
+}
+
+static bool path_best_local_meta_from(const node_t *n, const sockaddr_t *skip, sockaddr_t *out, address_source_t *src_out, address_source_t want) {
+	for(int i = 0; i < MAX_RECENT && n->recent[i].sa.sa_family; i++) {
+		address_source_t src = n->recent_source[i];
+
+		if(src != want) {
+			continue;
+		}
+
+		if(!path_address_is_local(&n->recent[i])) {
+			continue;
+		}
+
+		if(!path_is_meta_candidate(n, &n->recent[i], src, n->recent_cap[i])) {
+			continue;
+		}
+
+		if(skip && !sockaddrcmp(&n->recent[i], skip)) {
+			continue;
+		}
+
+		path_copy_sockaddr(out, &n->recent[i]);
+
+		if(src_out) {
+			*src_out = src;
+		}
+
+		return true;
+	}
+
+	return false;
+}
+
+bool path_best_local_meta(const node_t *n, const sockaddr_t *skip, sockaddr_t *out, address_source_t *src_out) {
+	if(!n || !out) {
+		return false;
+	}
+
+	/* Prefer DISCOVERY (listen port) over AUTH_DIRECT (often an inbound
+	   ephemeral). Tick/setup must not redial a closed source port. */
+	if(path_best_local_meta_from(n, skip, out, src_out, ADDR_SRC_DISCOVERY)) {
+		return true;
+	}
+
+	return path_best_local_meta_from(n, skip, out, src_out, ADDR_SRC_AUTH_DIRECT);
+}
+
+bool path_best_startup_meta(const node_t *n, const sockaddr_t *skip, sockaddr_t *out, address_source_t *src_out) {
+	if(path_best_direct_meta(n, skip, out, src_out)) {
+		return true;
+	}
+
+	if(!n || !out || !n->edge_tree) {
+		return false;
+	}
+
+	for splay_each(edge_t, e, n->edge_tree) {
+		const sockaddr_t *sa;
+
+		if(!e->reverse) {
+			continue;
+		}
+
+		if(e->reverse->options & OPTION_INDIRECT) {
+			continue;
+		}
+
+		sa = &e->reverse->address;
+
+		if(skip && !sockaddrcmp(sa, skip)) {
+			continue;
+		}
+
+		if(!path_is_meta_candidate(n, sa, ADDR_SRC_EDGE_DIRECT, PATH_CAP_BOTH)) {
+			continue;
+		}
+
+		path_copy_sockaddr(out, sa);
+
+		if(src_out) {
+			*src_out = ADDR_SRC_EDGE_DIRECT;
 		}
 
 		return true;
@@ -1095,7 +1292,7 @@ path_tier_t path_select_destination_tier(const node_t *dest, bool meta_in) {
 		return PATH_TIER_NONE;
 	}
 
-	if(!meta_in && hop_udp_ready(dest)) {
+	if(!meta_in && !dest->status.forced_relay && hop_udp_ready(dest)) {
 		return dest->udp_tier == PATH_TIER_DIRECT_LOCAL_UDP ? PATH_TIER_DIRECT_LOCAL_UDP : PATH_TIER_DIRECT_WAN_UDP;
 	}
 
@@ -1107,8 +1304,7 @@ path_tier_t path_select_destination_tier(const node_t *dest, bool meta_in) {
 }
 
 bool path_udp_should_probe_local(meshlink_handle_t *mesh, const node_t *n, sockaddr_t *out) {
-	sockaddr_t sa;
-	sockaddr_t *dest = out ? out : &sa;
+	path_endpoint_t ep;
 
 	if(!mesh || !n || !n->status.udp_confirmed || n->udp_tier != PATH_TIER_DIRECT_WAN_UDP) {
 		return false;
@@ -1118,7 +1314,15 @@ bool path_udp_should_probe_local(meshlink_handle_t *mesh, const node_t *n, socka
 		return false;
 	}
 
-	return path_pick_local_udp_candidate(mesh, n, dest);
+	if(!path_pick_local_udp_candidate(mesh, n, &ep)) {
+		return false;
+	}
+
+	if(out) {
+		path_copy_sockaddr(out, &ep.address);
+	}
+
+	return true;
 }
 
 void path_schedule_local_udp_probe(meshlink_handle_t *mesh, node_t *n) {
@@ -1129,12 +1333,14 @@ void path_schedule_local_udp_probe(meshlink_handle_t *mesh, node_t *n) {
 	n->udp_local_probe_next = mesh->loop.now.tv_sec + UDP_LOCAL_PROBE_SEC;
 }
 
-bool path_pick_local_udp_candidate(meshlink_handle_t *mesh, const node_t *n, sockaddr_t *out) {
+bool path_pick_local_udp_candidate(meshlink_handle_t *mesh, const node_t *n, path_endpoint_t *out) {
 	(void)mesh;
 
 	if(!n || !out) {
 		return false;
 	}
+
+	memset(out, 0, sizeof *out);
 
 	for(int i = 0; i < MAX_RECENT && n->recent[i].sa.sa_family; i++) {
 		if(!path_is_udp_candidate(n, &n->recent[i], n->recent_source[i], n->recent_cap[i])) {
@@ -1157,13 +1363,17 @@ bool path_pick_local_udp_candidate(meshlink_handle_t *mesh, const node_t *n, soc
 			continue;
 		}
 
-		*out = n->recent[i];
+		path_copy_sockaddr(&out->address, &n->recent[i]);
+		out->source = n->recent_source[i];
+		out->capability = n->recent_cap[i];
 		return true;
 	}
 
 	if(n->catta_address.sa.sa_family != AF_UNSPEC && path_address_is_local(&n->catta_address)
 	                && (n->address.sa.sa_family == AF_UNSPEC || sockaddrcmp(&n->catta_address, &n->address))) {
-		*out = n->catta_address;
+		path_copy_sockaddr(&out->address, &n->catta_address);
+		out->source = ADDR_SRC_DISCOVERY;
+		out->capability = PATH_CAP_BOTH;
 		return true;
 	}
 
@@ -1189,14 +1399,133 @@ void path_note_udp_confirmed(meshlink_handle_t *mesh, node_t *n) {
 	n->udp_local_probe_next = 0;
 
 	if(was != n->udp_tier) {
-		path_log_transition(mesh, n, was, n->udp_tier, "udp confirmed");
+		path_log_udp_tier(mesh, n, was, n->udp_tier, "confirmed");
+	}
+
+	path_consider_route_promotion(mesh, n, PATH_PROMOTION_DIRECT_UDP);
+
+	if(mesh && n == mesh->backbone_udp.node) {
+		path_consider_demanded_route_promotions(mesh, PATH_PROMOTION_BACKBONE_UDP);
+	}
+
+	path_consider_promotion(mesh, n, PATH_PROMOTION_UDP_CONFIRMED);
+}
+
+static void path_defer_demotion(meshlink_handle_t *mesh, node_t *n, const char *reason) {
+	if(n->demote_deferred) {
+		return;
+	}
+
+	n->demote_deferred = true;
+	snprintf(n->demote_reason, sizeof n->demote_reason, "%s", reason ? reason : "");
+
+	if(mesh->route_guard_deferred_count < ROUTE_GUARD_DEFERRED_MAX) {
+		mesh->route_guard_deferred[mesh->route_guard_deferred_count++] = n;
+	} else {
+		mesh->route_guard_overflow = true;
 	}
 }
 
-void path_note_udp_demoted(meshlink_handle_t *mesh, node_t *n) {
+static void path_apply_deferred_demotion(meshlink_handle_t *mesh, node_t *n) {
+	if(!n->demote_deferred) {
+		return;
+	}
+
+	n->demote_deferred = false;
+	path_note_udp_demoted_reason(mesh, n, n->demote_reason);
+}
+
+void path_send_guard_enter(meshlink_handle_t *mesh) {
+	if(mesh) {
+		mesh->route_guard_depth++;
+	}
+}
+
+void path_send_guard_leave(meshlink_handle_t *mesh) {
+	if(!mesh || !mesh->route_guard_depth || --mesh->route_guard_depth) {
+		return;
+	}
+
+	bool overflow = mesh->route_guard_overflow;
+	unsigned count = mesh->route_guard_deferred_count;
+
+	mesh->route_guard_overflow = false;
+	mesh->route_guard_deferred_count = 0;
+
+	for(unsigned i = 0; i < count; i++) {
+		path_apply_deferred_demotion(mesh, mesh->route_guard_deferred[i]);
+	}
+
+	if(overflow) {
+		for splay_each(node_t, n, mesh->nodes) {
+			path_apply_deferred_demotion(mesh, n);
+		}
+	}
+}
+
+static bool path_route_uses_udp_sa(const data_route_t *r, const node_t *owner, const node_t *failed, const sockaddr_t *sa) {
+	if(!r || !owner || !failed || !sa || sa->sa.sa_family == AF_UNSPEC || sa->sa.sa_family == AF_UNKNOWN) {
+		return false;
+	}
+
+	if(r->kind == DATA_ROUTE_DIRECT_UDP && owner == failed) {
+		return !sockaddrcmp(&r->udp_endpoint, sa);
+	}
+
+	if(r->kind == DATA_ROUTE_RELAY && r->relay_carrier == RELAY_CARRIER_UDP && r->first_hop == failed) {
+		return !sockaddrcmp(&r->udp_endpoint, sa);
+	}
+
+	return false;
+}
+
+static void path_rerank_recorded(meshlink_handle_t *mesh, node_t *dest) {
+	path_target_t target;
+
+	if(!mesh || !dest) {
+		return;
+	}
+
+	if(path_select_fallback(mesh, dest, &target)) {
+		path_commit_active_route(dest, &target, &mesh->loop.now);
+	}
+}
+
+static void path_rerank_if_route_uses_udp(meshlink_handle_t *mesh, node_t *failed, const sockaddr_t *sa) {
+	if(!mesh || !failed || !sa) {
+		return;
+	}
+
+	if(path_route_uses_udp_sa(&failed->active_route, failed, failed, sa)) {
+		path_rerank_recorded(mesh, failed);
+	}
+
+	if(!mesh->nodes) {
+		return;
+	}
+
+	for splay_each(node_t, dest, mesh->nodes) {
+		if(dest == failed) {
+			continue;
+		}
+
+		if(path_route_uses_udp_sa(&dest->active_route, dest, failed, sa)) {
+			path_rerank_recorded(mesh, dest);
+		}
+	}
+}
+
+void path_note_udp_demoted_reason(meshlink_handle_t *mesh, node_t *n, const char *reason) {
 	path_tier_t was;
 
 	if(!n || !n->status.udp_confirmed || n->status.temp_udp_confirmed) {
+		return;
+	}
+
+	if(mesh && mesh->route_guard_depth) {
+		/* Mid-datagram. Switching carriers now would split this datagram
+		   across two paths; the next one gets the new route. */
+		path_defer_demotion(mesh, n, reason);
 		return;
 	}
 
@@ -1206,13 +1535,47 @@ void path_note_udp_demoted(meshlink_handle_t *mesh, node_t *n) {
 	n->mtuprobes = 0;
 	n->minmtu = 0;
 	n->maxmtu = MTU;
-	path_log_transition(mesh, n, was, PATH_TIER_NONE, "reliable retransmit");
+	path_log_udp_tier(mesh, n, was, PATH_TIER_NONE, reason);
+
+	if(mesh) {
+		path_scheduler_end_type(mesh, n, PATH_TXN_PMTU_DISCOVERY);
+	}
+
+	if(mesh && n == mesh->backbone_udp.node) {
+		mesh->backbone_udp.confirmed = false;
+		mesh->backbone_udp.liveness_nonce = 0;
+		mesh->backbone_udp.unanswered = 0;
+
+		if(mesh->backbone_udp.endpoint.sa.sa_family) {
+			path_copy_sockaddr(&mesh->backbone_udp.failed_endpoint, &mesh->backbone_udp.endpoint);
+		}
+
+		timeout_del(&mesh->loop, &n->mtutimeout);
+
+		if(mesh->backbone_udp.timer.cb) {
+			path_backbone_udp_arm(mesh, PATH_BACKBONE_UDP_ESTABLISH_SEC, 0);
+		}
+	}
+
+	if(mesh) {
+		path_suspect_stop(mesh, n);
+		path_rerank_if_route_uses_udp(mesh, n, &n->address);
+	}
 }
 
-bool path_promote_udp_if_better(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *from) {
-	if(!n || !from || !n->status.udp_confirmed) {
+void path_note_udp_demoted(meshlink_handle_t *mesh, node_t *n) {
+	path_note_udp_demoted_reason(mesh, n, "reliable retransmit");
+}
+
+static bool path_promote_udp_endpoint(meshlink_handle_t *mesh, node_t *n, const path_endpoint_t *ep) {
+	const sockaddr_t *from;
+	path_cap_t cap;
+
+	if(!n || !ep || !n->status.udp_confirmed) {
 		return false;
 	}
+
+	from = &ep->address;
 
 	if(n->address.sa.sa_family != AF_UNSPEC && !sockaddrcmp(from, &n->address)) {
 		return false;
@@ -1222,19 +1585,2004 @@ bool path_promote_udp_if_better(meshlink_handle_t *mesh, node_t *n, const sockad
 		return false;
 	}
 
-	path_tier_t next = path_udp_tier_for(from, ADDR_SRC_AUTH_DIRECT);
+	path_tier_t next = path_udp_tier_for(from, ep->source);
 
 	if(!path_tier_better(next, n->udp_tier == PATH_TIER_NONE ? PATH_TIER_DIRECT_WAN_UDP : n->udp_tier)
 	                && n->udp_tier != PATH_TIER_NONE) {
 		return false;
 	}
 
+	cap = ep->capability ? ep->capability : path_default_cap(ep->source);
+
 	path_tier_t was = n->udp_tier;
-	update_node_udp(mesh, n, from);
-	path_learn_address_cap(mesh, n, from, ADDR_SRC_AUTH_DIRECT, path_address_is_local(from) ? PATH_CAP_BOTH : PATH_CAP_UDP);
+	update_node_udp_from(mesh, n, from, ep->source);
 	n->udp_tier = next;
-	path_log_transition(mesh, n, was, next, "local probe reply");
+	n->address_cap = cap;
+	path_learn_address_cap(mesh, n, from, ep->source, cap);
+	path_log_udp_tier(mesh, n, was, next, "local probe reply");
 	return true;
+}
+
+/* Production commit install. Same sockaddr refreshes source and cap. Eligibility
+   is the picker gate, re-checked before any write: UDP candidate, direct or
+   reflexive, and a bound address. That rejects canonical, an EDGE_DIRECT or
+   UNKNOWN NLB-IP hybrid, and a HINT/UNKNOWN blocked by an unresolved hostname
+   canonical. Tier ranking stays on path_promote_udp_endpoint so the devtool
+   wrapper can still refuse a non-improving dest. */
+static bool path_install_committed_udp(meshlink_handle_t *mesh, node_t *n, const path_endpoint_t *ep) {
+	const sockaddr_t *from;
+	path_cap_t cap;
+	path_tier_t next;
+	path_tier_t was;
+
+	if(!mesh || !n || !ep || !n->status.udp_confirmed) {
+		return false;
+	}
+
+	from = &ep->address;
+	cap = ep->capability ? ep->capability : path_default_cap(ep->source);
+
+	if(!path_is_udp_candidate(n, from, ep->source, cap)
+	                || (!path_is_direct_candidate(n, from, ep->source)
+	                    && ep->source != ADDR_SRC_UDP_REFLEXIVE)
+	                || !udp_address_bound(from)) {
+		return false;
+	}
+
+	next = path_udp_tier_for(from, ep->source);
+	was = n->udp_tier;
+	update_node_udp_from(mesh, n, from, ep->source);
+	n->address_source = ep->source;
+	n->address_cap = cap;
+	n->udp_tier = next;
+	path_learn_address_cap(mesh, n, from, ep->source, cap);
+	path_log_udp_tier(mesh, n, was, next, "candidate commit");
+	return true;
+}
+
+bool path_promote_udp_if_better(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *from) {
+	path_endpoint_t ep;
+	int i;
+
+	if(!from) {
+		return false;
+	}
+
+	memset(&ep, 0, sizeof ep);
+	path_copy_sockaddr(&ep.address, from);
+	ep.source = ADDR_SRC_AUTH_DIRECT;
+	ep.capability = path_default_cap(ADDR_SRC_AUTH_DIRECT);
+
+	if(n) {
+		for(i = 0; i < MAX_RECENT && n->recent[i].sa.sa_family; i++) {
+			if(!sockaddrcmp(&n->recent[i], from)) {
+				ep.source = n->recent_source[i];
+				ep.capability = n->recent_cap[i];
+				break;
+			}
+		}
+	}
+
+	return path_promote_udp_endpoint(mesh, n, &ep);
+}
+
+static path_tier_t path_route_to_tier(const data_route_t *r) {
+	if(!r) {
+		return PATH_TIER_NONE;
+	}
+
+	switch(r->kind) {
+	case DATA_ROUTE_DIRECT_UDP:
+		return r->local ? PATH_TIER_DIRECT_LOCAL_UDP : PATH_TIER_DIRECT_WAN_UDP;
+
+	case DATA_ROUTE_DIRECT_LOCAL_META:
+		return PATH_TIER_META_DIRECT;
+
+	case DATA_ROUTE_RELAY:
+		if(r->relay_carrier == RELAY_CARRIER_UDP) {
+			return PATH_TIER_RELAY_UDP;
+		}
+
+		if(r->relay_carrier == RELAY_CARRIER_META_CANONICAL) {
+			return PATH_TIER_META_CANONICAL;
+		}
+
+		return PATH_TIER_META_DIRECT;
+
+	case DATA_ROUTE_NONE:
+	default:
+		return PATH_TIER_NONE;
+	}
+}
+
+void path_note_selected_route(meshlink_handle_t *mesh, node_t *n, const char *reason) {
+	path_tier_t to;
+	path_tier_t from;
+
+	if(!n) {
+		return;
+	}
+
+	to = path_route_to_tier(&n->active_route);
+	from = n->last_path_tier;
+
+	if(from == to) {
+		return;
+	}
+
+	n->last_path_tier = to;
+
+	if(!mesh || mesh->log_level > MESHLINK_INFO) {
+		return;
+	}
+
+	logger(mesh, MESHLINK_INFO, "Path route: %s %s -> %s (%s)", n->name, path_tier_name(from), path_tier_name(to), reason ? reason : "");
+}
+
+/* --- one candidate under validation -------------------------------------- */
+
+static int64_t timespec_ms_between(const struct timespec *from, const struct timespec *to) {
+	return (int64_t)(to->tv_sec - from->tv_sec) * 1000 + (to->tv_nsec - from->tv_nsec) / 1000000;
+}
+
+static bool timespec_after_or_equal(const struct timespec *a, const struct timespec *b) {
+	return timespec_ms_between(b, a) >= 0;
+}
+
+static struct timespec path_ms_to_timespec(int64_t ms) {
+	if(ms < 0) {
+		ms = 0;
+	}
+
+	return (struct timespec) {
+		ms / 1000, (long)(ms % 1000) * 1000000L
+	};
+}
+
+static void timespec_add_ms(struct timespec *ts, int ms) {
+	long nsec;
+
+	if(!ts || ms < 0) {
+		return;
+	}
+
+	ts->tv_sec += ms / 1000;
+	nsec = ts->tv_nsec + (long)(ms % 1000) * 1000000L;
+
+	if(nsec >= 1000000000L) {
+		ts->tv_sec++;
+		nsec -= 1000000000L;
+	}
+
+	ts->tv_nsec = nsec;
+}
+
+static void path_suspect_set_deadline(meshlink_handle_t *mesh, suspect_validation_t *s) {
+	s->deadline = mesh->loop.now;
+	timespec_add_ms(&s->deadline, PATH_SUSPECT_WINDOW_MS);
+}
+
+static struct timespec path_suspect_rearm_delay(meshlink_handle_t *mesh, const suspect_validation_t *s) {
+	int64_t remain = timespec_ms_between(&mesh->loop.now, &s->deadline);
+	int64_t gap;
+
+	if(remain <= 0) {
+		return (struct timespec) {
+			0, 0
+		};
+	}
+
+	if(s->probes_sent >= PATH_SUSPECT_PROBES) {
+		return path_ms_to_timespec(remain);
+	}
+
+	gap = PATH_SUSPECT_WINDOW_MS / PATH_SUSPECT_PROBES;
+
+	if(gap < 1) {
+		gap = 1;
+	}
+
+	if(remain < gap) {
+		gap = remain;
+	}
+
+	return path_ms_to_timespec(gap);
+}
+
+static const int path_cooldown_ladder[] = {30, 60, 120, 300, 600};
+
+static int path_cooldown_seconds(meshlink_handle_t *mesh, uint8_t failures) {
+	size_t steps = sizeof path_cooldown_ladder / sizeof path_cooldown_ladder[0];
+	int base = path_cooldown_ladder[failures >= steps ? steps - 1 : failures];
+	int span = base / 5;
+
+	/* +/-20% so a mesh-wide event does not make every node retry in lockstep. */
+	return base - span + prng(mesh, (uint64_t)(2 * span + 1));
+}
+
+static uint64_t path_fresh_nonce(void) {
+	uint64_t nonce = 0;
+
+	do {
+		randomize(&nonce, sizeof nonce);
+	} while(!nonce);
+
+	return nonce;
+}
+
+/* The active route has carried data long enough that replacing it is worth the
+   disturbance. A route that was never recorded has no residency to serve. */
+static bool path_residency_served(meshlink_handle_t *mesh, const node_t *n) {
+	if(n->active_route.kind == DATA_ROUTE_NONE || !n->active_route.selected_at.tv_sec) {
+		return true;
+	}
+
+	return mesh->loop.now.tv_sec - n->active_route.selected_at.tv_sec >= PATH_ROUTE_MIN_RESIDENCY_SEC;
+}
+
+static void promotion_timer_handler(event_loop_t *loop, void *data);
+
+static void path_promotion_timer_stop(meshlink_handle_t *mesh, node_t *n) {
+	if(mesh) {
+		timeout_del(&mesh->loop, &n->promotion_timer);
+	}
+}
+
+static void path_promotion_timer_arm(meshlink_handle_t *mesh, node_t *n, const struct timespec *tv) {
+	struct timespec when = tv ? *tv : (struct timespec) {
+		0, 0
+	};
+
+	if(!n->promotion_timer.cb) {
+		timeout_add(&mesh->loop, &n->promotion_timer, promotion_timer_handler, n, &when);
+	} else {
+		timeout_set(&mesh->loop, &n->promotion_timer, &when);
+	}
+
+	if(mesh->threadstarted && mesh->loop.pipefd[1] != -1 && !pthread_equal(mesh->thread, pthread_self())) {
+		signal_trigger(&mesh->loop, &mesh->datafromapp);
+	}
+}
+
+static const char *path_promotion_reason_name(path_promotion_reason_t reason) {
+	switch(reason) {
+	case PATH_PROMOTION_DISCOVERY:
+		return "discovery";
+
+	case PATH_PROMOTION_HINT:
+		return "hint";
+
+	case PATH_PROMOTION_AUTH_DIRECT:
+		return "auth-direct";
+
+	case PATH_PROMOTION_COOLDOWN_CLEARED:
+		return "cooldown-cleared";
+
+	case PATH_PROMOTION_UDP_CONFIRMED:
+		return "udp-confirmed";
+
+	case PATH_PROMOTION_TICK:
+		return "tick";
+
+	default:
+		return "unknown";
+	}
+}
+
+static path_promotion_reason_t path_promotion_reason_for_source(address_source_t src) {
+	switch(src) {
+	case ADDR_SRC_DISCOVERY:
+		return PATH_PROMOTION_DISCOVERY;
+
+	case ADDR_SRC_HINT:
+		return PATH_PROMOTION_HINT;
+
+	case ADDR_SRC_AUTH_DIRECT:
+		return PATH_PROMOTION_AUTH_DIRECT;
+
+	default:
+		return PATH_PROMOTION_TICK;
+	}
+}
+
+static address_source_t path_promotion_observation_source(path_promotion_reason_t reason) {
+	switch(reason) {
+	case PATH_PROMOTION_DISCOVERY:
+		return ADDR_SRC_DISCOVERY;
+
+	case PATH_PROMOTION_HINT:
+		return ADDR_SRC_HINT;
+
+	case PATH_PROMOTION_AUTH_DIRECT:
+		return ADDR_SRC_AUTH_DIRECT;
+
+	default:
+		return ADDR_SRC_UNKNOWN;
+	}
+}
+
+static void path_candidate_discard(meshlink_handle_t *mesh, node_t *n) {
+	path_promotion_timer_stop(mesh, n);
+	path_scheduler_cancel(mesh, n, PATH_TX_CHANNEL_PROMOTION);
+	memset(&n->promotion_candidate, 0, sizeof n->promotion_candidate);
+}
+
+void path_transaction_preempt(meshlink_handle_t *mesh, node_t *node, path_transaction_type_t type) {
+	if(!mesh || !node) {
+		return;
+	}
+
+	switch(type) {
+	case PATH_TXN_PROMOTION:
+		if(node->promotion_candidate.active
+		                && node->promotion_candidate.successful_rounds >= PATH_PROMOTION_ROUNDS) {
+			/* Already validated: stop emitting, keep the candidate so tick
+			   can reacquire the slot and commit. Probing searches discard. */
+			path_log_validation(mesh, node,
+			                    node->promotion_candidate.endpoint.sa.sa_family ? &node->promotion_candidate.endpoint : NULL,
+			                    "candidate-paused", "preempted");
+			path_promotion_timer_stop(mesh, node);
+			break;
+		}
+
+		if(node->promotion_candidate.active) {
+			path_log_validation(mesh, node,
+			                    node->promotion_candidate.endpoint.sa.sa_family ? &node->promotion_candidate.endpoint : NULL,
+			                    "candidate-dropped", "preempted");
+		}
+
+		path_candidate_discard(mesh, node);
+		break;
+
+	case PATH_TXN_SUSPECT:
+		path_suspect_stop(mesh, node);
+		break;
+
+	default:
+		break;
+	}
+}
+
+/* End the in-flight attempt. Endpoint retry history lives on node_t. */
+static void path_candidate_end_attempt(meshlink_handle_t *mesh, node_t *n) {
+	route_candidate_t *c = &n->promotion_candidate;
+
+	path_promotion_timer_stop(mesh, n);
+	path_scheduler_cancel(mesh, n, PATH_TX_CHANNEL_PROMOTION);
+	c->active = false;
+	c->nonce = 0;
+	c->successful_rounds = 0;
+	memset(&c->first_success, 0, sizeof c->first_success);
+	memset(&c->deadline, 0, sizeof c->deadline);
+}
+
+static void path_candidate_send_packet(meshlink_handle_t *mesh, const path_probe_request_t *req) {
+	send_candidate_probe(mesh, req->node);
+}
+
+void path_promotion_timer_tick(meshlink_handle_t *mesh, node_t *n) {
+	route_candidate_t *c;
+	path_probe_request_t req;
+	path_sched_txn_t *txn;
+
+	if(!mesh || !n) {
+		return;
+	}
+
+	c = &n->promotion_candidate;
+
+	if(!c->active || c->successful_rounds >= PATH_PROMOTION_ROUNDS) {
+		path_promotion_timer_stop(mesh, n);
+		return;
+	}
+
+	if(c->deadline.tv_sec && mesh->loop.now.tv_sec >= c->deadline.tv_sec) {
+		path_candidate_timeout(mesh, n, "validation deadline");
+		return;
+	}
+
+	txn = path_scheduler_begin_transaction(mesh, n, PATH_TXN_PROMOTION, PATH_TX_CHANNEL_PROMOTION, path_transaction_preempt);
+
+	if(!txn) {
+		path_promotion_timer_arm(mesh, n, &(struct timespec) {
+			PATH_CANDIDATE_PROBE_INTERVAL_SEC, 0
+		});
+		return;
+	}
+
+	memset(&req, 0, sizeof req);
+	req.node = n;
+	req.length = PATH_PROMOTION_PROBE_LEN;
+	req.priority = PATH_TX_CHANNEL_PROMOTION;
+	req.send = path_candidate_send_packet;
+	(void)path_scheduler_emit_packet(mesh, txn, &req);
+	path_promotion_timer_arm(mesh, n, &(struct timespec) {
+		PATH_CANDIDATE_PROBE_INTERVAL_SEC, 0
+	});
+}
+
+static void promotion_timer_handler(event_loop_t *loop, void *data) {
+	path_promotion_timer_tick(loop->data, data);
+}
+
+/* A justified observation may retry now. Failures stay: the ladder does not
+   reset. Production callers go through the epoch gate in consider_promotion. */
+static void path_candidate_clear_cooldown_from(meshlink_handle_t *mesh, node_t *n,
+                address_source_t src) {
+	if(!n) {
+		return;
+	}
+
+	memset(&n->candidate_retry.cooldown_until, 0, sizeof n->candidate_retry.cooldown_until);
+
+	if(mesh) {
+		n->candidate_retry.network_generation = mesh->lan_network_epoch;
+	}
+
+	if(src == ADDR_SRC_AUTH_DIRECT) {
+		n->candidate_retry.auth_seen = true;
+	} else if(src == ADDR_SRC_DISCOVERY || src == ADDR_SRC_HINT) {
+		n->candidate_retry.auth_seen = false;
+	}
+
+	path_consider_promotion(mesh, n, PATH_PROMOTION_COOLDOWN_CLEARED);
+}
+
+void path_candidate_clear_cooldown(meshlink_handle_t *mesh, node_t *n) {
+	path_candidate_clear_cooldown_from(mesh, n, ADDR_SRC_UNKNOWN);
+}
+
+static void path_note_candidate_failure(meshlink_handle_t *mesh, node_t *n) {
+	n->candidate_retry.last_failure_at = mesh->loop.now;
+	memset(&n->active_route.healthy_since, 0, sizeof n->active_route.healthy_since);
+}
+
+void path_note_authenticated_route_success(meshlink_handle_t *mesh, node_t *n) {
+	if(!mesh || !n || n->active_route.kind == DATA_ROUTE_NONE || n->active_route.suspect) {
+		return;
+	}
+
+	if(!n->active_route.healthy_since.tv_sec) {
+		n->active_route.healthy_since = mesh->loop.now;
+	}
+}
+
+static bool path_retry_is_endpoint(const node_t *n, const sockaddr_t *ep) {
+	return n && ep && n->candidate_retry.endpoint.sa.sa_family && ep->sa.sa_family
+	       && !sockaddrcmp(&n->candidate_retry.endpoint, ep);
+}
+
+static bool path_cooldown_outstanding(const meshlink_handle_t *mesh, const node_t *n) {
+	return n->candidate_retry.cooldown_until.tv_sec
+	       && mesh->loop.now.tv_sec < n->candidate_retry.cooldown_until.tv_sec;
+}
+
+static bool path_retry_epoch_is_new(const meshlink_handle_t *mesh, const node_t *n,
+                                    const sockaddr_t *ep, address_source_t src) {
+	const path_candidate_retry_t *r = &n->candidate_retry;
+
+	if(!path_cooldown_outstanding(mesh, n) || !path_retry_is_endpoint(n, ep)) {
+		return false;
+	}
+
+	if(mesh->lan_network_epoch != r->network_generation) {
+		return true;
+	}
+
+	if(src == ADDR_SRC_AUTH_DIRECT && !r->auth_seen) {
+		return true;
+	}
+
+	return false;
+}
+
+static bool path_failure_this_tick(const meshlink_handle_t *mesh, const node_t *n) {
+	return n->candidate_retry.last_failure_at.tv_sec == mesh->loop.now.tv_sec
+	       && n->candidate_retry.last_failure_at.tv_nsec == mesh->loop.now.tv_nsec;
+}
+
+/* A long healthy stretch does say the earlier failures are not representative.
+   cooldown_until clears only via the observation epoch gate, time expiry, or
+   the force helper. WAN health must not wipe an in-flight wait. */
+static void path_candidate_reset_escalation(node_t *n) {
+	n->candidate_retry.failures = 0;
+}
+
+static void path_retry_clear_if_endpoint(node_t *n, const sockaddr_t *ep) {
+	if(path_retry_is_endpoint(n, ep)) {
+		memset(&n->candidate_retry, 0, sizeof n->candidate_retry);
+	}
+}
+
+void path_candidate_timeout(meshlink_handle_t *mesh, node_t *n, const char *reason) {
+	if(!mesh || !n || !n->promotion_candidate.active) {
+		return;
+	}
+
+	route_candidate_t *c = &n->promotion_candidate;
+	path_candidate_retry_t *r = &n->candidate_retry;
+	sockaddr_t endpoint = c->endpoint;
+	bool local_udp = c->kind == DATA_ROUTE_DIRECT_UDP;
+	int cooldown = 0;
+
+	if(local_udp) {
+		if(!path_retry_is_endpoint(n, &c->endpoint)) {
+			memset(r, 0, sizeof *r);
+			path_copy_sockaddr(&r->endpoint, &c->endpoint);
+		}
+
+		path_note_candidate_failure(mesh, n);
+		cooldown = path_cooldown_seconds(mesh, r->failures);
+
+		if(r->failures < UINT8_MAX) {
+			r->failures++;
+		}
+	}
+
+	path_candidate_end_attempt(mesh, n);
+
+	if(local_udp) {
+		r->cooldown_until = mesh->loop.now;
+		r->cooldown_until.tv_sec += cooldown;
+		r->network_generation = mesh->lan_network_epoch;
+	}
+
+	if(mesh->log_level <= MESHLINK_INFO) {
+		char detail[64];
+
+		if(local_udp) {
+			snprintf(detail, sizeof detail, "%s cooldown=%ds", reason ? reason : "no reply", cooldown);
+		} else {
+			snprintf(detail, sizeof detail, "%s", reason ? reason : "no reply");
+		}
+
+		path_log_validation(mesh, n, endpoint.sa.sa_family ? &endpoint : NULL, "candidate-dropped", detail);
+	}
+}
+
+static bool path_is_ordinary_peer_pair(const meshlink_handle_t *mesh, const node_t *peer) {
+	return mesh
+	       && mesh->self
+	       && peer
+	       && peer != mesh->self
+	       && connection_policy_lan_device_class(mesh->self->devclass)
+	       && connection_policy_lan_device_class(peer->devclass)
+	       && !connection_policy_is_backbone(mesh, peer);
+}
+
+bool path_peer_udp_demanded(const meshlink_handle_t *mesh, const node_t *peer) {
+	if(!mesh || !peer) {
+		return false;
+	}
+
+	if(peer->peer_udp.channel_count) {
+		return true;
+	}
+
+	if(!peer->peer_udp.idle_until.tv_sec && !peer->peer_udp.idle_until.tv_nsec) {
+		return false;
+	}
+
+	return timespec_ms_between(&mesh->loop.now, &peer->peer_udp.idle_until) > 0;
+}
+
+bool path_peer_udp_punching_allowed(const meshlink_handle_t *mesh, const node_t *n) {
+	return path_is_ordinary_peer_pair(mesh, n) && path_peer_udp_demanded(mesh, n);
+}
+
+void path_peer_ensure_udp_key(meshlink_handle_t *mesh, node_t *peer) {
+	if(!mesh || !peer) {
+		return;
+	}
+
+	if(!peer->status.reachable || peer->status.validkey || peer->status.waitingforkey) {
+		return;
+	}
+
+	if(!connection_policy_backbone_udp_required(mesh, peer)
+	                && !path_peer_udp_punching_allowed(mesh, peer)) {
+		return;
+	}
+
+	send_req_key(mesh, peer);
+}
+
+static void path_peer_udp_stop(meshlink_handle_t *mesh, node_t *n) {
+	if(!mesh || !n) {
+		return;
+	}
+
+	timeout_del(&mesh->loop, &n->mtutimeout);
+	timeout_del(&mesh->loop, &n->promotion_timer);
+	memset(&n->promotion_candidate, 0, sizeof n->promotion_candidate);
+	path_suspect_stop(mesh, n);
+	n->status.want_udp = false;
+	memset(&n->peer_udp.idle_until, 0, sizeof n->peer_udp.idle_until);
+	path_scheduler_cancel(mesh, n, PATH_TX_CHANNEL_PROMOTION);
+	path_scheduler_cancel(mesh, n, PATH_TX_LIVENESS);
+	path_scheduler_cancel(mesh, n, PATH_TX_PMTU_INCREASE);
+	path_note_udp_demoted_reason(mesh, n, "peer demand idle");
+}
+
+bool path_channel_acquire(meshlink_handle_t *mesh, node_t *peer) {
+	bool first;
+
+	if(!path_is_ordinary_peer_pair(mesh, peer)) {
+		return false;
+	}
+
+	first = !peer->peer_udp.channel_count;
+	peer->peer_udp.channel_count++;
+
+	if(!first) {
+		return true;
+	}
+
+	memset(&peer->peer_udp.idle_until, 0, sizeof peer->peer_udp.idle_until);
+	path_peer_ensure_udp_key(mesh, peer);
+
+	if(!path_peer_udp_punching_allowed(mesh, peer)) {
+		return true;
+	}
+
+	if(peer->status.validkey && !peer->mtutimeout.cb && !peer->devtool_force_meta) {
+		send_mtu_probe(mesh, peer);
+	}
+
+	path_consider_promotion(mesh, peer, PATH_PROMOTION_TICK);
+	return true;
+}
+
+void path_channel_release(meshlink_handle_t *mesh, node_t *peer) {
+	if(!mesh || !peer || !peer->peer_udp.channel_count) {
+		return;
+	}
+
+	peer->peer_udp.channel_count--;
+
+	if(peer->peer_udp.channel_count) {
+		return;
+	}
+
+	if(path_is_ordinary_peer_pair(mesh, peer)) {
+		peer->peer_udp.idle_until = mesh->loop.now;
+		peer->peer_udp.idle_until.tv_sec += PATH_PEER_UDP_GRACE_SEC;
+	} else {
+		path_peer_udp_stop(mesh, peer);
+	}
+}
+
+static void path_log_validation_source(meshlink_handle_t *mesh, const node_t *n, const sockaddr_t *sa,
+                                       const char *action, const char *detail, address_source_t src) {
+	char buf[160];
+
+	if(detail && detail[0]) {
+		snprintf(buf, sizeof buf, "%s source=%s", detail, address_source_name(src));
+	} else {
+		snprintf(buf, sizeof buf, "source=%s", address_source_name(src));
+	}
+
+	path_log_validation(mesh, n, sa, action, buf);
+}
+
+void path_consider_promotion(meshlink_handle_t *mesh, node_t *n, path_promotion_reason_t reason) {
+	if(!mesh || !n || n->mesh != mesh) {
+		return;
+	}
+
+	if(!path_peer_udp_punching_allowed(mesh, n)) {
+		return;
+	}
+
+	route_candidate_t *c = &n->promotion_candidate;
+	bool replace_carrier = false;
+
+	if(c->active) {
+		if((reason != PATH_PROMOTION_HINT && reason != PATH_PROMOTION_DISCOVERY
+		                && reason != PATH_PROMOTION_AUTH_DIRECT)
+		                || c->nonce
+		                || c->kind != DATA_ROUTE_DIRECT_UDP) {
+			return;
+		}
+
+		replace_carrier = true;
+	}
+
+	if(!n->status.udp_confirmed || n->udp_tier != PATH_TIER_DIRECT_WAN_UDP) {
+		return;
+	}
+
+	path_endpoint_t better;
+
+	if(!path_pick_local_udp_candidate(mesh, n, &better)) {
+		return;
+	}
+
+	if(path_retry_is_endpoint(n, &better.address)
+	                && path_cooldown_outstanding(mesh, n)) {
+		address_source_t src = path_promotion_observation_source(reason);
+
+		if(src != ADDR_SRC_UNKNOWN && path_retry_epoch_is_new(mesh, n, &better.address, src)) {
+			path_candidate_clear_cooldown_from(mesh, n, src);
+		}
+
+		return;
+	}
+
+	if(replace_carrier) {
+		path_candidate_discard(mesh, n);
+	}
+
+	/* Retrying the endpoint that already failed keeps its place on the
+	   escalation ladder. A different endpoint starts with a clean record. */
+	if(n->candidate_retry.endpoint.sa.sa_family && sockaddrcmp(&n->candidate_retry.endpoint, &better.address)) {
+		memset(&n->candidate_retry, 0, sizeof n->candidate_retry);
+	}
+
+	if(!path_scheduler_begin_transaction(mesh, n, PATH_TXN_PROMOTION, PATH_TX_CHANNEL_PROMOTION, path_transaction_preempt)) {
+		return;
+	}
+
+	memset(c, 0, sizeof *c);
+	c->active = true;
+	c->kind = DATA_ROUTE_DIRECT_UDP;
+	path_copy_sockaddr(&c->endpoint, &better.address);
+	c->source = better.source;
+	c->capability = better.capability;
+	c->local = path_address_is_local(&better.address);
+	c->nonce = path_fresh_nonce();
+	c->deadline = mesh->loop.now;
+	c->deadline.tv_sec += PATH_PROMOTION_DEADLINE_SEC;
+
+	path_log_validation_source(mesh, n, &better.address, "candidate-start",
+	                           path_promotion_reason_name(reason), better.source);
+	path_promotion_timer_arm(mesh, n, &(struct timespec) {
+		0, 0
+	});
+}
+
+static int path_carrier_rank(data_route_kind_t kind, relay_carrier_t carrier, bool local) {
+	switch(kind) {
+	case DATA_ROUTE_DIRECT_UDP:
+		return local ? 0 : 1;
+
+	case DATA_ROUTE_DIRECT_LOCAL_META:
+		return local ? 2 : 6;
+
+	case DATA_ROUTE_RELAY:
+		if(carrier == RELAY_CARRIER_UDP) {
+			return 3;
+		}
+
+		if(carrier == RELAY_CARRIER_META_DIRECT) {
+			return 4;
+		}
+
+		return 5;
+
+	case DATA_ROUTE_NONE:
+	default:
+		return 7;
+	}
+}
+
+static const char *path_route_promotion_name(path_route_promotion_t which) {
+	switch(which) {
+	case PATH_PROMOTION_DIRECT_UDP:
+		return "direct-udp";
+
+	case PATH_PROMOTION_BACKBONE_UDP:
+		return "backbone-udp";
+
+	case PATH_PROMOTION_LOCAL_META:
+		return "local-meta";
+
+	case PATH_PROMOTION_META_DIRECT:
+		return "meta-direct";
+
+	default:
+		return "unknown";
+	}
+}
+
+void path_consider_route_promotion(meshlink_handle_t *mesh, node_t *n, path_route_promotion_t which) {
+	path_target_t proposed;
+	route_candidate_t *c;
+	int have;
+	int want;
+
+	if(!mesh) {
+		return;
+	}
+
+	if(!n) {
+		path_consider_demanded_route_promotions(mesh, which);
+		return;
+	}
+
+	if(n->mesh && n->mesh != mesh) {
+		return;
+	}
+
+	if(n->active_route.kind == DATA_ROUTE_NONE) {
+		return;
+	}
+
+	if(!path_peer_udp_demanded(mesh, n)) {
+		return;
+	}
+
+	c = &n->promotion_candidate;
+
+	if(c->active) {
+		return;
+	}
+
+	memset(&proposed, 0, sizeof proposed);
+
+	switch(which) {
+	case PATH_PROMOTION_DIRECT_UDP:
+		if(!path_fill_direct_udp(mesh, n, &proposed)) {
+			return;
+		}
+
+		break;
+
+	case PATH_PROMOTION_BACKBONE_UDP:
+		if(!path_fill_relay_udp(mesh, n, &proposed)) {
+			return;
+		}
+
+		break;
+
+	case PATH_PROMOTION_LOCAL_META:
+		if(!path_fill_local_meta(mesh, n, &proposed)) {
+			return;
+		}
+
+		break;
+
+	case PATH_PROMOTION_META_DIRECT:
+		if(!path_fill_relay_meta(mesh, n, &proposed)
+		                || proposed.relay_carrier != RELAY_CARRIER_META_DIRECT) {
+			return;
+		}
+
+		break;
+
+	default:
+		return;
+	}
+
+	have = path_carrier_rank(n->active_route.kind, n->active_route.relay_carrier, n->active_route.local);
+	want = path_carrier_rank(proposed.kind, proposed.relay_carrier, proposed.local);
+
+	if(want >= have) {
+		return;
+	}
+
+	if(!path_scheduler_begin_transaction(mesh, n, PATH_TXN_PROMOTION, PATH_TX_CHANNEL_PROMOTION, path_transaction_preempt)) {
+		return;
+	}
+
+	memset(c, 0, sizeof *c);
+	c->active = true;
+	c->kind = proposed.kind;
+	c->relay_carrier = proposed.relay_carrier;
+	c->first_hop = proposed.first_hop;
+	c->local = proposed.local;
+	c->source = proposed.endpoint_source;
+	path_copy_sockaddr(&c->endpoint, &proposed.udp_endpoint);
+	c->successful_rounds = PATH_PROMOTION_ROUNDS;
+	c->first_success = mesh->loop.now;
+	path_log_validation_source(mesh, n, proposed.udp_endpoint.sa.sa_family ? &proposed.udp_endpoint : NULL,
+	                           "candidate-start", path_route_promotion_name(which), c->source);
+}
+
+static void path_consider_demanded_route_promotions(meshlink_handle_t *mesh, path_route_promotion_t which) {
+	if(!mesh || !mesh->nodes) {
+		return;
+	}
+
+	for splay_each(node_t, dest, mesh->nodes) {
+		if(dest == mesh->self
+		                || dest->active_route.kind == DATA_ROUTE_NONE
+		                || !path_peer_udp_demanded(mesh, dest)) {
+			continue;
+		}
+
+		path_consider_route_promotion(mesh, dest, which);
+	}
+}
+
+bool path_candidate_probe_target(meshlink_handle_t *mesh, node_t *n, sockaddr_t *out, uint64_t *nonce_out) {
+	if(!mesh || !n || !out || !nonce_out) {
+		return false;
+	}
+
+	route_candidate_t *c = &n->promotion_candidate;
+
+	if(!c->active || !c->nonce) {
+		return false;
+	}
+
+	*out = c->endpoint;
+	*nonce_out = c->nonce;
+	return true;
+}
+
+static bool path_target_matches_candidate(const route_candidate_t *c, const path_target_t *t) {
+	if(!c || !t) {
+		return false;
+	}
+
+	if(c->kind != t->kind
+	                || c->relay_carrier != t->relay_carrier
+	                || c->first_hop != t->first_hop
+	                || c->local != t->local
+	                || c->source != t->endpoint_source) {
+		return false;
+	}
+
+	return !sockaddrcmp(&c->endpoint, &t->udp_endpoint);
+}
+
+/* Commit is a pure endpoint swap for future records: the node session, its
+   channels and its UDP proof all stay exactly as they are. */
+void path_commit_candidate(meshlink_handle_t *mesh, node_t *n) {
+	route_candidate_t *c;
+	path_target_t target;
+	sockaddr_t endpoint;
+	int have;
+	int want;
+
+	if(!mesh || !n) {
+		return;
+	}
+
+	c = &n->promotion_candidate;
+	endpoint = c->endpoint;
+	memset(&target, 0, sizeof target);
+
+	/* nonce == 0 is an already-live carrier; a nonzero nonce is probe-proven. */
+	if(c->kind == DATA_ROUTE_DIRECT_UDP && !c->nonce) {
+		if(!path_fill_direct_udp(mesh, n, &target) || !path_target_matches_candidate(c, &target)) {
+			path_candidate_discard(mesh, n);
+			return;
+		}
+	} else if(c->kind == DATA_ROUTE_DIRECT_UDP) {
+		target.kind = DATA_ROUTE_DIRECT_UDP;
+		path_copy_sockaddr(&target.udp_endpoint, &endpoint);
+		target.endpoint_source = c->source;
+		target.local = path_udp_tier_for(&endpoint, c->source) == PATH_TIER_DIRECT_LOCAL_UDP;
+	} else if(c->kind == DATA_ROUTE_DIRECT_LOCAL_META) {
+		if(!path_fill_local_meta(mesh, n, &target) || !path_target_matches_candidate(c, &target)) {
+			path_candidate_discard(mesh, n);
+			return;
+		}
+	} else if(c->kind == DATA_ROUTE_RELAY && c->relay_carrier == RELAY_CARRIER_UDP) {
+		if(!path_fill_relay_udp(mesh, n, &target) || !path_target_matches_candidate(c, &target)) {
+			path_candidate_discard(mesh, n);
+			return;
+		}
+	} else if(c->kind == DATA_ROUTE_RELAY && c->relay_carrier == RELAY_CARRIER_META_DIRECT) {
+		if(!path_fill_relay_meta(mesh, n, &target) || !path_target_matches_candidate(c, &target)) {
+			path_candidate_discard(mesh, n);
+			return;
+		}
+	} else {
+		path_candidate_discard(mesh, n);
+		return;
+	}
+
+	have = path_carrier_rank(n->active_route.kind, n->active_route.relay_carrier, n->active_route.local);
+	want = path_carrier_rank(target.kind, target.relay_carrier, target.local);
+
+	if(want >= have) {
+		path_candidate_discard(mesh, n);
+		return;
+	}
+
+	if(target.kind == DATA_ROUTE_DIRECT_UDP) {
+		path_endpoint_t ep;
+		address_source_t src = c->source;
+		path_cap_t cap = c->capability;
+
+		memset(&ep, 0, sizeof ep);
+		path_copy_sockaddr(&ep.address, &endpoint);
+		ep.source = src;
+		ep.capability = cap;
+
+		if(!path_install_committed_udp(mesh, n, &ep)) {
+			path_log_validation_source(mesh, n, &endpoint, "candidate-dropped", "endpoint install rejected", src);
+			path_candidate_discard(mesh, n);
+			return;
+		}
+
+		path_retry_clear_if_endpoint(n, &target.udp_endpoint);
+		path_candidate_discard(mesh, n);
+		path_log_validation_source(mesh, n, &endpoint, "candidate-promoted", "validated", src);
+		path_commit_active_route(n, &target, &mesh->loop.now);
+		return;
+	}
+
+	{
+		address_source_t src = c->source;
+
+		path_candidate_discard(mesh, n);
+		path_log_validation_source(mesh, n, endpoint.sa.sa_family ? &endpoint : NULL, "candidate-promoted", "validated", src);
+		path_commit_active_route(n, &target, &mesh->loop.now);
+	}
+}
+
+static bool path_suspect_begin_epoch(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *endpoint);
+static void suspect_timer_handler(event_loop_t *loop, void *data);
+static void path_suspect_expire(meshlink_handle_t *mesh, node_t *n);
+
+static void path_suspect_timer_arm(meshlink_handle_t *mesh, node_t *n, const struct timespec *tv) {
+	struct timespec when = tv ? *tv : (struct timespec) {
+		0, 0
+	};
+
+	if(!n->suspect_validation.timer.cb) {
+		timeout_add(&mesh->loop, &n->suspect_validation.timer, suspect_timer_handler, n, &when);
+	} else {
+		timeout_set(&mesh->loop, &n->suspect_validation.timer, &when);
+	}
+
+	if(mesh->threadstarted && mesh->loop.pipefd[1] != -1 && !pthread_equal(mesh->thread, pthread_self())) {
+		signal_trigger(&mesh->loop, &mesh->datafromapp);
+	}
+}
+
+void path_suspect_stop(meshlink_handle_t *mesh, node_t *n) {
+	if(!n) {
+		return;
+	}
+
+	if(mesh) {
+		timeout_del(&mesh->loop, &n->suspect_validation.timer);
+		path_scheduler_cancel(mesh, n, PATH_TX_ACTIVE_ROUTE_RECOVERY);
+	}
+
+	memset(&n->suspect_validation, 0, sizeof n->suspect_validation);
+}
+
+static void path_suspect_send_packet(meshlink_handle_t *mesh, const path_probe_request_t *req) {
+	send_suspect_probe(mesh, req->node);
+}
+
+static void path_suspect_send(meshlink_handle_t *mesh, node_t *n) {
+	path_probe_request_t req;
+
+	memset(&req, 0, sizeof req);
+	req.node = n;
+	req.length = PATH_PROMOTION_PROBE_LEN;
+	req.priority = PATH_TX_ACTIVE_ROUTE_RECOVERY;
+	req.send = path_suspect_send_packet;
+	(void)path_scheduler_emit_packet(mesh, path_scheduler_begin_transaction(mesh, n, PATH_TXN_SUSPECT, PATH_TX_ACTIVE_ROUTE_RECOVERY, path_transaction_preempt), &req);
+}
+
+static bool path_suspect_begin_epoch(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *endpoint) {
+	path_suspect_stop(mesh, n);
+
+	if(!path_scheduler_begin_transaction(mesh, n, PATH_TXN_SUSPECT, PATH_TX_ACTIVE_ROUTE_RECOVERY, path_transaction_preempt)) {
+		return false;
+	}
+
+	n->suspect_validation.active = true;
+	path_copy_sockaddr(&n->suspect_validation.endpoint, endpoint);
+	n->suspect_validation.nonce = path_fresh_nonce();
+	path_suspect_set_deadline(mesh, &n->suspect_validation);
+	path_suspect_timer_arm(mesh, n, &(struct timespec) {
+		0, 0
+	});
+	return true;
+}
+
+static void path_suspect_reopen_epoch(meshlink_handle_t *mesh, node_t *n) {
+	suspect_validation_t *s = &n->suspect_validation;
+
+	s->nonce = path_fresh_nonce();
+	s->probes_sent = 0;
+	s->replies_received = 0;
+	path_suspect_set_deadline(mesh, s);
+	n->active_route.suspect_at = mesh->loop.now;
+	path_log_validation(mesh, n, &s->endpoint, "route-degraded", "no live fallback, still probing");
+	path_suspect_timer_arm(mesh, n, &(struct timespec) {
+		0, 0
+	});
+}
+
+static void path_suspect_mark_route(meshlink_handle_t *mesh, node_t *n, const char *reason) {
+	n->active_route.suspect = true;
+	n->active_route.suspect_at = mesh->loop.now;
+	memset(&n->active_route.healthy_since, 0, sizeof n->active_route.healthy_since);
+	path_log_validation(mesh, n, &n->active_route.udp_endpoint, "route-suspect", reason ? reason : "");
+}
+
+static bool path_route_depends_on_hop_udp(const node_t *dest, const node_t *hop) {
+	if(!dest || !hop || dest == hop || !dest->active_route.suspect) {
+		return false;
+	}
+
+	if(dest->active_route.kind != DATA_ROUTE_RELAY
+	                || dest->active_route.relay_carrier != RELAY_CARRIER_UDP
+	                || dest->active_route.first_hop != hop) {
+		return false;
+	}
+
+	if(hop->suspect_validation.active) {
+		return !sockaddrcmp(&dest->active_route.udp_endpoint, &hop->suspect_validation.endpoint);
+	}
+
+	return true;
+}
+
+static bool path_suspect_any_dependent_fallback(meshlink_handle_t *mesh, node_t *hop) {
+	if(!mesh || !hop || !mesh->nodes) {
+		return false;
+	}
+
+	for splay_each(node_t, dest, mesh->nodes) {
+		if(path_route_depends_on_hop_udp(dest, hop) && path_has_live_fallback(mesh, dest)) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static void path_suspect_commit_fallback(meshlink_handle_t *mesh, node_t *n) {
+	path_target_t target;
+
+	if(!n) {
+		return;
+	}
+
+	if(n->promotion_candidate.active) {
+		path_candidate_discard(mesh, n);
+	}
+
+	n->active_route.suspect = false;
+
+	if(n->active_route.kind == DATA_ROUTE_DIRECT_UDP) {
+		path_note_udp_demoted_reason(mesh, n, "suspect probes unanswered");
+	}
+
+	if(path_select_fallback(mesh, n, &target)) {
+		path_commit_active_route(n, &target, &mesh->loop.now);
+	}
+}
+
+static void path_suspect_expire_dependents(meshlink_handle_t *mesh, node_t *hop) {
+	if(!mesh || !hop || !mesh->nodes) {
+		return;
+	}
+
+	for splay_each(node_t, dest, mesh->nodes) {
+		if(!path_route_depends_on_hop_udp(dest, hop)) {
+			continue;
+		}
+
+		if(path_has_live_fallback(mesh, dest)) {
+			if(dest->promotion_candidate.active) {
+				path_candidate_discard(mesh, dest);
+			}
+
+			path_suspect_commit_fallback(mesh, dest);
+		}
+	}
+}
+
+static void path_suspect_expire(meshlink_handle_t *mesh, node_t *n) {
+	suspect_validation_t *s;
+
+	if(!mesh || !n) {
+		return;
+	}
+
+	s = &n->suspect_validation;
+
+	if(!s->active) {
+		if(n->active_route.kind == DATA_ROUTE_RELAY
+		                && n->active_route.relay_carrier == RELAY_CARRIER_UDP
+		                && n->active_route.first_hop) {
+			if(n->active_route.first_hop->suspect_validation.active) {
+				path_suspect_expire(mesh, n->active_route.first_hop);
+			} else if(n->active_route.suspect) {
+				path_suspect_begin_epoch(mesh, n->active_route.first_hop, &n->active_route.udp_endpoint);
+			}
+
+			return;
+		}
+
+		/* No epoch means we never acquired a recovery slot. Retry; never
+		   demote without a transaction and probes. */
+		if(n->active_route.suspect && !n->promotion_candidate.active
+		                && n->active_route.udp_endpoint.sa.sa_family
+		                && n->active_route.udp_endpoint.sa.sa_family != AF_UNKNOWN) {
+			path_suspect_begin_epoch(mesh, n, &n->active_route.udp_endpoint);
+		}
+
+		return;
+	}
+
+	/* Suspect failure wins only when a fallback can take over. Discarding
+	   the candidate first would destroy the only rescue path on a route
+	   that has to reopen the epoch. */
+	if(path_has_live_fallback(mesh, n) || path_suspect_any_dependent_fallback(mesh, n)) {
+		/* Dependents first. Demoting this hop reranks them and would hide
+		   the relay route before their promotions are discarded. */
+		path_suspect_expire_dependents(mesh, n);
+
+		if(n->active_route.suspect) {
+			path_suspect_commit_fallback(mesh, n);
+		} else if(n->status.udp_confirmed) {
+			path_note_udp_demoted_reason(mesh, n, "suspect probes unanswered");
+		}
+
+		if(s->active) {
+			path_suspect_stop(mesh, n);
+		}
+
+		return;
+	}
+
+	path_suspect_reopen_epoch(mesh, n);
+}
+
+static void suspect_timer_handler(event_loop_t *loop, void *data) {
+	meshlink_handle_t *mesh = loop->data;
+	node_t *n = data;
+	suspect_validation_t *s = &n->suspect_validation;
+	struct timespec delay;
+
+	if(!s->active) {
+		path_suspect_stop(mesh, n);
+		return;
+	}
+
+	if(timespec_after_or_equal(&mesh->loop.now, &s->deadline)) {
+		path_suspect_expire(mesh, n);
+		return;
+	}
+
+	if(s->probes_sent < PATH_SUSPECT_PROBES) {
+		path_suspect_send(mesh, n);
+	}
+
+	if(!s->active) {
+		return;
+	}
+
+	delay = path_suspect_rearm_delay(mesh, s);
+	path_suspect_timer_arm(mesh, n, &delay);
+}
+
+void path_clear_route_suspicion(meshlink_handle_t *mesh, node_t *n) {
+	sockaddr_t ep;
+
+	if(!mesh || !n) {
+		return;
+	}
+
+	path_copy_sockaddr(&ep, &n->suspect_validation.endpoint);
+
+	if(n->active_route.suspect) {
+		n->active_route.suspect = false;
+		path_log_validation(mesh, n, ep.sa.sa_family ? &ep : NULL, "suspect-cleared", "probe answered");
+		path_note_authenticated_route_success(mesh, n);
+	}
+
+	if(mesh->nodes) {
+		for splay_each(node_t, dest, mesh->nodes) {
+			if(!path_route_depends_on_hop_udp(dest, n)) {
+				continue;
+			}
+
+			dest->active_route.suspect = false;
+			path_log_validation(mesh, dest, ep.sa.sa_family ? &ep : NULL, "suspect-cleared", "hop probe answered");
+			path_note_authenticated_route_success(mesh, dest);
+		}
+	}
+
+	path_suspect_stop(mesh, n);
+}
+
+bool path_suspect_probe_target(meshlink_handle_t *mesh, node_t *n, sockaddr_t *out, uint64_t *nonce_out) {
+	const suspect_validation_t *s;
+
+	if(!mesh || !n || !out || !nonce_out) {
+		return false;
+	}
+
+	s = &n->suspect_validation;
+
+	if((!s->active || !s->nonce)
+	                && n->active_route.kind == DATA_ROUTE_RELAY
+	                && n->active_route.relay_carrier == RELAY_CARRIER_UDP
+	                && n->active_route.first_hop) {
+		s = &n->active_route.first_hop->suspect_validation;
+	}
+
+	if(!s->active || !s->nonce) {
+		return false;
+	}
+
+	path_copy_sockaddr(out, &s->endpoint);
+	*nonce_out = s->nonce;
+	return true;
+}
+
+void path_observe_probe_reply(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *from, uint64_t nonce) {
+	if(!mesh || !n || !from) {
+		return;
+	}
+
+	if(n == mesh->backbone_udp.node && nonce && nonce == mesh->backbone_udp.liveness_nonce) {
+		path_backbone_udp_observe_reply(mesh, n, from, nonce);
+		return;
+	}
+
+	suspect_validation_t *s = &n->suspect_validation;
+
+	if(s->active && s->nonce && nonce == s->nonce && !sockaddrcmp(from, &s->endpoint)) {
+		if(timespec_after_or_equal(&mesh->loop.now, &s->deadline)) {
+			return;
+		}
+
+		s->replies_received++;
+		path_clear_route_suspicion(mesh, n);
+		return;
+	}
+
+	route_candidate_t *c = &n->promotion_candidate;
+
+	/* A reply on the endpoint we are already using is liveness, not promotion.
+	   It must not clear a suspect epoch that this nonce does not belong to. */
+	if(n->address.sa.sa_family != AF_UNSPEC && !sockaddrcmp(from, &n->address)) {
+		path_note_authenticated_route_success(mesh, n);
+		return;
+	}
+
+	if(!c->active || !c->nonce || nonce != c->nonce || sockaddrcmp(from, &c->endpoint)) {
+		return;
+	}
+
+	/* Two replies from one burst prove nothing about stability, so rounds have
+	   to be separated in time and each one gets a fresh nonce. */
+	if(c->successful_rounds && timespec_ms_between(&c->first_success, &mesh->loop.now) < PATH_PROMOTION_ROUND_GAP_MS) {
+		return;
+	}
+
+	path_scheduler_cancel_packets(mesh, n, PATH_TX_CHANNEL_PROMOTION);
+
+	if(!c->successful_rounds) {
+		c->first_success = mesh->loop.now;
+	}
+
+	c->successful_rounds++;
+	c->nonce = path_fresh_nonce();
+
+	if(c->successful_rounds < PATH_PROMOTION_ROUNDS) {
+		path_log_validation(mesh, n, from, "candidate-round", "awaiting next round");
+		path_promotion_timer_arm(mesh, n, &(struct timespec) {
+			0, PATH_PROMOTION_ROUND_GAP_MS * 1000000
+		});
+		return;
+	}
+
+	/* Timer owns rounds and the deadline. Tick owns hold and residency. */
+	path_promotion_timer_stop(mesh, n);
+
+	if(timespec_ms_between(&c->first_success, &mesh->loop.now) < PATH_PROMOTION_HOLD_MS) {
+		return;
+	}
+
+	if(!path_residency_served(mesh, n)) {
+		return;
+	}
+
+	if(!path_scheduler_has_transaction(mesh, n, PATH_TXN_PROMOTION)
+	                && !path_scheduler_begin_transaction(mesh, n, PATH_TXN_PROMOTION, PATH_TX_CHANNEL_PROMOTION, path_transaction_preempt)) {
+		return;
+	}
+
+	path_commit_candidate(mesh, n);
+}
+
+void path_note_route_suspect(meshlink_handle_t *mesh, node_t *n, const char *reason) {
+	node_t *hop;
+	const sockaddr_t *ep;
+
+	if(!mesh || !n || n->active_route.suspect) {
+		return;
+	}
+
+	ep = &n->active_route.udp_endpoint;
+
+	if(ep->sa.sa_family == AF_UNSPEC || ep->sa.sa_family == AF_UNKNOWN) {
+		return;
+	}
+
+	if(n->active_route.kind == DATA_ROUTE_DIRECT_UDP) {
+		if(!path_suspect_begin_epoch(mesh, n, ep)) {
+			return;
+		}
+
+		path_suspect_mark_route(mesh, n, reason);
+		return;
+	}
+
+	if(n->active_route.kind != DATA_ROUTE_RELAY
+	                || n->active_route.relay_carrier != RELAY_CARRIER_UDP
+	                || !n->active_route.first_hop) {
+		return;
+	}
+
+	hop = n->active_route.first_hop;
+
+	if(hop->suspect_validation.active && !sockaddrcmp(&hop->suspect_validation.endpoint, ep)) {
+		path_suspect_mark_route(mesh, n, reason);
+
+		if(hop->active_route.kind == DATA_ROUTE_DIRECT_UDP
+		                && !hop->active_route.suspect
+		                && !sockaddrcmp(&hop->active_route.udp_endpoint, ep)) {
+			path_suspect_mark_route(mesh, hop, reason);
+		}
+
+		return;
+	}
+
+	if(!path_suspect_begin_epoch(mesh, hop, ep)) {
+		return;
+	}
+
+	path_suspect_mark_route(mesh, n, reason);
+
+	if(hop->active_route.kind == DATA_ROUTE_DIRECT_UDP
+	                && !hop->active_route.suspect
+	                && !sockaddrcmp(&hop->active_route.udp_endpoint, ep)) {
+		path_suspect_mark_route(mesh, hop, reason);
+	}
+}
+
+static node_t *path_app_relay_hop(meshlink_handle_t *mesh, const node_t *n) {
+	node_t *hop;
+
+	if(!mesh || !n) {
+		return NULL;
+	}
+
+	if(n->status.forced_relay) {
+		hop = n->nexthop;
+	} else {
+		hop = connection_policy_backbone(mesh);
+	}
+
+	if(!hop || hop == mesh->self || hop == n) {
+		return NULL;
+	}
+
+	if(!n->status.forced_relay && hop->status.conflict_backbone) {
+		return NULL;
+	}
+
+	return hop;
+}
+
+static bool path_target_matches_skip(const data_route_t *skip, const path_target_t *t) {
+	if(!skip || skip->kind == DATA_ROUTE_NONE) {
+		return false;
+	}
+
+	if(skip->kind != t->kind
+	                || skip->relay_carrier != t->relay_carrier
+	                || skip->first_hop != t->first_hop
+	                || skip->local != t->local
+	                || skip->endpoint_source != t->endpoint_source) {
+		return false;
+	}
+
+	return !sockaddrcmp(&skip->udp_endpoint, &t->udp_endpoint);
+}
+
+static bool path_fill_direct_udp(meshlink_handle_t *mesh, const node_t *n, path_target_t *out) {
+	if(n->devtool_force_meta || n->status.forced_relay) {
+		return false;
+	}
+
+	if(connection_policy_is_backbone(mesh, n)
+	                && mesh->backbone_udp.confirmed
+	                && mesh->backbone_udp.endpoint.sa.sa_family
+	                && mesh->backbone_udp.endpoint.sa.sa_family != AF_UNKNOWN) {
+		out->kind = DATA_ROUTE_DIRECT_UDP;
+		path_copy_sockaddr(&out->udp_endpoint, &mesh->backbone_udp.endpoint);
+		out->endpoint_source = mesh->backbone_udp.source;
+		out->local = path_address_is_local(&mesh->backbone_udp.endpoint);
+		return true;
+	}
+
+	if(!hop_udp_ready(n) || n->address.sa.sa_family == AF_UNSPEC || n->address.sa.sa_family == AF_UNKNOWN) {
+		return false;
+	}
+
+	out->kind = DATA_ROUTE_DIRECT_UDP;
+	path_copy_sockaddr(&out->udp_endpoint, &n->address);
+	out->endpoint_source = n->address_source;
+	out->local = n->udp_tier == PATH_TIER_DIRECT_LOCAL_UDP;
+	return true;
+}
+
+static bool path_fill_local_meta(meshlink_handle_t *mesh, const node_t *n, path_target_t *out) {
+	if(!connection_policy_is_local_adjacency(mesh, n)) {
+		return false;
+	}
+
+	out->kind = DATA_ROUTE_DIRECT_LOCAL_META;
+	out->local = true;
+	return true;
+}
+
+static bool path_fill_relay_udp(meshlink_handle_t *mesh, const node_t *n, path_target_t *out) {
+	node_t *hop = path_app_relay_hop(mesh, n);
+
+	if(!hop || n->devtool_force_meta) {
+		return false;
+	}
+
+	if(mesh->self && n->name && relay_names_unusable(mesh->self->name, n->name)) {
+		return false;
+	}
+
+	if(!hop_udp_ready(hop)) {
+		return false;
+	}
+
+	if(!n->status.forced_relay && hop == mesh->backbone_udp.node) {
+		if(!mesh->backbone_udp.confirmed
+		                || mesh->backbone_udp.endpoint.sa.sa_family == AF_UNSPEC
+		                || mesh->backbone_udp.endpoint.sa.sa_family == AF_UNKNOWN) {
+			return false;
+		}
+
+		out->kind = DATA_ROUTE_RELAY;
+		out->relay_carrier = RELAY_CARRIER_UDP;
+		out->first_hop = hop;
+		path_copy_sockaddr(&out->udp_endpoint, &mesh->backbone_udp.endpoint);
+		out->endpoint_source = mesh->backbone_udp.source;
+		return true;
+	}
+
+	if(hop->address.sa.sa_family == AF_UNSPEC || hop->address.sa.sa_family == AF_UNKNOWN) {
+		return false;
+	}
+
+	out->kind = DATA_ROUTE_RELAY;
+	out->relay_carrier = RELAY_CARRIER_UDP;
+	out->first_hop = hop;
+	path_copy_sockaddr(&out->udp_endpoint, &hop->address);
+	out->endpoint_source = hop->address_source;
+	return true;
+}
+
+static bool path_fill_relay_meta(meshlink_handle_t *mesh, const node_t *n, path_target_t *out) {
+	node_t *hop = path_app_relay_hop(mesh, n);
+
+	if(!hop || !hop->connection || !hop->connection->status.active) {
+		return false;
+	}
+
+	out->kind = DATA_ROUTE_RELAY;
+	out->relay_carrier = path_meta_is_canonical(hop, hop->connection) ? RELAY_CARRIER_META_CANONICAL : RELAY_CARRIER_META_DIRECT;
+	out->first_hop = hop;
+	return true;
+}
+
+static bool path_fill_dest_meta(meshlink_handle_t *mesh, const node_t *n, path_target_t *out) {
+	if(connection_policy_is_local_adjacency(mesh, n)) {
+		return false;
+	}
+
+	if(!n->connection || !n->connection->status.active) {
+		return false;
+	}
+
+	out->kind = DATA_ROUTE_DIRECT_LOCAL_META;
+	out->local = path_address_is_local(&n->connection->address);
+	return true;
+}
+
+static bool path_rank_carriers(meshlink_handle_t *mesh, node_t *n, const data_route_t *skip, path_target_t *out) {
+	memset(out, 0, sizeof *out);
+
+	if(path_fill_direct_udp(mesh, n, out) && !path_target_matches_skip(skip, out)) {
+		return true;
+	}
+
+	memset(out, 0, sizeof *out);
+
+	if(path_fill_local_meta(mesh, n, out) && !path_target_matches_skip(skip, out)) {
+		return true;
+	}
+
+	memset(out, 0, sizeof *out);
+
+	if(path_fill_relay_udp(mesh, n, out) && !path_target_matches_skip(skip, out)) {
+		return true;
+	}
+
+	memset(out, 0, sizeof *out);
+
+	if(path_fill_relay_meta(mesh, n, out) && !path_target_matches_skip(skip, out)) {
+		return true;
+	}
+
+	memset(out, 0, sizeof *out);
+
+	if(path_fill_dest_meta(mesh, n, out) && !path_target_matches_skip(skip, out)) {
+		return true;
+	}
+
+	memset(out, 0, sizeof *out);
+	return false;
+}
+
+static bool path_recorded_usable(const meshlink_handle_t *mesh, const node_t *n) {
+	const data_route_t *r = &n->active_route;
+	node_t *hop;
+	const connection_t *c;
+
+	if(!mesh) {
+		return false;
+	}
+
+	switch(r->kind) {
+	case DATA_ROUTE_DIRECT_UDP:
+		if(r->udp_endpoint.sa.sa_family == AF_UNSPEC || r->udp_endpoint.sa.sa_family == AF_UNKNOWN) {
+			return false;
+		}
+
+		if(n == mesh->backbone_udp.node) {
+			return mesh->backbone_udp.confirmed
+			       && !sockaddrcmp(&r->udp_endpoint, &mesh->backbone_udp.endpoint);
+		}
+
+		return hop_udp_ready(n) && !sockaddrcmp(&r->udp_endpoint, &n->address);
+
+	case DATA_ROUTE_DIRECT_LOCAL_META:
+		if(!n->connection || !n->connection->status.active) {
+			return false;
+		}
+
+		if(r->local) {
+			if(!connection_policy_is_local_adjacency(mesh, n)) {
+				return false;
+			}
+
+			return path_address_is_local(&n->connection->address);
+		}
+
+		return true;
+
+	case DATA_ROUTE_RELAY:
+		hop = n->status.forced_relay ? n->nexthop : connection_policy_backbone((meshlink_handle_t *)mesh);
+
+		if(!hop || r->first_hop != hop || hop == mesh->self || hop == n) {
+			return false;
+		}
+
+		if(!n->status.forced_relay && hop->status.conflict_backbone) {
+			return false;
+		}
+
+		if(r->relay_carrier == RELAY_CARRIER_UDP) {
+			if(n->status.forced_relay) {
+				return hop_udp_ready(hop)
+				       && r->udp_endpoint.sa.sa_family != AF_UNSPEC
+				       && r->udp_endpoint.sa.sa_family != AF_UNKNOWN
+				       && !sockaddrcmp(&r->udp_endpoint, &hop->address);
+			}
+
+			return hop == mesh->backbone_udp.node
+			       && mesh->backbone_udp.confirmed
+			       && !sockaddrcmp(&r->udp_endpoint, &mesh->backbone_udp.endpoint);
+		}
+
+		c = hop->connection;
+
+		if(!c || !c->status.active) {
+			return false;
+		}
+
+		if(r->relay_carrier == RELAY_CARRIER_META_CANONICAL) {
+			return path_meta_is_canonical(hop, c);
+		}
+
+		if(r->relay_carrier == RELAY_CARRIER_META_DIRECT) {
+			return !path_meta_is_canonical(hop, c);
+		}
+
+		return false;
+
+	case DATA_ROUTE_NONE:
+	default:
+		return false;
+	}
+}
+
+static void path_route_to_target(const data_route_t *r, path_target_t *out, bool temporary) {
+	memset(out, 0, sizeof *out);
+	out->kind = r->kind;
+	out->relay_carrier = r->relay_carrier;
+	out->first_hop = r->first_hop;
+	out->local = r->local;
+	out->endpoint_source = r->endpoint_source;
+	path_copy_sockaddr(&out->udp_endpoint, &r->udp_endpoint);
+	out->temporary_fallback = temporary;
+}
+
+bool path_has_live_fallback(meshlink_handle_t *mesh, const node_t *n) {
+	path_target_t target;
+
+	if(!mesh || !n) {
+		return false;
+	}
+
+	return path_rank_carriers(mesh, (node_t *)n, &n->active_route, &target);
+}
+
+bool path_liveness_probe_warranted(meshlink_handle_t *mesh, const node_t *n) {
+	return path_peer_udp_punching_allowed(mesh, n);
+}
+
+static void path_commit_active_route(node_t *n, const path_target_t *target, const struct timespec *now) {
+	data_route_t *route = &n->active_route;
+	bool changed = route->kind != target->kind
+	               || route->relay_carrier != target->relay_carrier
+	               || route->first_hop != target->first_hop
+	               || route->local != target->local
+	               || route->endpoint_source != target->endpoint_source
+	               || sockaddrcmp(&route->udp_endpoint, &target->udp_endpoint);
+
+	if(!changed) {
+		return;
+	}
+
+	path_suspect_stop(n->mesh, n);
+
+	route->kind = target->kind;
+	route->relay_carrier = target->relay_carrier;
+	route->first_hop = target->first_hop;
+	route->local = target->local;
+	route->endpoint_source = target->endpoint_source;
+	path_copy_sockaddr(&route->udp_endpoint, &target->udp_endpoint);
+	route->suspect = false;
+	route->selected_at = *now;
+	memset(&route->healthy_since, 0, sizeof route->healthy_since);
+
+	if(n->promotion_candidate.active
+	                && n->promotion_candidate.kind == DATA_ROUTE_DIRECT_UDP
+	                && !n->promotion_candidate.nonce) {
+		path_target_t live;
+
+		memset(&live, 0, sizeof live);
+
+		if(!path_fill_direct_udp(n->mesh, n, &live)
+		                || !path_target_matches_candidate(&n->promotion_candidate, &live)) {
+			path_candidate_discard(n->mesh, n);
+		}
+	}
+
+	if(n->promotion_candidate.active
+	                && n->promotion_candidate.kind == target->kind
+	                && n->promotion_candidate.relay_carrier == target->relay_carrier
+	                && n->promotion_candidate.first_hop == target->first_hop
+	                && n->promotion_candidate.local == target->local
+	                && !sockaddrcmp(&n->promotion_candidate.endpoint, &target->udp_endpoint)) {
+		path_candidate_discard(n->mesh, n);
+	}
+
+	path_note_selected_route(n->mesh, n, "commit");
+}
+
+void path_route_tick(meshlink_handle_t *mesh, node_t *n) {
+	if(!mesh || !n) {
+		return;
+	}
+
+	if(!n->peer_udp.channel_count
+	                && (n->peer_udp.idle_until.tv_sec || n->peer_udp.idle_until.tv_nsec)
+	                && timespec_ms_between(&n->peer_udp.idle_until, &mesh->loop.now) >= 0) {
+		path_peer_udp_stop(mesh, n);
+	}
+
+	route_candidate_t *c = &n->promotion_candidate;
+	bool validated = c->active && c->successful_rounds >= PATH_PROMOTION_ROUNDS;
+	bool committed = false;
+
+	/* Hold and residency live here, not on promotion_timer. After round 2 the
+	   timer is already stopped; a validated candidate is waiting on us, so the
+	   validation deadline does not apply. */
+	if(validated
+	                && timespec_ms_between(&c->first_success, &mesh->loop.now) >= PATH_PROMOTION_HOLD_MS
+	                && path_residency_served(mesh, n)) {
+		if(path_scheduler_has_transaction(mesh, n, PATH_TXN_PROMOTION)
+		                || path_scheduler_begin_transaction(mesh, n, PATH_TXN_PROMOTION, PATH_TX_CHANNEL_PROMOTION, path_transaction_preempt)) {
+			path_commit_candidate(mesh, n);
+			committed = true;
+		}
+	} else if(!validated && c->active && c->deadline.tv_sec && mesh->loop.now.tv_sec >= c->deadline.tv_sec) {
+		path_candidate_timeout(mesh, n, "no validated reply");
+		committed = true;
+	}
+
+	/* The suspect timer owns the epoch. Tick only reconciles a missed
+	   deadline so a stalled loop cannot leave suspicion stuck. */
+	if(n->suspect_validation.active) {
+		if(timespec_after_or_equal(&mesh->loop.now, &n->suspect_validation.deadline)) {
+			path_suspect_expire(mesh, n);
+		}
+	} else if(n->active_route.suspect) {
+		if(n->active_route.kind == DATA_ROUTE_RELAY
+		                && n->active_route.relay_carrier == RELAY_CARRIER_UDP
+		                && n->active_route.first_hop) {
+			if(n->active_route.first_hop->suspect_validation.active) {
+				if(timespec_after_or_equal(&mesh->loop.now, &n->active_route.first_hop->suspect_validation.deadline)) {
+					path_suspect_expire(mesh, n->active_route.first_hop);
+				}
+			} else {
+				path_suspect_begin_epoch(mesh, n->active_route.first_hop, &n->active_route.udp_endpoint);
+			}
+		} else {
+			path_suspect_begin_epoch(mesh, n, &n->active_route.udp_endpoint);
+		}
+	}
+
+	/* Failures reset from authenticated service after the latest failure, never
+	   from selected_at, and never while a cooldown is still owed.
+	   cooldown_until itself clears only via the observation epoch gate, time
+	   expiry, or the force helper. */
+	if(!n->active_route.suspect
+	                && n->active_route.healthy_since.tv_sec
+	                && mesh->loop.now.tv_sec - n->active_route.healthy_since.tv_sec >= PATH_HEALTHY_RESET_SEC
+	                && !path_cooldown_outstanding(mesh, n)
+	                && !path_failure_this_tick(mesh, n)) {
+		path_candidate_reset_escalation(n);
+	}
+
+	/* After cooldown expires (or never started) this is the retry that used to
+	   hitchhike on the path-MTU timer. Skip consider_* in the same tick that
+	   committed or retired the current candidate so the cooldown and same-tick
+	   failure just written are observed before the next start. */
+	path_peer_ensure_udp_key(mesh, n);
+
+	if(!committed) {
+		path_consider_route_promotion(mesh, n, PATH_PROMOTION_DIRECT_UDP);
+		path_consider_route_promotion(mesh, n, PATH_PROMOTION_LOCAL_META);
+		path_consider_route_promotion(mesh, n, PATH_PROMOTION_BACKBONE_UDP);
+		path_consider_route_promotion(mesh, n, PATH_PROMOTION_META_DIRECT);
+		path_consider_promotion(mesh, n, PATH_PROMOTION_TICK);
+	}
+}
+
+const char *data_route_kind_name(data_route_kind_t kind) {
+	switch(kind) {
+	case DATA_ROUTE_DIRECT_UDP:
+		return "direct-udp";
+
+	case DATA_ROUTE_DIRECT_LOCAL_META:
+		return "direct-local-meta";
+
+	case DATA_ROUTE_RELAY:
+		return "relay";
+
+	case DATA_ROUTE_NONE:
+	default:
+		return "none";
+	}
+}
+
+const char *relay_carrier_name(relay_carrier_t carrier) {
+	switch(carrier) {
+	case RELAY_CARRIER_UDP:
+		return "udp";
+
+	case RELAY_CARRIER_META_DIRECT:
+		return "meta-direct";
+
+	case RELAY_CARRIER_META_CANONICAL:
+		return "meta-canonical";
+
+	case RELAY_CARRIER_NONE:
+	default:
+		return "none";
+	}
+}
+
+bool path_select_fallback(meshlink_handle_t *mesh, node_t *n, path_target_t *out) {
+	if(!mesh || !n || !out) {
+		return false;
+	}
+
+	memset(out, 0, sizeof *out);
+
+	if(!n->status.reachable) {
+		return false;
+	}
+
+	if(path_rank_carriers(mesh, n, NULL, out)) {
+		return true;
+	}
+
+	out->kind = DATA_ROUTE_DIRECT_LOCAL_META;
+	return true;
+}
+
+bool path_resolve_active_route(meshlink_handle_t *mesh, node_t *n, path_target_t *out) {
+	if(!mesh || !n || !out) {
+		return false;
+	}
+
+	memset(out, 0, sizeof *out);
+
+	if(!n->status.reachable) {
+		return false;
+	}
+
+	if(n->active_route.kind == DATA_ROUTE_NONE) {
+		return false;
+	}
+
+	if(n->active_route.suspect && path_has_live_fallback(mesh, n)) {
+		if(path_rank_carriers(mesh, n, &n->active_route, out)) {
+			out->temporary_fallback = true;
+			return true;
+		}
+	}
+
+	if(path_recorded_usable(mesh, n)) {
+		path_route_to_target(&n->active_route, out, false);
+		return true;
+	}
+
+	if(path_select_fallback(mesh, n, out)) {
+		path_commit_active_route(n, out, &mesh->loop.now);
+		return true;
+	}
+
+	return false;
+}
+
+bool path_active_send_target(meshlink_handle_t *mesh, node_t *n, path_target_t *out) {
+	if(!mesh || !n || !out) {
+		return false;
+	}
+
+	memset(out, 0, sizeof *out);
+
+	if(!n->status.reachable) {
+		return false;
+	}
+
+	if(n->active_route.kind == DATA_ROUTE_NONE || n->status.forced_relay || n->devtool_force_meta) {
+		return path_select_fallback(mesh, n, out);
+	}
+
+	return path_resolve_active_route(mesh, n, out);
+}
+
+void path_record_active_route(meshlink_handle_t *mesh, node_t *n, const path_target_t *target) {
+	if(!mesh || !n || !target) {
+		return;
+	}
+
+	if(target->temporary_fallback) {
+		return;
+	}
+
+	path_commit_active_route(n, target, &mesh->loop.now);
 }
 
 void path_log_candidate(meshlink_handle_t *mesh, const node_t *n, const sockaddr_t *sa, address_source_t src, path_cap_t cap, const char *action) {
@@ -1267,10 +3615,19 @@ void path_log_meta(meshlink_handle_t *mesh, const node_t *n, const sockaddr_t *s
 	free(hostname);
 }
 
-void path_log_transition(meshlink_handle_t *mesh, const node_t *n, path_tier_t from, path_tier_t to, const char *reason) {
-	if(!mesh || !n) {
+void path_log_udp_tier(meshlink_handle_t *mesh, const node_t *n, path_tier_t from, path_tier_t to, const char *reason) {
+	if(!mesh || !n || mesh->log_level > MESHLINK_INFO || from == to) {
 		return;
 	}
 
-	logger(mesh, MESHLINK_INFO, "Path route: %s %s -> %s (%s)", n->name, path_tier_name(from), path_tier_name(to), reason ? reason : "");
+	logger(mesh, MESHLINK_INFO, "Path UDP: %s %s -> %s (%s)", n->name, path_tier_name(from), path_tier_name(to), reason ? reason : "");
+}
+
+void path_log_transition(meshlink_handle_t *mesh, const node_t *n, path_tier_t from, path_tier_t to, const char *reason) {
+	/* Production Path route: logs go through path_note_selected_route() so last_path_tier stays authoritative. */
+	(void)mesh;
+	(void)n;
+	(void)from;
+	(void)to;
+	(void)reason;
 }

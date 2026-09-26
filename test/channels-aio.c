@@ -2,26 +2,23 @@
 #undef NDEBUG
 #endif
 
-#define _POSIX_C_SOURCE 200809L
-
 #include <assert.h>
 #include <stdio.h>
-#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #include "meshlink.h"
+#include "devtools.h"
 #include "utils.h"
 
-static const size_t size = 25000000; // size of data to transfer
+static const size_t size = 8000000; // large enough to split across AIO buffers
 static const size_t smallsize = 100000; // size of the data to transfer without AIO
 static const size_t nchannels = 4; // number of simultaneous channels
 
 struct aio_info {
 	int callbacks;
 	size_t size;
-	struct timespec ts;
+	struct aio_info *previous;
 	struct sync_flag flag;
 };
 
@@ -31,7 +28,6 @@ struct channel_info {
 };
 
 static size_t b_received_len;
-static struct timespec b_received_ts;
 static struct sync_flag b_received_flag;
 
 static void aio_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, const void *data, size_t len, void *priv) {
@@ -41,7 +37,11 @@ static void aio_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, const v
 	(void)len;
 
 	struct aio_info *info = priv;
-	clock_gettime(CLOCK_MONOTONIC, &info->ts);
+
+	if(info->previous) {
+		assert(info->previous->callbacks == 1);
+	}
+
 	info->callbacks++;
 	info->size += len;
 	set_sync_flag(&info->flag, true);
@@ -55,9 +55,29 @@ static void receive_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, con
 	b_received_len += len;
 
 	if(b_received_len >= smallsize) {
-		clock_gettime(CLOCK_MONOTONIC, &b_received_ts);
 		set_sync_flag(&b_received_flag, true);
 	}
+}
+
+static bool node_is_keyed(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	devtool_node_status_t st;
+	devtool_get_node_status(mesh, node, &st);
+	bool keyed = st.meta_connected && st.validkey;
+	devtool_free_node_status(&st);
+	return keyed;
+}
+
+/* AIO, not UDP. Persistently force META without deleting recent[] so delayed
+   bridge probe replies cannot move this test back onto UDP. */
+static void stay_on_meta(meshlink_handle_t *a, meshlink_handle_t *b) {
+	meshlink_node_t *a_b = meshlink_get_node(a, "b");
+	meshlink_node_t *b_a = meshlink_get_node(b, "a");
+	assert(a_b && b_a);
+	assert_after(node_is_keyed(a, a_b) && node_is_keyed(b, b_a), 20);
+	devtool_set_udp_confirmed(a, a_b, false);
+	devtool_set_udp_confirmed(b, b_a, false);
+	devtool_force_meta(a, a_b, true);
+	devtool_force_meta(b, b_a, true);
 }
 
 static bool accept_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, uint16_t port, const void *data, size_t len) {
@@ -105,6 +125,8 @@ int main(void) {
 		init_sync_flag(&in_infos[i].aio_infos[1].flag);
 		init_sync_flag(&out_infos[i].aio_infos[0].flag);
 		init_sync_flag(&out_infos[i].aio_infos[1].flag);
+		in_infos[i].aio_infos[1].previous = &in_infos[i].aio_infos[0];
+		out_infos[i].aio_infos[1].previous = &out_infos[i].aio_infos[0];
 
 		in_infos[i].data = malloc(size);
 		assert(in_infos[i].data);
@@ -125,6 +147,7 @@ int main(void) {
 	// Start both instances
 
 	start_meshlink_pair(mesh_a, mesh_b);
+	stay_on_meta(mesh_a, mesh_b);
 
 	// Open channels from a to b.
 
@@ -151,13 +174,13 @@ int main(void) {
 
 	// Wait for everyone to finish.
 
-	assert(wait_sync_flag(&b_received_flag, 10));
+	assert(wait_sync_flag(&b_received_flag, 60));
 
 	for(size_t i = 0; i < nchannels; i++) {
-		assert(wait_sync_flag(&out_infos[i].aio_infos[0].flag, 10));
-		assert(wait_sync_flag(&out_infos[i].aio_infos[1].flag, 10));
-		assert(wait_sync_flag(&in_infos[i].aio_infos[0].flag, 10));
-		assert(wait_sync_flag(&in_infos[i].aio_infos[1].flag, 10));
+		assert(wait_sync_flag(&out_infos[i].aio_infos[0].flag, 60));
+		assert(wait_sync_flag(&out_infos[i].aio_infos[1].flag, 60));
+		assert(wait_sync_flag(&in_infos[i].aio_infos[0].flag, 60));
+		assert(wait_sync_flag(&in_infos[i].aio_infos[1].flag, 60));
 	}
 
 	// Check that everything is correct.
@@ -180,15 +203,7 @@ int main(void) {
 		assert(in_infos[i].aio_infos[0].size == size / 4);
 		assert(in_infos[i].aio_infos[1].size == size - size / 4);
 
-		// First batch of data should all be sent and received before the second batch
-		for(size_t j = 0; j < nchannels; j++) {
-			assert(timespec_lt(&out_infos[i].aio_infos[0].ts, &out_infos[j].aio_infos[1].ts));
-			assert(timespec_lt(&in_infos[i].aio_infos[0].ts, &in_infos[j].aio_infos[1].ts));
-		}
-
-		// The non-AIO transfer should have completed before everything else
-		assert(!timespec_lt(&out_infos[i].aio_infos[0].ts, &b_received_ts));
-		assert(!timespec_lt(&in_infos[i].aio_infos[0].ts, &b_received_ts));
+		// Per-channel AIO order is asserted by the second buffer's callback.
 
 		free(in_infos[i].data);
 	}

@@ -296,14 +296,10 @@ static void relay_cover_sanity(meshlink_handle_t *mesh, node_t *from, node_t *de
 	(void)relay_capture_send(from, 0, ctx->inner, sizeof(ctx->inner));
 	(void)relay_capture_send(from, 0, ctx->wrapped, RELAY_CAPTURE_MAX + 1);
 
-	relay_update_destination_transport(mesh, NULL);
-	relay_update_destination_transport(mesh, mesh->self);
-	relay_recompute_dependents(NULL, hop);
-	relay_recompute_dependents(mesh, NULL);
-	relay_recompute_dependents(mesh, hop);
+	(void)relay_fixed_channel_mtu(NULL, dest);
+	(void)relay_fixed_channel_mtu(mesh, NULL);
+	(void)relay_fixed_channel_mtu(mesh, hop);
 	relay_on_hard_send_error(mesh, NULL, NULL, 0);
-	relay_wake_probes(mesh, NULL);
-	relay_wake_probes(mesh, hop);
 	relay_clear_budget_if_nexthop_changed(mesh, NULL);
 	relay_clear_budget_if_nexthop_changed(mesh, mesh->self);
 	dest->prev_nexthop = hop;
@@ -316,7 +312,7 @@ static void relay_cover_sanity(meshlink_handle_t *mesh, node_t *from, node_t *de
 }
 
 static void relay_cover_null_devtools(meshlink_handle_t *mesh, node_t *from, node_t *dest, node_t *hop, relay_cover_ctx_t *ctx) {
-	uint32_t math = 0;
+	(void)hop;
 	(void)relay_devtool_has_report(NULL, "a", "b");
 	(void)relay_devtool_have_reported(NULL, "a", "b");
 	(void)relay_devtool_report_count(NULL);
@@ -333,7 +329,7 @@ static void relay_cover_null_devtools(meshlink_handle_t *mesh, node_t *from, nod
 }
 
 static void relay_cover_report_table(meshlink_handle_t *mesh, node_t *from, node_t *dest, node_t *hop, relay_cover_ctx_t *ctx) {
-	uint32_t math = 0;
+	(void)hop;
 	ctx->saved_reports = mesh->relay_reports;
 	mesh->relay_reports = NULL;
 	relay_expire_idle(mesh);
@@ -361,7 +357,6 @@ static void relay_cover_report_table(meshlink_handle_t *mesh, node_t *from, node
 }
 
 static void relay_cover_handle_record(meshlink_handle_t *mesh, node_t *from, node_t *dest, node_t *hop, relay_cover_ctx_t *ctx) {
-	uint32_t math = 0;
 	(void)relay_handle_record(mesh, from, ctx->inner, 1);
 
 	uint8_t badid[64];
@@ -425,7 +420,6 @@ static void relay_cover_handle_record(meshlink_handle_t *mesh, node_t *from, nod
 }
 
 static void relay_cover_maybe_report(meshlink_handle_t *mesh, node_t *from, node_t *dest, node_t *hop, relay_cover_ctx_t *ctx) {
-	uint32_t math = 0;
 	relay_maybe_report(mesh, from->name, NULL, false);
 	dest->nexthop = hop;
 	relay_maybe_report(mesh, from->name, dest, false);
@@ -476,7 +470,6 @@ static void relay_cover_maybe_report(meshlink_handle_t *mesh, node_t *from, node
 }
 
 static void relay_cover_req_mtu(meshlink_handle_t *mesh, node_t *from, node_t *dest, node_t *hop, relay_cover_ctx_t *ctx) {
-	uint32_t math = 0;
 	(void)relay_handle_req_relay_mtu(mesh, from->connection, "bad", from);
 	(void)relay_handle_req_relay_mtu(mesh, from->connection, "0 a b 4 !!! 1", from);
 	(void)relay_handle_req_relay_mtu(mesh, from->connection, "0 a b 4 nosuchnode 100", from);
@@ -505,30 +498,32 @@ static void relay_cover_req_mtu(meshlink_handle_t *mesh, node_t *from, node_t *d
 		}
 	}
 
+	/* The fixed size depends only on the name pair, so none of this state can
+	   move it. Walk the same states anyway to prove that. */
+	uint16_t fixed = relay_fixed_channel_mtu(mesh, dest);
 	dest->status.udp_confirmed = true;
 	dest->minmtu = 0;
-	relay_update_destination_transport(mesh, dest);
+	assert(relay_fixed_channel_mtu(mesh, dest) == fixed);
 	dest->minmtu = MTU;
-	relay_update_destination_transport(mesh, dest);
+	assert(relay_fixed_channel_mtu(mesh, dest) == fixed);
 	dest->status.udp_confirmed = false;
 	dest->status.reachable = false;
-	relay_update_destination_transport(mesh, dest);
+	assert(relay_fixed_channel_mtu(mesh, dest) == fixed);
 	dest->status.reachable = true;
 	dest->nexthop = NULL;
-	relay_update_destination_transport(mesh, dest);
+	assert(relay_fixed_channel_mtu(mesh, dest) == fixed);
 	dest->nexthop = mesh->self;
-	relay_update_destination_transport(mesh, dest);
+	assert(relay_fixed_channel_mtu(mesh, dest) == fixed);
 	dest->nexthop = hop;
 	hop->status.udp_confirmed = false;
-	relay_update_destination_transport(mesh, dest);
+	assert(relay_fixed_channel_mtu(mesh, dest) == fixed);
 	hop->status.udp_confirmed = true;
 	hop->status.validkey = true;
 	hop->status.temp_udp_confirmed = false;
 	dest->relay_budget = 0;
-	relay_update_destination_transport(mesh, dest);
+	assert(relay_fixed_channel_mtu(mesh, dest) == fixed);
 	dest->relay_budget = 800;
-	relay_update_destination_transport(mesh, dest);
-
+	assert(relay_fixed_channel_mtu(mesh, dest) == fixed);
 }
 
 static void relay_cover_hard_send_block(meshlink_handle_t *mesh, node_t *from, node_t *dest, node_t *hop, relay_cover_ctx_t *ctx) {
@@ -652,6 +647,7 @@ static void relay_cover_report_null(meshlink_handle_t *mesh, node_t *from, node_
 }
 
 static void relay_cover_meta_inject(meshlink_handle_t *mesh, node_t *from, node_t *dest, node_t *hop, relay_cover_ctx_t *ctx) {
+	(void)from;
 	char huge_self[510];
 	char long_a[256];
 	char long_b[256];
@@ -707,7 +703,7 @@ static void relay_cover_meta_inject(meshlink_handle_t *mesh, node_t *from, node_
 }
 
 static void relay_cover_inject_alias(meshlink_handle_t *mesh, node_t *from, node_t *dest, node_t *hop, relay_cover_ctx_t *ctx) {
-	uint32_t math = 0;
+	(void)hop;
 	dest->sptps.outstate = false;
 	(void)relay_inject_inner(mesh, dest, 0);
 	(void)relay_devtool_send_meta_sptps(mesh, dest, 0, ctx->inner, sizeof(ctx->inner));
@@ -732,7 +728,7 @@ static void relay_cover_inject_alias(meshlink_handle_t *mesh, node_t *from, node
 }
 
 static void relay_cover_restore(meshlink_handle_t *mesh, node_t *from, node_t *dest, node_t *hop, relay_cover_ctx_t *ctx) {
-	uint32_t math = 0;
+	(void)mesh;
 	dest->nexthop = ctx->saved_nh;
 	dest->prev_nexthop = ctx->saved_prev;
 	dest->status.udp_confirmed = ctx->saved_uc;
@@ -746,8 +742,6 @@ static void relay_cover_restore(meshlink_handle_t *mesh, node_t *from, node_t *d
 	hop->status.udp_confirmed = ctx->saved_huc;
 	hop->connection = ctx->saved_conn;
 	hop->mtuprobes = ctx->saved_probes;
-	relay_update_destination_transport(mesh, dest);
-	relay_update_destination_transport(mesh, hop);
 }
 
 static void relay_cover_exit_uninitialized(void) {

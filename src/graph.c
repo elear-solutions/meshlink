@@ -135,7 +135,7 @@ static void sssp_bfs(meshlink_handle_t *mesh) {
 				node_add_recent_address_cap(mesh, e->to, &e->address, ADDR_SRC_EDGE_DIRECT, PATH_CAP_BOTH);
 
 				if(graph_may_seed_udp(e->to, &e->address)) {
-					update_node_udp(mesh, e->to, &e->address);
+					update_node_udp_from(mesh, e->to, &e->address, ADDR_SRC_EDGE_DIRECT);
 				}
 			}
 
@@ -164,6 +164,7 @@ static void check_reachability(meshlink_handle_t *mesh) {
 			logger(mesh, MESHLINK_DEBUG, "Node %s has a new session ID", n->name);
 
 			n->session_id = n->prevedge->reverse->session_id;
+			n->last_path_tier = PATH_TIER_NONE;
 
 			if(n->utcp) {
 				utcp_reset_all_connections(n->utcp);
@@ -180,9 +181,13 @@ static void check_reachability(meshlink_handle_t *mesh) {
 			n->mtuprobes = 0;
 
 			timeout_del(&mesh->loop, &n->mtutimeout);
-			/* Keep relay_budget; dependents wait for a later probe. */
-			relay_recompute_dependents(mesh, n);
-			relay_update_destination_transport(mesh, n);
+			timeout_del(&mesh->loop, &n->promotion_timer);
+			memset(&n->promotion_candidate, 0, sizeof n->promotion_candidate);
+			path_suspect_stop(mesh, n);
+			path_scheduler_cancel_node(mesh, n);
+			n->probe_dest_override_active = false;
+			path_backbone_udp_reset(mesh, n);
+			path_peer_ensure_udp_key(mesh, n);
 		}
 
 		if(n->status.visited != n->status.reachable) {
@@ -215,8 +220,12 @@ static void check_reachability(meshlink_handle_t *mesh) {
 			n->mtuprobes = 0;
 
 			timeout_del(&mesh->loop, &n->mtutimeout);
-			relay_recompute_dependents(mesh, n);
-			relay_update_destination_transport(mesh, n);
+			timeout_del(&mesh->loop, &n->promotion_timer);
+			memset(&n->promotion_candidate, 0, sizeof n->promotion_candidate);
+			path_suspect_stop(mesh, n);
+			path_scheduler_cancel_node(mesh, n);
+			n->probe_dest_override_active = false;
+			path_backbone_udp_reset(mesh, n);
 
 			if(!n->status.blacklisted) {
 				update_node_status(mesh, n);
@@ -225,10 +234,15 @@ static void check_reachability(meshlink_handle_t *mesh) {
 			if(!n->status.reachable) {
 				update_node_udp(mesh, n, NULL);
 				n->status.broadcast = false;
+				n->last_path_tier = PATH_TIER_NONE;
 			}
 
 			if(n->utcp) {
 				utcp_offline(n->utcp, !n->status.reachable);
+			}
+
+			if(n->status.reachable) {
+				path_peer_ensure_udp_key(mesh, n);
 			}
 		}
 	}

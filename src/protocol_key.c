@@ -20,6 +20,7 @@
 #include "system.h"
 
 #include "connection.h"
+#include "connection_policy.h"
 #include "logger.h"
 #include "meshlink_internal.h"
 #include "net.h"
@@ -132,6 +133,7 @@ bool send_req_key(meshlink_handle_t *mesh, node_t *to) {
 
 	char label[sizeof(meshlink_udp_label) + strlen(mesh->self->name) + strlen(to->name) + 2];
 	snprintf(label, sizeof(label), "%s %s %s", meshlink_udp_label, mesh->self->name, to->name);
+	to->sptps_restart_count++;
 	sptps_stop(&to->sptps);
 	node_set_validkey(mesh, to, false);
 	to->status.waitingforkey = true;
@@ -168,6 +170,15 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 
 				logger(mesh, MESHLINK_INFO, "Learned ECDSA public key from %s", from->name);
 				from->status.dirty = true;
+				from->last_connect_try = 0;
+
+				for list_each(outgoing_t, outgoing, mesh->outgoings) {
+					if(outgoing->node == from && outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED) {
+						connection_policy_reset_backbone_retry(outgoing);
+					}
+				}
+
+				connection_policy_tick(mesh);
 
 				if(!node_write_config(mesh, from, true)) {
 					// ignore
@@ -195,6 +206,15 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 
 		logger(mesh, MESHLINK_INFO, "Learned ECDSA public key from %s", from->name);
 		from->status.dirty = true;
+		from->last_connect_try = 0;
+
+		for list_each(outgoing_t, outgoing, mesh->outgoings) {
+			if(outgoing->node == from && outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED) {
+				connection_policy_reset_backbone_retry(outgoing);
+			}
+		}
+
+		connection_policy_tick(mesh);
 
 		if(!node_write_config(mesh, from, true)) {
 			// ignore
@@ -202,7 +222,8 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 
 		/* If we are trying to form an outgoing connection to this node, retry immediately */
 		for list_each(outgoing_t, outgoing, mesh->outgoings) {
-			if(outgoing->node == from && outgoing->ev.cb) {
+			if(outgoing->node == from && outgoing->ev.cb
+			                && outgoing->purpose == META_PURPOSE_BACKBONE_REQUIRED) {
 				outgoing->timeout = 0;
 				timeout_set(&mesh->loop, &outgoing->ev, &(struct timespec) {
 					0, 0
@@ -611,10 +632,16 @@ bool ans_key_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 			logger(mesh, MESHLINK_DEBUG, "Using reflexive UDP address from %s: %s port %s", from->name, address, port);
 			sockaddr_t sa = str2sockaddr(address, port);
 			path_learn_address_cap(mesh, from, &sa, ADDR_SRC_UDP_REFLEXIVE, PATH_CAP_UDP);
-			update_node_udp(mesh, from, &sa);
+			update_node_udp_from(mesh, from, &sa, ADDR_SRC_UDP_REFLEXIVE);
 		}
 
-		send_mtu_probe(mesh, from);
+		/* Finding 9 gates peer punching. The backbone UDP mapping is started
+		   here instead of send_mtu_probe(); PMTU starts after confirm. */
+		if(connection_policy_backbone_udp_required(mesh, from)) {
+			path_backbone_udp_start(mesh, from);
+		} else if(path_peer_udp_punching_allowed(mesh, from)) {
+			send_mtu_probe(mesh, from);
+		}
 	}
 
 	return true;
