@@ -27,7 +27,7 @@ ANS_KEY <observed> <recipient> . -1 -1 -1 0 <host> <port>
 
 An empty forwarded `ANS_KEY` is filled the same way. A fresh observation
 wins. A confirmed active endpoint is the fallback. `recent[0]` is not
-copied onto the message. A forwarder that is not the backbone keeps an address already present. The backbone replaces a member-filled address with its observation, or drops it when it has none.
+copied onto the message. A forwarder that is not the backbone keeps an address already present. The backbone replaces a member-filled address from the same helper (fresh observation, otherwise a confirmed active endpoint) and drops it only when that helper has nothing.
 
 An observation older than 75 seconds, or one whose session id no longer
 matches, is not sent. No observation leaves the peers on relay.
@@ -58,6 +58,8 @@ Backbone:
 - `No UDP observation for <node>`
 - `Sending punch hint for <node> to <peer>: <host> port <port>`
 - `Appending fresh UDP observation to ANS_KEY from <node> to <peer>`
+- `Replacing member UDP address on ANS_KEY from <node> to <peer>`
+- `Dropping member UDP address on ANS_KEY from <node> to <peer>`
 
 Peers:
 

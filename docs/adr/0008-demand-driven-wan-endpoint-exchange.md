@@ -50,7 +50,7 @@ No observation means no hint. Relay UDP and META stay in place.
 The same helper repairs opportunistic `ANS_KEY` forwarding. An empty
 address is filled from the fresh observation, otherwise from a confirmed
 active UDP endpoint. `recent[0]` is never the source of a forwarded hint.
-A forwarder that is not the backbone leaves an address already on the message alone. The backbone does not: a member-filled address is replaced with the fresh observation, or dropped when the backbone has none.
+A forwarder that is not the backbone leaves an address already on the message alone. The backbone does not. It replaces a member-filled address with the same helper: a fresh observation, otherwise a confirmed active endpoint. It drops the address only when that helper has nothing.
 
 The receiver installs a hint only while its own channel demand is live and
 the peer key is valid. An unconfirmed peer adopts it as the probe
