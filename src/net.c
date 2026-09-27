@@ -221,7 +221,6 @@ static void timeout_handler(event_loop_t *loop, void *data) {
 	assert(data);
 
 	meshlink_handle_t *mesh = loop->data;
-	logger(mesh, MESHLINK_DEBUG, "timeout_handler()");
 
 	for list_each(connection_t, c, mesh->connections) {
 		int pingtimeout = c->node ? mesh->dev_class_traits[c->node->devclass].pingtimeout : default_timeout;
