@@ -212,10 +212,14 @@ static void stability_close_trio(const char *prefix,
 	stability_destroy_conf(prefix, 3);
 }
 
-/* --- T1: the channel size is decided once, from the names alone ----------- */
+static size_t direct_mss(uint16_t payload) {
+	return payload - sizeof(stability_packethdr_t) - UTCP_HDR;
+}
+
+/* --- T1: channel size follows the settled carrier ------------------------- */
 
 static void test_fixed_channel_size(void) {
-	printf("\n=== path-stability T1: channel size is fixed for the channel's life ===\n");
+	printf("\n=== path-stability T1: channel size tracks the active carrier ===\n");
 
 	assert(meshlink_destroy("path_stability_t1_conf.1"));
 	assert(meshlink_destroy("path_stability_t1_conf.2"));
@@ -238,33 +242,56 @@ static void test_fixed_channel_size(void) {
 	assert_after(node_is_reachable(a, a_b), 15);
 	assert_after(node_is_keyed(a, a_b), 20);
 
+	/* META, so an already-parked direct PMTU cannot raise the channel at open. */
+	devtool_force_meta(a, a_b, true);
+
 	meshlink_channel_t *ch = meshlink_channel_open(a, a_b, 7, receive_cb, NULL, 0);
 	assert(ch);
 
-	size_t expected = relay_floor_mss("aaa", "bbb");
-	assert(meshlink_channel_get_mss(a, ch) == expected);
+	size_t floor = relay_floor_mss("aaa", "bbb");
+	assert(meshlink_channel_get_mss(a, ch) == floor);
 
-	/* Everything that used to repacketize a live channel. */
+	/* A measurement alone does not settle the route. */
 	assert(devtool_set_minmtu(a, a_b, MTU));
-	assert(meshlink_channel_get_mss(a, ch) == expected);
+	assert(meshlink_channel_get_mss(a, ch) == floor);
 
-	devtool_set_udp_confirmed(a, a_b, true);
-	assert(meshlink_channel_get_mss(a, ch) == expected);
-
-	devtool_set_udp_confirmed(a, a_b, false);
-	assert(meshlink_channel_get_mss(a, ch) == expected);
-
-	assert(devtool_set_minmtu(a, a_b, MINMTU));
-	assert(meshlink_channel_get_mss(a, ch) == expected);
-
-	/* A second channel to the same destination gets the same size. */
-	meshlink_channel_t *ch2 = meshlink_channel_open(a, a_b, 8, receive_cb, NULL, 0);
-	assert(ch2);
-	assert(meshlink_channel_get_mss(a, ch2) == expected);
+	devtool_force_meta(a, a_b, false);
+	struct sockaddr_in wan = v4("203.0.113.10", 9);
+	assert(devtool_confirm_udp_from(a, a_b, (struct sockaddr *)&wan, 1));
 
 	devtool_node_status_t st = snapshot(a, a_b);
-	assert(st.channel_mtu == expected + UTCP_HDR);
+	assert(st.active_route_kind == ROUTE_DIRECT_UDP);
 	devtool_free_node_status(&st);
+
+	assert(devtool_accept_pmtu_increase(a, a_b, 1000));
+	size_t raised = direct_mss(1008);
+	assert(meshlink_channel_get_mss(a, ch) == raised);
+
+	/* Eight probes is enough once minmtu has met maxmtu. */
+	assert(devtool_fix_early_pmtu(a, a_b, 1200));
+	size_t early = direct_mss(1200);
+	assert(meshlink_channel_get_mss(a, ch) == early);
+
+	meshlink_channel_t *ch2 = meshlink_channel_open(a, a_b, 8, receive_cb, NULL, 0);
+	assert(ch2);
+	assert(meshlink_channel_get_mss(a, ch2) == early);
+
+	st = snapshot(a, a_b);
+	assert(st.channel_mtu == early + UTCP_HDR);
+	assert(st.mtuprobes >= 30);
+	devtool_free_node_status(&st);
+
+	/* Clearing the measurement drops back to the floor on the same direct route. */
+	assert(devtool_set_minmtu(a, a_b, 0));
+	assert(meshlink_channel_get_mss(a, ch) == floor);
+	assert(meshlink_channel_get_mss(a, ch2) == floor);
+
+	assert(devtool_fix_early_pmtu(a, a_b, 1200));
+	assert(meshlink_channel_get_mss(a, ch) == early);
+
+	devtool_force_meta(a, a_b, true);
+	assert(meshlink_channel_get_mss(a, ch) == floor);
+	assert(meshlink_channel_get_mss(a, ch2) == floor);
 
 	meshlink_channel_abort(a, ch);
 	meshlink_channel_abort(a, ch2);
@@ -272,7 +299,7 @@ static void test_fixed_channel_size(void) {
 	meshlink_close(b);
 	assert(meshlink_destroy("path_stability_t1_conf.1"));
 	assert(meshlink_destroy("path_stability_t1_conf.2"));
-	printf("path-stability T1 ok: size %zu survived every path event\n", expected);
+	printf("path-stability T1 ok: floor %zu, settled %zu, demoted back\n", floor, early);
 }
 
 /* --- T14: a channel from another mesh is rejected ------------------------- */
@@ -303,6 +330,9 @@ static void test_mss_rejects_foreign_mesh(void) {
 	assert(a_b);
 	assert_after(node_is_reachable(a, a_b), 15);
 	assert_after(node_is_keyed(a, a_b), 20);
+
+	/* Park on META so a localhost PMTU settle cannot raise this channel first. */
+	devtool_force_meta(a, a_b, true);
 
 	meshlink_channel_t *ch = meshlink_channel_open(a, a_b, 7, receive_cb, NULL, 0);
 	assert(ch);
@@ -339,17 +369,25 @@ struct hammer {
 	meshlink_handle_t *mesh;
 	meshlink_node_t *node;
 	meshlink_channel_t *channel;
-	size_t expected;
+	size_t floor;
 	atomic_bool stop;
 	atomic_bool mismatch;
 	atomic_uint reads;
 };
 
+static bool mss_is_legal(size_t got, size_t floor) {
+	size_t lo = MINMTU - sizeof(stability_packethdr_t) - UTCP_HDR;
+	size_t hi = MTU - sizeof(stability_packethdr_t) - UTCP_HDR;
+	return got == floor || (got >= lo && got <= hi);
+}
+
 static void *mss_reader(void *arg) {
 	struct hammer *h = arg;
 
 	while(!atomic_load(&h->stop)) {
-		if(meshlink_channel_get_mss(h->mesh, h->channel) != h->expected) {
+		size_t got = meshlink_channel_get_mss(h->mesh, h->channel);
+
+		if(!mss_is_legal(got, h->floor)) {
 			atomic_store(&h->mismatch, true);
 		}
 
@@ -406,7 +444,7 @@ static void test_mss_under_route_churn(void) {
 	h.mesh = a;
 	h.node = a_b;
 	h.channel = ch;
-	h.expected = relay_floor_mss("aaa", "bbb");
+	h.floor = relay_floor_mss("aaa", "bbb");
 	atomic_init(&h.stop, false);
 	atomic_init(&h.mismatch, false);
 	atomic_init(&h.reads, 0);
@@ -428,7 +466,7 @@ static void test_mss_under_route_churn(void) {
 	meshlink_close(b);
 	assert(meshlink_destroy("path_stability_t2_conf.1"));
 	assert(meshlink_destroy("path_stability_t2_conf.2"));
-	printf("path-stability T2 ok: %u reads, no size ever moved\n", atomic_load(&h.reads));
+	printf("path-stability T2 ok: %u reads, only floor or a settled direct size\n", atomic_load(&h.reads));
 }
 
 /* --- T3: promotion needs two separated rounds and a served residency ------ */
@@ -2129,12 +2167,101 @@ static void test_idle_channel_traffic(void) {
 	printf("path-stability T21 ok: liveness %u/%u, resumed pings %u/%u\n", dlive1, dlive2, dping1, dping2);
 }
 
+static uint8_t demote_buf[2048];
+static size_t demote_got;
+
+static void demote_receive_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, const void *data, size_t len) {
+	(void)mesh;
+	(void)channel;
+
+	if(data && demote_got + len <= sizeof demote_buf) {
+		memcpy(demote_buf + demote_got, data, len);
+		demote_got += len;
+	}
+}
+
+static bool demote_accept_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, uint16_t port, const void *data, size_t len) {
+	(void)port;
+	(void)data;
+	(void)len;
+	meshlink_set_channel_receive_cb(mesh, channel, demote_receive_cb);
+	set_sync_flag(&accepted, true);
+	return true;
+}
+
+static bool demote_got_all(size_t n) {
+	return demote_got == n;
+}
+
+/* In-flight data cut at the raised MSS still arrives after the route drops to the floor. */
+static void test_demotion_resplits(void) {
+	printf("\n=== path-stability: demotion resplits in-flight data ===\n");
+
+	assert(meshlink_destroy("path_stability_demote_conf.1"));
+	assert(meshlink_destroy("path_stability_demote_conf.2"));
+
+	meshlink_handle_t *a = meshlink_open("path_stability_demote_conf.1", "aaa", "path-stability-demote", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *b = meshlink_open("path_stability_demote_conf.2", "bbb", "path-stability-demote", DEV_CLASS_STATIONARY);
+	assert(a && b);
+	meshlink_enable_discovery(a, false);
+	meshlink_enable_discovery(b, false);
+
+	init_sync_flag(&accepted);
+	init_sync_flag(&received);
+	meshlink_set_channel_accept_cb(b, demote_accept_cb);
+	join_meshlink_peer(a, b);
+	assert(meshlink_start(a));
+	assert(meshlink_start(b));
+
+	meshlink_node_t *a_b = meshlink_get_node(a, "bbb");
+	assert(a_b);
+	assert_after(node_is_reachable(a, a_b), 15);
+	assert_after(node_is_keyed(a, a_b), 20);
+
+	/* Open on the live meta path. A WAN blackhole cannot complete the handshake. */
+	meshlink_channel_t *ch = meshlink_channel_open(a, a_b, 7, demote_receive_cb, NULL, 0);
+	assert(ch);
+	assert(wait_sync_flag(&accepted, 15));
+
+	struct sockaddr_in wan = v4("203.0.113.12", 9);
+	assert(devtool_confirm_udp_from(a, a_b, (struct sockaddr *)&wan, 1));
+	assert(devtool_fix_early_pmtu(a, a_b, 1200));
+
+	size_t floor = relay_floor_mss("aaa", "bbb");
+	size_t raised = direct_mss(1200);
+	assert(meshlink_channel_get_mss(a, ch) == raised);
+	assert(raised > floor);
+
+	size_t n = floor + 100;
+	assert(n < sizeof demote_buf);
+	uint8_t payload[1600];
+
+	for(size_t i = 0; i < n; i++) {
+		payload[i] = (uint8_t)(i * 17 + 3);
+	}
+
+	demote_got = 0;
+	assert(meshlink_channel_send(a, ch, payload, n) == (ssize_t)n);
+	devtool_force_meta(a, a_b, true);
+	assert(meshlink_channel_get_mss(a, ch) == floor);
+	assert_after(demote_got_all(n), 15);
+	assert(memcmp(demote_buf, payload, n) == 0);
+
+	meshlink_channel_abort(a, ch);
+	meshlink_close(a);
+	meshlink_close(b);
+	assert(meshlink_destroy("path_stability_demote_conf.1"));
+	assert(meshlink_destroy("path_stability_demote_conf.2"));
+	printf("path-stability demotion ok: %zu bytes arrived after shrink to %zu\n", n, floor);
+}
+
 int main(void) {
 	setvbuf(stdout, NULL, _IOLBF, 0);
 	setvbuf(stderr, NULL, _IONBF, 0);
 	meshlink_set_log_cb(NULL, MESHLINK_WARNING, NULL);
 
 	test_fixed_channel_size();
+	test_demotion_resplits();
 	test_mss_rejects_foreign_mesh();
 	test_mss_under_route_churn();
 	test_promotion_is_slow();

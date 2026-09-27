@@ -122,6 +122,28 @@ static bool path_mtu_optional_ready(meshlink_handle_t *mesh, bool skip_minute) {
 	return skip_minute || mesh->probe_budget.minute_tokens > 0;
 }
 
+/* Park discovery once the search has collapsed (30 probes, or earlier when
+   minmtu has already met maxmtu — localhost often does this around 8).
+   update_node_pmtu is skipped when minmtu was already <= maxmtu, so the
+   channel resize has to happen here after mtuprobes becomes 31. */
+static void mtu_probe_fix_if_ready(meshlink_handle_t *mesh, node_t *n) {
+	if(!(n->status.udp_confirmed && (n->mtuprobes == 30 || (n->mtuprobes < 30 && n->minmtu >= n->maxmtu)))) {
+		return;
+	}
+
+	if(n->minmtu > n->maxmtu) {
+		n->minmtu = n->maxmtu;
+		update_node_pmtu(mesh, n);
+	} else {
+		n->maxmtu = n->minmtu;
+	}
+
+	n->mtu = n->minmtu;
+	logger(mesh, MESHLINK_INFO, "Fixing MTU of %s to %d after %d probes", n->name, n->mtu, n->mtuprobes);
+	n->mtuprobes = 31;
+	channel_refresh_carrier(mesh, n);
+}
+
 static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 	meshlink_handle_t *mesh = loop->data;
 	node_t *n = data;
@@ -160,18 +182,7 @@ static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 		n->mtuprobes = 31;
 	}
 
-	if(n->status.udp_confirmed && (n->mtuprobes == 30 || (n->mtuprobes < 30 && n->minmtu >= n->maxmtu))) {
-		if(n->minmtu > n->maxmtu) {
-			n->minmtu = n->maxmtu;
-			update_node_pmtu(mesh, n);
-		} else {
-			n->maxmtu = n->minmtu;
-		}
-
-		n->mtu = n->minmtu;
-		logger(mesh, MESHLINK_INFO, "Fixing MTU of %s to %d after %d probes", n->name, n->mtu, n->mtuprobes);
-		n->mtuprobes = 31;
-	}
+	mtu_probe_fix_if_ready(mesh, n);
 
 	if(n->mtuprobes == 31) {
 		if(!n->minmtu && n->status.want_udp && n->nexthop && n->nexthop->connection) {
@@ -639,6 +650,19 @@ bool net_devtool_accept_pmtu_increase(meshlink_handle_t *mesh, node_t *n, uint16
 	return n->mtuprobes == 30 && n->maxmtu == len && n->minmtu == len;
 }
 
+/* Caller holds mesh->mutex. Plants an 8-probe collapse and runs Fixing MTU. */
+bool net_devtool_fix_early_pmtu(meshlink_handle_t *mesh, node_t *n, uint16_t len) {
+	if(!mesh || !n || !n->status.udp_confirmed || len < MINMTU || len > MTU) {
+		return false;
+	}
+
+	n->minmtu = len;
+	n->maxmtu = len;
+	n->mtuprobes = 8;
+	mtu_probe_fix_if_ready(mesh, n);
+	return n->mtuprobes == 31 && n->mtu == len && n->minmtu == len;
+}
+
 /* VPN packet I/O */
 
 static void receive_packet(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet) {
@@ -1103,6 +1127,8 @@ static bool send_sptps_via_udp(meshlink_handle_t *mesh, node_t *to, const void *
 			if(to->mtu >= len) {
 				to->mtu = len - 1;
 			}
+
+			channel_refresh_mtu(mesh, to);
 		} else {
 			logger(mesh, MESHLINK_WARNING, "Error sending UDP SPTPS packet to %s: %s", to->name, sockstrerror(sockerrno));
 			relay_on_hard_send_error(mesh, to, sa, sock);

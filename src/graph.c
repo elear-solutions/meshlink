@@ -177,9 +177,11 @@ static void check_reachability(meshlink_handle_t *mesh) {
 			n->last_req_key = -3600;
 
 			n->status.udp_confirmed = false;
+			n->mtu = MTU;
 			n->maxmtu = MTU;
 			n->minmtu = 0;
 			n->mtuprobes = 0;
+			n->relay_budget = 0;
 
 			timeout_del(&mesh->loop, &n->mtutimeout);
 			timeout_del(&mesh->loop, &n->promotion_timer);
@@ -189,6 +191,7 @@ static void check_reachability(meshlink_handle_t *mesh) {
 			n->probe_dest_override_active = false;
 			path_backbone_udp_reset(mesh, n);
 			path_peer_ensure_udp_key(mesh, n);
+			channel_refresh_carrier(mesh, n);
 		}
 
 		if(n->status.visited != n->status.reachable) {
@@ -216,9 +219,11 @@ static void check_reachability(meshlink_handle_t *mesh) {
 			}
 
 			n->status.udp_confirmed = false;
+			n->mtu = MTU;
 			n->maxmtu = MTU;
 			n->minmtu = 0;
 			n->mtuprobes = 0;
+			n->relay_budget = 0;
 
 			timeout_del(&mesh->loop, &n->mtutimeout);
 			timeout_del(&mesh->loop, &n->promotion_timer);
@@ -241,6 +246,8 @@ static void check_reachability(meshlink_handle_t *mesh) {
 			if(n->utcp) {
 				utcp_offline(n->utcp, !n->status.reachable);
 			}
+
+			channel_refresh_carrier(mesh, n);
 
 			if(n->status.reachable) {
 				path_peer_ensure_udp_key(mesh, n);

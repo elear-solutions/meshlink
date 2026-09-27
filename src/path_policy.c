@@ -1571,6 +1571,7 @@ void path_note_udp_demoted_reason(meshlink_handle_t *mesh, node_t *n, const char
 	if(mesh) {
 		path_suspect_stop(mesh, n);
 		path_rerank_if_route_uses_udp(mesh, n, &n->address);
+		channel_refresh_carrier(mesh, n);
 	}
 }
 
@@ -2394,6 +2395,7 @@ void path_note_punch_endpoint(meshlink_handle_t *mesh, node_t *node, const socka
 			node->mtuprobes = 0;
 			node->minmtu = 0;
 			node->maxmtu = MTU;
+			channel_refresh_carrier(mesh, node);
 		}
 
 		send_mtu_probe(mesh, node);
@@ -3672,6 +3674,7 @@ static void path_commit_active_route(node_t *n, const path_target_t *target, con
 	}
 
 	path_note_selected_route(n->mesh, n, "commit");
+	channel_refresh_mtu(n->mesh, n);
 }
 
 void path_route_tick(meshlink_handle_t *mesh, node_t *n) {

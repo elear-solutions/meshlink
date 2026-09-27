@@ -58,12 +58,18 @@ The active route never stores a `connection_t *`. META targets are
 resolved from the node's current connection under the mesh mutex at send
 time, so terminating a connection cannot leave a dangling route.
 
-Channel size is fixed. UTCP receives one maximum transmission unit when
-the node's UTCP instance is created, computed as the relay-safe floor for
-that origin and destination name pair. Path-MTU discovery, relay budget
-reports, and route changes never call `utcp_set_mtu()` afterwards.
-`meshlink_channel_get_mss()` takes the mesh mutex and returns that fixed
-budget.
+Channel size tracks the active carrier, under the mesh mutex. UTCP is
+created at the relay-safe floor for that origin and destination name
+pair. That floor remains the size on META and until discovery settles.
+Direct UDP then raises to the settled SPTPS payload minus the meshlink
+header. UDP relay raises to an accepted `relay_budget` (or the hop's
+settled PMTU minus the type-8 prefix) minus that header, including while
+the destination is already `udp_confirmed` but the active route is still
+relay. A shrink happens in the same step as the demotion or budget clear.
+`meshlink_channel_get_mss()` takes the mesh mutex and returns the current
+budget. The historical race was `utcp_set_mtu()` reallocating `utcp->pkt`
+against an unlocked `get_mss` or an in-flight send; every refresh still
+holds `mesh->mutex`, which is what closes it.
 
 One `utcp_send()` call uses one route. A soft or hard failure observed
 while that call is unwinding is recorded and applied after it returns, so
@@ -97,9 +103,10 @@ interval. Relay forwarding does not accelerate probing.
 
 ## Consequences
 
-- Channel maximum segment size is stable for the lifetime of the node's
-  UTCP instance, so an application may read it once. It is the relay-safe
-  floor, not the best size the current path could carry.
+- Channel maximum segment size follows the active carrier. The floor is
+  the initial size and the META size. Applications that cache it must
+  read `meshlink_channel_get_mss()` again from `node_pmtu_cb`. A send
+  that is larger than the current MSS is split.
 - Promotion changes only future records. Node SPTPS, `validkey`, and UTCP
   channels survive it.
 - Fallback is not hitless. Unreliable records already handed to a failed
@@ -122,5 +129,6 @@ interval. Relay forwarding does not accelerate probing.
   and `mtutimeout`.
 - `path_record_active_route()` records a temporary fallback and does
   not commit it as the active route.
-- Per-address UDP and META health matrices, planned-route generations,
-  and route-driven UTCP resizing are removed.
+- Per-address UDP and META health matrices and planned-route generations
+  are removed. UTCP resizing is serialized on the mesh mutex and follows
+  only the active carrier's settled budget.

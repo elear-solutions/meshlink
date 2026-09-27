@@ -361,6 +361,7 @@ static void devtool_get_reset_node_status(meshlink_handle_t *mesh, meshlink_node
 		status->candidate_failures = internal->candidate_retry.failures;
 		status->candidate_nonce = internal->promotion_candidate.active ? internal->promotion_candidate.nonce : 0;
 		status->channel_mtu = internal->utcp ? utcp_get_mtu(internal->utcp) : 0;
+		status->relay_budget = internal->relay_budget;
 		memset(&status->candidate_endpoint, 0, sizeof status->candidate_endpoint);
 
 		if(internal->promotion_candidate.active) {
@@ -1194,6 +1195,7 @@ bool devtool_force_relay_path(meshlink_handle_t *mesh, meshlink_node_t *dest, me
 	timeout_del(&mesh->loop, &d->mtutimeout);
 	d->mtuprobes = 0;
 	d->relay_budget = 0;
+	channel_refresh_mtu(mesh, d);
 	commit_ranked_route(mesh, d);
 	pthread_mutex_unlock(&mesh->mutex);
 	return true;
@@ -1997,6 +1999,28 @@ bool devtool_accept_pmtu_increase(meshlink_handle_t *mesh, meshlink_node_t *node
 	}
 
 	ok = net_devtool_accept_pmtu_increase(mesh, (node_t *)node, settled);
+	pthread_mutex_unlock(&mesh->mutex);
+
+	if(!ok) {
+		meshlink_errno = MESHLINK_EINVAL;
+	}
+
+	return ok;
+}
+
+bool devtool_fix_early_pmtu(meshlink_handle_t *mesh, meshlink_node_t *node, uint16_t len) {
+	bool ok;
+
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	ok = net_devtool_fix_early_pmtu(mesh, (node_t *)node, len);
 	pthread_mutex_unlock(&mesh->mutex);
 
 	if(!ok) {

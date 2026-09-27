@@ -49,11 +49,13 @@ bool relay_hop_udp_ready(const struct node_t *hop);
 /* True when origin+dest names cannot fit a type-8 record under MINMTU. */
 bool relay_names_unusable(const char *origin, const char *destination);
 
-/* The one UTCP MTU a destination ever gets, fixed when its utcp is created.
-   Relay-safe floor when a type-8 record can carry this name pair, otherwise the
-   direct UDP floor. Never recomputed: PMTU, relay budget reports and route
-   changes must not repacketize live channels. */
+/* Relay-safe UTCP floor for this name pair: type-8 reservation when the names
+   fit under MINMTU, otherwise the direct UDP floor. This is the initial size
+   and the META size. Live channels move off it via channel_refresh_mtu(). */
 uint16_t relay_fixed_channel_mtu(struct meshlink_handle *mesh, const struct node_t *dest);
+
+/* prefix length + SPTPS datagram overhead. Production and tests. */
+bool relay_prefix21(const char *origin, const char *destination, uint32_t *out);
 
 /* Clear hop UDP readiness only when the failed dest is the confirmed address.
    `sock` is the attempted listen index from the send site and is unused:

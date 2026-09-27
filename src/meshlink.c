@@ -4172,6 +4172,7 @@ static bool blacklist(meshlink_handle_t *mesh, node_t *n) {
 	n->mtuprobes = 0;
 	n->status.udp_confirmed = false;
 	n->relay_budget = 0;
+	channel_refresh_carrier(mesh, n);
 
 	if(n->status.reachable) {
 		n->last_unreachable = time(NULL);
@@ -4644,8 +4645,123 @@ static ssize_t channel_send(struct utcp *utcp, const void *data, size_t len) {
 	return meshlink_send_immediate(mesh, (meshlink_node_t *)n, data, len) ? (ssize_t)len : -1;
 }
 
-/* The only place a node's UTCP is created, and the only place its MTU is set.
-   Every later path event leaves the packetization alone. */
+/* UTCP MTU for the carrier that is actually sending. Floor until a settled
+   direct PMTU or an accepted UDP-relay budget says otherwise. Caller holds
+   mesh->mutex. */
+uint16_t channel_compute_mtu(meshlink_handle_t *mesh, const node_t *n) {
+	uint16_t floor;
+	uint16_t mtu;
+	uint16_t max_utcp;
+
+	if(!mesh || !n) {
+		return 0;
+	}
+
+	floor = relay_fixed_channel_mtu(mesh, n);
+	mtu = floor;
+
+	if(n->status.blacklisted) {
+		return floor;
+	}
+
+	if(n->active_route.kind == DATA_ROUTE_DIRECT_UDP
+	                && n->status.udp_confirmed && n->minmtu && n->mtuprobes >= 30) {
+		uint16_t payload = n->minmtu;
+
+		if(n->mtu && n->mtu < payload) {
+			payload = n->mtu;
+		}
+
+		if(payload < MINMTU) {
+			payload = MINMTU;
+		}
+
+		if(payload > MTU) {
+			payload = MTU;
+		}
+
+		mtu = payload - sizeof(meshlink_packethdr_t);
+	} else if(n->active_route.kind == DATA_ROUTE_RELAY
+	                && n->active_route.relay_carrier == RELAY_CARRIER_UDP
+	                && !relay_names_unusable(mesh->self->name, n->name)) {
+		uint16_t budget = n->relay_budget;
+
+		if(!budget && n->active_route.first_hop) {
+			const node_t *hop = n->active_route.first_hop;
+			uint32_t prefix21 = 0;
+
+			if(hop->minmtu && hop->mtuprobes >= 30
+			                && relay_prefix21(mesh->self->name, n->name, &prefix21)
+			                && hop->minmtu > prefix21) {
+				budget = (uint16_t)(hop->minmtu - prefix21);
+			}
+		}
+
+		if(budget > sizeof(meshlink_packethdr_t)) {
+			uint16_t raised = budget - sizeof(meshlink_packethdr_t);
+
+			if(raised > floor) {
+				mtu = raised;
+			}
+		}
+	}
+
+	max_utcp = MTU - sizeof(meshlink_packethdr_t);
+
+	if(mtu <= RELAY_UTCP_HDR) {
+		mtu = floor > RELAY_UTCP_HDR ? floor : 0;
+	}
+
+	if(mtu > max_utcp) {
+		mtu = max_utcp;
+	}
+
+	return mtu;
+}
+
+void channel_refresh_mtu(meshlink_handle_t *mesh, node_t *n) {
+	uint16_t want;
+
+	if(!mesh || !n || !n->utcp) {
+		return;
+	}
+
+	want = channel_compute_mtu(mesh, n);
+
+	if(!want || want == utcp_get_mtu(n->utcp)) {
+		return;
+	}
+
+	utcp_set_mtu(n->utcp, want);
+
+	if(utcp_get_mtu(n->utcp) != want) {
+		logger(mesh, MESHLINK_WARNING, "Could not resize UTCP MTU of %s to %u", n->name, (unsigned)want);
+	}
+}
+
+void channel_refresh_carrier(meshlink_handle_t *mesh, node_t *n) {
+	if(!mesh || !n) {
+		return;
+	}
+
+	channel_refresh_mtu(mesh, n);
+
+	if(!mesh->nodes) {
+		return;
+	}
+
+	for splay_each(node_t, dest, mesh->nodes) {
+		if(dest != n
+		                && dest->active_route.kind == DATA_ROUTE_RELAY
+		                && dest->active_route.relay_carrier == RELAY_CARRIER_UDP
+		                && dest->active_route.first_hop == n) {
+			channel_refresh_mtu(mesh, dest);
+		}
+	}
+}
+
+/* Creates the node's UTCP and sizes it for the carrier that is live right now.
+   Later route, PMTU, and relay-budget changes call channel_refresh_mtu(). */
 static void channel_utcp_init(meshlink_handle_t *mesh, node_t *n) {
 	n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, n);
 
@@ -4655,6 +4771,7 @@ static void channel_utcp_init(meshlink_handle_t *mesh, node_t *n) {
 
 	utcp_set_mtu(n->utcp, relay_fixed_channel_mtu(mesh, n));
 	utcp_set_retransmit_cb(n->utcp, channel_retransmit);
+	channel_refresh_mtu(mesh, n);
 }
 
 void meshlink_set_channel_receive_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, meshlink_channel_receive_cb_t cb) {
@@ -5294,9 +5411,9 @@ size_t meshlink_channel_get_recvq(meshlink_handle_t *mesh, meshlink_channel_t *c
 	return recvq;
 }
 
-/* The fixed payload budget for this channel's destination. It is chosen when
-   the destination's UTCP is created and does not change with the route, so an
-   application may read it once and keep using it. */
+/* Current payload budget for this channel. It follows the active carrier:
+   the relay floor, a settled direct PMTU, or an accepted UDP-relay budget.
+   Read it again after node_pmtu_cb; a cached larger write is still split. */
 size_t meshlink_channel_get_mss(meshlink_handle_t *mesh, meshlink_channel_t *channel) {
 	if(!mesh || !channel) {
 		meshlink_errno = MESHLINK_EINVAL;
@@ -5374,15 +5491,16 @@ void update_node_status(meshlink_handle_t *mesh, node_t *n) {
 	}
 }
 
-/* Path-MTU discovery is endpoint validation and telemetry. It reports the
-   measurement and bounds what the send path may put on the wire; it never
-   repacketizes a live channel (see ADR 0004). */
+/* Path-MTU discovery reports the measurement and resizes live channels to the
+   carrier that can carry it. Direct UDP uses the settled payload; a hop's
+   settle also resizes UDP-relay destinations that still have no relay_budget. */
 void update_node_pmtu(meshlink_handle_t *mesh, node_t *n) {
 	if(mesh->node_pmtu_cb && !n->status.blacklisted) {
 		mesh->node_pmtu_cb(mesh, (meshlink_node_t *)n, n->minmtu);
 	}
 
 	relay_notify_minmtu_change(mesh, n);
+	channel_refresh_carrier(mesh, n);
 }
 
 void handle_duplicate_node(meshlink_handle_t *mesh, node_t *n) {

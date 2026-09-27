@@ -115,8 +115,9 @@ bool relay_names_unusable(const char *origin, const char *destination) {
 uint16_t relay_fixed_channel_mtu(meshlink_handle_t *mesh, const node_t *dest) {
 	uint32_t direct_floor = 0;
 
-	/* MINMTU is the smallest payload any validated UDP path may carry, so it is
-	   the only size that stays correct for the whole life of the channel. */
+	/* MINMTU is the smallest payload any validated UDP path may carry, so the
+	   floor stays valid on META and before PMTU settles. Live channels raise
+	   above it in channel_refresh_mtu(). */
 	if(!relay_sub_u32(MINMTU, (uint32_t)sizeof(meshlink_packethdr_t), &direct_floor)) {
 		return 0;
 	}
@@ -225,6 +226,7 @@ void relay_clear_budget_if_nexthop_changed(meshlink_handle_t *mesh, node_t *dest
 	if(dest->nexthop != dest->prev_nexthop) {
 		dest->relay_budget = 0;
 		dest->prev_nexthop = dest->nexthop;
+		channel_refresh_mtu(mesh, dest);
 	} else {
 		dest->prev_nexthop = dest->nexthop;
 	}
@@ -596,8 +598,14 @@ bool relay_handle_req_relay_mtu(meshlink_handle_t *mesh, connection_t *c, const 
 		return true;
 	}
 
-	/* Ignore unless sender is dest's current META nexthop on this connection; phase 1 is one hop. */
-	if(from != dest->nexthop || from->connection != c || dest->status.udp_confirmed) {
+	/* Ignore unless sender is dest's current META nexthop on this connection.
+	   A confirmed direct route no longer needs the relay budget. A confirmed
+	   dest whose active route is still relay (promotion not committed) does. */
+	if(from != dest->nexthop || from->connection != c) {
+		return true;
+	}
+
+	if(dest->status.udp_confirmed && dest->active_route.kind == DATA_ROUTE_DIRECT_UDP) {
 		return true;
 	}
 
@@ -612,9 +620,9 @@ bool relay_handle_req_relay_mtu(meshlink_handle_t *mesh, connection_t *c, const 
 		return true;
 	}
 
-	/* Telemetry and a send-side limit only. The channel MSS is fixed at the
-	   relay-safe floor, so a reported budget can never shrink it. */
+	/* Accepted vpn-packet budget. UDP-relay channels grow and shrink with it. */
 	dest->relay_budget = (uint16_t)budget;
+	channel_refresh_mtu(mesh, dest);
 	logger(mesh, MESHLINK_DEBUG, "Got REQ_RELAY_MTU from %s for %s: %u", from->name, dest->name, (unsigned)dest->relay_budget);
 	return true;
 }

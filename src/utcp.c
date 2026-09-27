@@ -2405,7 +2405,9 @@ void utcp_set_mtu(struct utcp *utcp, uint16_t mtu) {
 		return;
 	}
 
-	if(mtu > utcp->mtu) {
+	uint16_t old = utcp->mtu;
+
+	if(mtu > old) {
 		char *new = realloc(utcp->pkt, mtu + sizeof(struct hdr));
 
 		if(!new) {
@@ -2417,6 +2419,28 @@ void utcp_set_mtu(struct utcp *utcp, uint16_t mtu) {
 
 	utcp->mtu = mtu;
 	utcp->mss = mtu - sizeof(struct hdr);
+
+	if(mtu == old || !utcp->connections) {
+		return;
+	}
+
+	for(int i = 0; i < utcp->nconnections; i++) {
+		struct utcp_connection *c = utcp->connections[i];
+
+		if(!c || c->reapable || !is_reliable(c) || c->state == CLOSED) {
+			continue;
+		}
+
+		if(mtu > old) {
+			uint32_t floor_cwnd = (uint32_t)utcp->mss * 2;
+
+			if(c->snd.cwnd < floor_cwnd) {
+				c->snd.cwnd = floor_cwnd;
+			}
+		} else if(seqdiff(c->snd.nxt, c->snd.una) > 0) {
+			c->snd.nxt = c->snd.una;
+		}
+	}
 }
 
 void utcp_reset_timers(struct utcp *utcp) {

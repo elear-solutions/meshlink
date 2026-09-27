@@ -320,8 +320,16 @@ typedef struct meshlink_packethdr {
 void meshlink_send_from_queue(event_loop_t *loop, void *mesh);
 void update_node_status(meshlink_handle_t *mesh, struct node_t *n);
 void update_node_pmtu(meshlink_handle_t *mesh, struct node_t *n);
+/* Caller holds mesh->mutex. Current UTCP MTU for the active carrier, or the floor. */
+uint16_t channel_compute_mtu(struct meshlink_handle *mesh, const struct node_t *n);
+/* Caller holds mesh->mutex. No-op without a UTCP instance or when the size is unchanged. */
+void channel_refresh_mtu(struct meshlink_handle *mesh, struct node_t *n);
+/* Refresh n, then every UDP-relay dest whose first hop is n. */
+void channel_refresh_carrier(struct meshlink_handle *mesh, struct node_t *n);
 /* Test hook: feed a settled +8 PMTU reply. Not part of the packet API in net.h. */
 bool net_devtool_accept_pmtu_increase(struct meshlink_handle *mesh, struct node_t *n, uint16_t settled);
+/* Test hook: plant minmtu==maxmtu at 8 probes and run the Fixing-MTU branch. */
+bool net_devtool_fix_early_pmtu(struct meshlink_handle *mesh, struct node_t *n, uint16_t len);
 
 /* Greater name yields keepalive so a same-tick pair collapses to one direction. */
 static inline bool mesh_self_name_is_greater(const char *self_name, const char *peer_name) {

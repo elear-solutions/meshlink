@@ -71,7 +71,7 @@ typedef struct node_t {
 	// Private member variables
 	node_status_t status;
 	uint16_t minmtu;                        /* Probed minimum MTU */
-	uint16_t relay_budget;                  /* Last accepted final-hop encrypted-record budget */
+	uint16_t relay_budget;                  /* Accepted type-8 vpn budget; raises channel MSS on UDP relay */
 	dev_class_t devclass;
 
 	// Used for packet I/O

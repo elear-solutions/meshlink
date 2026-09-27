@@ -89,6 +89,10 @@ void utcp_set_user_timeout(struct utcp *utcp, int seconds);
 
 uint16_t utcp_get_mtu(struct utcp *utcp);
 uint16_t utcp_get_mss(struct utcp *utcp);
+/* Meshlink callers hold mesh->mutex. Grow reallocs the packet buffer; shrink
+   keeps it. A failed grow leaves the previous MTU. On increase, a reliable
+   connection whose cwnd is below 2*mss is raised to that. On decrease, reliable
+   connections with unacked data rewind snd.nxt to snd.una. */
 void utcp_set_mtu(struct utcp *utcp, uint16_t mtu);
 
 void utcp_reset_timers(struct utcp *utcp);

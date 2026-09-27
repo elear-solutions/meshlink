@@ -498,8 +498,8 @@ static void relay_cover_req_mtu(meshlink_handle_t *mesh, node_t *from, node_t *d
 		}
 	}
 
-	/* The fixed size depends only on the name pair, so none of this state can
-	   move it. Walk the same states anyway to prove that. */
+	/* The floor helper depends only on the name pair. Live channel MSS is
+	   channel_compute_mtu(), not this return value. */
 	uint16_t fixed = relay_fixed_channel_mtu(mesh, dest);
 	dest->status.udp_confirmed = true;
 	dest->minmtu = 0;

@@ -94,6 +94,7 @@ devtool_liveness_probe_warranted
 devtool_meta_pings_sent
 devtool_liveness_probes_sent
 devtool_accept_pmtu_increase
+devtool_fix_early_pmtu
 devtool_probe_second_tokens
 devtool_probe_minute_tokens
 devtool_probe_active_transactions

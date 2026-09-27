@@ -179,7 +179,8 @@ struct devtool_node_status {
 	uint64_t candidate_nonce;             /// nonce the current round must echo (0 if none)
 	struct sockaddr_storage candidate_endpoint; /// endpoint under validation (AF_UNSPEC if none)
 	int candidate_cooldown_remaining;     /// seconds until this endpoint may be tried again
-	uint16_t channel_mtu;                 /// fixed UTCP MTU chosen when the node's utcp was created
+	uint16_t channel_mtu;                 /// current UTCP MTU (header + MSS), not chosen once
+	uint16_t relay_budget;                /// accepted type-8 vpn budget; 0 if none
 };
 
 /// Get the status of a node.
@@ -654,6 +655,9 @@ unsigned devtool_liveness_probes_sent(struct meshlink_handle *mesh, struct meshl
 
 /// Plant `settled` as the PMTU and accept a reply of settled+8 without restarting discovery.
 bool devtool_accept_pmtu_increase(struct meshlink_handle *mesh, struct meshlink_node *node, uint16_t settled);
+
+/// Plant `len` as a collapsed PMTU (minmtu == maxmtu) at 8 probes and run Fixing MTU.
+bool devtool_fix_early_pmtu(struct meshlink_handle *mesh, struct meshlink_node *node, uint16_t len);
 
 unsigned devtool_probe_second_tokens(struct meshlink_handle *mesh);
 unsigned devtool_probe_minute_tokens(struct meshlink_handle *mesh);
