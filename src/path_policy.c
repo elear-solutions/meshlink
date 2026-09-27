@@ -2388,6 +2388,18 @@ bool path_select_punch_hint(const meshlink_handle_t *mesh, const node_t *node, s
 	return false;
 }
 
+static sockaddr_t path_punch_last_probe;
+static bool path_punch_last_probe_valid;
+
+bool path_punch_last_probe_dest(sockaddr_t *out) {
+	if(!out || !path_punch_last_probe_valid) {
+		return false;
+	}
+
+	path_copy_sockaddr(out, &path_punch_last_probe);
+	return true;
+}
+
 bool path_unconfirmed_punch_dest(const node_t *n, sockaddr_t *out) {
 	if(!n || !out || n->status.udp_confirmed) {
 		return false;
@@ -2399,6 +2411,12 @@ bool path_unconfirmed_punch_dest(const node_t *n, sockaddr_t *out) {
 
 	path_copy_sockaddr(out, &n->peer_udp.last_hint);
 	return true;
+}
+
+static void path_punch_send_probe(meshlink_handle_t *mesh, node_t *node) {
+	/* Sample after last_hint is stored and before the handler runs. */
+	path_punch_last_probe_valid = path_unconfirmed_punch_dest(node, &path_punch_last_probe);
+	send_mtu_probe(mesh, node);
 }
 
 void path_note_punch_endpoint(meshlink_handle_t *mesh, node_t *node, const sockaddr_t *sa) {
@@ -2447,10 +2465,11 @@ void path_note_punch_endpoint(meshlink_handle_t *mesh, node_t *node, const socka
 			channel_refresh_carrier(mesh, node);
 		}
 
-		/* choose_udp_address reads last_hint, and send_mtu_probe() sends
-		   before it returns. Store the hint first. */
+		/* choose_udp_address reads last_hint, and the probe sends
+		   before this function returns. Store the hint first. */
+		path_punch_last_probe_valid = false;
 		path_punch_note_hint(mesh, node, sa);
-		send_mtu_probe(mesh, node);
+		path_punch_send_probe(mesh, node);
 		return;
 	}
 

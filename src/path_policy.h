@@ -383,6 +383,8 @@ bool path_select_punch_hint(const struct meshlink_handle *mesh, const struct nod
 void path_note_punch_endpoint(struct meshlink_handle *mesh, struct node_t *node, const sockaddr_t *sa);
 /* Unconfirmed probe dest. The installed punch hint, when it is still usable. */
 bool path_unconfirmed_punch_dest(const struct node_t *n, sockaddr_t *out);
+/* Dest sampled immediately before the probe path_note_punch_endpoint just armed. */
+bool path_punch_last_probe_dest(sockaddr_t *out);
 
 /* First/last channel to an ordinary peer. acquire() is false (no count change)
    for backbone/UNKNOWN/self. Release always decrements a non-zero count so a

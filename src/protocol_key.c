@@ -644,8 +644,8 @@ static bool ans_key_drop_member_address(meshlink_handle_t *mesh, const node_t *f
 		return false;
 	}
 
-	if(!connection_policy_lan_device_class(mesh->self->devclass)
-	                || !connection_policy_lan_device_class(from->devclass)) {
+	/* mesh->self is DEV_CLASS_BACKBONE here. LAN class applies to the peer. */
+	if(!connection_policy_lan_device_class(from->devclass)) {
 		return false;
 	}
 
@@ -665,6 +665,12 @@ static bool ans_key_backbone_hint(meshlink_handle_t *mesh, node_t *from, const c
 
 	return true;
 }
+
+/* Address the backbone actually forwarded. send_meta drops the bytes when the socket is synthetic. */
+static char ans_key_forward_host[NI_MAXHOST];
+static char ans_key_forward_port[16];
+static bool ans_key_forward_rewritten;
+static bool ans_key_forward_has_addr;
 
 bool ans_key_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	assert(request);
@@ -759,11 +765,18 @@ bool ans_key_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 			sockaddr_t replaced;
 
 			if(ans_key_backbone_hint(mesh, from, address, &replaced)) {
+				ans_key_forward_rewritten = true;
+
 				if(replaced.sa.sa_family != AF_UNSPEC) {
 					char *reflexive_address, *reflexive_port;
 
 					logger(mesh, MESHLINK_INFO, "Replacing member UDP address on ANS_KEY from %s to %s", from->name, to->name);
 					sockaddr2str(&replaced, &reflexive_address, &reflexive_port);
+					strncpy(ans_key_forward_host, reflexive_address, sizeof ans_key_forward_host - 1);
+					ans_key_forward_host[sizeof ans_key_forward_host - 1] = 0;
+					strncpy(ans_key_forward_port, reflexive_port, sizeof ans_key_forward_port - 1);
+					ans_key_forward_port[sizeof ans_key_forward_port - 1] = 0;
+					ans_key_forward_has_addr = true;
 					send_request(mesh, to->nexthop->connection, NULL, "%d %s %s %s %d %d %d %d %s %s",
 					             ANS_KEY, from_name, to_name, key, cipher, digest, maclength, compression,
 					             reflexive_address, reflexive_port);
@@ -773,6 +786,9 @@ bool ans_key_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 				}
 
 				logger(mesh, MESHLINK_DEBUG, "Dropping member UDP address on ANS_KEY from %s to %s", from->name, to->name);
+				ans_key_forward_host[0] = 0;
+				ans_key_forward_port[0] = 0;
+				ans_key_forward_has_addr = false;
 				return send_request(mesh, to->nexthop->connection, NULL, "%d %s %s %s %d %d %d %d",
 				                    ANS_KEY, from_name, to_name, key, cipher, digest, maclength, compression);
 			}
@@ -1028,6 +1044,12 @@ bool punch_endpoint_cover_unit(meshlink_handle_t *mesh) {
 	PUNCH_CHECK(!src->status.udp_confirmed);
 	PUNCH_CHECK(!sockaddrcmp(&src->address, &hint));
 	{
+		sockaddr_t probed;
+
+		PUNCH_CHECK(path_punch_last_probe_dest(&probed));
+		PUNCH_CHECK(!sockaddrcmp(&probed, &hint));
+	}
+	{
 		char *saved_self_ext = mesh->self->external_ip_address;
 		char *saved_peer_ext = src->external_ip_address;
 		int saved_nsocks = mesh->listen_sockets;
@@ -1171,7 +1193,7 @@ bool punch_endpoint_cover_unit(meshlink_handle_t *mesh) {
 		sockaddr_t observed_hint;
 		char req[160];
 
-		mesh->self->devclass = DEV_CLASS_STATIONARY;
+		mesh->self->devclass = DEV_CLASS_BACKBONE;
 		mesh->backbone.node = mesh->self;
 		mesh->backbone.name = mesh->self->name;
 		src->devclass = DEV_CLASS_STATIONARY;
@@ -1185,12 +1207,21 @@ bool punch_endpoint_cover_unit(meshlink_handle_t *mesh) {
 		PUNCH_CHECK(repl.sa.sa_family == AF_INET);
 		PUNCH_CHECK(ntohs(repl.in.sin_port) == 4000);
 		snprintf(req, sizeof req, "%d %s %s . -1 -1 -1 0 198.51.100.9 9", ANS_KEY, src->name, dst->name);
+		ans_key_forward_rewritten = false;
+		ans_key_forward_has_addr = false;
 		PUNCH_CHECK(ans_key_h(mesh, &live, req));
+		PUNCH_CHECK(ans_key_forward_rewritten && ans_key_forward_has_addr);
+		PUNCH_CHECK(!strcmp(ans_key_forward_host, "203.0.113.10"));
+		PUNCH_CHECK(!strcmp(ans_key_forward_port, "4000"));
 		PUNCH_CHECK(src->address.sa.sa_family == AF_UNSPEC);
 		PUNCH_CHECK(dst->address.sa.sa_family == AF_UNSPEC);
 		path_clear_udp_observation(src);
 		src->status.udp_confirmed = false;
 		memset(&src->address, 0, sizeof src->address);
+		ans_key_forward_rewritten = false;
+		ans_key_forward_has_addr = false;
+		PUNCH_CHECK(ans_key_h(mesh, &live, req));
+		PUNCH_CHECK(ans_key_forward_rewritten && !ans_key_forward_has_addr);
 		PUNCH_CHECK(ans_key_backbone_hint(mesh, src, "198.51.100.9", &repl));
 		PUNCH_CHECK(repl.sa.sa_family == AF_UNSPEC);
 		mesh->backbone.node = during_bb;
