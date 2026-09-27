@@ -1570,14 +1570,22 @@ void path_note_udp_demoted_reason(meshlink_handle_t *mesh, node_t *n, const char
 	}
 
 	if(mesh) {
-		/* A confirmed peer kept this hint aside. It is the mapping to probe
-		   now that the working endpoint is gone. */
+		sockaddr_t live;
+		bool have_live = n->address.sa.sa_family != AF_UNSPEC
+		                 && n->address.sa.sa_family != AF_UNKNOWN;
+
+		/* Rerank against the endpoint the route still names. Installing the
+		   hint first would make that compare miss and leave the dead carrier. */
+		if(have_live) {
+			path_copy_sockaddr(&live, &n->address);
+		}
+
 		if(path_punch_endpoint_usable(&n->peer_udp.last_hint)) {
 			update_node_udp_from(mesh, n, &n->peer_udp.last_hint, ADDR_SRC_UDP_REFLEXIVE);
 		}
 
 		path_suspect_stop(mesh, n);
-		path_rerank_if_route_uses_udp(mesh, n, &n->address);
+		path_rerank_if_route_uses_udp(mesh, n, have_live ? &live : &n->address);
 		channel_refresh_carrier(mesh, n);
 	}
 }
@@ -2439,7 +2447,11 @@ void path_note_punch_endpoint(meshlink_handle_t *mesh, node_t *node, const socka
 			channel_refresh_carrier(mesh, node);
 		}
 
+		/* choose_udp_address reads last_hint, and send_mtu_probe() sends
+		   before it returns. Store the hint first. */
+		path_punch_note_hint(mesh, node, sa);
 		send_mtu_probe(mesh, node);
+		return;
 	}
 
 	path_punch_note_hint(mesh, node, sa);

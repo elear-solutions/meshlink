@@ -4734,6 +4734,11 @@ void channel_refresh_mtu(meshlink_handle_t *mesh, node_t *n) {
 
 	utcp_set_mtu(n->utcp, want);
 
+	/* ack() defers the resize until it returns. That is not a failed resize. */
+	if(utcp_mtu_change_pending(n->utcp)) {
+		return;
+	}
+
 	if(utcp_get_mtu(n->utcp) != want) {
 		logger(mesh, MESHLINK_WARNING, "Could not resize UTCP MTU of %s to %u", n->name, (unsigned)want);
 	}

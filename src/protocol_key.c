@@ -633,6 +633,39 @@ static bool ans_key_from_backbone(meshlink_handle_t *mesh, connection_t *c) {
 	       && backbone->connection == c;
 }
 
+/* This node is the backbone, and `from` is an ordinary peer. An address that
+   peer already wrote is their claim, not an observation. */
+static bool ans_key_drop_member_address(meshlink_handle_t *mesh, const node_t *from) {
+	if(!mesh || !mesh->self || !from || from == mesh->self) {
+		return false;
+	}
+
+	if(connection_policy_backbone(mesh) != mesh->self) {
+		return false;
+	}
+
+	if(!connection_policy_lan_device_class(mesh->self->devclass)
+	                || !connection_policy_lan_device_class(from->devclass)) {
+		return false;
+	}
+
+	return !connection_policy_is_backbone(mesh, from);
+}
+
+/* True when a pre-filled address must not be forwarded. `hint` is the
+   observation to send instead, or AF_UNSPEC when there is nothing to append. */
+static bool ans_key_backbone_hint(meshlink_handle_t *mesh, node_t *from, const char *address, sockaddr_t *hint) {
+	if(!address || !*address || !hint || !ans_key_drop_member_address(mesh, from)) {
+		return false;
+	}
+
+	if(!path_select_punch_hint(mesh, from, hint, NULL)) {
+		memset(hint, 0, sizeof *hint);
+	}
+
+	return true;
+}
+
 bool ans_key_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	assert(request);
 	assert(*request);
@@ -718,6 +751,30 @@ bool ans_key_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 				free(reflexive_address);
 				free(reflexive_port);
 				return true;
+			}
+		}
+
+		/* A member-filled address is not the backbone's observation. */
+		if(*address) {
+			sockaddr_t replaced;
+
+			if(ans_key_backbone_hint(mesh, from, address, &replaced)) {
+				if(replaced.sa.sa_family != AF_UNSPEC) {
+					char *reflexive_address, *reflexive_port;
+
+					logger(mesh, MESHLINK_INFO, "Replacing member UDP address on ANS_KEY from %s to %s", from->name, to->name);
+					sockaddr2str(&replaced, &reflexive_address, &reflexive_port);
+					send_request(mesh, to->nexthop->connection, NULL, "%d %s %s %s %d %d %d %d %s %s",
+					             ANS_KEY, from_name, to_name, key, cipher, digest, maclength, compression,
+					             reflexive_address, reflexive_port);
+					free(reflexive_address);
+					free(reflexive_port);
+					return true;
+				}
+
+				logger(mesh, MESHLINK_DEBUG, "Dropping member UDP address on ANS_KEY from %s to %s", from->name, to->name);
+				return send_request(mesh, to->nexthop->connection, NULL, "%d %s %s %s %d %d %d %d",
+				                    ANS_KEY, from_name, to_name, key, cipher, digest, maclength, compression);
 			}
 		}
 
@@ -1022,9 +1079,12 @@ bool punch_endpoint_cover_unit(meshlink_handle_t *mesh) {
 		PUNCH_CHECK(!sockaddrcmp(&src->address, &hint));
 		PUNCH_CHECK(src->status.udp_confirmed);
 		PUNCH_CHECK(!sockaddrcmp(&src->recent[0], &newer));
+		src->active_route.kind = DATA_ROUTE_DIRECT_UDP;
+		src->active_route.udp_endpoint = src->address;
 		path_note_udp_demoted_reason(mesh, src, "cover demotion");
 		PUNCH_CHECK(!src->status.udp_confirmed);
 		PUNCH_CHECK(!sockaddrcmp(&src->address, &src->peer_udp.last_hint));
+		PUNCH_CHECK(src->active_route.kind != DATA_ROUTE_DIRECT_UDP);
 	}
 
 	peer.name = (char *)"punchpeer";
@@ -1102,6 +1162,41 @@ bool punch_endpoint_cover_unit(meshlink_handle_t *mesh) {
 		PUNCH_CHECK(ntohs(src->address.in.sin_port) == 4400);
 		PUNCH_CHECK(src->peer_udp.requests_sent == requests_before + 1);
 		PUNCH_CHECK(src->peer_udp.request_step == 1);
+	}
+	{
+		node_t *during_bb = mesh->backbone.node;
+		char *during_name = mesh->backbone.name;
+		int saved_class = mesh->self->devclass;
+		sockaddr_t repl;
+		sockaddr_t observed_hint;
+		char req[160];
+
+		mesh->self->devclass = DEV_CLASS_STATIONARY;
+		mesh->backbone.node = mesh->self;
+		mesh->backbone.name = mesh->self->name;
+		src->devclass = DEV_CLASS_STATIONARY;
+		src->session_id = 11;
+		src->status.udp_confirmed = false;
+		memset(&src->address, 0, sizeof src->address);
+		memset(&src->peer_udp.last_hint, 0, sizeof src->peer_udp.last_hint);
+		observed_hint = str2sockaddr("203.0.113.10", "4000");
+		path_note_authenticated_udp_observation(mesh, src, &observed_hint);
+		PUNCH_CHECK(ans_key_backbone_hint(mesh, src, "198.51.100.9", &repl));
+		PUNCH_CHECK(repl.sa.sa_family == AF_INET);
+		PUNCH_CHECK(ntohs(repl.in.sin_port) == 4000);
+		snprintf(req, sizeof req, "%d %s %s . -1 -1 -1 0 198.51.100.9 9", ANS_KEY, src->name, dst->name);
+		PUNCH_CHECK(ans_key_h(mesh, &live, req));
+		PUNCH_CHECK(src->address.sa.sa_family == AF_UNSPEC);
+		PUNCH_CHECK(dst->address.sa.sa_family == AF_UNSPEC);
+		path_clear_udp_observation(src);
+		src->status.udp_confirmed = false;
+		memset(&src->address, 0, sizeof src->address);
+		PUNCH_CHECK(ans_key_backbone_hint(mesh, src, "198.51.100.9", &repl));
+		PUNCH_CHECK(repl.sa.sa_family == AF_UNSPEC);
+		mesh->backbone.node = during_bb;
+		PUNCH_CHECK(!ans_key_backbone_hint(mesh, src, "198.51.100.9", &repl));
+		mesh->backbone.name = during_name;
+		mesh->self->devclass = saved_class;
 	}
 	mesh->backbone.node = saved_bb;
 	swapped_bb = false;
