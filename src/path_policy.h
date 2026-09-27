@@ -157,11 +157,21 @@ typedef struct path_target_t {
 #define PATH_BACKBONE_UDP_KEEPALIVE_MISS  2
 #define PATH_BACKBONE_UDP_ESTABLISH_BACKOFF_MAX 30
 #define PATH_PEER_UDP_GRACE_SEC           5
+/* Three backbone keepalives. Older than this, an observation is not a punch hint. */
+#define PATH_UDP_OBSERVATION_FRESH_SEC    (PATH_BACKBONE_UDP_KEEPALIVE_SEC * 3)
 
-/* Ordinary-peer UDP punching is refcounted from channels. Backbone UDP is not. */
+/* Ordinary-peer UDP punching is refcounted from channels. Backbone UDP is not.
+   Endpoint requests share one ladder per peer, not per channel. */
 typedef struct peer_path_demand_t {
 	unsigned channel_count;
 	struct timespec idle_until;             /* {0,0} = no grace */
+	struct timespec next_request;           /* {0,0} = send on the next tick */
+	uint8_t request_step;                   /* index into 1,2,5,10,30s */
+	uint32_t requests_sent;                 /* successful REQ_PUNCH_ENDPOINT sends */
+	uint32_t request_session;               /* session_id last requested */
+	uint64_t network_epoch;                 /* lan_network_epoch when the ladder was armed */
+	uint32_t demand_epoch;                  /* increments on each 0→1 demand */
+	sockaddr_t last_hint;                   /* last installed punch hint */
 } peer_path_demand_t;
 
 #define CANONICAL_RESOLVE_TIMEOUT 2
@@ -358,6 +368,18 @@ bool path_peer_udp_punching_allowed(const struct meshlink_handle *mesh, const st
 /* REQ_KEY when reachable, no node SPTPS yet, and UDP is required (backbone mapping
    or ordinary-peer demand). No-op if already waitingforkey. */
 void path_peer_ensure_udp_key(struct meshlink_handle *mesh, struct node_t *peer);
+
+/* Runtime punch hint from an authenticated direct UDP datagram. Does not set
+   udp_confirmed, does not change the active route, and is not persisted. */
+void path_note_authenticated_udp_observation(struct meshlink_handle *mesh, struct node_t *node, const sockaddr_t *endpoint);
+/* Fresh, session-matched observation. False leaves *out untouched. */
+bool path_get_fresh_udp_observation(const struct meshlink_handle *mesh, const struct node_t *node, sockaddr_t *out);
+/* Drop the observation and the request ladder. Channel demand is kept. */
+void path_clear_udp_observation(struct node_t *node);
+/* Observation, else a confirmed active UDP endpoint. Never recent[0]. */
+bool path_select_punch_hint(const struct meshlink_handle *mesh, const struct node_t *node, sockaddr_t *out, bool *from_observation);
+/* Install a hinted peer endpoint. Probes only while demand is live and UDP is unconfirmed. */
+void path_note_punch_endpoint(struct meshlink_handle *mesh, struct node_t *node, const sockaddr_t *sa);
 
 /* First/last channel to an ordinary peer. acquire() is false (no count change)
    for backbone/UNKNOWN/self. Release always decrements a non-zero count so a

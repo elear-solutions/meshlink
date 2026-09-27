@@ -280,7 +280,7 @@ trio_LDADD = $(top_builddir)/src/libmeshlink.la
 trio2_SOURCES = trio2.c utils.c utils.h
 trio2_LDADD = $(top_builddir)/src/libmeshlink.la
 
-udp_relay_SOURCES = udp-relay.c utils.c utils.h
+udp_relay_SOURCES = udp-relay.c netns_utils.c netns_utils.h utils.c utils.h
 udp_relay_LDADD = $(top_builddir)/src/libmeshlink.la
 
 relay_coverage_SOURCES = relay-coverage.c utils.c utils.h

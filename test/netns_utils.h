@@ -22,4 +22,10 @@ extern peer_config_t *setup_relay_peer_nut_indirect(const char *prefix);
 extern bool set_peers_tcponly(peer_config_t *peers, int npeers);
 extern void close_relay_peer_nut(peer_config_t *peers);
 
+/// Backbone on 203.0.113.1, app and camera behind separate NATs.
+/// symmetric uses MASQUERADE --random so the backbone-observed port is not punchable.
+/// NULL means the topology could not be built; nothing is left allocated.
+extern peer_config_t *setup_nat_hole_punch(const char *prefix, bool symmetric);
+extern void close_nat_hole_punch(peer_config_t *peers);
+
 #endif

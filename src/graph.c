@@ -165,6 +165,7 @@ static void check_reachability(meshlink_handle_t *mesh) {
 
 			n->session_id = n->prevedge->reverse->session_id;
 			n->last_path_tier = PATH_TIER_NONE;
+			path_clear_udp_observation(n);
 
 			if(n->utcp) {
 				utcp_reset_all_connections(n->utcp);

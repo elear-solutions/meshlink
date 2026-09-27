@@ -675,7 +675,11 @@ static void receive_udppacket(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *
 
 	if(!sptps_receive_data(&n->sptps, inpkt->data, inpkt->len)) {
 		logger(mesh, MESHLINK_ERROR, "Could not process SPTPS data from %s: %s", n->name, strerror(errno));
+		return;
 	}
+
+	/* Direct, authenticated UDP only. META-carried and relayed SPTPS do not land here. */
+	path_note_authenticated_udp_observation(mesh, n, &n->last_udp_from);
 }
 
 static void send_sptps_packet(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *origpkt) {

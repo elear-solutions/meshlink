@@ -400,6 +400,19 @@ static void devtool_get_reset_node_status(meshlink_handle_t *mesh, meshlink_node
 		status->sptps_state = internal->sptps.state;
 		status->sptps_outseqno = internal->sptps.outseqno;
 		status->sptps_restart_count = internal->sptps_restart_count;
+		status->punch_requests_sent = internal->peer_udp.requests_sent;
+		status->punch_hints_sent = internal->punch_hints_sent;
+		status->punch_request_step = internal->peer_udp.request_step;
+		memset(&status->udp_observation, 0, sizeof status->udp_observation);
+		{
+			sockaddr_t observed;
+
+			status->udp_observation_fresh = path_get_fresh_udp_observation(mesh, internal, &observed);
+
+			if(status->udp_observation_fresh) {
+				memcpy(&status->udp_observation, &observed, sizeof observed > sizeof status->udp_observation ? sizeof status->udp_observation : sizeof observed);
+			}
+		}
 		status->connection_generation = c && c->outgoing ? c->outgoing->generation : 0;
 		status->meta_drain_active = false;
 

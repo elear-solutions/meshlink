@@ -1817,6 +1817,83 @@ static void test_wan_peer_udp_route(void) {
 	printf("path-stability T17b ok: DIRECT_UDP WAN (!local)\n");
 }
 
+/* Keys are already valid. Opening a channel still requests the endpoint once, and does not restart SPTPS. */
+static void test_punch_demand_keeps_key(void) {
+	printf("\n=== path-stability T22: punch request with a valid key ===\n");
+
+	peer_config_t *peers = setup_relay_peer_nut_wan("pathstab22");
+	meshlink_node_t *peer_nut;
+	meshlink_node_t *nut_peer;
+	meshlink_channel_t *ch;
+	meshlink_channel_t *ch2;
+	uint32_t restarts;
+	uint32_t requests;
+
+	init_sync_flag(&accepted);
+	init_sync_flag(&received);
+	meshlink_set_channel_accept_cb(peers[2].mesh, accept_cb);
+
+	for(int i = 0; i < 3; i++) {
+		assert(meshlink_start(peers[i].mesh));
+	}
+
+	assert_after(meshlink_get_node(peers[1].mesh, "nut") && meshlink_get_node(peers[2].mesh, "peer"), 20);
+	peer_nut = meshlink_get_node(peers[1].mesh, "nut");
+	nut_peer = meshlink_get_node(peers[2].mesh, "peer");
+	assert(peer_nut && nut_peer);
+	assert_after(node_is_reachable(peers[1].mesh, peer_nut), 15);
+
+	/* Ordinary-peer SPTPS starts on channel demand. Prime a key while UDP
+	   probes are held, then open again: the new demand must request an
+	   endpoint without restarting that key. */
+	devtool_force_meta(peers[1].mesh, peer_nut, true);
+	devtool_force_meta(peers[2].mesh, nut_peer, true);
+	ch = meshlink_channel_open(peers[1].mesh, peer_nut, 7, receive_cb, NULL, 0);
+	assert(ch);
+	assert(wait_sync_flag(&accepted, 20));
+	assert_after(node_is_keyed(peers[1].mesh, peer_nut) && node_is_keyed(peers[2].mesh, nut_peer), 20);
+	meshlink_channel_abort(peers[1].mesh, ch);
+	reset_sync_flag(&accepted);
+
+	{
+		devtool_node_status_t st = snapshot(peers[1].mesh, peer_nut);
+		restarts = st.sptps_restart_count;
+		requests = st.punch_requests_sent;
+		devtool_free_node_status(&st);
+	}
+
+	ch = meshlink_channel_open(peers[1].mesh, peer_nut, 7, receive_cb, NULL, 0);
+	assert(ch);
+
+	{
+		devtool_node_status_t st = snapshot(peers[1].mesh, peer_nut);
+		assert(st.punch_requests_sent == requests + 1);
+		assert(st.sptps_restart_count == restarts);
+		assert(st.validkey);
+		requests = st.punch_requests_sent;
+		devtool_free_node_status(&st);
+	}
+
+	ch2 = meshlink_channel_open(peers[1].mesh, peer_nut, 8, receive_cb, NULL, 0);
+	assert(ch2);
+
+	{
+		devtool_node_status_t st = snapshot(peers[1].mesh, peer_nut);
+		assert(st.punch_requests_sent == requests);
+		assert(st.sptps_restart_count == restarts);
+		devtool_free_node_status(&st);
+	}
+
+	assert(wait_sync_flag(&accepted, 20));
+
+	devtool_force_meta(peers[1].mesh, peer_nut, false);
+	devtool_force_meta(peers[2].mesh, nut_peer, false);
+	meshlink_channel_abort(peers[1].mesh, ch);
+	meshlink_channel_abort(peers[1].mesh, ch2);
+	close_relay_peer_nut(peers);
+	printf("path-stability T22 ok: one punch request, SPTPS kept\n");
+}
+
 /* Class 5: backbone direct-META relay — UDP dropped, no camera LAN META. */
 static void test_relay_meta_direct_route(void) {
 	printf("\n=== path-stability T17e: backbone META_DIRECT relay delivers ===\n");
@@ -2073,6 +2150,7 @@ int main(void) {
 	/* Netns setup calls exit(77). Skip only these cases so the rest of the binary still runs. */
 	if(netns_available()) {
 		test_wan_peer_udp_route();
+		test_punch_demand_keeps_key();
 		test_relay_meta_direct_route();
 		test_relay_meta_canonical_route();
 	} else {

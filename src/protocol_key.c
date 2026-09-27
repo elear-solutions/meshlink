@@ -28,6 +28,7 @@
 #include "netutl.h"
 #include "node.h"
 #include "path_policy.h"
+#include "path_scheduler.h"
 #include "prf.h"
 #include "protocol.h"
 #include "relay.h"
@@ -139,6 +140,130 @@ bool send_req_key(meshlink_handle_t *mesh, node_t *to) {
 	to->status.waitingforkey = true;
 	to->last_req_key = mesh->loop.now.tv_sec;
 	return sptps_start(&to->sptps, to, true, true, mesh->private_key, to->ecdsa, label, sizeof(label) - 1, send_initial_sptps_data, receive_sptps_record);
+}
+
+bool send_punch_endpoint_request(meshlink_handle_t *mesh, node_t *peer) {
+	node_t *backbone;
+
+	if(!mesh || !peer || !mesh->self || !peer->name || !peer->status.reachable) {
+		return false;
+	}
+
+	if(!path_peer_udp_punching_allowed(mesh, peer)) {
+		return false;
+	}
+
+	backbone = connection_policy_backbone(mesh);
+
+	if(!backbone || !backbone->name || !backbone->connection || !backbone->connection->status.active) {
+		return false;
+	}
+
+	if(backbone->connection->protocol_minor < 4) {
+		return false;
+	}
+
+	logger(mesh, MESHLINK_INFO, "Requesting punch endpoint for %s via %s", peer->name, backbone->name);
+
+	if(!send_request(mesh, backbone->connection, NULL, "%d %s %s %d %s", REQ_KEY, mesh->self->name, backbone->name, REQ_PUNCH_ENDPOINT, peer->name)) {
+		return false;
+	}
+
+	peer->peer_udp.requests_sent++;
+	return true;
+}
+
+static bool punch_peer_eligible(const meshlink_handle_t *mesh, const node_t *n) {
+	return n
+	       && n != mesh->self
+	       && connection_policy_lan_device_class(n->devclass)
+	       && !connection_policy_is_backbone(mesh, n)
+	       && !n->status.blacklisted
+	       && !n->status.conflict_backbone;
+}
+
+static bool send_address_only_ans_key(meshlink_handle_t *mesh, node_t *observed, node_t *recipient, const sockaddr_t *sa) {
+	char *host = NULL;
+	char *port = NULL;
+	bool ok;
+
+	if(!recipient->status.reachable || !recipient->nexthop || !recipient->nexthop->connection) {
+		logger(mesh, MESHLINK_WARNING, "Cannot send punch hint for %s to %s", observed->name, recipient->name);
+		return false;
+	}
+
+	sockaddr2str(sa, &host, &port);
+	logger(mesh, MESHLINK_INFO, "Sending punch hint for %s to %s: %s port %s", observed->name, recipient->name, host, port);
+	ok = send_request(mesh, recipient->nexthop->connection, NULL, "%d %s %s . -1 -1 -1 0 %s %s", ANS_KEY, observed->name, recipient->name, host, port);
+	free(host);
+	free(port);
+
+	if(ok && mesh->self) {
+		mesh->self->punch_hints_sent++;
+	}
+
+	return ok;
+}
+
+static bool req_punch_endpoint_h(meshlink_handle_t *mesh, connection_t *c, const char *request, node_t *from) {
+	char target_name[MAX_STRING_SIZE];
+	node_t *target;
+	sockaddr_t sa;
+
+	if(!mesh->self || !connection_policy_is_backbone(mesh, mesh->self) || mesh->self->status.conflict_backbone) {
+		logger(mesh, MESHLINK_WARNING, "Ignoring punch endpoint request from %s: this node is not the backbone", from->name);
+		return true;
+	}
+
+	if(from->connection != c || !c->status.active) {
+		logger(mesh, MESHLINK_WARNING, "Ignoring punch endpoint request from %s: not its live META connection", from->name);
+		return true;
+	}
+
+	if(c->protocol_minor < 4) {
+		logger(mesh, MESHLINK_INFO, "Ignoring punch endpoint request from %s: protocol %d.%d", from->name, c->protocol_major, c->protocol_minor);
+		return true;
+	}
+
+	if(sscanf(request, "%*d %*s %*s %*d " MAX_STRING, target_name) != 1 || !check_id(target_name)) {
+		logger(mesh, MESHLINK_ERROR, "Got bad %s from %s: %s", "REQ_PUNCH_ENDPOINT", from->name, "invalid target");
+		return true;
+	}
+
+	target = lookup_node(mesh, target_name);
+
+	if(!target) {
+		logger(mesh, MESHLINK_WARNING, "Punch endpoint request from %s for unknown node %s", from->name, target_name);
+		return true;
+	}
+
+	logger(mesh, MESHLINK_INFO, "Punch endpoint request for %s from %s", target->name, from->name);
+
+	if(!punch_peer_eligible(mesh, from) || !punch_peer_eligible(mesh, target) || from == target) {
+		logger(mesh, MESHLINK_WARNING, "Rejected punch endpoint request from %s for %s", from->name, target->name);
+		return true;
+	}
+
+	if(!target->status.reachable) {
+		logger(mesh, MESHLINK_INFO, "No punch hint for %s: not reachable", target->name);
+		return true;
+	}
+
+	if(path_get_fresh_udp_observation(mesh, target, &sa)) {
+		logger(mesh, MESHLINK_INFO, "Fresh UDP observation for %s", target->name);
+		send_address_only_ans_key(mesh, target, from, &sa);
+	} else {
+		logger(mesh, MESHLINK_INFO, "No UDP observation for %s", target->name);
+	}
+
+	if(path_get_fresh_udp_observation(mesh, from, &sa)) {
+		logger(mesh, MESHLINK_INFO, "Fresh UDP observation for %s", from->name);
+		send_address_only_ans_key(mesh, from, target, &sa);
+	} else {
+		logger(mesh, MESHLINK_INFO, "No UDP observation for %s", from->name);
+	}
+
+	return true;
 }
 
 /* REQ_KEY is overloaded to allow arbitrary requests to be routed between two nodes. */
@@ -421,6 +546,9 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 		return true;
 	}
 
+	case REQ_PUNCH_ENDPOINT:
+		return req_punch_endpoint_h(mesh, c, request, from);
+
 	default:
 		logger(mesh, MESHLINK_ERROR, "Unknown extended REQ_KEY request from %s: %s", from->name, request);
 		return true;
@@ -558,15 +686,26 @@ bool ans_key_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		from->in_forward += len + SPTPS_OVERHEAD;
 		to->out_forward += len + SPTPS_OVERHEAD;
 
-		/* Append the known UDP address of the from node, if we have a confirmed one */
-		if(!*address && from->status.udp_confirmed && from->address.sa.sa_family != AF_UNSPEC) {
-			char *reflexive_address, *reflexive_port;
-			logger(mesh, MESHLINK_DEBUG, "Appending reflexive UDP address to ANS_KEY from %s to %s", from->name, to->name);
-			sockaddr2str(&from->address, &reflexive_address, &reflexive_port);
-			send_request(mesh, to->nexthop->connection, NULL, "%s %s %s", request, reflexive_address, reflexive_port);
-			free(reflexive_address);
-			free(reflexive_port);
-			return true;
+		/* Append a fresh observation, or a confirmed endpoint. Never recent[0]. */
+		if(!*address) {
+			sockaddr_t hint;
+			bool observed = false;
+
+			if(path_select_punch_hint(mesh, from, &hint, &observed)) {
+				char *reflexive_address, *reflexive_port;
+
+				if(observed) {
+					logger(mesh, MESHLINK_INFO, "Appending fresh UDP observation to ANS_KEY from %s to %s", from->name, to->name);
+				} else {
+					logger(mesh, MESHLINK_DEBUG, "Appending confirmed UDP endpoint to ANS_KEY from %s to %s", from->name, to->name);
+				}
+
+				sockaddr2str(&hint, &reflexive_address, &reflexive_port);
+				send_request(mesh, to->nexthop->connection, NULL, "%s %s %s", request, reflexive_address, reflexive_port);
+				free(reflexive_address);
+				free(reflexive_port);
+				return true;
+			}
 		}
 
 		return send_request(mesh, to->nexthop->connection, NULL, "%s", request);
@@ -628,21 +767,309 @@ bool ans_key_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	}
 
 	if(from->status.validkey) {
+		bool punched = false;
+
 		if(*address && *port) {
-			logger(mesh, MESHLINK_DEBUG, "Using reflexive UDP address from %s: %s port %s", from->name, address, port);
 			sockaddr_t sa = str2sockaddr(address, port);
-			path_learn_address_cap(mesh, from, &sa, ADDR_SRC_UDP_REFLEXIVE, PATH_CAP_UDP);
-			update_node_udp_from(mesh, from, &sa, ADDR_SRC_UDP_REFLEXIVE);
+
+			logger(mesh, MESHLINK_DEBUG, "Using reflexive UDP address from %s: %s port %s", from->name, address, port);
+
+			if(path_peer_udp_punching_allowed(mesh, from)) {
+				path_note_punch_endpoint(mesh, from, &sa);
+				punched = true;
+			} else if(connection_policy_backbone_udp_required(mesh, from)) {
+				path_learn_address_cap(mesh, from, &sa, ADDR_SRC_UDP_REFLEXIVE, PATH_CAP_UDP);
+				update_node_udp_from(mesh, from, &sa, ADDR_SRC_UDP_REFLEXIVE);
+			}
 		}
 
 		/* Finding 9 gates peer punching. The backbone UDP mapping is started
 		   here instead of send_mtu_probe(); PMTU starts after confirm. */
 		if(connection_policy_backbone_udp_required(mesh, from)) {
 			path_backbone_udp_start(mesh, from);
-		} else if(path_peer_udp_punching_allowed(mesh, from)) {
+		} else if(!punched && path_peer_udp_punching_allowed(mesh, from)) {
 			send_mtu_probe(mesh, from);
 		}
 	}
 
 	return true;
+}
+
+bool punch_endpoint_cover_unit(meshlink_handle_t *mesh) {
+	node_t *src = NULL;
+	node_t *dst = NULL;
+	node_t peer;
+	node_t route;
+	node_t fake_bb;
+	connection_t live;
+	connection_t back;
+	connection_t fake_conn;
+	node_t *saved_bb = NULL;
+	char *saved_bb_name = NULL;
+	sockaddr_t hint;
+	sockaddr_t out;
+	bool observed = false;
+	bool ok = false;
+	bool swapped_name = false;
+	bool swapped_bb = false;
+	uint32_t hints;
+	uint32_t restarts;
+	char punch_req[128];
+
+	if(!mesh || !mesh->self) {
+		return false;
+	}
+
+#define PUNCH_CHECK(cond) do { \
+	if(!(cond)) { \
+		logger(mesh, MESHLINK_ERROR, "punch_endpoint_cover_unit failed: %s", #cond); \
+		goto done; \
+	} \
+} while(0)
+
+	memset(&peer, 0, sizeof peer);
+	memset(&route, 0, sizeof route);
+	memset(&fake_bb, 0, sizeof fake_bb);
+	memset(&fake_conn, 0, sizeof fake_conn);
+
+	src = new_node();
+	dst = new_node();
+	src->name = xstrdup("punchsrc");
+	dst->name = xstrdup("punchdst");
+	src->devclass = DEV_CLASS_STATIONARY;
+	dst->devclass = DEV_CLASS_STATIONARY;
+	src->session_id = 11;
+	dst->session_id = 22;
+	src->status.reachable = true;
+	dst->status.reachable = true;
+	src->status.validkey = true;
+	dst->status.validkey = true;
+	src->devtool_force_meta = true;
+	dst->devtool_force_meta = true;
+	src->mesh = mesh;
+	dst->mesh = mesh;
+	node_add(mesh, src);
+	node_add(mesh, dst);
+
+	memset(&live, 0, sizeof live);
+	memset(&back, 0, sizeof back);
+	live.socket = -1;
+	back.socket = -1;
+	live.status.active = true;
+	back.status.active = true;
+	live.protocol_minor = 4;
+	back.protocol_minor = 4;
+	live.node = src;
+	src->connection = &live;
+	src->nexthop = src;
+	dst->connection = &back;
+	dst->nexthop = dst;
+
+	hint = str2sockaddr("203.0.113.10", "4000");
+	PUNCH_CHECK(!path_get_fresh_udp_observation(mesh, src, &out));
+	src->session_id = 0;
+	path_note_authenticated_udp_observation(mesh, src, &hint);
+	PUNCH_CHECK(!src->udp_observation.session_id);
+	src->session_id = 11;
+	hint.in.sin_port = 0;
+	path_note_authenticated_udp_observation(mesh, src, &hint);
+	PUNCH_CHECK(!src->udp_observation.session_id);
+	hint = str2sockaddr("10.1.0.9", "4000");
+	path_note_authenticated_udp_observation(mesh, src, &hint);
+	PUNCH_CHECK(!src->udp_observation.session_id);
+	hint = str2sockaddr("203.0.113.10", "4000");
+	path_note_authenticated_udp_observation(mesh, src, &hint);
+	PUNCH_CHECK(src->udp_observation.session_id == 11);
+	PUNCH_CHECK(!src->status.udp_confirmed);
+	PUNCH_CHECK(path_get_fresh_udp_observation(mesh, src, &out));
+	PUNCH_CHECK(!sockaddrcmp(&out, &hint));
+	src->session_id = 12;
+	PUNCH_CHECK(!path_get_fresh_udp_observation(mesh, src, &out));
+	src->session_id = 11;
+	src->udp_observation.observed_at = mesh->loop.now;
+	src->udp_observation.observed_at.tv_sec -= PATH_UDP_OBSERVATION_FRESH_SEC + 1;
+	PUNCH_CHECK(!path_get_fresh_udp_observation(mesh, src, &out));
+	src->udp_observation.observed_at = mesh->loop.now;
+	PUNCH_CHECK(path_select_punch_hint(mesh, src, &out, &observed) && observed);
+
+	src->recent[0] = str2sockaddr("198.51.100.8", "9");
+	src->recent_source[0] = ADDR_SRC_UDP_REFLEXIVE;
+	src->recent_cap[0] = PATH_CAP_UDP;
+	path_clear_udp_observation(src);
+	PUNCH_CHECK(!src->status.udp_confirmed);
+	PUNCH_CHECK(!path_select_punch_hint(mesh, src, &out, &observed));
+	src->status.udp_confirmed = true;
+	src->address = str2sockaddr("203.0.113.40", "4100");
+	PUNCH_CHECK(path_select_punch_hint(mesh, src, &out, &observed) && !observed);
+	PUNCH_CHECK(!sockaddrcmp(&out, &src->address));
+	src->status.udp_confirmed = false;
+
+	snprintf(punch_req, sizeof punch_req, "%d punchsrc %s %d punchdst", REQ_KEY, mesh->self->name, REQ_PUNCH_ENDPOINT);
+	saved_bb_name = mesh->backbone.name;
+	mesh->backbone.name = mesh->self->name;
+	swapped_name = true;
+	hints = mesh->self->punch_hints_sent;
+	PUNCH_CHECK(req_punch_endpoint_h(mesh, &live, "0 baz punchsrc", src));
+	PUNCH_CHECK(mesh->self->punch_hints_sent == hints);
+	src->status.blacklisted = true;
+	PUNCH_CHECK(req_punch_endpoint_h(mesh, &live, punch_req, src));
+	PUNCH_CHECK(mesh->self->punch_hints_sent == hints);
+	src->status.blacklisted = false;
+	src->status.conflict_backbone = true;
+	PUNCH_CHECK(req_punch_endpoint_h(mesh, &live, punch_req, src));
+	PUNCH_CHECK(mesh->self->punch_hints_sent == hints);
+	src->status.conflict_backbone = false;
+	live.protocol_minor = 3;
+	path_note_authenticated_udp_observation(mesh, dst, &hint);
+	PUNCH_CHECK(req_punch_endpoint_h(mesh, &live, punch_req, src));
+	PUNCH_CHECK(mesh->self->punch_hints_sent == hints);
+	live.protocol_minor = 4;
+	dst->udp_observation.observed_at.tv_sec -= PATH_UDP_OBSERVATION_FRESH_SEC + 1;
+	PUNCH_CHECK(req_punch_endpoint_h(mesh, &live, punch_req, src));
+	PUNCH_CHECK(mesh->self->punch_hints_sent == hints);
+	dst->udp_observation.observed_at = mesh->loop.now;
+	dst->udp_observation.session_id = dst->session_id;
+	path_copy_sockaddr(&dst->udp_observation.endpoint, &hint);
+	src->peer_udp.channel_count = 1;
+	PUNCH_CHECK(req_punch_endpoint_h(mesh, &live, punch_req, src));
+	PUNCH_CHECK(mesh->self->punch_hints_sent > hints);
+	PUNCH_CHECK(!src->status.udp_confirmed);
+	PUNCH_CHECK(!dst->status.udp_confirmed);
+	mesh->backbone.name = saved_bb_name;
+	swapped_name = false;
+	mesh->self->status.conflict_backbone = true;
+	PUNCH_CHECK(req_punch_endpoint_h(mesh, &live, punch_req, src));
+	mesh->self->status.conflict_backbone = false;
+
+	src->status.udp_confirmed = false;
+	memset(&src->address, 0, sizeof src->address);
+	path_note_punch_endpoint(mesh, src, &hint);
+	PUNCH_CHECK(!src->status.udp_confirmed);
+	PUNCH_CHECK(!sockaddrcmp(&src->address, &hint));
+	src->status.udp_confirmed = true;
+	src->udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+	{
+		sockaddr_t newer = str2sockaddr("203.0.113.77", "4200");
+
+		path_note_punch_endpoint(mesh, src, &newer);
+		PUNCH_CHECK(!sockaddrcmp(&src->address, &hint));
+		PUNCH_CHECK(src->status.udp_confirmed);
+		PUNCH_CHECK(!sockaddrcmp(&src->recent[0], &newer));
+	}
+
+	peer.name = (char *)"punchpeer";
+	peer.mesh = mesh;
+	peer.devclass = DEV_CLASS_STATIONARY;
+	peer.status.reachable = true;
+	peer.status.validkey = true;
+	peer.devtool_force_meta = true;
+	peer.sptps_restart_count = 3;
+	restarts = peer.sptps_restart_count;
+	saved_bb = mesh->backbone.node;
+	fake_bb.name = saved_bb ? saved_bb->name : mesh->self->name;
+	fake_conn.socket = -1;
+	fake_conn.status.active = true;
+	fake_conn.protocol_minor = 4;
+	fake_conn.node = &fake_bb;
+	fake_bb.connection = &fake_conn;
+	mesh->backbone.node = &fake_bb;
+	swapped_bb = true;
+	PUNCH_CHECK(path_channel_acquire(mesh, &peer));
+	PUNCH_CHECK(peer.peer_udp.requests_sent == 1);
+	PUNCH_CHECK(peer.sptps_restart_count == restarts);
+	PUNCH_CHECK(path_channel_acquire(mesh, &peer));
+	PUNCH_CHECK(peer.peer_udp.requests_sent == 1);
+	peer.status.udp_confirmed = true;
+	peer.udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+	path_route_tick(mesh, &peer);
+	PUNCH_CHECK(peer.peer_udp.requests_sent == 1);
+	peer.status.udp_confirmed = false;
+	peer.udp_tier = PATH_TIER_NONE;
+	memset(&peer.peer_udp.next_request, 0, sizeof peer.peer_udp.next_request);
+	peer.peer_udp.request_step = 0;
+	path_route_tick(mesh, &peer);
+	PUNCH_CHECK(peer.peer_udp.requests_sent == 2);
+	fake_conn.protocol_minor = 3;
+	memset(&peer.peer_udp.next_request, 0, sizeof peer.peer_udp.next_request);
+	peer.peer_udp.request_step = 0;
+	path_route_tick(mesh, &peer);
+	PUNCH_CHECK(peer.peer_udp.requests_sent == 2);
+	mesh->backbone.node = saved_bb;
+	swapped_bb = false;
+	path_channel_release(mesh, &peer);
+	path_channel_release(mesh, &peer);
+
+	route.name = (char *)"punchroute";
+	route.mesh = mesh;
+	route.devclass = DEV_CLASS_STATIONARY;
+	route.status.reachable = true;
+	route.status.validkey = true;
+	route.status.udp_confirmed = true;
+	route.udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+	route.address = str2sockaddr("203.0.113.50", "4300");
+	route.peer_udp.channel_count = 1;
+	route.active_route.kind = DATA_ROUTE_RELAY;
+	route.active_route.relay_carrier = RELAY_CARRIER_META_CANONICAL;
+	route.promotion_candidate.active = true;
+	route.promotion_candidate.kind = DATA_ROUTE_RELAY;
+	route.promotion_candidate.relay_carrier = RELAY_CARRIER_UDP;
+	route.promotion_candidate.successful_rounds = PATH_PROMOTION_ROUNDS;
+	path_consider_route_promotion(mesh, &route, PATH_PROMOTION_DIRECT_UDP);
+	PUNCH_CHECK(route.promotion_candidate.active);
+	PUNCH_CHECK(route.promotion_candidate.kind == DATA_ROUTE_DIRECT_UDP);
+	PUNCH_CHECK(!route.promotion_candidate.local);
+	route.promotion_candidate.active = true;
+	route.promotion_candidate.kind = DATA_ROUTE_DIRECT_UDP;
+	route.promotion_candidate.local = true;
+	route.promotion_candidate.successful_rounds = PATH_PROMOTION_ROUNDS;
+	path_consider_route_promotion(mesh, &route, PATH_PROMOTION_DIRECT_UDP);
+	PUNCH_CHECK(route.promotion_candidate.local);
+	route.promotion_candidate.active = true;
+	route.promotion_candidate.kind = DATA_ROUTE_RELAY;
+	route.promotion_candidate.relay_carrier = RELAY_CARRIER_UDP;
+	route.promotion_candidate.local = false;
+	route.promotion_candidate.successful_rounds = PATH_PROMOTION_ROUNDS;
+	route.promotion_candidate.first_success = mesh->loop.now;
+	path_commit_candidate(mesh, &route);
+	PUNCH_CHECK(route.active_route.relay_carrier != RELAY_CARRIER_UDP || route.active_route.kind != DATA_ROUTE_RELAY);
+	PUNCH_CHECK(route.promotion_candidate.kind == DATA_ROUTE_DIRECT_UDP);
+
+	ok = true;
+
+done:
+	if(swapped_name) {
+		mesh->backbone.name = saved_bb_name;
+	}
+
+	if(swapped_bb) {
+		mesh->backbone.node = saved_bb;
+	}
+
+	if(src) {
+		src->connection = NULL;
+		timeout_del(&mesh->loop, &src->mtutimeout);
+		timeout_del(&mesh->loop, &src->promotion_timer);
+		path_suspect_stop(mesh, src);
+		path_scheduler_cancel_node(mesh, src);
+		node_del(mesh, src);
+	}
+
+	if(dst) {
+		dst->connection = NULL;
+		timeout_del(&mesh->loop, &dst->mtutimeout);
+		timeout_del(&mesh->loop, &dst->promotion_timer);
+		path_suspect_stop(mesh, dst);
+		path_scheduler_cancel_node(mesh, dst);
+		node_del(mesh, dst);
+	}
+
+	timeout_del(&mesh->loop, &peer.mtutimeout);
+	timeout_del(&mesh->loop, &peer.promotion_timer);
+	timeout_del(&mesh->loop, &route.promotion_timer);
+	path_suspect_stop(mesh, &peer);
+	path_suspect_stop(mesh, &route);
+	path_scheduler_cancel_node(mesh, &peer);
+	path_scheduler_cancel_node(mesh, &route);
+#undef PUNCH_CHECK
+	return ok;
 }

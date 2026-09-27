@@ -112,7 +112,9 @@ interval. Relay forwarding does not accelerate probing.
   nothing; every other node owns one persistent `BACKBONE_REQUIRED`
   intent and a bounded LAN-resilience overlay of at most three
   authenticated local META adjacencies. Direct peer UDP punching stays
-  channel-demand-driven (finding 9).
+  channel-demand-driven (finding 9). ADR 0008 exchanges the current
+  WAN mapping on that same demand and lets a confirmed direct carrier
+  supersede a pending lower-ranked relay candidate.
 - Backbone UDP relay reachability stays warm with no channel. Ordinary
   peer UDP punching does not.
 - The global scheduler admits probe packets and transactions. Due times
