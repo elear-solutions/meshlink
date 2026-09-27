@@ -72,6 +72,7 @@ typedef struct connection_t {
 	int tcplen;                     /* length of incoming TCPpacket */
 	int allow_request;              /* defined if there's only one request possible */
 	time_t last_ping_time;          /* last time we saw some activity from the other end or pinged them */
+	unsigned pings_sent;            /* send_ping() calls on this socket; tests read it */
 	time_t last_key_renewal;        /* last time we renewed the SPTPS key */
 	time_t activated_at;            /* first time this META socket became active; never restamped on key renewal */
 

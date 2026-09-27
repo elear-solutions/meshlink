@@ -238,6 +238,9 @@ struct meshlink_handle {
 		uint64_t addr_set_fingerprint; /* FNV-1a of ifaces + addresses; 0 until first commit */
 		bool addr_set_initialized;
 		bool addr_dump_complete;       /* Linux: GETADDR dump finished; later batches may advance epoch */
+		timeout_t lan_query_timeout;   /* one coalesced mDNS query when a dial target lacks presence */
+		unsigned lan_query_fires;      /* times that timer called discovery_refresh */
+		bool lan_query_hold;           /* discovery_stop: do not arm again until discovery_start */
 #ifdef __APPLE__
 		pthread_t thread;
 		pthread_mutex_t stop_mutex;
@@ -317,6 +320,13 @@ typedef struct meshlink_packethdr {
 void meshlink_send_from_queue(event_loop_t *loop, void *mesh);
 void update_node_status(meshlink_handle_t *mesh, struct node_t *n);
 void update_node_pmtu(meshlink_handle_t *mesh, struct node_t *n);
+/* Test hook: feed a settled +8 PMTU reply. Not part of the packet API in net.h. */
+bool net_devtool_accept_pmtu_increase(struct meshlink_handle *mesh, struct node_t *n, uint16_t settled);
+
+/* Greater name yields keepalive so a same-tick pair collapses to one direction. */
+static inline bool mesh_self_name_is_greater(const char *self_name, const char *peer_name) {
+	return self_name && peer_name && strcmp(self_name, peer_name) > 0;
+}
 extern meshlink_log_level_t global_log_level;
 extern meshlink_log_cb_t global_log_cb;
 void handle_duplicate_node(meshlink_handle_t *mesh, struct node_t *n);

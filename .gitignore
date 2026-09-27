@@ -76,6 +76,7 @@ test/channels-no-partial
 test/channels-udp
 test/channels-udp-cornercases
 test/discovery
+test/discovery-learn
 test/duplicate
 test/echo-fork
 test/encrypted

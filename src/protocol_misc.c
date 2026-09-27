@@ -94,6 +94,7 @@ bool termreq_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 bool send_ping(meshlink_handle_t *mesh, connection_t *c) {
 	c->status.pinged = true;
 	c->last_ping_time = mesh->loop.now.tv_sec;
+	c->pings_sent++;
 
 	return send_request(mesh, c, NULL, "%d", PING);
 }

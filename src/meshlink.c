@@ -2330,6 +2330,9 @@ void meshlink_close(meshlink_handle_t *mesh) {
 	logger(mesh, MESHLINK_INFO, "Terminating");
 
 	path_scheduler_stop(mesh);
+	/* discovery_stop only runs from the mesh thread. A query armed before
+	   start (or after a stop that lost the race) must not outlive close. */
+	timeout_del(&mesh->loop, &mesh->discovery.lan_query_timeout);
 	event_loop_exit(&mesh->loop);
 
 #ifdef HAVE_MINGW

@@ -193,15 +193,20 @@ static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 			goto end;
 		}
 
-		if(path_mtu_optional_ready(mesh, false)
-		                && path_mtu_emit(mesh, n, NULL, 64, false, PATH_TX_LIVENESS) == PATH_SCHED_SENT) {
-			sent++;
-		}
-
+		/* A 64-byte echo and a maxmtu+8 echo in the same tick race: the
+		   64-byte reply collapses mtuprobes to 30 and the +8 raise is
+		   clamped away. Send the raise alone when it is due. */
 		if(n->maxmtu + 8 < MTU && mesh->loop.now.tv_sec >= n->pmtu_increase_next
 		                && path_mtu_optional_ready(mesh, false)) {
 			n->pmtu_increase_next = mesh->loop.now.tv_sec + PATH_PMTU_INCREASE_INTERVAL_SEC;
-			(void)path_mtu_emit(mesh, n, NULL, n->maxmtu + 8, false, PATH_TX_PMTU_INCREASE);
+
+			if(path_mtu_emit(mesh, n, NULL, n->maxmtu + 8, false, PATH_TX_PMTU_INCREASE) == PATH_SCHED_SENT) {
+				sent++;
+			}
+		} else if(path_mtu_optional_ready(mesh, false)
+		                && path_mtu_emit(mesh, n, NULL, 64, false, PATH_TX_LIVENESS) == PATH_SCHED_SENT) {
+			sent++;
+			n->liveness_probes_sent++;
 		}
 
 		if(!sent) {
@@ -408,6 +413,73 @@ void send_backbone_udp_probe(meshlink_handle_t *mesh) {
 	send_probe_to(mesh, n, &packet, &mesh->backbone_udp.endpoint);
 }
 
+static bool sockaddr_is_set(const sockaddr_t *sa) {
+	return sa->sa.sa_family != AF_UNSPEC && sa->sa.sa_family != AF_UNKNOWN;
+}
+
+/* The probe we would send uses the confirmed UDP dest. That can differ from
+   the data route when application records still ride local META. A confirmed
+   alias is the same session: the source port is often not n->address. */
+static bool liveness_request_from_active_endpoint(meshlink_handle_t *mesh, const node_t *n) {
+	if(!n->status.udp_confirmed || !sockaddr_is_set(&n->last_udp_from)) {
+		return false;
+	}
+
+	if(sockaddr_is_set(&n->address) && !sockaddrcmp(&n->last_udp_from, &n->address)) {
+		return true;
+	}
+
+	if(n->active_route.kind == DATA_ROUTE_DIRECT_UDP
+	                && sockaddr_is_set(&n->active_route.udp_endpoint)
+	                && !sockaddrcmp(&n->last_udp_from, &n->active_route.udp_endpoint)) {
+		return true;
+	}
+
+	return lookup_node_udp(mesh, &n->last_udp_from) == n;
+}
+
+/* Higher name's next liveness sits past the lower name's next probe. */
+#define GREATER_NAME_PARK_SLACK_SEC 1
+
+static void mtu_probe_park_greater_name(meshlink_handle_t *mesh, node_t *n) {
+	int interval = 60;
+	int wait = 5;
+
+	if(n->devclass >= 0 && n->devclass < DEV_CLASS_COUNT) {
+		interval = mesh->dev_class_traits[n->devclass].pinginterval;
+		wait = mesh->dev_class_traits[n->devclass].pingtimeout;
+	}
+
+	if(interval < 1) {
+		interval = 1;
+	}
+
+	if(wait < 1) {
+		wait = 1;
+	}
+
+	n->mtuprobes = 31;
+
+	if(n->mtutimeout.cb) {
+		timeout_set(&mesh->loop, &n->mtutimeout, &(struct timespec) {
+			interval + wait + GREATER_NAME_PARK_SLACK_SEC, prng(mesh, TIMER_FUDGE)
+		});
+	}
+}
+
+static void mtu_probe_raise_settled(meshlink_handle_t *mesh, node_t *n, uint16_t len) {
+	logger(mesh, MESHLINK_INFO, "Increase in PMTU to %s detected, raising MTU to %d", n->name, len);
+
+	if(n->minmtu < len) {
+		n->minmtu = len;
+	}
+
+	n->maxmtu = len;
+	n->mtu = len;
+	update_node_pmtu(mesh, n);
+	n->mtuprobes = 30;
+}
+
 static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet, uint16_t len) {
 	n->in_meta += len + PROBE_OVERHEAD;
 
@@ -419,7 +491,20 @@ static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet
 	logger(mesh, MESHLINK_DEBUG, "Got MTU probe length %d from %s", packet->len, n->name);
 
 	if(!packet->data[0]) {
-		/* It's a probe request, send back a reply */
+		/* It's a probe request, send back a reply. A parked peer that just
+		   heard a 64-byte liveness request from the active endpoint does not
+		   need to send its own; the echo already proves both directions.
+		   30 counts: our own echo lands first and sets 30 before this request. */
+		uint64_t req_nonce = 0;
+
+		memcpy(&req_nonce, packet->data + PROBE_NONCE_OFFSET, sizeof req_nonce);
+
+		/* Nonce-bearing requests are promotion or suspect probes, not liveness. */
+		bool park_liveness = n->mtuprobes >= 30
+		                     && len == 64
+		                     && req_nonce == 0
+		                     && path_liveness_probe_warranted(mesh, n)
+		                     && liveness_request_from_active_endpoint(mesh, n);
 
 		packet->data[0] = 1;
 
@@ -438,6 +523,13 @@ static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet
 		}
 
 		n->status.temp_udp_confirmed = false;
+
+		/* Both peers arm the same timer, so resetting the counter keeps them
+		   in phase and both keep sending. The higher name yields: its next
+		   send sits past the lower name's next probe, which parks it again. */
+		if(park_liveness && mesh->self && mesh_self_name_is_greater(mesh->self->name, n->name)) {
+			mtu_probe_park_greater_name(mesh, n);
+		}
 	} else {
 		/* A test can pin application traffic to META. Requests are still
 		   answered, but delayed replies cannot silently re-enable UDP. */
@@ -500,10 +592,8 @@ static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet
 		/* If we haven't established the PMTU yet, restart the discovery process. */
 
 		if(n->mtuprobes > 30) {
-			if(len == n->maxmtu + 8) {
-				logger(mesh, MESHLINK_INFO, "Increase in PMTU to %s detected, restarting PMTU discovery", n->name);
-				n->maxmtu = MTU;
-				n->mtuprobes = 10;
+			if(len == n->maxmtu + 8 && len < MTU) {
+				mtu_probe_raise_settled(mesh, n, len);
 				return;
 			}
 
@@ -525,6 +615,28 @@ static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet
 			update_node_pmtu(mesh, n);
 		}
 	}
+}
+
+/* Caller holds mesh->mutex. Plants a settled PMTU and feeds the +8 reply. */
+bool net_devtool_accept_pmtu_increase(meshlink_handle_t *mesh, node_t *n, uint16_t settled) {
+	vpn_packet_t packet;
+	uint16_t len;
+
+	if(!mesh || !n || settled < 64 || (unsigned)settled + 8 >= MTU) {
+		return false;
+	}
+
+	n->minmtu = settled;
+	n->maxmtu = settled;
+	n->mtuprobes = 32;
+	len = (uint16_t)(settled + 8);
+
+	memset(&packet, 0, sizeof packet);
+	packet.probe = true;
+	packet.data[0] = 1;
+	packet.len = len;
+	mtu_probe_h(mesh, n, &packet, len);
+	return n->mtuprobes == 30 && n->maxmtu == len && n->minmtu == len;
 }
 
 /* VPN packet I/O */

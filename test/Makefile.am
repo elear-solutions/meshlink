@@ -16,6 +16,7 @@ TESTS = \
 	channels-udp \
 	channels-udp-cornercases \
 	discovery \
+	discovery-learn \
 	duplicate \
 	encrypted \
 	ephemeral \
@@ -91,6 +92,7 @@ check_PROGRAMS = \
 	channels-udp \
 	channels-udp-cornercases \
 	discovery \
+	discovery-learn \
 	duplicate \
 	echo-fork \
 	encrypted \
@@ -187,6 +189,9 @@ channels_udp_cornercases_LDADD = $(top_builddir)/src/libmeshlink.la
 
 discovery_SOURCES = discovery.c utils.c utils.h
 discovery_LDADD = $(top_builddir)/src/libmeshlink.la
+
+discovery_learn_SOURCES = discovery-learn.c utils.c utils.h
+discovery_learn_LDADD = $(top_builddir)/src/libmeshlink.la
 
 duplicate_SOURCES = duplicate.c utils.c utils.h
 duplicate_LDADD = $(top_builddir)/src/libmeshlink.la

@@ -174,6 +174,20 @@ bool receive_request(meshlink_handle_t *mesh, connection_t *c, const char *reque
 			logger(mesh, MESHLINK_ERROR, "Error while processing %s from %s", request_name[reqno], c->name);
 			return false;
 		}
+
+		/* Any handled request is proof the peer is alive. Otherwise both
+		   ends send their own PING every pinginterval. The greater name
+		   waits one extra second so a same-tick pair does not stay locked:
+		   the lesser name's next PING arrives first and pushes it again. */
+		if(c->status.active) {
+			c->last_ping_time = mesh->loop.now.tv_sec;
+
+			if(mesh->self && c->node && mesh_self_name_is_greater(mesh->self->name, c->node->name)) {
+				c->last_ping_time++;
+			}
+
+			c->status.pinged = false;
+		}
 	} else {
 		logger(mesh, MESHLINK_ERROR, "Bogus data received from %s", c->name);
 		return false;

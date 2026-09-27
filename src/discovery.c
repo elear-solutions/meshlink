@@ -58,6 +58,7 @@
 #define MESHLINK_MDNS_SERVICE_TYPE "_%s._tcp"
 #define MESHLINK_MDNS_NAME_KEY "name"
 #define MESHLINK_MDNS_FINGERPRINT_KEY "fingerprint"
+#define DISCOVERY_LAN_QUERY_NS (200 * 1000 * 1000L)
 
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
@@ -140,6 +141,82 @@ static uint64_t discovery_address_set_fingerprint(const meshlink_handle_t *mesh)
 	return h;
 }
 
+static bool discovery_peer_needs_lan_query(meshlink_handle_t *mesh, const node_t *peer) {
+	if(!mesh->self || !peer || peer == mesh->self) {
+		return false;
+	}
+
+	if(!connection_policy_lan_device_class(mesh->self->devclass)) {
+		return false;
+	}
+
+	if(peer->status.blacklisted || peer->status.conflict_backbone) {
+		return false;
+	}
+
+	if(connection_policy_is_backbone(mesh, peer)) {
+		return false;
+	}
+
+	if(!connection_policy_lan_device_class(peer->devclass)) {
+		return false;
+	}
+
+	if(!mesh->self->name || !peer->name || strcmp(mesh->self->name, peer->name) >= 0) {
+		return false;
+	}
+
+	return !connection_policy_has_current_lan_discovery(mesh, peer);
+}
+
+static bool discovery_lan_query_wanted(meshlink_handle_t *mesh) {
+	if(!mesh->discovery.enabled || !mesh->nodes) {
+		return false;
+	}
+
+	for splay_each(node_t, n, mesh->nodes) {
+		if(discovery_peer_needs_lan_query(mesh, n)) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static void discovery_lan_query_handler(event_loop_t *loop, void *data) {
+	(void)loop;
+	meshlink_handle_t *mesh = data;
+
+	if(!discovery_lan_query_wanted(mesh)) {
+		return;
+	}
+
+	mesh->discovery.lan_query_fires++;
+	discovery_refresh(mesh);
+}
+
+void discovery_consider_lan_query(meshlink_handle_t *mesh) {
+	struct timespec tv = {
+		0, DISCOVERY_LAN_QUERY_NS
+	};
+
+	if(!mesh || mesh->discovery.lan_query_hold || !discovery_lan_query_wanted(mesh)) {
+		return;
+	}
+
+	if(!mesh->discovery.lan_query_timeout.cb) {
+		timeout_add(&mesh->loop, &mesh->discovery.lan_query_timeout, discovery_lan_query_handler, mesh, &tv);
+	} else {
+		timeout_set(&mesh->loop, &mesh->discovery.lan_query_timeout, &tv);
+	}
+
+	/* Apple reachability and API callers are not the mesh thread. select
+	   stays asleep until something else wakes it. */
+	if(mesh->threadstarted && mesh->loop.pipefd[1] != -1 && !pthread_equal(mesh->thread, pthread_self())) {
+		signal_trigger(&mesh->loop, &mesh->datafromapp);
+	}
+}
+
 static void discovery_commit_address_set(meshlink_handle_t *mesh) {
 	uint64_t fp = discovery_address_set_fingerprint(mesh);
 	bool first;
@@ -155,6 +232,8 @@ static void discovery_commit_address_set(meshlink_handle_t *mesh) {
 	if(!first) {
 		connection_policy_advance_network_epoch(mesh);
 	}
+
+	discovery_consider_lan_query(mesh);
 }
 
 static void send_mdns_packet_ipv4(meshlink_handle_t *mesh, int fd, int index, const sockaddr_t *src, const sockaddr_t *dest, void *data, size_t len) {
@@ -442,6 +521,7 @@ static void mdns_io_handler(event_loop_t *loop, void *data, int flags) {
 		}
 
 		free(fingerprint);
+		discovery_consider_lan_query(mesh);
 	}
 
 	free(name);
@@ -1108,6 +1188,7 @@ bool discovery_start(meshlink_handle_t *mesh) {
 	logger(mesh, MESHLINK_DEBUG, "discovery_start called\n");
 
 	assert(mesh);
+	mesh->discovery.lan_query_hold = false;
 
 	// Set up multicast sockets for mDNS
 	static const int one = 1;
@@ -1216,6 +1297,7 @@ bool discovery_start(meshlink_handle_t *mesh) {
 	scan_ifaddrs(mesh);
 #endif
 
+	discovery_consider_lan_query(mesh);
 	return true;
 }
 
@@ -1233,6 +1315,9 @@ void discovery_stop(meshlink_handle_t *mesh) {
 	if(pthread_mutex_lock(&mesh->mutex) != 0) {
 		abort();
 	}
+
+	mesh->discovery.lan_query_hold = true;
+	timeout_del(&mesh->loop, &mesh->discovery.lan_query_timeout);
 
 	free(mesh->discovery.ifaces);
 	free(mesh->discovery.addresses);

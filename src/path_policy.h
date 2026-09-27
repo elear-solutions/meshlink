@@ -222,6 +222,7 @@ bool path_learn_address_cap_ex(struct meshlink_handle *mesh, struct node_t *n, c
 /* Append behind proven slots. Empty or full recent[] drops the address (does not evict). INDIRECT is allowed. */
 bool path_learn_address_fallback(struct meshlink_handle *mesh, struct node_t *n, const sockaddr_t *sa, address_source_t src);
 bool path_learn_address_fallback_cap(struct meshlink_handle *mesh, struct node_t *n, const sockaddr_t *sa, address_source_t src, path_cap_t cap);
+void path_clear_catta_address(struct node_t *n);
 void path_clear_recent(struct node_t *n);
 /* Force ADDR_SRC_UNKNOWN / UDP-only at the front (test/devtools plant of a leftover NLB). */
 void path_plant_recent(struct node_t *n, const sockaddr_t *sa);

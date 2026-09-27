@@ -89,6 +89,7 @@ typedef struct node_t {
 	// MTU probes
 	timeout_t mtutimeout;                   /* Probe event */
 	int mtuprobes;                          /* Number of probes */
+	unsigned liveness_probes_sent;          /* Parked 64-byte liveness probes actually emitted */
 	uint16_t mtu;                           /* Maximum size of packets to send to this node */
 	uint16_t maxmtu;                        /* Probed maximum MTU */
 	uint16_t mtu_probe_request_len;         /* Outbound probe-request payload length; set only around sptps_send_record for dest-IP DEBUG log */
