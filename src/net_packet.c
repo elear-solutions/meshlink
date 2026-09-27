@@ -946,7 +946,23 @@ void choose_udp_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **s
 		return;
 	}
 
-	/* Unconfirmed. */
+	/* Unconfirmed. A punch hint is the observed NAT port. It wins over
+	   REQ_EXTERNAL's listen port, which is a different socket once the
+	   public IPs differ. */
+	{
+		sockaddr_t punch;
+
+		if(path_unconfirmed_punch_dest(n, &punch)) {
+			path_copy_sockaddr(sa_buf, &punch);
+			*sa = sa_buf;
+
+			if(finish_udp_dest(mesh, sa, sock)) {
+				logger(mesh, MESHLINK_DEBUG, "UDP dest for %s: punch hint", n->name);
+				return;
+			}
+		}
+	}
+
 	sockaddr_t self_ext_buf;
 	const sockaddr_t *self_ext = self_external_sockaddr(mesh, &self_ext_buf) ? &self_ext_buf : NULL;
 

@@ -194,6 +194,12 @@ struct utcp {
 	uint16_t mss; // The maximum size of the payload of a UTCP packet.
 	int timeout; // sec
 
+	/* >0 while ack() or fast_retransmit() still holds pkt. utcp_set_mtu defers. */
+	unsigned send_depth;
+	bool mtu_deferred;
+	uint16_t deferred_mtu;
+	void (*mtu_applied)(struct utcp *utcp);
+
 	// Connection management
 
 	struct utcp_connection **connections;

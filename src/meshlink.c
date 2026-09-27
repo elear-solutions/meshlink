@@ -4760,6 +4760,23 @@ void channel_refresh_carrier(meshlink_handle_t *mesh, node_t *n) {
 	}
 }
 
+/* utcp_set_mtu calls this only after the buffer resize has landed, including
+   a resize that was deferred until ack() returned. */
+static void channel_mtu_applied(struct utcp *utcp) {
+	node_t *n = utcp->priv;
+	meshlink_handle_t *mesh;
+
+	if(!n || !n->mesh) {
+		return;
+	}
+
+	mesh = n->mesh;
+
+	if(mesh->node_pmtu_cb && !n->status.blacklisted) {
+		mesh->node_pmtu_cb(mesh, (meshlink_node_t *)n, n->minmtu);
+	}
+}
+
 /* Creates the node's UTCP and sizes it for the carrier that is live right now.
    Later route, PMTU, and relay-budget changes call channel_refresh_mtu(). */
 static void channel_utcp_init(meshlink_handle_t *mesh, node_t *n) {
@@ -4769,6 +4786,7 @@ static void channel_utcp_init(meshlink_handle_t *mesh, node_t *n) {
 		return;
 	}
 
+	utcp_set_mtu_applied_cb(n->utcp, channel_mtu_applied);
 	utcp_set_mtu(n->utcp, relay_fixed_channel_mtu(mesh, n));
 	utcp_set_retransmit_cb(n->utcp, channel_retransmit);
 	channel_refresh_mtu(mesh, n);
@@ -5493,14 +5511,24 @@ void update_node_status(meshlink_handle_t *mesh, node_t *n) {
 
 /* Path-MTU discovery reports the measurement and resizes live channels to the
    carrier that can carry it. Direct UDP uses the settled payload; a hop's
-   settle also resizes UDP-relay destinations that still have no relay_budget. */
+   settle also resizes UDP-relay destinations that still have no relay_budget.
+   The callback runs after the UTCP MTU changes, so get_mss() inside it is current.
+   A resize that utcp deferred until ack() returns notifies from that flush. */
 void update_node_pmtu(meshlink_handle_t *mesh, node_t *n) {
-	if(mesh->node_pmtu_cb && !n->status.blacklisted) {
-		mesh->node_pmtu_cb(mesh, (meshlink_node_t *)n, n->minmtu);
-	}
+	uint16_t before = n->utcp ? utcp_get_mtu(n->utcp) : 0;
 
 	relay_notify_minmtu_change(mesh, n);
 	channel_refresh_carrier(mesh, n);
+
+	if(!mesh->node_pmtu_cb || n->status.blacklisted) {
+		return;
+	}
+
+	if(n->utcp && (utcp_get_mtu(n->utcp) != before || utcp_mtu_change_pending(n->utcp))) {
+		return;
+	}
+
+	mesh->node_pmtu_cb(mesh, (meshlink_node_t *)n, n->minmtu);
 }
 
 void handle_duplicate_node(meshlink_handle_t *mesh, node_t *n) {

@@ -405,18 +405,24 @@ peer_config_t *setup_nat_hole_punch(const char *prefix, bool symmetric) {
 	free(command);
 	command = NULL;
 
-	/* Cone: DNAT inbound UDP to the host so a preserved mapped port reaches the
-	   socket. Plain MASQUERADE otherwise files that packet as a new flow and
-	   moves the outbound source port, and the observed mapping never answers.
+	/* Cone: DNAT only the preserved mapped port (the listen port MASQUERADE
+	   keeps) back to that socket. A probe to any other port, including a
+	   planted :9, must not reach the host. Plain MASQUERADE otherwise files
+	   that packet as a new flow and moves the outbound source port.
 	   Symmetric (--random) must not DNAT: the observed port is not the socket,
 	   and direct UDP has to stay down. */
 	char dnat[640] = "";
 
 	if(!symmetric) {
+		int port1 = meshlink_get_port(peers[1].mesh);
+		int port2 = meshlink_get_port(peers[2].mesh);
+
+		assert(port1 > 0 && port2 > 0);
 		snprintf(dnat, sizeof dnat,
-		         "/bin/ip netns exec %s %s -t nat -A PREROUTING -i eth0 -p udp -j DNAT --to-destination 10.1.0.2;"
-		         "/bin/ip netns exec %s %s -t nat -A PREROUTING -i eth0 -p udp -j DNAT --to-destination 10.2.0.2;",
-		         nat_netns_name[0], ipt, nat_netns_name[1], ipt);
+		         "/bin/ip netns exec %s %s -t nat -A PREROUTING -i eth0 -p udp --dport %d -j DNAT --to-destination 10.1.0.2:%d;"
+		         "/bin/ip netns exec %s %s -t nat -A PREROUTING -i eth0 -p udp --dport %d -j DNAT --to-destination 10.2.0.2:%d;",
+		         nat_netns_name[0], ipt, port1, port1,
+		         nat_netns_name[1], ipt, port2, port2);
 	}
 
 	assert(asprintf(&command,

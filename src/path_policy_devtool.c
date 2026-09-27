@@ -23,6 +23,7 @@
 #include "protocol.h"
 #include "sptps.h"
 #include "splay_tree.h"
+#include "utcp.h"
 #include "xalloc.h"
 
 #include <arpa/inet.h>
@@ -3453,7 +3454,8 @@ bool path_policy_cover_unit(meshlink_handle_t *mesh, node_t *live) {
 	                && cover_route_usability_and_promotion(mesh)
 	                && cover_preserve(mesh)
 	                && cover_scheduler(mesh)
-	                && punch_endpoint_cover_unit(mesh);
+	                && punch_endpoint_cover_unit(mesh)
+	                && utcp_mtu_reentry_unit();
 	mesh->probe_max_transactions = saved_max;
 	return ok;
 }

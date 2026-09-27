@@ -47,6 +47,7 @@ static void path_note_canonical_resolve_failed(meshlink_handle_t *mesh, node_t *
 static void path_on_canonical_resolved(meshlink_handle_t *mesh, node_t *n);
 static uint64_t path_fresh_nonce(void);
 static void path_commit_active_route(node_t *n, const path_target_t *target, const struct timespec *now);
+static bool path_punch_endpoint_usable(const sockaddr_t *sa);
 static bool hop_udp_ready(const node_t *hop);
 static bool path_fill_direct_udp(meshlink_handle_t *mesh, const node_t *n, path_target_t *out);
 static bool path_fill_local_meta(meshlink_handle_t *mesh, const node_t *n, path_target_t *out);
@@ -1569,6 +1570,12 @@ void path_note_udp_demoted_reason(meshlink_handle_t *mesh, node_t *n, const char
 	}
 
 	if(mesh) {
+		/* A confirmed peer kept this hint aside. It is the mapping to probe
+		   now that the working endpoint is gone. */
+		if(path_punch_endpoint_usable(&n->peer_udp.last_hint)) {
+			update_node_udp_from(mesh, n, &n->peer_udp.last_hint, ADDR_SRC_UDP_REFLEXIVE);
+		}
+
 		path_suspect_stop(mesh, n);
 		path_rerank_if_route_uses_udp(mesh, n, &n->address);
 		channel_refresh_carrier(mesh, n);
@@ -2185,7 +2192,12 @@ bool path_peer_udp_punching_allowed(const meshlink_handle_t *mesh, const node_t 
 static bool path_punch_endpoint_usable(const sockaddr_t *sa) {
 	uint16_t port = 0;
 
-	if(!udp_address_usable(sa)) {
+	if(!udp_address_usable(sa) || path_address_is_local(sa)) {
+		return false;
+	}
+
+	/* udp_address_usable still accepts broadcast. ADR 0008 does not record it. */
+	if(sa->sa.sa_family == AF_INET && ntohl(sa->in.sin_addr.s_addr) == 0xffffffffu) {
 		return false;
 	}
 
@@ -2202,8 +2214,14 @@ static const int path_punch_ladder[] = {1, 2, 5, 10, 30};
 
 static void path_punch_reset_schedule(node_t *n) {
 	n->peer_udp.request_step = 0;
+	n->peer_udp.ladder_stopped = false;
 	memset(&n->peer_udp.next_request, 0, sizeof n->peer_udp.next_request);
 	n->peer_udp.request_session = 0;
+}
+
+/* Session change stops the ladder. A demand epoch or a network epoch restarts it. */
+static void path_punch_stop_ladder(node_t *n) {
+	n->peer_udp.ladder_stopped = true;
 }
 
 static void path_punch_schedule(node_t *n, const struct timespec *now) {
@@ -2243,7 +2261,13 @@ static void path_punch_endpoint_tick(meshlink_handle_t *mesh, node_t *peer) {
 
 	if(peer->session_id && peer->peer_udp.request_session
 	                && peer->peer_udp.request_session != peer->session_id) {
-		path_punch_reset_schedule(peer);
+		path_punch_stop_ladder(peer);
+		peer->peer_udp.request_session = peer->session_id;
+		return;
+	}
+
+	if(peer->peer_udp.ladder_stopped) {
+		return;
 	}
 
 	if((peer->peer_udp.next_request.tv_sec || peer->peer_udp.next_request.tv_nsec)
@@ -2251,7 +2275,10 @@ static void path_punch_endpoint_tick(meshlink_handle_t *mesh, node_t *peer) {
 		return;
 	}
 
-	(void)send_punch_endpoint_request(mesh, peer);
+	if(!send_punch_endpoint_request(mesh, peer)) {
+		return;
+	}
+
 	path_punch_schedule(peer, &mesh->loop.now);
 	peer->peer_udp.request_session = peer->session_id;
 }
@@ -2270,8 +2297,9 @@ static void path_punch_note_hint(meshlink_handle_t *mesh, node_t *n, const socka
 	}
 
 	path_copy_sockaddr(&n->peer_udp.last_hint, sa);
-	n->peer_udp.request_step = 0;
-	path_punch_schedule(n, &mesh->loop.now);
+	/* Same restart as a demand epoch or a network epoch: send on this tick. */
+	path_punch_reset_schedule(n);
+	path_punch_endpoint_tick(mesh, n);
 }
 
 void path_note_authenticated_udp_observation(meshlink_handle_t *mesh, node_t *node, const sockaddr_t *endpoint) {
@@ -2323,7 +2351,7 @@ void path_clear_udp_observation(node_t *n) {
 	}
 
 	memset(&n->udp_observation, 0, sizeof n->udp_observation);
-	path_punch_reset_schedule(n);
+	path_punch_stop_ladder(n);
 	memset(&n->peer_udp.last_hint, 0, sizeof n->peer_udp.last_hint);
 }
 
@@ -2350,6 +2378,19 @@ bool path_select_punch_hint(const meshlink_handle_t *mesh, const node_t *node, s
 	}
 
 	return false;
+}
+
+bool path_unconfirmed_punch_dest(const node_t *n, sockaddr_t *out) {
+	if(!n || !out || n->status.udp_confirmed) {
+		return false;
+	}
+
+	if(!n->peer_udp.last_hint.sa.sa_family || !path_punch_endpoint_usable(&n->peer_udp.last_hint)) {
+		return false;
+	}
+
+	path_copy_sockaddr(out, &n->peer_udp.last_hint);
+	return true;
 }
 
 void path_note_punch_endpoint(meshlink_handle_t *mesh, node_t *node, const sockaddr_t *sa) {

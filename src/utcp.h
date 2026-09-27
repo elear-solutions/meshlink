@@ -92,8 +92,17 @@ uint16_t utcp_get_mss(struct utcp *utcp);
 /* Meshlink callers hold mesh->mutex. Grow reallocs the packet buffer; shrink
    keeps it. A failed grow leaves the previous MTU. On increase, a reliable
    connection whose cwnd is below 2*mss is raised to that. On decrease, reliable
-   connections with unacked data rewind snd.nxt to snd.una. */
+   connections with unacked data rewind snd.nxt to snd.una.
+   A call from inside ack() or fast_retransmit() is applied after that send
+   returns, so the packet buffer those functions still hold is not freed and
+   snd.nxt is not rewound mid-send. */
 void utcp_set_mtu(struct utcp *utcp, uint16_t mtu);
+/* Fired after a set actually changes the MTU, including a deferred one. */
+void utcp_set_mtu_applied_cb(struct utcp *utcp, void (*cb)(struct utcp *utcp));
+/* True when a set is waiting for ack()/fast_retransmit() to return. */
+bool utcp_mtu_change_pending(const struct utcp *utcp);
+/* Send callback grows the MTU mid-ack. False if the second segment uses a freed buffer. */
+bool utcp_mtu_reentry_unit(void);
 
 void utcp_reset_timers(struct utcp *utcp);
 

@@ -167,6 +167,7 @@ typedef struct peer_path_demand_t {
 	struct timespec idle_until;             /* {0,0} = no grace */
 	struct timespec next_request;           /* {0,0} = send on the next tick */
 	uint8_t request_step;                   /* index into 1,2,5,10,30s */
+	bool ladder_stopped;                    /* session change; demand or network epoch clears it */
 	uint32_t requests_sent;                 /* successful REQ_PUNCH_ENDPOINT sends */
 	uint32_t request_session;               /* session_id last requested */
 	uint64_t network_epoch;                 /* lan_network_epoch when the ladder was armed */
@@ -380,6 +381,8 @@ void path_clear_udp_observation(struct node_t *node);
 bool path_select_punch_hint(const struct meshlink_handle *mesh, const struct node_t *node, sockaddr_t *out, bool *from_observation);
 /* Install a hinted peer endpoint. Probes only while demand is live and UDP is unconfirmed. */
 void path_note_punch_endpoint(struct meshlink_handle *mesh, struct node_t *node, const sockaddr_t *sa);
+/* Unconfirmed probe dest. The installed punch hint, when it is still usable. */
+bool path_unconfirmed_punch_dest(const struct node_t *n, sockaddr_t *out);
 
 /* First/last channel to an ordinary peer. acquire() is false (no count change)
    for backbone/UNKNOWN/self. Release always decrements a non-zero count so a
