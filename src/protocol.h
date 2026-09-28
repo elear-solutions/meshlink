@@ -25,7 +25,7 @@
 /* Protocol version. Different major versions are incompatible. */
 
 #define PROT_MAJOR 17
-#define PROT_MINOR 3 /* Should not exceed 255! */
+#define PROT_MINOR 4 /* Should not exceed 255! */
 
 /* Silly Windows */
 
@@ -51,6 +51,7 @@ typedef enum request_t {
 	REQ_CANONICAL,
 	REQ_EXTERNAL,
 	REQ_RELAY_MTU,
+	REQ_PUNCH_ENDPOINT,
 	NUM_REQUESTS
 } request_t;
 
@@ -103,6 +104,8 @@ bool send_pong(struct meshlink_handle *mesh, struct connection_t *);
 bool send_add_edge(struct meshlink_handle *mesh, struct connection_t *, const struct edge_t *, int contradictions);
 bool send_del_edge(struct meshlink_handle *mesh, struct connection_t *, const struct edge_t *, int contradictions);
 bool send_req_key(struct meshlink_handle *mesh, struct node_t *);
+bool send_punch_endpoint_request(struct meshlink_handle *mesh, struct node_t *);
+bool punch_endpoint_cover_unit(struct meshlink_handle *mesh);
 bool send_canonical_address(struct meshlink_handle *mesh, struct node_t *);
 bool send_external_ip_address(struct meshlink_handle *mesh, struct node_t *);
 bool send_raw_packet(struct meshlink_handle *mesh, struct connection_t *, const vpn_packet_t *);

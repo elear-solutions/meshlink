@@ -128,8 +128,11 @@ Retiring an intent closes its sockets. `drop_outgoing()`:
   adjacencies so the LAN remains connected if the backbone is gone.
 - A stored backbone that is reclassified or conflicted drops both the
   reserved intent and its live META.
-- ADR 0004's route ranking is unchanged. ADR 0005 still owns identity
-  and the conflict bit. ADR 0006 still owns who may invite.
+- ADR 0004's route ranking is unchanged, except that ADR 0008 lets a
+  strictly better live carrier replace a pending lower candidate.
+  ADR 0005 still owns identity and the conflict bit. ADR 0006 still
+  owns who may invite. Endpoint requests are ordinary META traffic on
+  the existing backbone connection; they do not add a connection intent.
 - Finding 6 (retry ladder) is implemented on the backbone intent.
   LAN uses the generic outgoing retry. Finding 10 (relay-hop skip of
   `conflict_backbone`) remains separate.

@@ -293,3 +293,173 @@ bool set_peers_tcponly(peer_config_t *peers, int npeers) {
 void close_relay_peer_nut(peer_config_t *peers) {
 	close_peers(peers, 3);
 }
+
+static char *nat_netns_name[2];
+
+static void forget_nat_netns(void) {
+	for(int i = 0; i < 2; i++) {
+		char *command = NULL;
+
+		if(!nat_netns_name[i]) {
+			continue;
+		}
+
+		assert(asprintf(&command, "/bin/ip netns delete %s >/dev/null 2>&1", nat_netns_name[i]) > 0);
+		(void)system(command);
+		free(command);
+		free(nat_netns_name[i]);
+		nat_netns_name[i] = NULL;
+	}
+}
+
+static int nat_run(const char *command) {
+	int rc = system(command);
+
+	if(rc != 0) {
+		fprintf(stderr, "nat setup failed (%d): %s\n", rc, command);
+	}
+
+	return rc;
+}
+
+peer_config_t *setup_nat_hole_punch(const char *prefix, bool symmetric) {
+	static peer_config_t peers[] = {
+		{"relay", DEV_CLASS_BACKBONE, NULL, 0, NULL, {0}},
+		{"app", DEV_CLASS_PORTABLE, NULL, 0, NULL, {0}},
+		{"cam", DEV_CLASS_STATIONARY, NULL, 0, NULL, {0}},
+	};
+	const char *ipt = (access("/usr/sbin/iptables-legacy", X_OK) == 0) ? "/usr/sbin/iptables-legacy" : "iptables";
+	const char *random = symmetric ? " --random" : "";
+	char *command = NULL;
+
+	forget_nat_netns();
+	create_peers(peers, 3, prefix);
+
+	assert(asprintf(&nat_netns_name[0], "%sna", prefix) > 0);
+	assert(asprintf(&nat_netns_name[1], "%snb", prefix) > 0);
+
+	assert(asprintf(&command,
+	                "/bin/ip netns delete %s >/dev/null 2>&1 || true;"
+	                "/bin/ip netns delete %s >/dev/null 2>&1 || true;"
+	                "/bin/ip netns add %s;"
+	                "/bin/ip netns add %s;"
+	                "/bin/ip netns exec %s ip link set dev lo up;"
+	                "/bin/ip netns exec %s ip link set dev lo up;"
+	                "/bin/ip netns exec %s ip link add br0 type bridge;"
+	                "/bin/ip netns exec %s ip addr add 203.0.113.1/24 dev br0;"
+	                "/bin/ip netns exec %s ip link set br0 up;"
+	                "/bin/ip netns exec %s ip link add eth0 type veth peer name nata netns %s;"
+	                "/bin/ip netns exec %s ip link set nata master br0 up;"
+	                "/bin/ip netns exec %s ip addr add 203.0.113.2/24 dev eth0;"
+	                "/bin/ip netns exec %s ip link set eth0 up;"
+	                "/bin/ip netns exec %s ip link add eth0 type veth peer name natb netns %s;"
+	                "/bin/ip netns exec %s ip link set natb master br0 up;"
+	                "/bin/ip netns exec %s ip addr add 203.0.113.3/24 dev eth0;"
+	                "/bin/ip netns exec %s ip link set eth0 up;"
+	                "/bin/ip netns exec %s ip link add eth0 type veth peer name lan netns %s;"
+	                "/bin/ip netns exec %s ip addr add 10.1.0.1/24 dev lan;"
+	                "/bin/ip netns exec %s ip link set lan up;"
+	                "/bin/ip netns exec %s ip addr add 10.1.0.2/24 dev eth0;"
+	                "/bin/ip netns exec %s ip link set eth0 up;"
+	                "/bin/ip netns exec %s ip route add default via 10.1.0.1;"
+	                "/bin/ip netns exec %s ip link add eth0 type veth peer name lan netns %s;"
+	                "/bin/ip netns exec %s ip addr add 10.2.0.1/24 dev lan;"
+	                "/bin/ip netns exec %s ip link set lan up;"
+	                "/bin/ip netns exec %s ip addr add 10.2.0.2/24 dev eth0;"
+	                "/bin/ip netns exec %s ip link set eth0 up;"
+	                "/bin/ip netns exec %s ip route add default via 10.2.0.1;",
+	                nat_netns_name[0], nat_netns_name[1],
+	                nat_netns_name[0], nat_netns_name[1],
+	                nat_netns_name[0], nat_netns_name[1],
+	                peers[0].netns_name,
+	                peers[0].netns_name,
+	                peers[0].netns_name,
+	                nat_netns_name[0], peers[0].netns_name,
+	                peers[0].netns_name,
+	                nat_netns_name[0],
+	                nat_netns_name[0],
+	                nat_netns_name[1], peers[0].netns_name,
+	                peers[0].netns_name,
+	                nat_netns_name[1],
+	                nat_netns_name[1],
+	                peers[1].netns_name, nat_netns_name[0],
+	                nat_netns_name[0],
+	                nat_netns_name[0],
+	                peers[1].netns_name,
+	                peers[1].netns_name,
+	                peers[1].netns_name,
+	                peers[2].netns_name, nat_netns_name[1],
+	                nat_netns_name[1],
+	                nat_netns_name[1],
+	                peers[2].netns_name,
+	                peers[2].netns_name,
+	                peers[2].netns_name) > 0);
+
+	if(nat_run(command) != 0) {
+		free(command);
+		close_peers(peers, 3);
+		forget_nat_netns();
+		return NULL;
+	}
+
+	free(command);
+	command = NULL;
+
+	/* Cone: DNAT only the preserved mapped port (the listen port MASQUERADE
+	   keeps) back to that socket. A probe to any other port, including a
+	   planted :9, must not reach the host. Plain MASQUERADE otherwise files
+	   that packet as a new flow and moves the outbound source port.
+	   Symmetric (--random) must not DNAT: the observed port is not the socket,
+	   and direct UDP has to stay down. */
+	char dnat[640] = "";
+
+	if(!symmetric) {
+		int port1 = meshlink_get_port(peers[1].mesh);
+		int port2 = meshlink_get_port(peers[2].mesh);
+
+		assert(port1 > 0 && port2 > 0);
+		snprintf(dnat, sizeof dnat,
+		         "/bin/ip netns exec %s %s -t nat -A PREROUTING -i eth0 -p udp --dport %d -j DNAT --to-destination 10.1.0.2:%d;"
+		         "/bin/ip netns exec %s %s -t nat -A PREROUTING -i eth0 -p udp --dport %d -j DNAT --to-destination 10.2.0.2:%d;",
+		         nat_netns_name[0], ipt, port1, port1,
+		         nat_netns_name[1], ipt, port2, port2);
+	}
+
+	assert(asprintf(&command,
+	                "/bin/ip netns exec %s sysctl -w net.ipv4.ip_forward=1 >/dev/null;"
+	                "/bin/ip netns exec %s sysctl -w net.ipv4.ip_forward=1 >/dev/null;"
+	                "/bin/ip netns exec %s %s -P FORWARD ACCEPT;"
+	                "/bin/ip netns exec %s %s -P FORWARD ACCEPT;"
+	                "%s"
+	                "/bin/ip netns exec %s %s -t nat -A POSTROUTING -s 10.1.0.0/24 -o eth0 -j MASQUERADE%s;"
+	                "/bin/ip netns exec %s %s -t nat -A POSTROUTING -s 10.2.0.0/24 -o eth0 -j MASQUERADE%s;",
+	                nat_netns_name[0], nat_netns_name[1],
+	                nat_netns_name[0], ipt,
+	                nat_netns_name[1], ipt,
+	                dnat,
+	                nat_netns_name[0], ipt, random,
+	                nat_netns_name[1], ipt, random) > 0);
+
+	if(nat_run(command) != 0) {
+		free(command);
+		close_peers(peers, 3);
+		forget_nat_netns();
+		return NULL;
+	}
+
+	free(command);
+	snprintf(peers[0].ip, sizeof peers[0].ip, "203.0.113.1");
+	snprintf(peers[1].ip, sizeof peers[1].ip, "10.1.0.2");
+	snprintf(peers[2].ip, sizeof peers[2].ip, "10.2.0.2");
+	assert(meshlink_add_invitation_address(peers[0].mesh, "203.0.113.1", NULL));
+	invite_peers(peers, 3);
+	return peers;
+}
+
+void close_nat_hole_punch(peer_config_t *peers) {
+	if(peers) {
+		close_peers(peers, 3);
+	}
+
+	forget_nat_netns();
+}

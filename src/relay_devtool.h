@@ -42,7 +42,6 @@ relay_report_entry_t *relay_report_get(struct meshlink_handle *mesh, const char 
 bool relay_decode(const void *data, size_t len, char *origin, size_t origin_size, char *destination, size_t destination_size, const uint8_t **inner, size_t *inner_len);
 bool relay_add_u32(uint32_t a, uint32_t b, uint32_t *out);
 bool relay_sub_u32(uint32_t a, uint32_t b, uint32_t *out);
-bool relay_prefix21(const char *origin, const char *destination, uint32_t *out);
 
 bool relay_inject_inner(struct meshlink_handle *mesh, struct node_t *dest, uint8_t type);
 

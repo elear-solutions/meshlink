@@ -34,6 +34,9 @@
 #undef poll
 #endif
 
+static void utcp_set_mtu_apply(struct utcp *utcp, uint16_t mtu);
+static void utcp_flush_deferred_mtu(struct utcp *utcp);
+
 #ifndef UTCP_CLOCK
 #if defined(CLOCK_MONOTONIC_RAW) && defined(__x86_64__)
 #define UTCP_CLOCK CLOCK_MONOTONIC_RAW
@@ -820,6 +823,10 @@ static void ack(struct utcp_connection *c, bool sendatleastone) {
 		uint8_t data[];
 	} *pkt = c->utcp->pkt;
 
+	/* Hold send_depth across the whole loop. A send callback that resizes
+	   the MTU must not free pkt or rewind snd.nxt before the next segment. */
+	c->utcp->send_depth++;
+
 	pkt->hdr.src = c->src;
 	pkt->hdr.dst = c->dst;
 	pkt->hdr.ack = c->rcv.nxt;
@@ -863,6 +870,12 @@ static void ack(struct utcp_connection *c, bool sendatleastone) {
 			pkt->hdr.wnd += seglen;
 		}
 	} while(left);
+
+	if(c->utcp->send_depth) {
+		c->utcp->send_depth--;
+	}
+
+	utcp_flush_deferred_mtu(c->utcp);
 }
 
 ssize_t utcp_send(struct utcp_connection *c, const void *data, size_t len) {
@@ -1012,7 +1025,14 @@ static void fast_retransmit(struct utcp_connection *c) {
 
 		buffer_copy(&c->sndbuf, pkt->data, 0, len);
 		print_packet(c, "rtrx", pkt, sizeof(pkt->hdr) + len);
+		utcp->send_depth++;
 		utcp->send(utcp, pkt, sizeof(pkt->hdr) + len);
+
+		if(utcp->send_depth) {
+			utcp->send_depth--;
+		}
+
+		utcp_flush_deferred_mtu(utcp);
 		break;
 
 	default:
@@ -2396,16 +2416,16 @@ uint16_t utcp_get_mss(struct utcp *utcp) {
 	return utcp ? utcp->mss : 0;
 }
 
-void utcp_set_mtu(struct utcp *utcp, uint16_t mtu) {
-	if(!utcp) {
+static void utcp_set_mtu_apply(struct utcp *utcp, uint16_t mtu) {
+	uint16_t old;
+
+	if(!utcp || mtu <= sizeof(struct hdr)) {
 		return;
 	}
 
-	if(mtu <= sizeof(struct hdr)) {
-		return;
-	}
+	old = utcp->mtu;
 
-	if(mtu > utcp->mtu) {
+	if(mtu > old) {
 		char *new = realloc(utcp->pkt, mtu + sizeof(struct hdr));
 
 		if(!new) {
@@ -2417,6 +2437,118 @@ void utcp_set_mtu(struct utcp *utcp, uint16_t mtu) {
 
 	utcp->mtu = mtu;
 	utcp->mss = mtu - sizeof(struct hdr);
+
+	if(mtu != old && utcp->connections) {
+		for(int i = 0; i < utcp->nconnections; i++) {
+			struct utcp_connection *c = utcp->connections[i];
+
+			if(!c || c->reapable || !is_reliable(c) || c->state == CLOSED) {
+				continue;
+			}
+
+			if(mtu > old) {
+				uint32_t floor_cwnd = (uint32_t)utcp->mss * 2;
+
+				if(c->snd.cwnd < floor_cwnd) {
+					c->snd.cwnd = floor_cwnd;
+				}
+			} else if(seqdiff(c->snd.nxt, c->snd.una) > 0) {
+				c->snd.nxt = c->snd.una;
+			}
+		}
+	}
+
+	if(mtu != old && utcp->mtu_applied) {
+		utcp->mtu_applied(utcp);
+	}
+}
+
+static void utcp_flush_deferred_mtu(struct utcp *utcp) {
+	uint16_t mtu;
+
+	if(!utcp || utcp->send_depth || !utcp->mtu_deferred) {
+		return;
+	}
+
+	utcp->mtu_deferred = false;
+	mtu = utcp->deferred_mtu;
+	utcp_set_mtu_apply(utcp, mtu);
+}
+
+void utcp_set_mtu(struct utcp *utcp, uint16_t mtu) {
+	if(!utcp || mtu <= sizeof(struct hdr)) {
+		return;
+	}
+
+	if(utcp->send_depth) {
+		utcp->mtu_deferred = true;
+		utcp->deferred_mtu = mtu;
+		return;
+	}
+
+	utcp_set_mtu_apply(utcp, mtu);
+}
+
+void utcp_set_mtu_applied_cb(struct utcp *utcp, void (*cb)(struct utcp *utcp)) {
+	if(utcp) {
+		utcp->mtu_applied = cb;
+	}
+}
+
+bool utcp_mtu_change_pending(const struct utcp *utcp) {
+	return utcp && utcp->mtu_deferred;
+}
+
+static int mtu_reentry_sends;
+
+static ssize_t mtu_reentry_send(struct utcp *utcp, const void *data, size_t len) {
+	(void)data;
+	mtu_reentry_sends++;
+
+	/* The SYN is the first send. Grow on the first data segment, while ack()
+	   still has more segments to write into pkt. */
+	if(mtu_reentry_sends > 1 && utcp_get_mtu(utcp) == 64) {
+		utcp_set_mtu(utcp, 500);
+	}
+
+	return (ssize_t)len;
+}
+
+bool utcp_mtu_reentry_unit(void) {
+	struct utcp *utcp;
+	struct utcp_connection *c;
+	char payload[180];
+	ssize_t sent;
+	bool ok;
+
+	mtu_reentry_sends = 0;
+	utcp = utcp_init(NULL, NULL, mtu_reentry_send, NULL);
+
+	if(!utcp) {
+		return false;
+	}
+
+	utcp_set_mtu(utcp, 64);
+	c = utcp_connect(utcp, 80, NULL, NULL);
+
+	if(!c) {
+		utcp_exit(utcp);
+		return false;
+	}
+
+	c->state = ESTABLISHED;
+	c->snd.una = c->snd.nxt;
+	c->snd.last = c->snd.nxt;
+	c->snd.wnd = 65535;
+	c->snd.cwnd = 65535;
+	memset(payload, 0x5a, sizeof payload);
+	sent = utcp_send(c, payload, sizeof payload);
+	ok = sent == (ssize_t)sizeof payload
+	     && mtu_reentry_sends >= 3
+	     && utcp_get_mtu(utcp) == 500
+	     && !utcp_mtu_change_pending(utcp);
+	utcp_exit(utcp);
+	return ok;
 }
 
 void utcp_reset_timers(struct utcp *utcp) {

@@ -32,7 +32,7 @@ typedef struct node_status_t {
 	uint16_t waitingforkey: 1;          /* 1 if we already sent out a request */
 	uint16_t visited: 1;                /* 1 if this node has been visited by one of the graph algorithms */
 	uint16_t reachable: 1;              /* 1 if this node is reachable in the graph */
-	uint16_t udp_confirmed: 1;          /* 1 if the address is one that we received UDP traffic on */
+	uint16_t udp_confirmed: 1;          /* 1 if a probe reply proved bidirectional UDP */
 	uint16_t broadcast: 1;              /* 1 if the next UDP packet should be broadcast to the local network */
 	uint16_t blacklisted: 1;            /* 1 if the node is blacklist so we never want to speak with him anymore */
 	uint16_t destroyed: 1;              /* 1 if the node is being destroyed, deallocate channels when any callback is triggered */
@@ -55,6 +55,13 @@ typedef struct lan_presence_t {
 	time_t last_discovered_at;
 } lan_presence_t;
 
+/* Runtime-only. Not a route, not persisted, not udp_confirmed. */
+typedef struct udp_observation_t {
+	sockaddr_t endpoint;
+	struct timespec observed_at;
+	uint32_t session_id;
+} udp_observation_t;
+
 
 typedef struct node_t {
 	// Public member variables
@@ -64,7 +71,7 @@ typedef struct node_t {
 	// Private member variables
 	node_status_t status;
 	uint16_t minmtu;                        /* Probed minimum MTU */
-	uint16_t relay_budget;                  /* Last accepted final-hop encrypted-record budget */
+	uint16_t relay_budget;                  /* Accepted type-8 vpn budget; raises channel MSS on UDP relay */
 	dev_class_t devclass;
 
 	// Used for packet I/O
@@ -136,6 +143,8 @@ typedef struct node_t {
 	int canonical_resolve_backoff;          /* Seconds until the next resolve retry */
 	time_t canonical_resolve_next;          /* Earliest time to retry hostname resolve */
 	sockaddr_t last_udp_from;               /* Source of the last inbound UDP packet */
+	udp_observation_t udp_observation;      /* Authenticated direct UDP source; runtime only */
+	uint32_t punch_hints_sent;              /* Address-only ANS_KEY hints this node sent */
 	sockaddr_t udp_cache_extra;             /* Extra node_udp_cache key (local probe / alternate from) */
 	path_tier_t udp_tier;                   /* Validated UDP dest tier */
 	path_tier_t last_path_tier;             /* Last logged destination-wide tier */

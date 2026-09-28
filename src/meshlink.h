@@ -473,7 +473,12 @@ typedef void (*meshlink_node_status_cb_t)(struct meshlink_handle *mesh, struct m
 void meshlink_set_node_status_cb(struct meshlink_handle *mesh, meshlink_node_status_cb_t cb);
 
 /// A callback reporting node path MTU changes.
-/** @param mesh      A handle which represents an instance of MeshLink.
+/** Fired when the measured path MTU changes. Applications that cache
+ *  `meshlink_channel_get_mss()` (for example an RTP packer) must read it
+ *  again here: the channel budget tracks the active carrier and is not fixed
+ *  for the life of the UTCP instance.
+ *
+ *  @param mesh      A handle which represents an instance of MeshLink.
  *  @param node       A pointer to a struct meshlink_node describing the node whose status changed.
  *                    This pointer is valid until meshlink_close() is called.
  *  @param pmtu       The current path MTU to the node, or 0 if UDP communication is not (yet) possible.
@@ -1774,13 +1779,17 @@ size_t meshlink_channel_get_sendq(struct meshlink_handle *mesh, struct meshlink_
 size_t meshlink_channel_get_recvq(struct meshlink_handle *mesh, struct meshlink_channel *channel) __attribute__((__warn_unused_result__));
 
 /// Get the maximum segment size of a channel.
-/** This returns the amount of bytes that can be sent at once for channels with UDP semantics.
+/** This returns how many payload bytes the channel will put in one segment
+ *  right now. The size follows the active carrier: the relay-safe floor, a
+ *  settled direct path MTU, or an accepted UDP-relay budget. It can grow or
+ *  shrink. `meshlink_set_node_pmtu_cb()` is the signal to read it again.
+ *  `meshlink_channel_send()` still splits a larger buffer at the current size.
  *
  *  \memberof meshlink_channel
  *  @param mesh         A handle which represents an instance of MeshLink.
  *  @param channel      A handle for the channel.
  *
- *  @return             The amount of bytes in the receive buffer.
+ *  @return             The current maximum segment size, or (size_t)-1 on error.
  */
 size_t meshlink_channel_get_mss(struct meshlink_handle *mesh, struct meshlink_channel *channel) __attribute__((__warn_unused_result__));
 

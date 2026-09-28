@@ -20,8 +20,10 @@
 #include "net_upgrade.h"
 #include "path_policy.h"
 #include "path_policy_devtool.h"
+#include "protocol.h"
 #include "sptps.h"
 #include "splay_tree.h"
+#include "utcp.h"
 #include "xalloc.h"
 
 #include <arpa/inet.h>
@@ -2167,7 +2169,11 @@ static bool cover_retry_survives_carrier(meshlink_handle_t *mesh) {
 
 	dest.active_route.selected_at.tv_sec -= PATH_ROUTE_MIN_RESIDENCY_SEC + 1;
 	dest.promotion_candidate.first_success.tv_sec -= 1;
+	/* Direct WAN is live above. ADR 0008 must not commit relay over it, so
+	   this tick proves retry state only after that better carrier is gone. */
+	dest.status.udp_confirmed = false;
 	path_route_tick(mesh, &dest);
+	dest.status.udp_confirmed = true;
 	CHECK_RETRY(!dest.promotion_candidate.active);
 	CHECK_RETRY(dest.active_route.kind == DATA_ROUTE_RELAY);
 	CHECK_RETRY(dest.active_route.relay_carrier == RELAY_CARRIER_UDP);
@@ -3447,7 +3453,9 @@ bool path_policy_cover_unit(meshlink_handle_t *mesh, node_t *live) {
 	                && cover_suspect_epoch(mesh)
 	                && cover_route_usability_and_promotion(mesh)
 	                && cover_preserve(mesh)
-	                && cover_scheduler(mesh);
+	                && cover_scheduler(mesh)
+	                && punch_endpoint_cover_unit(mesh)
+	                && utcp_mtu_reentry_unit();
 	mesh->probe_max_transactions = saved_max;
 	return ok;
 }
