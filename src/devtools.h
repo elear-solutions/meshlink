@@ -97,6 +97,10 @@ typedef struct devtool_node_status devtool_node_status_t;
 /// Number of cached canonical endpoints (node_t.canonical_sa + canonical_extra).
 #define DEVTOOL_MAX_CANONICAL 8
 
+/** Append-only snapshot. Bump when fields are added. New fields go at the end.
+ *  devtool_get_node_status() writes devtool_status_version. */
+#define DEVTOOL_NODE_STATUS_VERSION 3
+
 /// The status of a node.
 struct devtool_node_status {
 	uint32_t status;
@@ -181,6 +185,26 @@ struct devtool_node_status {
 	int candidate_cooldown_remaining;     /// seconds until this endpoint may be tried again
 	uint16_t channel_mtu;                 /// current UTCP MTU (header + MSS), not chosen once
 	uint16_t relay_budget;                /// accepted type-8 vpn budget; 0 if none
+
+	/* DEVTOOL_NODE_STATUS_VERSION 2. Append only. */
+	uint32_t devtool_status_version;      /// DEVTOOL_NODE_STATUS_VERSION
+	int cutover_state;                    /// meta cutover state, 0 if idle
+	uint64_t cutover_id;                  /// barrier id, 0 if idle
+	bool cutover_timer_armed;
+	unsigned cutover_pending_records;
+	size_t cutover_pending_bytes;
+	bool cutover_has_standby;
+	uint8_t key_retry_step;
+	uint32_t key_retry_epoch;
+	bool key_retry_armed;
+	bool key_delivery_uncertain;
+	bool pending_punch_hint;              /// a hint is staged ahead of validkey
+
+	/* DEVTOOL_NODE_STATUS_VERSION 3. Append only. */
+	uint8_t punch_challenge_provenance;   /// 0 none, 1 NMN hint, 2 authenticated ingress
+	uint8_t punch_challenge_attempts;     /// probes actually sent for the current challenge
+	bool punch_challenge_active;
+	struct sockaddr_storage punch_challenge_endpoint; /// AF_UNSPEC if none
 };
 
 /// Get the status of a node.

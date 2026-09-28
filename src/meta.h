@@ -23,6 +23,8 @@
 #include "connection.h"
 
 bool send_meta(struct meshlink_handle *mesh, struct connection_t *, const char *, int);
+/* Barrier messages and PING/PONG. Bypasses the ordered-cutover freeze. */
+bool send_meta_cutover_control(struct meshlink_handle *mesh, struct connection_t *, const char *, int);
 bool send_meta_sptps(void *, uint8_t, const void *, size_t);
 bool receive_meta_sptps(void *, uint8_t, const void *, uint16_t);
 void broadcast_meta(struct meshlink_handle *mesh, struct connection_t *, const char *, int);

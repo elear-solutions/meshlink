@@ -164,11 +164,6 @@ static bool handle_meta_write(meshlink_handle_t *mesh, connection_t *c) {
 
 	if(!c->outbuf.len) {
 		io_set(&mesh->loop, &c->io, IO_READ);
-
-		if(c->status.drain_only) {
-			terminate_connection(mesh, c, false);
-			return false;
-		}
 	}
 
 	return true;

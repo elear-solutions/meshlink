@@ -3453,6 +3453,7 @@ bool path_policy_cover_unit(meshlink_handle_t *mesh, node_t *live) {
 	                && cover_suspect_epoch(mesh)
 	                && cover_route_usability_and_promotion(mesh)
 	                && cover_preserve(mesh)
+	                && upgrade_cutover_cover_unit(mesh)
 	                && cover_scheduler(mesh)
 	                && punch_endpoint_cover_unit(mesh)
 	                && utcp_mtu_reentry_unit();

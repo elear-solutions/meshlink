@@ -27,10 +27,13 @@ be pre-resolved while the direct socket is pending; two startup sockets
 are never opened.
 
 After any path is active, upgrades are make-before-break: validate a
-better path in parallel, keep the current path carrying traffic, promote
-only after authentication, then drain and close the old META. Already
-queued encrypted META bytes may flush. A drain timeout is a cleanup
-guard only.
+better path in parallel and keep the current path carrying traffic.
+Promotion is not "drain the old socket". ADR 0009 replaces that cutover.
+Both peers hold the authenticated direct socket as a standby, freeze new
+ordinary META, and exchange PREPARE / READY / COMMIT / ACK so every
+in-flight record is delivered in order before the old META is closed.
+A drain of already-queued ciphertext is not sufficient and is not the
+migration mechanism.
 
 An authenticated direct META upgrade preserves node SPTPS, `validkey`,
 UTCP channels, UDP proof, and relay budgets when the old connection was

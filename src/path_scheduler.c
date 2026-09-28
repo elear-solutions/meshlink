@@ -91,7 +91,8 @@ static void path_scheduler_note_promotion_emit(const path_probe_request_t *req) 
 static bool path_scheduler_keepalive_priority(path_transaction_priority_t priority) {
 	return priority == PATH_TX_BACKBONE_REQUIRED
 	       || priority == PATH_TX_ACTIVE_ROUTE_RECOVERY
-	       || priority == PATH_TX_CHANNEL_PROMOTION;
+	       || priority == PATH_TX_CHANNEL_PROMOTION
+	       || priority == PATH_TX_PUNCH;
 }
 
 static void path_scheduler_drop_priority(meshlink_handle_t *mesh, node_t *node, path_transaction_priority_t priority) {
@@ -161,7 +162,8 @@ static path_sched_txn_t *path_scheduler_find_txn(meshlink_handle_t *mesh, const 
 static bool path_scheduler_skip_minute(const path_sched_txn_t *txn) {
 	return txn && (txn->type == PATH_TXN_PMTU_DISCOVERY
 	               || txn->type == PATH_TXN_PROMOTION
-	               || txn->type == PATH_TXN_SUSPECT);
+	               || txn->type == PATH_TXN_SUSPECT
+	               || txn->type == PATH_TXN_PUNCH);
 }
 
 static path_sched_txn_t *path_scheduler_preempt_victim(meshlink_handle_t *mesh, path_transaction_priority_t incoming) {
@@ -308,6 +310,33 @@ static void path_scheduler_dispatch(meshlink_handle_t *mesh, const path_probe_re
 	}
 }
 
+/* Drop the worst queued packet that this priority is allowed to preempt.
+   Equal priority stays put, same as transaction eviction. */
+static bool path_scheduler_make_room(meshlink_handle_t *mesh, path_transaction_priority_t incoming) {
+	path_sched_item_t *worst = NULL;
+
+	if(!mesh->probe_queue) {
+		return false;
+	}
+
+	for list_each(path_sched_item_t, item, mesh->probe_queue) {
+		if(item->req.priority <= incoming) {
+			continue;
+		}
+
+		if(!worst || item->req.priority > worst->req.priority) {
+			worst = item;
+		}
+	}
+
+	if(!worst) {
+		return false;
+	}
+
+	list_delete(mesh->probe_queue, worst);
+	return true;
+}
+
 static path_sched_admit_t path_scheduler_enqueue(meshlink_handle_t *mesh, const path_probe_request_t *req) {
 	path_sched_item_t *item;
 	struct timespec delay;
@@ -324,7 +353,8 @@ static path_sched_admit_t path_scheduler_enqueue(meshlink_handle_t *mesh, const 
 	}
 
 	if(req->priority != PATH_TX_BACKBONE_REQUIRED
-	                && mesh->probe_queue && mesh->probe_queue->count >= PATH_SCHED_PARKED_PACKETS_PER_MIN) {
+	                && mesh->probe_queue && mesh->probe_queue->count >= PATH_SCHED_PARKED_PACKETS_PER_MIN
+	                && !path_scheduler_make_room(mesh, req->priority)) {
 		return PATH_SCHED_DENIED;
 	}
 
@@ -477,13 +507,13 @@ path_sched_txn_t *path_scheduler_begin_transaction(meshlink_handle_t *mesh, node
 	if(mesh->probe_txns->count >= path_scheduler_max_txns(mesh)) {
 		path_sched_txn_t *victim = NULL;
 
-		/* Promotion and suspect last for seconds. At cap they steal the
+		/* Promotion, suspect, and punch last for seconds. At cap they steal the
 		   globally lowest-priority live slot so two other-node PMTU or
 		   promotion searches cannot block active-route recovery. Equal
 		   priority stays FIFO: the first occupant is not displaced.
 		   Eviction drops queued packets and notifies the owner so the
 		   victim state machine cannot run outside the cap. */
-		if(type == PATH_TXN_PROMOTION || type == PATH_TXN_SUSPECT) {
+		if(type == PATH_TXN_PROMOTION || type == PATH_TXN_SUSPECT || type == PATH_TXN_PUNCH) {
 			victim = path_scheduler_preempt_victim(mesh, priority);
 		}
 
@@ -535,6 +565,9 @@ static path_transaction_type_t path_scheduler_type_for_priority(path_transaction
 
 	case PATH_TX_CHANNEL_PROMOTION:
 		return PATH_TXN_PROMOTION;
+
+	case PATH_TX_PUNCH:
+		return PATH_TXN_PUNCH;
 
 	case PATH_TX_LIVENESS:
 	case PATH_TX_PMTU_INCREASE:

@@ -24,6 +24,7 @@
 #include "logger.h"
 #include "meshlink_internal.h"
 #include "meta.h"
+#include "net_upgrade.h"
 #include "protocol.h"
 #include "utils.h"
 #include "xalloc.h"
@@ -45,6 +46,11 @@ static bool (*request_handlers[NUM_REQUESTS])(meshlink_handle_t *, connection_t 
 	[REQ_KEY] = req_key_h,
 	[ANS_KEY] = ans_key_h,
 	[PACKET] = raw_packet_h,
+	[REQ_META_CUTOVER_PREPARE] = meta_cutover_prepare_h,
+	[REQ_META_CUTOVER_READY] = meta_cutover_ready_h,
+	[REQ_META_CUTOVER_COMMIT] = meta_cutover_commit_h,
+	[REQ_META_CUTOVER_ACK] = meta_cutover_ack_h,
+	[REQ_META_CUTOVER_EMERGENCY] = meta_cutover_emergency_h,
 };
 
 /* Request names */
@@ -63,6 +69,11 @@ static const char *request_name[NUM_REQUESTS] = {
 	[REQ_KEY] = "REQ_KEY",
 	[ANS_KEY] = "ANS_KEY",
 	[PACKET] = "PACKET",
+	[REQ_META_CUTOVER_PREPARE] = "META_CUTOVER_PREPARE",
+	[REQ_META_CUTOVER_READY] = "META_CUTOVER_READY",
+	[REQ_META_CUTOVER_COMMIT] = "META_CUTOVER_COMMIT",
+	[REQ_META_CUTOVER_ACK] = "META_CUTOVER_ACK",
+	[REQ_META_CUTOVER_EMERGENCY] = "META_CUTOVER_EMERGENCY",
 };
 
 bool check_id(const char *id) {
@@ -149,10 +160,6 @@ void forward_request(meshlink_handle_t *mesh, connection_t *from, const submesh_
 bool receive_request(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	assert(request);
 
-	if(c->status.drain_only) {
-		return true;
-	}
-
 	int reqno = atoi(request);
 
 	if(reqno || *request == '0') {
@@ -161,6 +168,21 @@ bool receive_request(meshlink_handle_t *mesh, connection_t *c, const char *reque
 			return false;
 		} else {
 			logger(mesh, MESHLINK_DEBUG, "Got %s from %s: %s", request_name[reqno], c->name, request);
+		}
+
+		if(c->status.spare && !upgrade_standby_allows(c, reqno)) {
+			/* 1: queued until promotion. 0: forced sync, process it now.
+			   -1: hold is full and there is no barrier to join. Fail the socket. */
+			int held = upgrade_standby_hold(mesh, c, request);
+
+			if(held > 0) {
+				return true;
+			}
+
+			if(held < 0 || c->status.spare) {
+				logger(mesh, MESHLINK_ERROR, "Dropping %s from standby %s would discard authenticated META", request_name[reqno], c->name);
+				return false;
+			}
 		}
 
 		if((c->allow_request != ALL) && (c->allow_request != reqno) && (reqno != ERROR)) {

@@ -25,6 +25,7 @@
 #include "logger.h"
 #include "meshlink_internal.h"
 #include "net.h"
+#include "net_upgrade.h"
 #include "node.h"
 #include "connection_policy.h"
 #include "discovery.h"
@@ -416,6 +417,34 @@ static void devtool_get_reset_node_status(meshlink_handle_t *mesh, meshlink_node
 		}
 		status->connection_generation = c && c->outgoing ? c->outgoing->generation : 0;
 		status->meta_drain_active = false;
+		{
+			upgrade_cutover_snapshot_t cut;
+
+			upgrade_cutover_snapshot(internal, &cut);
+			status->cutover_state = cut.state;
+			status->cutover_id = cut.id;
+			status->cutover_timer_armed = cut.timer_armed;
+			status->cutover_pending_records = cut.pending_records;
+			status->cutover_pending_bytes = cut.pending_bytes;
+			status->cutover_has_standby = cut.has_standby;
+		}
+		status->key_retry_step = internal->key_retry_step;
+		status->key_retry_epoch = internal->key_retry_epoch;
+		status->key_retry_armed = internal->key_retry_at.tv_sec || internal->key_retry_at.tv_nsec;
+		status->key_delivery_uncertain = internal->key_delivery_uncertain;
+		status->pending_punch_hint = internal->peer_udp.pending_hint.sa.sa_family != AF_UNSPEC;
+		status->punch_challenge_provenance = (uint8_t)internal->peer_udp.challenge.provenance;
+		status->punch_challenge_attempts = internal->peer_udp.challenge.attempts;
+		status->punch_challenge_active = internal->peer_udp.challenge.active;
+		memset(&status->punch_challenge_endpoint, 0, sizeof status->punch_challenge_endpoint);
+
+		if(internal->peer_udp.challenge.active) {
+			memcpy(&status->punch_challenge_endpoint, &internal->peer_udp.challenge.endpoint,
+			       sizeof internal->peer_udp.challenge.endpoint > sizeof status->punch_challenge_endpoint
+			       ? sizeof status->punch_challenge_endpoint : sizeof internal->peer_udp.challenge.endpoint);
+		}
+
+		status->devtool_status_version = DEVTOOL_NODE_STATUS_VERSION;
 
 		for list_each(connection_t, other, mesh->connections) {
 			if(other->status.drain_only && other->name && !strcmp(other->name, internal->name)) {
@@ -1265,6 +1294,7 @@ void devtool_force_meta(meshlink_handle_t *mesh, meshlink_node_t *node, bool ena
 	if(enabled) {
 		timeout_del(&mesh->loop, &n->mtutimeout);
 		timeout_del(&mesh->loop, &n->promotion_timer);
+		path_punch_cancel(mesh, n);
 		path_suspect_stop(mesh, n);
 		n->mtuprobes = 31;
 		n->status.udp_confirmed = false;
@@ -1284,6 +1314,7 @@ void devtool_force_meta(meshlink_handle_t *mesh, meshlink_node_t *node, bool ena
 			path_backbone_udp_start(mesh, n);
 		} else if(path_peer_udp_punching_allowed(mesh, n)) {
 			send_mtu_probe(mesh, n);
+			path_punch_release(mesh, n);
 		}
 	}
 

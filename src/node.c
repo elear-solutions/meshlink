@@ -23,6 +23,7 @@
 #include "logger.h"
 #include "meshlink_internal.h"
 #include "net.h"
+#include "net_upgrade.h"
 #include "netutl.h"
 #include "node.h"
 #include "connection_policy.h"
@@ -124,6 +125,11 @@ void node_set_validkey(meshlink_handle_t *mesh, node_t *n, bool valid) {
 	}
 
 	n->status.validkey = valid;
+
+	if(!valid) {
+		path_punch_cancel(mesh, n);
+	}
+
 	path_note_selected_route(mesh, n, valid ? "key recovered" : "key invalidated");
 }
 
@@ -178,7 +184,7 @@ void free_node(node_t *n) {
 	ecdsa_free(n->ecdsa);
 	sptps_stop(&n->sptps);
 
-	if(n->mtutimeout.cb || n->promotion_timer.cb || n->suspect_validation.timer.cb) {
+	if(n->mtutimeout.cb || n->promotion_timer.cb || n->punch_timer.cb || n->suspect_validation.timer.cb) {
 		abort();
 	}
 
@@ -216,6 +222,8 @@ static void node_udp_cache_forget(meshlink_handle_t *mesh, node_t *n) {
 	}
 }
 
+/* Receive lookup for a source we have not proven yet. n->address stays the
+   endpoint a challenge reply committed. */
 void node_udp_cache_alias(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa) {
 	if(!mesh || !n || !sa || !mesh->node_udp_cache) {
 		return;
@@ -233,12 +241,16 @@ void node_udp_cache_alias(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *
 }
 
 void node_del(meshlink_handle_t *mesh, node_t *n) {
+	upgrade_node_cleanup(mesh, n);
+	path_clear_pending_punch_hint(n);
 	path_reset_canonical_resolve(n);
 	node_udp_cache_forget(mesh, n);
 	node_clear_inbound_prev_nexthop(mesh, n);
 	node_clear_route_references(mesh, n);
+	path_punch_cancel(mesh, n);
 	timeout_del(&mesh->loop, &n->mtutimeout);
 	timeout_del(&mesh->loop, &n->promotion_timer);
+	timeout_del(&mesh->loop, &n->punch_timer);
 	path_suspect_stop(mesh, n);
 	memset(&n->peer_udp, 0, sizeof n->peer_udp);
 	path_scheduler_cancel_node(mesh, n);

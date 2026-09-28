@@ -56,6 +56,39 @@ bool send_meta_sptps(void *handle, uint8_t type, const void *buffer, size_t leng
 	return true;
 }
 
+static bool meta_bypasses_freeze(const char *buffer) {
+	int req = atoi(buffer);
+
+	return req == PING || req == PONG
+	       || req == REQ_META_CUTOVER_PREPARE
+	       || req == REQ_META_CUTOVER_READY
+	       || req == REQ_META_CUTOVER_COMMIT
+	       || req == REQ_META_CUTOVER_ACK
+	       || req == REQ_META_CUTOVER_EMERGENCY;
+}
+
+static bool send_meta_immediate(meshlink_handle_t *mesh, connection_t *c, const void *buffer, size_t length) {
+	if(c->socket < 0) {
+		return true;
+	}
+
+	if(c->allow_request == ID) {
+		buffer_add(&c->outbuf, buffer, length);
+		meta_watch_write(mesh, c);
+		return true;
+	}
+
+	return sptps_send_record(&c->sptps, 0, buffer, length);
+}
+
+bool send_meta_cutover_control(meshlink_handle_t *mesh, connection_t *c, const char *buffer, int length) {
+	assert(c);
+	assert(buffer);
+	assert(length >= 0);
+
+	return send_meta_immediate(mesh, c, buffer, (size_t)length);
+}
+
 bool send_meta(meshlink_handle_t *mesh, connection_t *c, const char *buffer, int length) {
 	assert(c);
 	assert(buffer);
@@ -70,13 +103,12 @@ bool send_meta(meshlink_handle_t *mesh, connection_t *c, const char *buffer, int
 		return true;
 	}
 
-	if(c->allow_request == ID) {
-		buffer_add(&c->outbuf, buffer, length);
-		meta_watch_write(mesh, c);
+	if(c->allow_request != ID && !meta_bypasses_freeze(buffer)
+	                && upgrade_meta_enqueue_if_frozen(mesh, c, buffer, length)) {
 		return true;
 	}
 
-	return sptps_send_record(&c->sptps, 0, buffer, length);
+	return send_meta_immediate(mesh, c, buffer, (size_t)length);
 }
 
 void broadcast_meta(meshlink_handle_t *mesh, connection_t *from, const char *buffer, int length) {
@@ -84,7 +116,7 @@ void broadcast_meta(meshlink_handle_t *mesh, connection_t *from, const char *buf
 	assert(length);
 
 	for list_each(connection_t, c, mesh->connections)
-		if(c != from && c->status.active && !c->status.drain_only && !(c->flags & PROTOCOL_TINY)) {
+		if(c != from && c->status.active && !c->status.drain_only && !c->status.spare && !(c->flags & PROTOCOL_TINY)) {
 			send_meta(mesh, c, buffer, length);
 		}
 }
@@ -94,7 +126,7 @@ void broadcast_submesh_meta(meshlink_handle_t *mesh, connection_t *from, const s
 	assert(length);
 
 	for list_each(connection_t, c, mesh->connections)
-		if(c != from && c->status.active && !c->status.drain_only && !(c->flags & PROTOCOL_TINY)) {
+		if(c != from && c->status.active && !c->status.drain_only && !c->status.spare && !(c->flags & PROTOCOL_TINY)) {
 			if(c->node && submesh_allows_node(s, c->node)) {
 				send_meta(mesh, c, buffer, length);
 			}
@@ -157,24 +189,6 @@ bool receive_meta_sptps(void *handle, uint8_t type, const void *data, uint16_t l
 bool receive_meta(meshlink_handle_t *mesh, connection_t *c) {
 	int inlen;
 	char inbuf[MAXBUFSIZE];
-
-	if(c->status.drain_only) {
-		inlen = recv(c->socket, inbuf, sizeof(inbuf), 0);
-
-		if(inlen <= 0) {
-			if(!inlen || !errno) {
-				logger(mesh, MESHLINK_INFO, "Connection closed by %s", c->name);
-			} else if(sockwouldblock(sockerrno)) {
-				return true;
-			} else {
-				logger(mesh, MESHLINK_ERROR, "Metadata socket read error for %s: %s", c->name, sockstrerror(sockerrno));
-			}
-
-			return false;
-		}
-
-		return true;
-	}
 
 	inlen = recv(c->socket, inbuf, sizeof(inbuf), 0);
 

@@ -138,7 +138,9 @@ static void receive2_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, co
 	(void)mesh;
 	(void)channel;
 
-	if(len == 5 && !memcmp(data, "Hello", 5)) {
+	/* Back-to-back sends can share one UTCP segment once the direct route
+	   commits, so the record may be Hello or HelloHello. */
+	if(len >= 5 && !memcmp(data, "Hello", 5)) {
 		set_sync_flag(&received2, true);
 	}
 }
@@ -1141,9 +1143,11 @@ static uint32_t nat_requests(meshlink_handle_t *mesh, meshlink_node_t *node) {
 	return count;
 }
 
-/* One production-path punch. Cone NAT must reach direct WAN UDP. Symmetric NAT must stay on relay. */
-static void nat_hole_punch_once(const char *prefix, bool symmetric) {
-	peer_config_t *peers = setup_nat_hole_punch(prefix, symmetric);
+/* One production-path punch. Direct UDP in both directions when at least one
+   NAT is cone. Two endpoint-dependent NATs stay on relay. */
+static void nat_hole_punch_once(const char *prefix, bool app_symmetric, bool cam_symmetric) {
+	peer_config_t *peers = setup_nat_hole_punch_asymm(prefix, app_symmetric, cam_symmetric);
+	bool expect_direct = !app_symmetric || !cam_symmetric;
 	meshlink_node_t *app_cam;
 	meshlink_node_t *cam_app;
 	meshlink_node_t *bb_app;
@@ -1205,25 +1209,35 @@ static void nat_hole_punch_once(const char *prefix, bool symmetric) {
 	devtool_force_meta(peers[1].mesh, app_cam, false);
 	devtool_force_meta(peers[2].mesh, cam_app, false);
 
-	if(!symmetric) {
+	if(expect_direct) {
 		for(int pass = 0; pass < 3; pass++) {
-			if(nat_route_is(peers[1].mesh, app_cam, 1)) {
+			if(nat_route_is(peers[1].mesh, app_cam, 1) && nat_route_is(peers[2].mesh, cam_app, 1)) {
 				break;
 			}
 
 			devtool_age_route(peers[1].mesh, app_cam, 31);
 			devtool_age_candidate(peers[1].mesh, app_cam, 2);
 			devtool_path_route_tick(peers[1].mesh, app_cam);
+			devtool_age_route(peers[2].mesh, cam_app, 31);
+			devtool_age_candidate(peers[2].mesh, cam_app, 2);
+			devtool_path_route_tick(peers[2].mesh, cam_app);
 			sleep(2);
 		}
 
 		assert_after(nat_route_is(peers[1].mesh, app_cam, 1), 30);
+		assert_after(nat_route_is(peers[2].mesh, cam_app, 1), 30);
 	} else {
 		sleep(8);
 		devtool_age_route(peers[1].mesh, app_cam, 31);
 		devtool_age_candidate(peers[1].mesh, app_cam, 2);
 		devtool_path_route_tick(peers[1].mesh, app_cam);
+		devtool_age_route(peers[2].mesh, cam_app, 31);
+		devtool_age_candidate(peers[2].mesh, cam_app, 2);
+		devtool_path_route_tick(peers[2].mesh, cam_app);
 		devtool_get_node_status(peers[1].mesh, app_cam, &st);
+		assert(st.active_route_kind != 1);
+		devtool_free_node_status(&st);
+		devtool_get_node_status(peers[2].mesh, cam_app, &st);
 		assert(st.active_route_kind != 1);
 		devtool_free_node_status(&st);
 	}
@@ -1243,7 +1257,7 @@ static void test_nat_hole_punch(void) {
 
 		snprintf(prefix, sizeof prefix, "natholeC%d", i);
 		printf("\n=== udp-relay NAT cone %d ===\n", i);
-		nat_hole_punch_once(prefix, false);
+		nat_hole_punch_once(prefix, false, false);
 	}
 
 	for(int i = 0; i < 5; i++) {
@@ -1251,7 +1265,18 @@ static void test_nat_hole_punch(void) {
 
 		snprintf(prefix, sizeof prefix, "natholeS%d", i);
 		printf("\n=== udp-relay NAT symmetric %d ===\n", i);
-		nat_hole_punch_once(prefix, true);
+		nat_hole_punch_once(prefix, true, true);
+	}
+
+	for(int i = 0; i < 3; i++) {
+		char prefix[32];
+
+		snprintf(prefix, sizeof prefix, "natholeM%d", i);
+		printf("\n=== udp-relay NAT cone to endpoint-dependent %d ===\n", i);
+		nat_hole_punch_once(prefix, false, true);
+		snprintf(prefix, sizeof prefix, "natholeN%d", i);
+		printf("\n=== udp-relay NAT endpoint-dependent to cone %d ===\n", i);
+		nat_hole_punch_once(prefix, true, false);
 	}
 
 	printf("udp-relay NAT hole punch ok\n");

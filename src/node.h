@@ -111,9 +111,17 @@ typedef struct node_t {
 
 	time_t last_req_key;
 
+	/* Node-owned SPTPS recovery. Not tied to one META socket. */
+	struct timespec key_retry_at;           /* {0,0} = watchdog not armed */
+	uint8_t key_retry_step;                 /* index into 2,5,10,30,60s */
+	uint32_t key_retry_epoch;               /* increments on each send_req_key() */
+	bool key_delivery_uncertain;            /* cutover lost the old primary before the barrier */
+	bool key_retry_wanted;                  /* inbound REQ_SPTPS asked for a retry; not channel demand */
+
 	struct ecdsa *ecdsa;                    /* His public ECDSA key */
 
 	struct connection_t *connection;        /* Connection associated with this node (if a direct connection exists) */
+	struct meta_cutover *meta_cutover;      /* Ordered canonical->direct barrier; owned by net_upgrade.c */
 	time_t last_connect_try;
 	time_t last_successfull_connection;
 
@@ -157,6 +165,7 @@ typedef struct node_t {
 	route_candidate_t promotion_candidate;
 	path_candidate_retry_t candidate_retry; /* local-UDP endpoint cooldown; not wiped by carrier promotions */
 	timeout_t promotion_timer;
+	timeout_t punch_timer;                  /* reciprocal hole-punch challenge; not inside peer_udp */
 	suspect_validation_t suspect_validation; /* nonce-epoch recovery; not PMTU */
 	peer_path_demand_t peer_udp;            /* Channel refcount + grace for ordinary-peer UDP */
 	time_t pmtu_increase_next;              /* Earliest next full-size "is the path bigger now" probe */

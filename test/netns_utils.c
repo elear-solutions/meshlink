@@ -323,13 +323,18 @@ static int nat_run(const char *command) {
 }
 
 peer_config_t *setup_nat_hole_punch(const char *prefix, bool symmetric) {
+	return setup_nat_hole_punch_asymm(prefix, symmetric, symmetric);
+}
+
+peer_config_t *setup_nat_hole_punch_asymm(const char *prefix, bool app_symmetric, bool cam_symmetric) {
 	static peer_config_t peers[] = {
 		{"relay", DEV_CLASS_BACKBONE, NULL, 0, NULL, {0}},
 		{"app", DEV_CLASS_PORTABLE, NULL, 0, NULL, {0}},
 		{"cam", DEV_CLASS_STATIONARY, NULL, 0, NULL, {0}},
 	};
 	const char *ipt = (access("/usr/sbin/iptables-legacy", X_OK) == 0) ? "/usr/sbin/iptables-legacy" : "iptables";
-	const char *random = symmetric ? " --random" : "";
+	const char *random_app = app_symmetric ? " --random" : "";
+	const char *random_cam = cam_symmetric ? " --random" : "";
 	char *command = NULL;
 
 	forget_nat_netns();
@@ -409,20 +414,34 @@ peer_config_t *setup_nat_hole_punch(const char *prefix, bool symmetric) {
 	   keeps) back to that socket. A probe to any other port, including a
 	   planted :9, must not reach the host. Plain MASQUERADE otherwise files
 	   that packet as a new flow and moves the outbound source port.
-	   Symmetric (--random) must not DNAT: the observed port is not the socket,
-	   and direct UDP has to stay down. */
-	char dnat[640] = "";
+	   Endpoint-dependent (--random) must not DNAT: the observed port is not
+	   the socket. Each side is independent, so a cone can face an
+	   endpoint-dependent peer. */
+	char dnat[1280] = "";
+	size_t dnat_used = 0;
 
-	if(!symmetric) {
+	if(!app_symmetric) {
 		int port1 = meshlink_get_port(peers[1].mesh);
-		int port2 = meshlink_get_port(peers[2].mesh);
+		int wrote;
 
-		assert(port1 > 0 && port2 > 0);
-		snprintf(dnat, sizeof dnat,
-		         "/bin/ip netns exec %s %s -t nat -A PREROUTING -i eth0 -p udp --dport %d -j DNAT --to-destination 10.1.0.2:%d;"
-		         "/bin/ip netns exec %s %s -t nat -A PREROUTING -i eth0 -p udp --dport %d -j DNAT --to-destination 10.2.0.2:%d;",
-		         nat_netns_name[0], ipt, port1, port1,
-		         nat_netns_name[1], ipt, port2, port2);
+		assert(port1 > 0);
+		wrote = snprintf(dnat + dnat_used, sizeof dnat - dnat_used,
+		                 "/bin/ip netns exec %s %s -t nat -A PREROUTING -i eth0 -p udp --dport %d -j DNAT --to-destination 10.1.0.2:%d;",
+		                 nat_netns_name[0], ipt, port1, port1);
+		assert(wrote > 0 && (size_t)wrote < sizeof dnat - dnat_used);
+		dnat_used += (size_t)wrote;
+	}
+
+	if(!cam_symmetric) {
+		int port2 = meshlink_get_port(peers[2].mesh);
+		int wrote;
+
+		assert(port2 > 0);
+		wrote = snprintf(dnat + dnat_used, sizeof dnat - dnat_used,
+		                 "/bin/ip netns exec %s %s -t nat -A PREROUTING -i eth0 -p udp --dport %d -j DNAT --to-destination 10.2.0.2:%d;",
+		                 nat_netns_name[1], ipt, port2, port2);
+		assert(wrote > 0 && (size_t)wrote < sizeof dnat - dnat_used);
+		dnat_used += (size_t)wrote;
 	}
 
 	assert(asprintf(&command,
@@ -437,8 +456,8 @@ peer_config_t *setup_nat_hole_punch(const char *prefix, bool symmetric) {
 	                nat_netns_name[0], ipt,
 	                nat_netns_name[1], ipt,
 	                dnat,
-	                nat_netns_name[0], ipt, random,
-	                nat_netns_name[1], ipt, random) > 0);
+	                nat_netns_name[0], ipt, random_app,
+	                nat_netns_name[1], ipt, random_cam) > 0);
 
 	if(nat_run(command) != 0) {
 		free(command);

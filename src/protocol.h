@@ -25,7 +25,9 @@
 /* Protocol version. Different major versions are incompatible. */
 
 #define PROT_MAJOR 17
-#define PROT_MINOR 4 /* Should not exceed 255! */
+#define PROT_MINOR 5 /* Should not exceed 255! */
+/* Direct META upgrades require this minor. Older peers stay on canonical META. */
+#define PROT_MINOR_ORDERED_CUTOVER 5
 
 /* Silly Windows */
 
@@ -52,6 +54,11 @@ typedef enum request_t {
 	REQ_EXTERNAL,
 	REQ_RELAY_MTU,
 	REQ_PUNCH_ENDPOINT,
+	REQ_META_CUTOVER_PREPARE,
+	REQ_META_CUTOVER_READY,
+	REQ_META_CUTOVER_COMMIT,
+	REQ_META_CUTOVER_ACK,
+	REQ_META_CUTOVER_EMERGENCY, /* primary died before the barrier; sync before ordinary META */
 	NUM_REQUESTS
 } request_t;
 
@@ -126,5 +133,19 @@ bool req_key_h(struct meshlink_handle *mesh, struct connection_t *, const char *
 bool ans_key_h(struct meshlink_handle *mesh, struct connection_t *, const char *);
 bool tcppacket_h(struct meshlink_handle *mesh, struct connection_t *, const char *);
 bool raw_packet_h(struct meshlink_handle *mesh, struct connection_t *, const char *);
+bool meta_cutover_prepare_h(struct meshlink_handle *mesh, struct connection_t *, const char *);
+bool meta_cutover_ready_h(struct meshlink_handle *mesh, struct connection_t *, const char *);
+bool meta_cutover_commit_h(struct meshlink_handle *mesh, struct connection_t *, const char *);
+bool meta_cutover_ack_h(struct meshlink_handle *mesh, struct connection_t *, const char *);
+bool meta_cutover_emergency_h(struct meshlink_handle *mesh, struct connection_t *, const char *);
+
+/* Node SPTPS recovery. One watchdog, owned by the node, not by a META socket. */
+void node_kex_arm(struct meshlink_handle *mesh, struct node_t *n);
+void node_kex_clear(struct meshlink_handle *mesh, struct node_t *n);
+void node_kex_note_demand(struct meshlink_handle *mesh, struct node_t *n);
+void node_kex_mark_uncertain(struct meshlink_handle *mesh, struct node_t *n);
+void node_kex_on_session_change(struct meshlink_handle *mesh, struct node_t *n);
+void node_kex_consider(struct meshlink_handle *mesh, struct node_t *n);
+void node_kex_watchdog(struct meshlink_handle *mesh);
 
 #endif

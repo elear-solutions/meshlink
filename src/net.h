@@ -145,6 +145,7 @@ bool read_ecdsa_private_key(struct meshlink_handle *mesh) __attribute__((__warn_
 bool node_write_config(struct meshlink_handle *mesh, struct node_t *, bool new_key) __attribute__((__warn_unused_result__));
 void send_mtu_probe(struct meshlink_handle *mesh, struct node_t *);
 void send_candidate_probe(struct meshlink_handle *mesh, struct node_t *n);
+bool send_punch_probe(struct meshlink_handle *mesh, struct node_t *n);
 void send_suspect_probe(struct meshlink_handle *mesh, struct node_t *n);
 void send_backbone_udp_probe(struct meshlink_handle *mesh);
 void choose_udp_address(struct meshlink_handle *mesh, struct node_t *n, const sockaddr_t **sa, int *sock, sockaddr_t *sa_buf);

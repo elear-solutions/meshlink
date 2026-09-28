@@ -234,15 +234,6 @@ static void timeout_handler(event_loop_t *loop, void *data) {
 			pingtimeout = 1;
 		}
 
-		// Also make sure that if outstanding key requests for the UDP counterpart of a connection has timed out, we restart it.
-		if(c->node) {
-			if(c->node->status.waitingforkey && c->node->last_req_key + pingtimeout < mesh->loop.now.tv_sec
-			                && (connection_policy_backbone_udp_required(mesh, c->node)
-			                    || path_peer_udp_punching_allowed(mesh, c->node))) {
-				send_req_key(mesh, c->node);
-			}
-		}
-
 		if(c->status.active && c->last_key_renewal + 3600 < mesh->loop.now.tv_sec) {
 			devtool_sptps_renewal_probe((meshlink_node_t *)c->node);
 
@@ -285,6 +276,8 @@ static void timeout_handler(event_loop_t *loop, void *data) {
 			terminate_connection(mesh, c, c->status.active);
 		}
 	}
+
+	node_kex_watchdog(mesh);
 
 	timeout_set(&mesh->loop, data, &(struct timespec) {
 		1, prng(mesh, TIMER_FUDGE)

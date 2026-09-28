@@ -79,6 +79,8 @@ typedef struct connection_t {
 	struct outgoing_t *outgoing;    /* used to keep track of outgoing connections */
 	uint32_t outgoing_generation;   /* outgoing_t.generation when this socket was opened */
 	timeout_t drain_ev;             /* cleanup guard for drain_only sockets */
+	struct list_t *standby_held;    /* ordinary META received while spare; replayed on promotion */
+	size_t standby_held_bytes;
 
 	struct edge_t *edge;            /* edge associated with this connection */
 	struct submesh_t *submesh;      /* his submesh handle if available in invitation file */

@@ -107,18 +107,22 @@ bool send_canonical_address(meshlink_handle_t *mesh, node_t *to) {
 	return send_request(mesh, to->nexthop->connection, NULL, "%d %s %s %d %s", REQ_KEY, mesh->self->name, to->name, REQ_CANONICAL, mesh->self->canonical_address);
 }
 
+static void node_kex_schedule(meshlink_handle_t *mesh, node_t *n, bool advance);
+
 bool send_req_key(meshlink_handle_t *mesh, node_t *to) {
 	if(!node_read_public_key(mesh, to)) {
 		logger(mesh, MESHLINK_DEBUG, "No ECDSA key known for %s", to->name);
 
 		if(!to->nexthop || !to->nexthop->connection) {
 			logger(mesh, MESHLINK_WARNING, "Cannot send REQ_PUBKEY to %s via %s", to->name, to->nexthop ? to->nexthop->name : to->name);
-			return true;
+		} else {
+			char *pubkey = ecdsa_get_base64_public_key(mesh->private_key);
+			send_request(mesh, to->nexthop->connection, NULL, "%d %s %s %d %s", REQ_KEY, mesh->self->name, to->name, REQ_PUBKEY, pubkey);
+			free(pubkey);
 		}
 
-		char *pubkey = ecdsa_get_base64_public_key(mesh->private_key);
-		send_request(mesh, to->nexthop->connection, NULL, "%d %s %s %d %s", REQ_KEY, mesh->self->name, to->name, REQ_PUBKEY, pubkey);
-		free(pubkey);
+		/* Keep key_retry_wanted. Climb the same ladder so a missing key is not retried every watchdog tick. */
+		node_kex_schedule(mesh, to, true);
 		return true;
 	}
 
@@ -139,7 +143,169 @@ bool send_req_key(meshlink_handle_t *mesh, node_t *to) {
 	node_set_validkey(mesh, to, false);
 	to->status.waitingforkey = true;
 	to->last_req_key = mesh->loop.now.tv_sec;
-	return sptps_start(&to->sptps, to, true, true, mesh->private_key, to->ecdsa, label, sizeof(label) - 1, send_initial_sptps_data, receive_sptps_record);
+	node_kex_arm(mesh, to);
+
+	if(!sptps_start(&to->sptps, to, true, true, mesh->private_key, to->ecdsa, label, sizeof(label) - 1, send_initial_sptps_data, receive_sptps_record)) {
+		return false;
+	}
+
+	return true;
+}
+
+static const int node_kex_ladder[] = {2, 5, 10, 30, 60};
+
+static void node_kex_schedule(meshlink_handle_t *mesh, node_t *n, bool advance) {
+	unsigned step;
+	int delay;
+	int jitter;
+
+	if(!mesh || !n) {
+		return;
+	}
+
+	step = n->key_retry_step;
+
+	if(step >= sizeof(node_kex_ladder) / sizeof(node_kex_ladder[0])) {
+		step = sizeof(node_kex_ladder) / sizeof(node_kex_ladder[0]) - 1;
+	}
+
+	delay = node_kex_ladder[step];
+	jitter = delay > 1 ? prng(mesh, (uint64_t)(delay / 2 + 1)) : 0;
+	n->key_retry_at = mesh->loop.now;
+	n->key_retry_at.tv_sec += delay;
+	n->key_retry_at.tv_nsec += (long)jitter * 1000000L;
+
+	if(n->key_retry_at.tv_nsec >= 1000000000L) {
+		n->key_retry_at.tv_sec++;
+		n->key_retry_at.tv_nsec -= 1000000000L;
+	}
+
+	if(advance && (size_t)n->key_retry_step + 1 < sizeof(node_kex_ladder) / sizeof(node_kex_ladder[0])) {
+		n->key_retry_step++;
+	}
+
+	logger(mesh, MESHLINK_INFO, "Node KEX retry scheduled for %s step=%u epoch=%u uncertain=%s",
+	       n->name, n->key_retry_step, n->key_retry_epoch, n->key_delivery_uncertain ? "yes" : "no");
+}
+
+void node_kex_arm(meshlink_handle_t *mesh, node_t *n) {
+	if(!mesh || !n) {
+		return;
+	}
+
+	n->key_retry_epoch++;
+	n->key_delivery_uncertain = false;
+	n->key_retry_wanted = false;
+	node_kex_schedule(mesh, n, true);
+}
+
+void node_kex_clear(meshlink_handle_t *mesh, node_t *n) {
+	if(!n) {
+		return;
+	}
+
+	n->status.waitingforkey = false;
+	n->key_retry_step = 0;
+	n->key_delivery_uncertain = false;
+	n->key_retry_wanted = false;
+	memset(&n->key_retry_at, 0, sizeof(n->key_retry_at));
+
+	if(mesh) {
+		logger(mesh, MESHLINK_DEBUG, "Node KEX recovered with %s epoch=%u", n->name, n->key_retry_epoch);
+	}
+}
+
+void node_kex_note_demand(meshlink_handle_t *mesh, node_t *n) {
+	if(!mesh || !n || n->status.validkey) {
+		return;
+	}
+
+	/* The bit is what makes the deadline fire. Channel demand and waitingforkey
+	   are independent and may both be false when the peer's records arrive first. */
+	n->key_retry_wanted = true;
+
+	if(n->key_retry_at.tv_sec || n->key_retry_at.tv_nsec) {
+		return;
+	}
+
+	logger(mesh, MESHLINK_INFO, "Node KEX demand from %s while key is invalid", n->name);
+	node_kex_schedule(mesh, n, false);
+}
+
+void node_kex_mark_uncertain(meshlink_handle_t *mesh, node_t *n) {
+	if(!mesh || !n || n == mesh->self) {
+		return;
+	}
+
+	if(n->status.validkey && !n->status.waitingforkey) {
+		return;
+	}
+
+	n->key_delivery_uncertain = true;
+	n->key_retry_at = mesh->loop.now;
+	logger(mesh, MESHLINK_INFO, "Node KEX delivery uncertain for %s epoch=%u", n->name, n->key_retry_epoch);
+}
+
+void node_kex_on_session_change(meshlink_handle_t *mesh, node_t *n) {
+	(void)mesh;
+
+	if(!n) {
+		return;
+	}
+
+	n->status.waitingforkey = false;
+	n->key_retry_step = 0;
+	n->key_retry_epoch = 0;
+	n->key_delivery_uncertain = false;
+	n->key_retry_wanted = false;
+	memset(&n->key_retry_at, 0, sizeof(n->key_retry_at));
+}
+
+static bool node_kex_due(const meshlink_handle_t *mesh, const node_t *n) {
+	if(!n->key_retry_at.tv_sec && !n->key_retry_at.tv_nsec) {
+		return false;
+	}
+
+	if(mesh->loop.now.tv_sec != n->key_retry_at.tv_sec) {
+		return mesh->loop.now.tv_sec > n->key_retry_at.tv_sec;
+	}
+
+	return mesh->loop.now.tv_nsec >= n->key_retry_at.tv_nsec;
+}
+
+static bool node_kex_wanted(meshlink_handle_t *mesh, node_t *n) {
+	if(!n || n == mesh->self || !n->status.reachable) {
+		return false;
+	}
+
+	if(n->status.validkey) {
+		return false;
+	}
+
+	if(n->key_delivery_uncertain) {
+		return true;
+	}
+
+	return n->key_retry_wanted || connection_policy_backbone_udp_required(mesh, n) || path_peer_udp_punching_allowed(mesh, n) || n->status.waitingforkey;
+}
+
+void node_kex_consider(meshlink_handle_t *mesh, node_t *n) {
+	if(!node_kex_wanted(mesh, n) || !node_kex_due(mesh, n)) {
+		return;
+	}
+
+	logger(mesh, MESHLINK_INFO, "Node KEX retry fired for %s step=%u epoch=%u", n->name, n->key_retry_step, n->key_retry_epoch);
+	send_req_key(mesh, n);
+}
+
+void node_kex_watchdog(meshlink_handle_t *mesh) {
+	if(!mesh || !mesh->nodes) {
+		return;
+	}
+
+	for splay_each(node_t, n, mesh->nodes) {
+		node_kex_consider(mesh, n);
+	}
 }
 
 bool send_punch_endpoint_request(meshlink_handle_t *mesh, node_t *peer) {
@@ -392,6 +558,7 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 		node_set_validkey(mesh, from, false);
 		from->status.waitingforkey = true;
 		from->last_req_key = mesh->loop.now.tv_sec;
+		node_kex_arm(mesh, from);
 
 		/* Send our canonical address to help with UDP hole punching */
 		send_canonical_address(mesh, from);
@@ -415,6 +582,7 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 	case REQ_SPTPS: {
 		if(!from->status.validkey) {
 			logger(mesh, MESHLINK_ERROR, "Got REQ_SPTPS from %s but we don't have a valid key yet", from->name);
+			node_kex_note_demand(mesh, from);
 			return true;
 		}
 
@@ -832,6 +1000,15 @@ bool ans_key_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		return true;
 	}
 
+	/* Address-only hints are staged even when the peer key is not valid yet. */
+	bool staged_hint = false;
+
+	if(*key == '.' && *address && *port && path_peer_udp_punching_allowed(mesh, from) && ans_key_from_backbone(mesh, c)) {
+		sockaddr_t hinted = str2sockaddr(address, port);
+		path_note_punch_endpoint(mesh, from, &hinted);
+		staged_hint = true;
+	}
+
 	/* Process SPTPS data if present */
 
 	if(*key != '.') {
@@ -860,7 +1037,9 @@ bool ans_key_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 
 			logger(mesh, MESHLINK_DEBUG, "Using reflexive UDP address from %s: %s port %s", from->name, address, port);
 
-			if(path_peer_udp_punching_allowed(mesh, from)) {
+			if(staged_hint) {
+				punched = true;
+			} else if(path_peer_udp_punching_allowed(mesh, from)) {
 				if(ans_key_from_backbone(mesh, c)) {
 					path_note_punch_endpoint(mesh, from, &sa);
 					punched = true;
@@ -1042,7 +1221,10 @@ bool punch_endpoint_cover_unit(meshlink_handle_t *mesh) {
 	memset(&src->address, 0, sizeof src->address);
 	path_note_punch_endpoint(mesh, src, &hint);
 	PUNCH_CHECK(!src->status.udp_confirmed);
-	PUNCH_CHECK(!sockaddrcmp(&src->address, &hint));
+	PUNCH_CHECK(src->address.sa.sa_family == AF_UNSPEC);
+	PUNCH_CHECK(src->peer_udp.challenge.active);
+	PUNCH_CHECK(src->peer_udp.challenge.provenance == PUNCH_PROV_NMN_HINT);
+	PUNCH_CHECK(!sockaddrcmp(&src->peer_udp.challenge.endpoint, &hint));
 	{
 		sockaddr_t probed;
 
@@ -1092,6 +1274,7 @@ bool punch_endpoint_cover_unit(meshlink_handle_t *mesh) {
 
 		PUNCH_CHECK(v4 >= 0 && chosen && !sockaddrcmp(chosen, &hint));
 	}
+	src->address = hint;
 	src->status.udp_confirmed = true;
 	src->udp_tier = PATH_TIER_DIRECT_WAN_UDP;
 	{
@@ -1105,7 +1288,10 @@ bool punch_endpoint_cover_unit(meshlink_handle_t *mesh) {
 		src->active_route.udp_endpoint = src->address;
 		path_note_udp_demoted_reason(mesh, src, "cover demotion");
 		PUNCH_CHECK(!src->status.udp_confirmed);
-		PUNCH_CHECK(!sockaddrcmp(&src->address, &src->peer_udp.last_hint));
+		PUNCH_CHECK(!sockaddrcmp(&src->address, &hint));
+		PUNCH_CHECK(src->peer_udp.challenge.active);
+		PUNCH_CHECK(src->peer_udp.challenge.provenance == PUNCH_PROV_NMN_HINT);
+		PUNCH_CHECK(!sockaddrcmp(&src->peer_udp.challenge.endpoint, &newer));
 		PUNCH_CHECK(src->active_route.kind != DATA_ROUTE_DIRECT_UDP);
 	}
 
@@ -1180,8 +1366,11 @@ bool punch_endpoint_cover_unit(meshlink_handle_t *mesh) {
 		PUNCH_CHECK(src->peer_udp.requests_sent == requests_before);
 		fake_conn.name = fake_bb.name;
 		PUNCH_CHECK(ans_key_h(mesh, &fake_conn, req));
-		PUNCH_CHECK(src->address.sa.sa_family == AF_INET);
-		PUNCH_CHECK(ntohs(src->address.in.sin_port) == 4400);
+		PUNCH_CHECK(src->address.sa.sa_family == AF_UNSPEC);
+		PUNCH_CHECK(!src->status.udp_confirmed);
+		PUNCH_CHECK(src->peer_udp.challenge.active);
+		PUNCH_CHECK(src->peer_udp.challenge.provenance == PUNCH_PROV_NMN_HINT);
+		PUNCH_CHECK(ntohs(src->peer_udp.challenge.endpoint.in.sin_port) == 4400);
 		PUNCH_CHECK(src->peer_udp.requests_sent == requests_before + 1);
 		PUNCH_CHECK(src->peer_udp.request_step == 1);
 	}
@@ -1213,6 +1402,8 @@ bool punch_endpoint_cover_unit(meshlink_handle_t *mesh) {
 		PUNCH_CHECK(ans_key_forward_rewritten && ans_key_forward_has_addr);
 		PUNCH_CHECK(!strcmp(ans_key_forward_host, "203.0.113.10"));
 		PUNCH_CHECK(!strcmp(ans_key_forward_port, "4000"));
+		PUNCH_CHECK(!strchr(ans_key_forward_host, ' '));
+		PUNCH_CHECK(!strchr(ans_key_forward_port, ' '));
 		PUNCH_CHECK(src->address.sa.sa_family == AF_UNSPEC);
 		PUNCH_CHECK(dst->address.sa.sa_family == AF_UNSPEC);
 		path_clear_udp_observation(src);
@@ -1269,6 +1460,146 @@ bool punch_endpoint_cover_unit(meshlink_handle_t *mesh) {
 	PUNCH_CHECK(route.active_route.relay_carrier != RELAY_CARRIER_UDP || route.active_route.kind != DATA_ROUTE_RELAY);
 	PUNCH_CHECK(route.promotion_candidate.kind == DATA_ROUTE_DIRECT_UDP);
 
+	{
+		sockaddr_t ingress = str2sockaddr("203.0.113.50", "51873");
+		sockaddr_t moving = str2sockaddr("203.0.113.10", "57670");
+		sockaddr_t local = str2sockaddr("10.9.9.9", "5000");
+		sockaddr_t changed = str2sockaddr("203.0.113.50", "51874");
+		sockaddr_t dest;
+		uint64_t nonce;
+		uint64_t saved_epoch = mesh->lan_network_epoch;
+		uint32_t observed_session;
+
+		path_punch_cancel(mesh, src);
+		src->devtool_force_meta = true;
+		src->status.validkey = true;
+		src->status.udp_confirmed = false;
+		src->status.reachable = true;
+		src->session_id = 11;
+		src->peer_udp.channel_count = 1;
+		src->peer_udp.hint_failed = false;
+		memset(&src->address, 0, sizeof src->address);
+		memset(&src->peer_udp.last_hint, 0, sizeof src->peer_udp.last_hint);
+		memset(&src->peer_udp.ingress, 0, sizeof src->peer_udp.ingress);
+		memset(&src->peer_udp.failed_ingress, 0, sizeof src->peer_udp.failed_ingress);
+		timeout_del(&mesh->loop, &src->promotion_timer);
+		memset(&src->promotion_candidate, 0, sizeof src->promotion_candidate);
+
+		path_observe_punch_ingress(mesh, src, &ingress);
+		PUNCH_CHECK(src->address.sa.sa_family == AF_UNSPEC);
+		PUNCH_CHECK(src->peer_udp.challenge.active);
+		PUNCH_CHECK(src->peer_udp.challenge.provenance == PUNCH_PROV_AUTH_INGRESS);
+		PUNCH_CHECK(!sockaddrcmp(&src->peer_udp.challenge.endpoint, &ingress));
+		nonce = src->peer_udp.challenge.nonce;
+		PUNCH_CHECK(nonce != 0);
+		path_observe_punch_ingress(mesh, src, &ingress);
+		PUNCH_CHECK(src->peer_udp.challenge.nonce == nonce);
+		path_note_punch_endpoint(mesh, src, &moving);
+		PUNCH_CHECK(src->peer_udp.challenge.provenance == PUNCH_PROV_AUTH_INGRESS);
+		PUNCH_CHECK(src->peer_udp.challenge.nonce == nonce);
+		PUNCH_CHECK(!sockaddrcmp(&src->peer_udp.challenge.endpoint, &ingress));
+		PUNCH_CHECK(!sockaddrcmp(&src->peer_udp.last_hint, &moving));
+		PUNCH_CHECK(src->address.sa.sa_family == AF_UNSPEC);
+
+		path_observe_punch_ingress(mesh, src, &changed);
+		PUNCH_CHECK(!sockaddrcmp(&src->peer_udp.challenge.endpoint, &changed));
+		PUNCH_CHECK(src->peer_udp.challenge.nonce != nonce);
+
+		path_punch_cancel(mesh, src);
+		memset(&src->peer_udp.last_hint, 0, sizeof src->peer_udp.last_hint);
+		src->peer_udp.hint_failed = false;
+		path_note_punch_endpoint(mesh, src, &moving);
+		PUNCH_CHECK(src->peer_udp.challenge.provenance == PUNCH_PROV_NMN_HINT);
+		path_observe_punch_ingress(mesh, src, &ingress);
+		PUNCH_CHECK(src->peer_udp.challenge.provenance == PUNCH_PROV_AUTH_INGRESS);
+		PUNCH_CHECK(!sockaddrcmp(&src->peer_udp.challenge.endpoint, &ingress));
+		nonce = src->peer_udp.challenge.nonce;
+		PUNCH_CHECK(!path_punch_accept_reply(mesh, src, &ingress, nonce + 1));
+		PUNCH_CHECK(!src->status.udp_confirmed);
+		PUNCH_CHECK(!path_punch_accept_reply(mesh, src, &moving, nonce));
+		PUNCH_CHECK(!src->status.udp_confirmed);
+		PUNCH_CHECK(src->address.sa.sa_family == AF_UNSPEC);
+		PUNCH_CHECK(path_punch_accept_reply(mesh, src, &ingress, nonce));
+		PUNCH_CHECK(src->status.udp_confirmed);
+		PUNCH_CHECK(!sockaddrcmp(&src->address, &ingress));
+		PUNCH_CHECK(!src->peer_udp.challenge.active);
+		timeout_del(&mesh->loop, &src->mtutimeout);
+		timeout_del(&mesh->loop, &src->promotion_timer);
+		path_scheduler_cancel(mesh, src, PATH_TX_CHANNEL_PROMOTION);
+		memset(&src->promotion_candidate, 0, sizeof src->promotion_candidate);
+
+		src->status.udp_confirmed = false;
+		memset(&src->address, 0, sizeof src->address);
+		observed_session = src->udp_observation.session_id;
+		path_observe_punch_ingress(mesh, src, &local);
+		PUNCH_CHECK(src->peer_udp.challenge.provenance == PUNCH_PROV_AUTH_INGRESS);
+		PUNCH_CHECK(!sockaddrcmp(&src->peer_udp.challenge.endpoint, &local));
+		PUNCH_CHECK(src->udp_observation.session_id == observed_session);
+		PUNCH_CHECK(src->address.sa.sa_family == AF_UNSPEC);
+
+		path_punch_cancel(mesh, src);
+		src->status.udp_confirmed = false;
+		src->peer_udp.hint_failed = false;
+		memset(&src->address, 0, sizeof src->address);
+		memset(&src->peer_udp.last_hint, 0, sizeof src->peer_udp.last_hint);
+		memset(&src->peer_udp.failed_ingress, 0, sizeof src->peer_udp.failed_ingress);
+		path_note_punch_endpoint(mesh, src, &moving);
+		path_observe_punch_ingress(mesh, src, &ingress);
+		src->peer_udp.challenge.attempts = PATH_PUNCH_CHALLENGE_ATTEMPTS;
+		path_punch_challenge_timeout(mesh, src);
+		PUNCH_CHECK(!sockaddrcmp(&src->peer_udp.failed_ingress, &ingress));
+		PUNCH_CHECK(src->peer_udp.challenge.active);
+		PUNCH_CHECK(src->peer_udp.challenge.provenance == PUNCH_PROV_NMN_HINT);
+		PUNCH_CHECK(!sockaddrcmp(&src->peer_udp.challenge.endpoint, &moving));
+		PUNCH_CHECK(!src->status.udp_confirmed);
+		PUNCH_CHECK(src->address.sa.sa_family == AF_UNSPEC);
+		src->peer_udp.challenge.attempts = PATH_PUNCH_CHALLENGE_ATTEMPTS;
+		path_punch_challenge_timeout(mesh, src);
+		PUNCH_CHECK(src->peer_udp.hint_failed);
+		PUNCH_CHECK(!src->peer_udp.challenge.active);
+		PUNCH_CHECK(!path_unconfirmed_punch_dest(mesh, src, &dest));
+
+		path_observe_punch_ingress(mesh, src, &ingress);
+		PUNCH_CHECK(!src->peer_udp.challenge.active);
+		changed.in.sin_port = htons(51875);
+		path_observe_punch_ingress(mesh, src, &changed);
+		PUNCH_CHECK(src->peer_udp.challenge.active);
+		PUNCH_CHECK(!sockaddrcmp(&src->peer_udp.challenge.endpoint, &changed));
+
+		mesh->lan_network_epoch = saved_epoch + 1;
+		path_punch_challenge_timeout(mesh, src);
+		PUNCH_CHECK(!src->peer_udp.challenge.active);
+		mesh->lan_network_epoch = saved_epoch;
+
+		path_punch_cancel(mesh, src);
+		src->status.validkey = false;
+		src->status.udp_confirmed = false;
+		src->peer_udp.hint_failed = false;
+		memset(&src->address, 0, sizeof src->address);
+		memset(&src->peer_udp.last_hint, 0, sizeof src->peer_udp.last_hint);
+		memset(&src->peer_udp.pending_hint, 0, sizeof src->peer_udp.pending_hint);
+		path_observe_punch_ingress(mesh, src, &ingress);
+		PUNCH_CHECK(!src->peer_udp.challenge.active);
+		PUNCH_CHECK(!sockaddrcmp(&src->peer_udp.ingress, &ingress));
+		path_note_punch_endpoint(mesh, src, &moving);
+		PUNCH_CHECK(src->peer_udp.pending_hint.sa.sa_family != AF_UNSPEC);
+		PUNCH_CHECK(!src->peer_udp.challenge.active);
+		src->status.validkey = true;
+		path_apply_pending_punch_hint(mesh, src);
+		PUNCH_CHECK(src->peer_udp.challenge.provenance == PUNCH_PROV_NMN_HINT);
+		path_punch_arm_ingress(mesh, src);
+		PUNCH_CHECK(src->peer_udp.challenge.provenance == PUNCH_PROV_AUTH_INGRESS);
+		PUNCH_CHECK(!sockaddrcmp(&src->peer_udp.challenge.endpoint, &ingress));
+		PUNCH_CHECK(src->address.sa.sa_family == AF_UNSPEC);
+
+		src->session_id = 99;
+		path_clear_udp_observation(src);
+		PUNCH_CHECK(!src->peer_udp.challenge.active);
+		PUNCH_CHECK(!src->peer_udp.ingress.sa.sa_family);
+		src->session_id = 11;
+		src->status.validkey = true;
+	}
+
 	ok = true;
 
 done:
@@ -1300,7 +1631,9 @@ done:
 
 	timeout_del(&mesh->loop, &peer.mtutimeout);
 	timeout_del(&mesh->loop, &peer.promotion_timer);
+	timeout_del(&mesh->loop, &peer.punch_timer);
 	timeout_del(&mesh->loop, &route.promotion_timer);
+	timeout_del(&mesh->loop, &route.punch_timer);
 	path_suspect_stop(mesh, &peer);
 	path_suspect_stop(mesh, &route);
 	path_scheduler_cancel_node(mesh, &peer);
