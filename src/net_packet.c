@@ -368,6 +368,41 @@ void send_candidate_probe(meshlink_handle_t *mesh, node_t *n) {
 	send_probe_to(mesh, n, &packet, &n->promotion_candidate.endpoint);
 }
 
+bool send_punch_probe(meshlink_handle_t *mesh, node_t *n) {
+	vpn_packet_t packet;
+	char *host = NULL;
+	char *port = NULL;
+
+	if(!mesh || !n || !n->status.reachable || !n->status.validkey || n->devtool_force_meta) {
+		return false;
+	}
+
+	if(!n->peer_udp.challenge.active || !n->peer_udp.challenge.nonce) {
+		return false;
+	}
+
+	memset(&packet, 0, sizeof packet);
+	packet.probe = true;
+	memcpy(packet.data + PROBE_NONCE_OFFSET, &n->peer_udp.challenge.nonce, sizeof n->peer_udp.challenge.nonce);
+	packet.len = PATH_PROMOTION_PROBE_LEN;
+	n->out_meta += packet.len + PROBE_OVERHEAD;
+
+	if(mesh->log_level <= MESHLINK_INFO) {
+		sockaddr_t logged;
+
+		path_copy_sockaddr(&logged, &n->peer_udp.challenge.endpoint);
+		sockaddr2str(&logged, &host, &port);
+		logger(mesh, MESHLINK_INFO, "Sending punch probe to %s at %s port %s source=%s",
+		       n->name, host ? host : "?", port ? port : "?",
+		       n->peer_udp.challenge.provenance == PUNCH_PROV_AUTH_INGRESS ? "peer-reflexive" : "rendezvous");
+		free(host);
+		free(port);
+	}
+
+	send_probe_to(mesh, n, &packet, &n->peer_udp.challenge.endpoint);
+	return true;
+}
+
 void send_suspect_probe(meshlink_handle_t *mesh, node_t *n) {
 	suspect_validation_t *s;
 
@@ -569,6 +604,14 @@ static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet
 		}
 
 		if(!n->status.udp_confirmed) {
+			/* Ordinary peers confirm only a reply to the challenge we sent.
+			   A nonce-0 bootstrap echo, or a reply from any other source,
+			   leaves the relay in place. Backbone UDP keeps the old path. */
+			if(path_peer_udp_punching_allowed(mesh, n)) {
+				path_punch_accept_reply(mesh, n, &n->last_udp_from, nonce);
+				return;
+			}
+
 			char *address, *port;
 			sockaddr2str(&n->address, &address, &port);
 
@@ -704,6 +747,7 @@ static void receive_udppacket(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *
 
 	/* Direct, authenticated UDP only. META-carried and relayed SPTPS do not land here. */
 	path_note_authenticated_udp_observation(mesh, n, &n->last_udp_from);
+	path_observe_punch_ingress(mesh, n, &n->last_udp_from);
 }
 
 static void send_sptps_packet(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *origpkt) {
@@ -952,12 +996,12 @@ void choose_udp_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **s
 	{
 		sockaddr_t punch;
 
-		if(path_unconfirmed_punch_dest(n, &punch)) {
+		if(path_unconfirmed_punch_dest(mesh, n, &punch)) {
 			path_copy_sockaddr(sa_buf, &punch);
 			*sa = sa_buf;
 
 			if(finish_udp_dest(mesh, sa, sock)) {
-				logger(mesh, MESHLINK_DEBUG, "UDP dest for %s: punch hint", n->name);
+				logger(mesh, MESHLINK_DEBUG, "UDP dest for %s: punch dest", n->name);
 				return;
 			}
 		}
@@ -1283,6 +1327,9 @@ bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t
 			if(from->utcp) {
 				utcp_reset_timers(from->utcp);
 			}
+
+			path_apply_pending_punch_hint(mesh, from);
+			path_punch_arm_ingress(mesh, from);
 		}
 
 		return true;
@@ -1427,11 +1474,15 @@ void handle_incoming_vpn_data(event_loop_t *loop, void *data, int flags) {
 		n = try_harder(mesh, &from, &pkt);
 
 		if(n) {
-			if(n->status.udp_confirmed && sockaddrcmp(&from, &n->address)) {
-				node_udp_cache_alias(mesh, n, &from);
+			/* An unconfirmed source is only an alias. n->address changes
+			   when a challenge reply proves that exact endpoint. */
+			if(n->status.udp_confirmed) {
+				if(sockaddrcmp(&from, &n->address)) {
+					node_udp_cache_alias(mesh, n, &from);
+				}
 			} else {
+				node_udp_cache_alias(mesh, n, &from);
 				path_learn_address_cap(mesh, n, &from, ADDR_SRC_UDP_REFLEXIVE, PATH_CAP_UDP);
-				update_node_udp_from(mesh, n, &from, ADDR_SRC_UDP_REFLEXIVE);
 			}
 		} else if(mesh->log_level <= MESHLINK_WARNING) {
 			hostname = sockaddr2hostname(&from);

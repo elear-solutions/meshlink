@@ -21,7 +21,7 @@ struct node_t;
 /* Fleet probe budget (finding 13). active_transactions counts live validation
    state machines (promotion, suspect, PMTU discovery), not packets.
    PATH_SCHED_PARKED_PACKETS_PER_MIN is the parked-probe cap: liveness and
-   PMTU-increase only. Admitted validation (promotion, suspect, PMTU discovery)
+   PMTU-increase only.    Admitted validation (promotion, suspect, punch, PMTU discovery)
    shares PATH_SCHED_PACKETS_PER_SEC and skips the parked minute bucket so a
    search can finish (~18 PMTU probes) and a second admitted search does not
    wait 60s. Worst-case optional validation traffic is therefore
@@ -39,6 +39,7 @@ typedef enum path_transaction_priority_t {
 	PATH_TX_BACKBONE_REQUIRED = 0,
 	PATH_TX_ACTIVE_ROUTE_RECOVERY,
 	PATH_TX_CHANNEL_PROMOTION,
+	PATH_TX_PUNCH,
 	PATH_TX_LIVENESS,
 	PATH_TX_PMTU_INCREASE
 } path_transaction_priority_t;
@@ -47,7 +48,8 @@ typedef enum path_transaction_type_t {
 	PATH_TXN_PROMOTION = 0,
 	PATH_TXN_SUSPECT,
 	PATH_TXN_PMTU_DISCOVERY,
-	PATH_TXN_META_UPGRADE
+	PATH_TXN_META_UPGRADE,
+	PATH_TXN_PUNCH
 } path_transaction_type_t;
 
 typedef enum path_sched_admit_t {
@@ -83,7 +85,7 @@ typedef struct path_probe_budget_t {
 
 /* Mesh-wide probe admission. Due-time stays on per-node timers; this is the gate.
    Validation state machines hold a slot from begin() until end(); keepalive
-   packets only consume packet tokens. Promotion and suspect may preempt the
+   packets only consume packet tokens. Promotion, suspect, and punch may preempt the
    globally lowest-priority live slot, including other nodes. Preemption drops
    that victim's queued packets and runs the owner callback so the state
    machine cannot keep emitting or committing outside the cap. */

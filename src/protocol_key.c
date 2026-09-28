@@ -392,7 +392,6 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 		node_set_validkey(mesh, from, false);
 		from->status.waitingforkey = true;
 		from->last_req_key = mesh->loop.now.tv_sec;
-
 		/* Send our canonical address to help with UDP hole punching */
 		send_canonical_address(mesh, from);
 
@@ -832,6 +831,15 @@ bool ans_key_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		return true;
 	}
 
+	/* Address-only hints are staged even when the peer key is not valid yet. */
+	bool staged_hint = false;
+
+	if(*key == '.' && *address && *port && path_peer_udp_punching_allowed(mesh, from) && ans_key_from_backbone(mesh, c)) {
+		sockaddr_t hinted = str2sockaddr(address, port);
+		path_note_punch_endpoint(mesh, from, &hinted);
+		staged_hint = true;
+	}
+
 	/* Process SPTPS data if present */
 
 	if(*key != '.') {
@@ -860,7 +868,9 @@ bool ans_key_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 
 			logger(mesh, MESHLINK_DEBUG, "Using reflexive UDP address from %s: %s port %s", from->name, address, port);
 
-			if(path_peer_udp_punching_allowed(mesh, from)) {
+			if(staged_hint) {
+				punched = true;
+			} else if(path_peer_udp_punching_allowed(mesh, from)) {
 				if(ans_key_from_backbone(mesh, c)) {
 					path_note_punch_endpoint(mesh, from, &sa);
 					punched = true;
@@ -1042,7 +1052,10 @@ bool punch_endpoint_cover_unit(meshlink_handle_t *mesh) {
 	memset(&src->address, 0, sizeof src->address);
 	path_note_punch_endpoint(mesh, src, &hint);
 	PUNCH_CHECK(!src->status.udp_confirmed);
-	PUNCH_CHECK(!sockaddrcmp(&src->address, &hint));
+	PUNCH_CHECK(src->address.sa.sa_family == AF_UNSPEC);
+	PUNCH_CHECK(src->peer_udp.challenge.active);
+	PUNCH_CHECK(src->peer_udp.challenge.provenance == PUNCH_PROV_NMN_HINT);
+	PUNCH_CHECK(!sockaddrcmp(&src->peer_udp.challenge.endpoint, &hint));
 	{
 		sockaddr_t probed;
 
@@ -1092,6 +1105,7 @@ bool punch_endpoint_cover_unit(meshlink_handle_t *mesh) {
 
 		PUNCH_CHECK(v4 >= 0 && chosen && !sockaddrcmp(chosen, &hint));
 	}
+	src->address = hint;
 	src->status.udp_confirmed = true;
 	src->udp_tier = PATH_TIER_DIRECT_WAN_UDP;
 	{
@@ -1105,7 +1119,10 @@ bool punch_endpoint_cover_unit(meshlink_handle_t *mesh) {
 		src->active_route.udp_endpoint = src->address;
 		path_note_udp_demoted_reason(mesh, src, "cover demotion");
 		PUNCH_CHECK(!src->status.udp_confirmed);
-		PUNCH_CHECK(!sockaddrcmp(&src->address, &src->peer_udp.last_hint));
+		PUNCH_CHECK(!sockaddrcmp(&src->address, &hint));
+		PUNCH_CHECK(src->peer_udp.challenge.active);
+		PUNCH_CHECK(src->peer_udp.challenge.provenance == PUNCH_PROV_NMN_HINT);
+		PUNCH_CHECK(!sockaddrcmp(&src->peer_udp.challenge.endpoint, &newer));
 		PUNCH_CHECK(src->active_route.kind != DATA_ROUTE_DIRECT_UDP);
 	}
 
@@ -1180,8 +1197,11 @@ bool punch_endpoint_cover_unit(meshlink_handle_t *mesh) {
 		PUNCH_CHECK(src->peer_udp.requests_sent == requests_before);
 		fake_conn.name = fake_bb.name;
 		PUNCH_CHECK(ans_key_h(mesh, &fake_conn, req));
-		PUNCH_CHECK(src->address.sa.sa_family == AF_INET);
-		PUNCH_CHECK(ntohs(src->address.in.sin_port) == 4400);
+		PUNCH_CHECK(src->address.sa.sa_family == AF_UNSPEC);
+		PUNCH_CHECK(!src->status.udp_confirmed);
+		PUNCH_CHECK(src->peer_udp.challenge.active);
+		PUNCH_CHECK(src->peer_udp.challenge.provenance == PUNCH_PROV_NMN_HINT);
+		PUNCH_CHECK(ntohs(src->peer_udp.challenge.endpoint.in.sin_port) == 4400);
 		PUNCH_CHECK(src->peer_udp.requests_sent == requests_before + 1);
 		PUNCH_CHECK(src->peer_udp.request_step == 1);
 	}
@@ -1213,6 +1233,8 @@ bool punch_endpoint_cover_unit(meshlink_handle_t *mesh) {
 		PUNCH_CHECK(ans_key_forward_rewritten && ans_key_forward_has_addr);
 		PUNCH_CHECK(!strcmp(ans_key_forward_host, "203.0.113.10"));
 		PUNCH_CHECK(!strcmp(ans_key_forward_port, "4000"));
+		PUNCH_CHECK(!strchr(ans_key_forward_host, ' '));
+		PUNCH_CHECK(!strchr(ans_key_forward_port, ' '));
 		PUNCH_CHECK(src->address.sa.sa_family == AF_UNSPEC);
 		PUNCH_CHECK(dst->address.sa.sa_family == AF_UNSPEC);
 		path_clear_udp_observation(src);
@@ -1269,6 +1291,146 @@ bool punch_endpoint_cover_unit(meshlink_handle_t *mesh) {
 	PUNCH_CHECK(route.active_route.relay_carrier != RELAY_CARRIER_UDP || route.active_route.kind != DATA_ROUTE_RELAY);
 	PUNCH_CHECK(route.promotion_candidate.kind == DATA_ROUTE_DIRECT_UDP);
 
+	{
+		sockaddr_t ingress = str2sockaddr("203.0.113.50", "51873");
+		sockaddr_t moving = str2sockaddr("203.0.113.10", "57670");
+		sockaddr_t local = str2sockaddr("10.9.9.9", "5000");
+		sockaddr_t changed = str2sockaddr("203.0.113.50", "51874");
+		sockaddr_t dest;
+		uint64_t nonce;
+		uint64_t saved_epoch = mesh->lan_network_epoch;
+		uint32_t observed_session;
+
+		path_punch_cancel(mesh, src);
+		src->devtool_force_meta = true;
+		src->status.validkey = true;
+		src->status.udp_confirmed = false;
+		src->status.reachable = true;
+		src->session_id = 11;
+		src->peer_udp.channel_count = 1;
+		src->peer_udp.hint_failed = false;
+		memset(&src->address, 0, sizeof src->address);
+		memset(&src->peer_udp.last_hint, 0, sizeof src->peer_udp.last_hint);
+		memset(&src->peer_udp.ingress, 0, sizeof src->peer_udp.ingress);
+		memset(&src->peer_udp.failed_ingress, 0, sizeof src->peer_udp.failed_ingress);
+		timeout_del(&mesh->loop, &src->promotion_timer);
+		memset(&src->promotion_candidate, 0, sizeof src->promotion_candidate);
+
+		path_observe_punch_ingress(mesh, src, &ingress);
+		PUNCH_CHECK(src->address.sa.sa_family == AF_UNSPEC);
+		PUNCH_CHECK(src->peer_udp.challenge.active);
+		PUNCH_CHECK(src->peer_udp.challenge.provenance == PUNCH_PROV_AUTH_INGRESS);
+		PUNCH_CHECK(!sockaddrcmp(&src->peer_udp.challenge.endpoint, &ingress));
+		nonce = src->peer_udp.challenge.nonce;
+		PUNCH_CHECK(nonce != 0);
+		path_observe_punch_ingress(mesh, src, &ingress);
+		PUNCH_CHECK(src->peer_udp.challenge.nonce == nonce);
+		path_note_punch_endpoint(mesh, src, &moving);
+		PUNCH_CHECK(src->peer_udp.challenge.provenance == PUNCH_PROV_AUTH_INGRESS);
+		PUNCH_CHECK(src->peer_udp.challenge.nonce == nonce);
+		PUNCH_CHECK(!sockaddrcmp(&src->peer_udp.challenge.endpoint, &ingress));
+		PUNCH_CHECK(!sockaddrcmp(&src->peer_udp.last_hint, &moving));
+		PUNCH_CHECK(src->address.sa.sa_family == AF_UNSPEC);
+
+		path_observe_punch_ingress(mesh, src, &changed);
+		PUNCH_CHECK(!sockaddrcmp(&src->peer_udp.challenge.endpoint, &changed));
+		PUNCH_CHECK(src->peer_udp.challenge.nonce != nonce);
+
+		path_punch_cancel(mesh, src);
+		memset(&src->peer_udp.last_hint, 0, sizeof src->peer_udp.last_hint);
+		src->peer_udp.hint_failed = false;
+		path_note_punch_endpoint(mesh, src, &moving);
+		PUNCH_CHECK(src->peer_udp.challenge.provenance == PUNCH_PROV_NMN_HINT);
+		path_observe_punch_ingress(mesh, src, &ingress);
+		PUNCH_CHECK(src->peer_udp.challenge.provenance == PUNCH_PROV_AUTH_INGRESS);
+		PUNCH_CHECK(!sockaddrcmp(&src->peer_udp.challenge.endpoint, &ingress));
+		nonce = src->peer_udp.challenge.nonce;
+		PUNCH_CHECK(!path_punch_accept_reply(mesh, src, &ingress, nonce + 1));
+		PUNCH_CHECK(!src->status.udp_confirmed);
+		PUNCH_CHECK(!path_punch_accept_reply(mesh, src, &moving, nonce));
+		PUNCH_CHECK(!src->status.udp_confirmed);
+		PUNCH_CHECK(src->address.sa.sa_family == AF_UNSPEC);
+		PUNCH_CHECK(path_punch_accept_reply(mesh, src, &ingress, nonce));
+		PUNCH_CHECK(src->status.udp_confirmed);
+		PUNCH_CHECK(!sockaddrcmp(&src->address, &ingress));
+		PUNCH_CHECK(!src->peer_udp.challenge.active);
+		timeout_del(&mesh->loop, &src->mtutimeout);
+		timeout_del(&mesh->loop, &src->promotion_timer);
+		path_scheduler_cancel(mesh, src, PATH_TX_CHANNEL_PROMOTION);
+		memset(&src->promotion_candidate, 0, sizeof src->promotion_candidate);
+
+		src->status.udp_confirmed = false;
+		memset(&src->address, 0, sizeof src->address);
+		observed_session = src->udp_observation.session_id;
+		path_observe_punch_ingress(mesh, src, &local);
+		PUNCH_CHECK(src->peer_udp.challenge.provenance == PUNCH_PROV_AUTH_INGRESS);
+		PUNCH_CHECK(!sockaddrcmp(&src->peer_udp.challenge.endpoint, &local));
+		PUNCH_CHECK(src->udp_observation.session_id == observed_session);
+		PUNCH_CHECK(src->address.sa.sa_family == AF_UNSPEC);
+
+		path_punch_cancel(mesh, src);
+		src->status.udp_confirmed = false;
+		src->peer_udp.hint_failed = false;
+		memset(&src->address, 0, sizeof src->address);
+		memset(&src->peer_udp.last_hint, 0, sizeof src->peer_udp.last_hint);
+		memset(&src->peer_udp.failed_ingress, 0, sizeof src->peer_udp.failed_ingress);
+		path_note_punch_endpoint(mesh, src, &moving);
+		path_observe_punch_ingress(mesh, src, &ingress);
+		src->peer_udp.challenge.attempts = PATH_PUNCH_CHALLENGE_ATTEMPTS;
+		path_punch_challenge_timeout(mesh, src);
+		PUNCH_CHECK(!sockaddrcmp(&src->peer_udp.failed_ingress, &ingress));
+		PUNCH_CHECK(src->peer_udp.challenge.active);
+		PUNCH_CHECK(src->peer_udp.challenge.provenance == PUNCH_PROV_NMN_HINT);
+		PUNCH_CHECK(!sockaddrcmp(&src->peer_udp.challenge.endpoint, &moving));
+		PUNCH_CHECK(!src->status.udp_confirmed);
+		PUNCH_CHECK(src->address.sa.sa_family == AF_UNSPEC);
+		src->peer_udp.challenge.attempts = PATH_PUNCH_CHALLENGE_ATTEMPTS;
+		path_punch_challenge_timeout(mesh, src);
+		PUNCH_CHECK(src->peer_udp.hint_failed);
+		PUNCH_CHECK(!src->peer_udp.challenge.active);
+		PUNCH_CHECK(!path_unconfirmed_punch_dest(mesh, src, &dest));
+
+		path_observe_punch_ingress(mesh, src, &ingress);
+		PUNCH_CHECK(!src->peer_udp.challenge.active);
+		changed.in.sin_port = htons(51875);
+		path_observe_punch_ingress(mesh, src, &changed);
+		PUNCH_CHECK(src->peer_udp.challenge.active);
+		PUNCH_CHECK(!sockaddrcmp(&src->peer_udp.challenge.endpoint, &changed));
+
+		mesh->lan_network_epoch = saved_epoch + 1;
+		path_punch_challenge_timeout(mesh, src);
+		PUNCH_CHECK(!src->peer_udp.challenge.active);
+		mesh->lan_network_epoch = saved_epoch;
+
+		path_punch_cancel(mesh, src);
+		src->status.validkey = false;
+		src->status.udp_confirmed = false;
+		src->peer_udp.hint_failed = false;
+		memset(&src->address, 0, sizeof src->address);
+		memset(&src->peer_udp.last_hint, 0, sizeof src->peer_udp.last_hint);
+		memset(&src->peer_udp.pending_hint, 0, sizeof src->peer_udp.pending_hint);
+		path_observe_punch_ingress(mesh, src, &ingress);
+		PUNCH_CHECK(!src->peer_udp.challenge.active);
+		PUNCH_CHECK(!sockaddrcmp(&src->peer_udp.ingress, &ingress));
+		path_note_punch_endpoint(mesh, src, &moving);
+		PUNCH_CHECK(src->peer_udp.pending_hint.sa.sa_family != AF_UNSPEC);
+		PUNCH_CHECK(!src->peer_udp.challenge.active);
+		src->status.validkey = true;
+		path_apply_pending_punch_hint(mesh, src);
+		PUNCH_CHECK(src->peer_udp.challenge.provenance == PUNCH_PROV_NMN_HINT);
+		path_punch_arm_ingress(mesh, src);
+		PUNCH_CHECK(src->peer_udp.challenge.provenance == PUNCH_PROV_AUTH_INGRESS);
+		PUNCH_CHECK(!sockaddrcmp(&src->peer_udp.challenge.endpoint, &ingress));
+		PUNCH_CHECK(src->address.sa.sa_family == AF_UNSPEC);
+
+		src->session_id = 99;
+		path_clear_udp_observation(src);
+		PUNCH_CHECK(!src->peer_udp.challenge.active);
+		PUNCH_CHECK(!src->peer_udp.ingress.sa.sa_family);
+		src->session_id = 11;
+		src->status.validkey = true;
+	}
+
 	ok = true;
 
 done:
@@ -1300,7 +1462,9 @@ done:
 
 	timeout_del(&mesh->loop, &peer.mtutimeout);
 	timeout_del(&mesh->loop, &peer.promotion_timer);
+	timeout_del(&mesh->loop, &peer.punch_timer);
 	timeout_del(&mesh->loop, &route.promotion_timer);
+	timeout_del(&mesh->loop, &route.punch_timer);
 	path_suspect_stop(mesh, &peer);
 	path_suspect_stop(mesh, &route);
 	path_scheduler_cancel_node(mesh, &peer);
