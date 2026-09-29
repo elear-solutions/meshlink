@@ -68,6 +68,10 @@ static bool meta_bypasses_freeze(const char *buffer) {
 }
 
 static bool send_meta_immediate(meshlink_handle_t *mesh, connection_t *c, const void *buffer, size_t length) {
+	if(c->meta_teardown || c->meta_replay_failed) {
+		return false;
+	}
+
 	if(c->socket < 0) {
 		return true;
 	}
@@ -96,16 +100,23 @@ bool send_meta(meshlink_handle_t *mesh, connection_t *c, const char *buffer, int
 
 	logger(mesh, MESHLINK_DEBUG, "Sending %d bytes of metadata to %s", length, c->name);
 
-	/* Synthetic inject peers (devtool_inject_add_edge) have no socket. A
-	   zeroed connection_t has allow_request == ID, and send_meta would
-	   buffer_add + io_set a stack io_t into the loop. */
-	if(c->socket < 0) {
-		return true;
+	/* A replay failure already decided this socket is done. Do not park the
+	   record on a connection that receive_request() is still using. */
+	if(c->meta_teardown || c->meta_replay_failed) {
+		return false;
 	}
 
+	/* Freeze before the socketless short-circuit. An overflow abort replays
+	   the FIFO first; this record is written only when that replay succeeded.
+	   Synthetic inject peers (allow_request == ID, socket < 0) still skip the
+	   freeze and return from send_meta_immediate without arming I/O. */
 	if(c->allow_request != ID && !meta_bypasses_freeze(buffer)
 	                && upgrade_meta_enqueue_if_frozen(mesh, c, buffer, length)) {
 		return true;
+	}
+
+	if(c->meta_teardown || c->meta_replay_failed) {
+		return false;
 	}
 
 	return send_meta_immediate(mesh, c, buffer, (size_t)length);

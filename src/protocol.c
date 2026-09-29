@@ -157,9 +157,7 @@ void forward_request(meshlink_handle_t *mesh, connection_t *from, const submesh_
 	}
 }
 
-bool receive_request(meshlink_handle_t *mesh, connection_t *c, const char *request) {
-	assert(request);
-
+static bool receive_request_dispatch(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	int reqno = atoi(request);
 
 	if(reqno || *request == '0') {
@@ -216,6 +214,26 @@ bool receive_request(meshlink_handle_t *mesh, connection_t *c, const char *reque
 	}
 
 	return true;
+}
+
+bool receive_request(meshlink_handle_t *mesh, connection_t *c, const char *request) {
+	bool ok;
+
+	assert(request);
+	assert(c);
+
+	c->meta_receive_depth++;
+	ok = receive_request_dispatch(mesh, c, request);
+	c->meta_receive_depth--;
+
+	/* A held record replayed from inside this frame failed. The handler that
+	   was on the stack cannot free c; failing this frame does. */
+	if(c->meta_replay_failed) {
+		c->meta_replay_failed = false;
+		ok = false;
+	}
+
+	return ok;
 }
 
 static int past_request_compare(const past_request_t *a, const past_request_t *b) {

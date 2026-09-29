@@ -107,6 +107,22 @@ void add_connection_edge(meshlink_handle_t *mesh, connection_t *c) {
   - Kill it with fire
   - Check if we need to retry making an outgoing connection
 */
+void connection_defer_teardown(meshlink_handle_t *mesh, connection_t *c) {
+	(void)mesh;
+
+	if(!c || c->meta_teardown) {
+		return;
+	}
+
+	c->meta_teardown = true;
+
+	/* The connection stays allocated. The next read sees EOF and
+	   terminate_connection() runs outside receive_request(). */
+	if(c->socket >= 0) {
+		shutdown(c->socket, SHUT_RDWR);
+	}
+}
+
 void terminate_connection(meshlink_handle_t *mesh, connection_t *c, bool report) {
 	/* last_key_renewal is restamped hourly; do not use it for backbone
 	   stability. Non-backbone flap detection still uses it. */

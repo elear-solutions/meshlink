@@ -182,6 +182,7 @@ typedef struct punch_challenge_t {
 	uint32_t session_id;
 	uint64_t network_epoch;
 	uint32_t demand_epoch;
+	struct timespec deadline;               /* absolute; denial cannot extend past this */
 } punch_challenge_t;
 
 /* Ordinary-peer UDP punching is refcounted from channels. Backbone UDP is not.
@@ -204,6 +205,8 @@ typedef struct peer_path_demand_t {
 	punch_challenge_t challenge;            /* the one endpoint we are proving right now */
 	sockaddr_t ingress;                     /* latest authenticated direct source; AF_UNSPEC if none */
 	uint32_t ingress_session;               /* session_id when ingress was observed */
+	uint32_t ingress_demand_epoch;          /* demand_epoch when ingress was observed */
+	uint64_t ingress_network_epoch;         /* lan_network_epoch when ingress was observed */
 	sockaddr_t failed_ingress;              /* auth source that already failed this demand; not retried */
 	bool hint_failed;                       /* the current last_hint already failed its challenge */
 } peer_path_demand_t;
@@ -425,6 +428,12 @@ void path_punch_arm_ingress(struct meshlink_handle *mesh, struct node_t *node);
 /* Commit only when nonce and UDP source match the current challenge and the
    session, network, and demand epochs still match. False leaves state alone. */
 bool path_punch_accept_reply(struct meshlink_handle *mesh, struct node_t *node, const sockaddr_t *from, uint64_t nonce);
+/* Unconfirmed ordinary-peer probe reply. True means the caller must stop:
+   an active challenge was accepted or rejected, or a public source stayed
+   on AUTH_INGRESS. False means a nonce-zero local reply (or a non-peer)
+   was confirmed and the current reply should finish PMTU. A local confirm
+   installs from, emits no ANS_KEY, and does not start another probe. */
+bool path_try_confirm_udp_probe_reply(struct meshlink_handle *mesh, struct node_t *node, const sockaddr_t *from, uint64_t nonce);
 /* Drop the in-flight challenge and its queued probes. Keeps the remembered ingress. */
 void path_punch_cancel(struct meshlink_handle *mesh, struct node_t *node);
 /* A challenge recorded while probes were held (devtool_force_meta) has no
@@ -436,6 +445,7 @@ void path_punch_challenge_timeout(struct meshlink_handle *mesh, struct node_t *n
 bool path_unconfirmed_punch_dest(const struct meshlink_handle *mesh, const struct node_t *n, sockaddr_t *out);
 /* Dest sampled immediately before the probe path_note_punch_endpoint just armed. */
 bool path_punch_last_probe_dest(sockaddr_t *out);
+unsigned path_punch_test_ans_exports(void);
 
 /* First/last channel to an ordinary peer. acquire() is false (no count change)
    for backbone/UNKNOWN/self. Release always decrements a non-zero count so a

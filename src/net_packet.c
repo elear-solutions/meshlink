@@ -403,6 +403,46 @@ bool send_punch_probe(meshlink_handle_t *mesh, node_t *n) {
 	return true;
 }
 
+/* Pre-confirmation only. A live challenge already has a destination. This walks
+   the same unconfirmed rotation as choose_udp_address() and does not start PMTU. */
+void send_punch_bootstrap(meshlink_handle_t *mesh, node_t *n) {
+	sockaddr_t scratch;
+	sockaddr_t sa_buf;
+	const sockaddr_t *sa = NULL;
+	int sock = -1;
+	vpn_packet_t packet;
+
+	if(!mesh || !n || !n->status.reachable || !n->status.validkey || n->devtool_force_meta || n->status.udp_confirmed) {
+		return;
+	}
+
+	if(!path_peer_udp_punching_allowed(mesh, n)) {
+		return;
+	}
+
+	if(path_unconfirmed_punch_dest(mesh, n, &scratch)) {
+		return;
+	}
+
+	/* choose_udp_address() walks the edge tree. A node that has not joined
+	   the graph yet has nothing to rotate through. */
+	if(!n->edge_tree || !mesh->listen_sockets || n->sock < 0 || n->sock >= mesh->listen_sockets) {
+		return;
+	}
+
+	choose_udp_address(mesh, n, &sa, &sock, &sa_buf);
+
+	if(!sa) {
+		return;
+	}
+
+	memset(&packet, 0, sizeof packet);
+	packet.probe = true;
+	packet.len = 64;
+	n->out_meta += packet.len + PROBE_OVERHEAD;
+	send_probe_to(mesh, n, &packet, sa);
+}
+
 void send_suspect_probe(meshlink_handle_t *mesh, node_t *n) {
 	suspect_validation_t *s;
 
@@ -604,36 +644,9 @@ static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet
 		}
 
 		if(!n->status.udp_confirmed) {
-			/* Ordinary peers confirm only a reply to the challenge we sent.
-			   A nonce-0 bootstrap echo, or a reply from any other source,
-			   leaves the relay in place. Backbone UDP keeps the old path. */
-			if(path_peer_udp_punching_allowed(mesh, n)) {
-				path_punch_accept_reply(mesh, n, &n->last_udp_from, nonce);
+			if(path_try_confirm_udp_probe_reply(mesh, n, &n->last_udp_from, nonce)) {
 				return;
 			}
-
-			char *address, *port;
-			sockaddr2str(&n->address, &address, &port);
-
-			if(n->nexthop && n->nexthop->connection) {
-				send_request(mesh, n->nexthop->connection, NULL, "%d %s %s . -1 -1 -1 0 %s %s", ANS_KEY, n->name, n->name, address, port);
-			} else {
-				logger(mesh, MESHLINK_WARNING, "Cannot send reflexive address to %s via %s", n->name, n->nexthop ? n->nexthop->name : n->name);
-			}
-
-			free(address);
-			free(port);
-			n->status.udp_confirmed = true;
-
-			/* The confirmed UDP address is a direct path to the node (UDP and TCP share
-			   a port): remember it and see if it can replace a canonical meta connection. */
-
-			if(n->address.sa.sa_family != AF_UNSPEC && node_add_recent_address_cap(mesh, n, &n->address, ADDR_SRC_UDP_REFLEXIVE, PATH_CAP_UDP)) {
-				n->upgrade_recent_idx = 0;
-			}
-
-			path_note_udp_confirmed(mesh, n);
-			try_upgrade_probe(mesh, n);
 		} else {
 			path_observe_probe_reply(mesh, n, &n->last_udp_from, nonce);
 		}

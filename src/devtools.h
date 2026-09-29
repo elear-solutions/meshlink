@@ -408,6 +408,27 @@ extern void (*devtool_upgrade_probe)(meshlink_handle_t *mesh, meshlink_node_t *n
  */
 extern bool devtool_repeat_next_ack;
 
+/// When set, the responder records PREPARE but does not send READY.
+extern bool devtool_hold_cutover_ready;
+
+/// Set on the mesh thread once a READY was withheld. Tests poll this instead of logs.
+extern volatile bool devtool_cutover_ready_held;
+
+/// Send the withheld READY for node. Mesh mutex is taken internally.
+bool devtool_release_cutover_ready(struct meshlink_handle *mesh, struct meshlink_node *node);
+
+/// Shut the node's current META socket down. The I/O path frees it; this does not.
+bool devtool_shutdown_meta_primary(struct meshlink_handle *mesh, struct meshlink_node *node);
+
+/// Queue REQ_KEY on the node's current META connection.
+bool devtool_queue_req_key(struct meshlink_handle *mesh, struct meshlink_node *node);
+
+/// Feed one request into the spare, or the primary if there is no spare.
+bool devtool_inject_meta_request(struct meshlink_handle *mesh, struct meshlink_node *node, const char *request);
+
+/// Abort the live cutover and replay onto the old primary when it is still canonical.
+void devtool_abort_meta_cutover(struct meshlink_handle *mesh, struct meshlink_node *node);
+
 /// Force renewal of SPTPS sessions with the given node.
 /** This causes the SPTPS sessions for both the UDP and TCP connections to renew their keys.
  *

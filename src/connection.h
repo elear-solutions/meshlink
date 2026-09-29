@@ -81,6 +81,9 @@ typedef struct connection_t {
 	timeout_t drain_ev;             /* cleanup guard for drain_only sockets */
 	struct list_t *standby_held;    /* ordinary META received while spare; replayed on promotion */
 	size_t standby_held_bytes;
+	int meta_receive_depth;         /* receive_request() frames currently on this connection */
+	bool meta_replay_failed;        /* a nested replay failed; the outer frame must return false */
+	bool meta_teardown;             /* deferred close: send_meta fails, I/O frees the connection */
 
 	struct edge_t *edge;            /* edge associated with this connection */
 	struct submesh_t *submesh;      /* his submesh handle if available in invitation file */

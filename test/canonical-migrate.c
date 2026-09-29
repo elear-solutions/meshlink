@@ -1269,6 +1269,208 @@ static void test_failover_after_promote(void) {
 	close_relayed_pair(&p);
 }
 
+static void wait_cutover_held(void) {
+	/* The 5s cutover timer starts when READY is held, not when this wait
+	   starts. Poll until the flag is set; a slow probe must not lose the race. */
+	for(int i = 0; i < 150 && !devtool_cutover_ready_held; i++) {
+		usleep(100000);
+	}
+
+	assert(devtool_cutover_ready_held);
+}
+
+static void arm_held_pair(struct pair *p, const char *prefix) {
+	devtool_hold_cutover_ready = true;
+	devtool_cutover_ready_held = false;
+	open_relayed_pair(p, prefix, false);
+	/* Backbone discovery would advertise the host's public address and the
+	   upgrade probe would leave loopback. Point REQ_EXTERNAL at b itself so
+	   the standby comes up on the direct socket the hold is waiting for. */
+	devtool_set_external_ip_address(p->b, meshlink_get_self(p->b), "127.0.0.1");
+	reset_probe_events();
+	watch_peer(p->a, "b");
+	assert(meshlink_start(p->b));
+	assert(meshlink_start(p->a));
+	assert(wait_sync_flag(&peer_reachable, 15));
+	hint_address(p->a, p->a_b, "127.0.0.1", p->b_port);
+	wait_cutover_held();
+}
+
+/* T22: ordinary META and a key request sit in the barrier, then one migration. */
+static void test_kex_during_cutover(void) {
+	printf("\n=== T22: KEX while cutover META is frozen ===\n");
+
+	struct pair p;
+	devtool_node_status_t st;
+	size_t mark;
+	long first;
+	long second;
+	int sessions;
+	uint32_t restarts;
+
+	arm_held_pair(&p, "canonical_migrate_t22");
+	mark = log_mark();
+	sessions = log_count("has a new session ID");
+	devtool_get_node_status(p.a, p.a_b, &st);
+	assert(st.cutover_state != 0);
+	assert(st.meta_via_canonical);
+	assert(st.validkey);
+	restarts = st.sptps_restart_count;
+	devtool_free_node_status(&st);
+
+	assert(devtool_inject_meta_request(p.b, p.b_a, "5 1 ord-1"));
+	assert(devtool_inject_meta_request(p.b, p.b_a, "5 2 ord-2"));
+	assert(devtool_queue_req_key(p.a, p.a_b));
+	devtool_get_node_status(p.a, p.a_b, &st);
+	assert(st.waitingforkey);
+	assert(st.sptps_restart_count == restarts + 1);
+	devtool_free_node_status(&st);
+
+	assert(devtool_release_cutover_ready(p.b, p.b_a));
+	assert_after(check_sync_flag(&probe_succeeded) || connected_direct(p.a, p.a_b, p.b_port), 20);
+	assert_after(has_validkey(p.a, p.a_b), 20);
+	devtool_get_node_status(p.a, p.a_b, &st);
+	assert(st.validkey);
+	assert(!st.waitingforkey);
+	assert(st.sptps_restart_count == restarts + 1);
+	assert(!st.meta_via_canonical);
+	devtool_free_node_status(&st);
+	first = log_find(mark, "b: Status message from a: 1: ord-1");
+	second = log_find(mark, "b: Status message from a: 2: ord-2");
+	assert(first >= 0 && second > first);
+	assert(log_count_from(mark, "a: Path META: b migrated canonical -> direct") == 1);
+	assert(log_count("has a new session ID") == sessions);
+
+	devtool_hold_cutover_ready = false;
+	meshlink_set_node_status_cb(p.a, NULL);
+	close_relayed_pair(&p);
+	printf("T22 ok\n");
+}
+
+/* T23: the old primary dies before READY. EMERGENCY delivers the queued key. */
+static void test_emergency_cutover_kex(void) {
+	printf("\n=== T23: emergency cutover delivers queued KEX ===\n");
+
+	struct pair p;
+	devtool_node_status_t st;
+	size_t mark;
+	long first;
+	long second;
+	int sessions;
+
+	arm_held_pair(&p, "canonical_migrate_t23");
+	mark = log_mark();
+	sessions = log_count("has a new session ID");
+	assert(devtool_inject_meta_request(p.b, p.b_a, "5 1 em-1"));
+	assert(devtool_inject_meta_request(p.b, p.b_a, "5 2 em-2"));
+	assert(devtool_queue_req_key(p.a, p.a_b));
+	assert(devtool_shutdown_meta_primary(p.a, p.a_b));
+	assert_after(has_validkey(p.a, p.a_b), 20);
+	assert_after(connected_direct(p.a, p.a_b, p.b_port), 20);
+	devtool_get_node_status(p.a, p.a_b, &st);
+	assert(st.validkey);
+	assert(!st.waitingforkey);
+	assert(st.cutover_state == 0);
+	devtool_free_node_status(&st);
+	first = log_find(mark, "b: Status message from a: 1: em-1");
+	second = log_find(mark, "b: Status message from a: 2: em-2");
+	assert(first >= 0 && second > first);
+	assert(log_count_from(mark, "a: Path META: b migrated canonical -> direct") == 1);
+	assert(log_count("has a new session ID") == sessions);
+	assert(log_count_from(mark, "META cutover emergency") >= 1);
+
+	devtool_hold_cutover_ready = false;
+	meshlink_set_node_status_cb(p.a, NULL);
+	close_relayed_pair(&p);
+	printf("T23 ok\n");
+}
+
+/* T24: a failing held request tears the promoted socket down once. */
+static void test_cutover_replay_failure(void) {
+	printf("\n=== T24: held failing request propagates one teardown ===\n");
+
+	struct pair p;
+	size_t mark;
+	long err;
+
+	arm_held_pair(&p, "canonical_migrate_t24");
+	mark = log_mark();
+
+	assert(devtool_inject_meta_request(p.b, p.b_a, "6"));
+	assert(devtool_release_cutover_ready(p.b, p.b_a));
+	assert_after(log_count_from(mark, "Error while processing ERROR from a") == 1, 10);
+	sleep(1);
+	assert(log_count_from(mark, "Error while processing ERROR from a") == 1);
+	err = log_find(mark, "b: Error while processing ERROR from a");
+	assert(err >= 0);
+	assert(log_count_from((size_t)err, "b: Closing connection with a") == 1);
+
+	devtool_hold_cutover_ready = false;
+	meshlink_set_node_status_cb(p.a, NULL);
+	close_relayed_pair(&p);
+	printf("T24 ok\n");
+}
+
+/* T25: abort leaves the old primary up and replays both FIFOs onto it. */
+static void test_cutover_abort_replays(void) {
+	printf("\n=== T25: abort replays outbound and held inbound ===\n");
+
+	struct pair p;
+	devtool_node_status_t st;
+	size_t mark;
+	long outbound;
+	long inbound;
+
+	arm_held_pair(&p, "canonical_migrate_t25");
+	mark = log_mark();
+	assert(devtool_queue_req_key(p.b, p.b_a));
+	assert(devtool_inject_meta_request(p.b, p.b_a, "5 1 held-replay"));
+	devtool_abort_meta_cutover(p.b, p.b_a);
+	assert_after(log_count_from(mark, "b: Status message from a: 1: held-replay") == 1, 5);
+	assert_after(log_count_from(mark, "a: Got REQ_KEY from b") >= 1, 5);
+	outbound = log_find(mark, "b: META cutover replay outbound to a");
+	inbound = log_find(mark, "b: META cutover replay inbound on a");
+	assert(outbound >= 0 && inbound > outbound);
+	devtool_get_node_status(p.b, p.b_a, &st);
+	assert(st.meta_connected);
+	assert(st.meta_via_canonical);
+	assert(st.cutover_state == 0);
+	devtool_free_node_status(&st);
+
+	devtool_hold_cutover_ready = false;
+	meshlink_set_node_status_cb(p.a, NULL);
+	close_relayed_pair(&p);
+	printf("T25 ok\n");
+}
+
+/* T26: a held ERROR during abort retires both sockets and does not promote. */
+static void test_cutover_abort_replay_failure(void) {
+	printf("\n=== T26: abort replay failure does not promote ===\n");
+
+	struct pair p;
+	size_t mark;
+
+	arm_held_pair(&p, "canonical_migrate_t26");
+	mark = log_mark();
+	assert(devtool_inject_meta_request(p.b, p.b_a, "6"));
+	devtool_abort_meta_cutover(p.b, p.b_a);
+	assert_after(log_count_from(mark, "Error while processing ERROR from a") == 1, 10);
+	sleep(1);
+	assert(log_count_from(mark, "Error while processing ERROR from a") == 1);
+	assert(log_count_from(mark, "b: META cutover abort with a") >= 1);
+	assert(log_count_from(mark, "migrated canonical -> direct") == 0);
+	assert(log_count_from(mark, "META cutover committed") == 0);
+	assert(log_count_from(mark, "emergency promotion") == 0);
+	/* Whichever socket the initiator observes first, the rejected standby
+	   is not installed. The responder never starts emergency sync. */
+	assert(log_count_from(mark, "b: META cutover emergency") == 0);
+
+	devtool_hold_cutover_ready = false;
+	meshlink_set_node_status_cb(p.a, NULL);
+	close_relayed_pair(&p);
+	printf("T26 ok\n");
+}
+
 int main(void) {
 	init_sync_flag(&stream_writable);
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, capture_log_cb);
@@ -1288,6 +1490,11 @@ int main(void) {
 	test_stop_during_probe();
 	test_blacklist_after_migrate();
 	test_failover_after_promote();
+	test_kex_during_cutover();
+	test_emergency_cutover_kex();
+	test_cutover_replay_failure();
+	test_cutover_abort_replays();
+	test_cutover_abort_replay_failure();
 
 	free_captured_log();
 	return 0;

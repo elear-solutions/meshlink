@@ -78,6 +78,8 @@ void (*devtool_adns_resolve_probe)(void) = nop_probe;
 void (*devtool_sptps_renewal_probe)(meshlink_node_t *node) = sptps_renewal_nop_probe;
 void (*devtool_upgrade_probe)(meshlink_handle_t *mesh, meshlink_node_t *node, devtool_upgrade_probe_stage_t stage) = upgrade_nop_probe;
 bool devtool_repeat_next_ack = false;
+bool devtool_hold_cutover_ready = false;
+volatile bool devtool_cutover_ready_held = false;
 
 /* Return an array of edges in the current network graph.
  * Data captures the current state and will not be updated.
@@ -577,6 +579,111 @@ void devtool_force_sptps_renewal(meshlink_handle_t *mesh, meshlink_node_t *node)
 		c->last_key_renewal = -3600;
 	}
 
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+bool devtool_release_cutover_ready(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	bool ok = false;
+
+	if(!mesh || !node) {
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	devtool_hold_cutover_ready = false;
+	ok = upgrade_cutover_release_ready(mesh, (node_t *)node);
+	pthread_mutex_unlock(&mesh->mutex);
+	return ok;
+}
+
+bool devtool_shutdown_meta_primary(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	connection_t *c;
+	bool ok = false;
+
+	if(!mesh || !node) {
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	c = ((node_t *)node)->connection;
+
+	if(c && c->socket >= 0) {
+		shutdown(c->socket, SHUT_RDWR);
+		ok = true;
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return ok;
+}
+
+bool devtool_queue_req_key(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	bool ok = false;
+
+	if(!mesh || !node) {
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	ok = send_req_key(mesh, (node_t *)node);
+	pthread_mutex_unlock(&mesh->mutex);
+	return ok;
+}
+
+bool devtool_inject_meta_request(meshlink_handle_t *mesh, meshlink_node_t *node, const char *request) {
+	node_t *n;
+	connection_t *target = NULL;
+	bool ok = false;
+
+	if(!mesh || !node || !request) {
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	n = (node_t *)node;
+
+	if(mesh->connections) {
+		for list_each(connection_t, c, mesh->connections) {
+			if(c->status.spare && c->node == n) {
+				target = c;
+				break;
+			}
+		}
+	}
+
+	if(!target) {
+		target = n->connection;
+	}
+
+	if(target) {
+		ok = receive_request(mesh, target, request);
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return ok;
+}
+
+void devtool_abort_meta_cutover(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	if(!mesh || !node) {
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	upgrade_cutover_test_abort(mesh, (node_t *)node);
 	pthread_mutex_unlock(&mesh->mutex);
 }
 
@@ -1313,7 +1420,9 @@ void devtool_force_meta(meshlink_handle_t *mesh, meshlink_node_t *node, bool ena
 		if(n == mesh->backbone_udp.node || connection_policy_backbone_udp_required(mesh, n)) {
 			path_backbone_udp_start(mesh, n);
 		} else if(path_peer_udp_punching_allowed(mesh, n)) {
-			send_mtu_probe(mesh, n);
+			/* Ordinary-peer PMTU starts in path_punch_accept_reply(), after
+			   the nonce and source match. Releasing the hold only emits the
+			   challenge. */
 			path_punch_release(mesh, n);
 		}
 	}

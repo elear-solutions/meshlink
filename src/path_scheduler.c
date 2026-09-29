@@ -95,6 +95,31 @@ static bool path_scheduler_keepalive_priority(path_transaction_priority_t priori
 	       || priority == PATH_TX_PUNCH;
 }
 
+/* Packet identity stays the enum. Punch and channel promotion share a rank so
+   neither evicts the other; active-route recovery still outranks both. */
+static int path_scheduler_rank(path_transaction_priority_t priority) {
+	switch(priority) {
+	case PATH_TX_BACKBONE_REQUIRED:
+		return 0;
+
+	case PATH_TX_ACTIVE_ROUTE_RECOVERY:
+		return 1;
+
+	case PATH_TX_CHANNEL_PROMOTION:
+	case PATH_TX_PUNCH:
+		return 2;
+
+	case PATH_TX_LIVENESS:
+		return 3;
+
+	case PATH_TX_PMTU_INCREASE:
+		return 4;
+
+	default:
+		return 100;
+	}
+}
+
 static void path_scheduler_drop_priority(meshlink_handle_t *mesh, node_t *node, path_transaction_priority_t priority) {
 	if(!mesh || !node || !mesh->probe_queue) {
 		return;
@@ -170,11 +195,11 @@ static path_sched_txn_t *path_scheduler_preempt_victim(meshlink_handle_t *mesh, 
 	path_sched_txn_t *victim = NULL;
 
 	for list_each(path_sched_txn_t, cur, mesh->probe_txns) {
-		if(cur->priority <= incoming) {
+		if(path_scheduler_rank(cur->priority) <= path_scheduler_rank(incoming)) {
 			continue;
 		}
 
-		if(!victim || cur->priority > victim->priority) {
+		if(!victim || path_scheduler_rank(cur->priority) > path_scheduler_rank(victim->priority)) {
 			victim = cur;
 		}
 	}
@@ -320,11 +345,11 @@ static bool path_scheduler_make_room(meshlink_handle_t *mesh, path_transaction_p
 	}
 
 	for list_each(path_sched_item_t, item, mesh->probe_queue) {
-		if(item->req.priority <= incoming) {
+		if(path_scheduler_rank(item->req.priority) <= path_scheduler_rank(incoming)) {
 			continue;
 		}
 
-		if(!worst || item->req.priority > worst->req.priority) {
+		if(!worst || path_scheduler_rank(item->req.priority) > path_scheduler_rank(worst->req.priority)) {
 			worst = item;
 		}
 	}
@@ -383,7 +408,7 @@ static path_sched_item_t *path_scheduler_best_runnable(meshlink_handle_t *mesh) 
 			continue;
 		}
 
-		if(!best || item->req.priority < best->req.priority) {
+		if(!best || path_scheduler_rank(item->req.priority) < path_scheduler_rank(best->req.priority)) {
 			best = item;
 		}
 	}
@@ -620,6 +645,12 @@ void path_scheduler_cancel_node(meshlink_handle_t *mesh, node_t *node) {
 	}
 
 	path_scheduler_sync_active(mesh);
+
+	/* Dropping the slot must not leave an active challenge with no timer.
+	   Owners that already called path_punch_cancel() have neither. */
+	if(node->peer_udp.challenge.active && !node->punch_timer.cb) {
+		path_punch_challenge_timeout(mesh, node);
+	}
 }
 
 path_sched_admit_t path_scheduler_emit_packet(meshlink_handle_t *mesh, path_sched_txn_t *txn, const path_probe_request_t *pkt) {

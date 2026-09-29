@@ -135,6 +135,8 @@ int outgoing_get_startup_ms(void);
 void close_network_connections(struct meshlink_handle *mesh);
 void main_loop(struct meshlink_handle *mesh);
 void terminate_connection(struct meshlink_handle *mesh, struct connection_t *, bool);
+/* Ask the META I/O path to close c after the current stack unwinds. Does not free c. */
+void connection_defer_teardown(struct meshlink_handle *mesh, struct connection_t *c);
 struct edge_t *new_connection_edge(struct meshlink_handle *mesh, struct connection_t *, struct node_t *, const char *hisport, int devclass) __attribute__((__warn_unused_result__));
 void install_node_connection(struct meshlink_handle *mesh, struct node_t *, struct connection_t *);
 void add_connection_edge(struct meshlink_handle *mesh, struct connection_t *);
@@ -146,6 +148,9 @@ bool node_write_config(struct meshlink_handle *mesh, struct node_t *, bool new_k
 void send_mtu_probe(struct meshlink_handle *mesh, struct node_t *);
 void send_candidate_probe(struct meshlink_handle *mesh, struct node_t *n);
 bool send_punch_probe(struct meshlink_handle *mesh, struct node_t *n);
+/* 64-byte pre-confirmation probe on the REQ_EXTERNAL/LAN rotation.
+   No PMTU timer, counters, route change, or udp_confirmed. */
+void send_punch_bootstrap(struct meshlink_handle *mesh, struct node_t *n);
 void send_suspect_probe(struct meshlink_handle *mesh, struct node_t *n);
 void send_backbone_udp_probe(struct meshlink_handle *mesh);
 void choose_udp_address(struct meshlink_handle *mesh, struct node_t *n, const sockaddr_t **sa, int *sock, sockaddr_t *sa_buf);

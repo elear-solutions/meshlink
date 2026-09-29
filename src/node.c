@@ -128,6 +128,9 @@ void node_set_validkey(meshlink_handle_t *mesh, node_t *n, bool valid) {
 
 	if(!valid) {
 		path_punch_cancel(mesh, n);
+		/* Same-session rekey keeps remembered ingress so the next demand can
+		   challenge it again. A staged hint belongs to the key that is gone. */
+		path_clear_pending_punch_hint(n);
 	}
 
 	path_note_selected_route(mesh, n, valid ? "key recovered" : "key invalidated");

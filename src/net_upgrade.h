@@ -92,6 +92,12 @@ bool upgrade_meta_enqueue_if_frozen(struct meshlink_handle *mesh, connection_t *
 /* Standby sockets accept only PING, PONG, ACK, EMERGENCY, and the cutover request this state expects. */
 bool upgrade_standby_allows(const connection_t *c, int reqno);
 
+/* Test hook: send the READY that devtool_hold_cutover_ready withheld. */
+bool upgrade_cutover_release_ready(struct meshlink_handle *mesh, struct node_t *n);
+
+/* Test hook: abort and replay onto the live primary. */
+void upgrade_cutover_test_abort(struct meshlink_handle *mesh, struct node_t *n);
+
 /* 1 = held until promotion. 0 = barrier forced open, caller must run the handler.
    -1 = fail closed. Never means the record was discarded and accepted. */
 int upgrade_standby_hold(struct meshlink_handle *mesh, connection_t *c, const char *request);

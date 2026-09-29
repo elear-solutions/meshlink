@@ -64,22 +64,38 @@ is never stored as an NMN observation and never exported in `ANS_KEY`.
 The node proves one endpoint at a time. It sends a 64-byte probe, nonce
 at the existing probe offset, to that endpoint. Peers already echo probe
 payload bytes, so this needs no wire-format or protocol-minor change.
-Two sends, one promotion-round apart, then the challenge fails. A later
-or moving hint does not restart an in-flight peer-reflexive challenge.
-When that challenge fails, the latest hint is tried, then the existing
-REQ_EXTERNAL and LAN rotation. A failed source is not pinned for the
-observation freshness window.
+The challenge has an absolute deadline of one promotion budget. Two
+actual sends, or that deadline, end it. Scheduler denial and preemption
+re-arm inside the deadline; they do not spin a 500 ms timer past it. A
+later or moving hint does not restart an in-flight peer-reflexive challenge.
+When that challenge fails, the latest hint is tried, then a separate
+64-byte bootstrap on the existing REQ_EXTERNAL and LAN rotation. That
+bootstrap does not arm the PMTU timer, touch PMTU counters, or set
+`udp_confirmed`. A failed source is not pinned for the observation
+freshness window.
 
 Confirmation is still a reply whose nonce and UDP source match the
 current challenge, and whose session, network, and demand epochs still
 match. That reply is what sets `udp_confirmed`, installs `n->address`,
-and starts PMTU. Receiving a request or an application datagram does not
-confirm, and it does not stop the NMN request ladder. A confirmed peer
-keeps the working endpoint and stores a newer hint for a later demotion.
-Demotion does not restore the hint as a confirmed address; it may start
-a new hint challenge. An identical hint does not restart the request
-ladder. Session change, demand end, network-epoch change, key loss, and
-freshness expiry drop a staged hint and the in-flight challenge.
+and starts PMTU, as one commit. Authenticated ingress is never exported
+in `ANS_KEY`, including when the source is public. A public rendezvous
+confirmation may still be advertised. The legacy local PMTU echo still
+confirms a loopback or private address when no punch challenge is in
+flight. It installs that reply source, not a stale `n->address`, and it
+does not emit `ANS_KEY` for that address. A nonce-zero echo does not
+confirm while a challenge is current, including a private or link-local
+challenge. A public ordinary-peer source with no challenge stays
+unconfirmed and arms `AUTH_INGRESS`. Receiving a request or an
+application datagram does not confirm, and it does not stop the NMN
+request ladder. A confirmed peer keeps the working endpoint and stores a
+newer hint for a later demotion. Demotion tries a remembered ingress
+that still matches the session, demand, and network epoch and has not
+already failed, then the latest hint, then the bootstrap rotation. It
+does not restore either candidate as a confirmed address. An identical
+hint does not restart the request ladder. Session change, demand end,
+network-epoch change, key loss, and freshness expiry drop a staged hint
+and the in-flight challenge. Key loss keeps remembered ingress so the
+same session can challenge it again.
 
 One peer shares one request ladder across every channel to it: immediate
 on the 0→1 transition, then 1, 2, 5, 10, and 30 seconds while direct UDP

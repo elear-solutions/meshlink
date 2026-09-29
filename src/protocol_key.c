@@ -1030,32 +1030,25 @@ bool ans_key_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	}
 
 	if(from->status.validkey) {
-		bool punched = false;
-
 		if(*address && *port) {
 			sockaddr_t sa = str2sockaddr(address, port);
 
 			logger(mesh, MESHLINK_DEBUG, "Using reflexive UDP address from %s: %s port %s", from->name, address, port);
 
-			if(staged_hint) {
-				punched = true;
-			} else if(path_peer_udp_punching_allowed(mesh, from)) {
+			if(!staged_hint && path_peer_udp_punching_allowed(mesh, from)) {
 				if(ans_key_from_backbone(mesh, c)) {
 					path_note_punch_endpoint(mesh, from, &sa);
-					punched = true;
 				}
-			} else if(connection_policy_backbone_udp_required(mesh, from)) {
+			} else if(!staged_hint && connection_policy_backbone_udp_required(mesh, from)) {
 				path_learn_address_cap(mesh, from, &sa, ADDR_SRC_UDP_REFLEXIVE, PATH_CAP_UDP);
 				update_node_udp_from(mesh, from, &sa, ADDR_SRC_UDP_REFLEXIVE);
 			}
 		}
 
-		/* Finding 9 gates peer punching. The backbone UDP mapping is started
-		   here instead of send_mtu_probe(); PMTU starts after confirm. */
+		/* Backbone UDP still starts here. Ordinary peers do not: a 64-byte
+		   bootstrap is not PMTU, and PMTU starts only after punch confirmation. */
 		if(connection_policy_backbone_udp_required(mesh, from)) {
 			path_backbone_udp_start(mesh, from);
-		} else if(!punched && path_peer_udp_punching_allowed(mesh, from)) {
-			send_mtu_probe(mesh, from);
 		}
 	}
 
@@ -1600,6 +1593,196 @@ bool punch_endpoint_cover_unit(meshlink_handle_t *mesh) {
 		src->status.validkey = true;
 	}
 
+	/* Authenticated ingress is not exported. PMTU stays down until confirm.
+	   Key loss drops a staged hint and keeps ingress. Demotion prefers ingress. */
+	{
+		sockaddr_t priv = str2sockaddr("10.9.9.9", "5000");
+		sockaddr_t linklocal = str2sockaddr("169.254.8.8", "5000");
+		sockaddr_t pub = str2sockaddr("203.0.113.77", "4242");
+		sockaddr_t saved_addr;
+		uint64_t nonce;
+		bool saved_force;
+		unsigned exports;
+
+		path_punch_cancel(mesh, src);
+		timeout_del(&mesh->loop, &src->mtutimeout);
+		src->devtool_force_meta = true;
+		src->status.validkey = true;
+		src->status.reachable = true;
+		src->status.udp_confirmed = false;
+		src->peer_udp.channel_count = 1;
+		src->mtuprobes = 0;
+		memset(&src->address, 0, sizeof src->address);
+		memset(&src->peer_udp.last_hint, 0, sizeof src->peer_udp.last_hint);
+		memset(&src->peer_udp.pending_hint, 0, sizeof src->peer_udp.pending_hint);
+		memset(&src->peer_udp.failed_ingress, 0, sizeof src->peer_udp.failed_ingress);
+		src->peer_udp.hint_failed = false;
+
+		exports = path_punch_test_ans_exports();
+		path_observe_punch_ingress(mesh, src, &priv);
+		PUNCH_CHECK(src->peer_udp.challenge.provenance == PUNCH_PROV_AUTH_INGRESS);
+		PUNCH_CHECK(!src->mtutimeout.cb);
+		PUNCH_CHECK(src->mtuprobes == 0);
+		nonce = src->peer_udp.challenge.nonce;
+		PUNCH_CHECK(path_punch_accept_reply(mesh, src, &priv, nonce));
+		PUNCH_CHECK(path_punch_test_ans_exports() == exports);
+		PUNCH_CHECK(src->status.udp_confirmed);
+		PUNCH_CHECK(!src->mtutimeout.cb);
+
+		src->status.udp_confirmed = false;
+		memset(&src->address, 0, sizeof src->address);
+		path_punch_cancel(mesh, src);
+		exports = path_punch_test_ans_exports();
+		path_observe_punch_ingress(mesh, src, &linklocal);
+		nonce = src->peer_udp.challenge.nonce;
+		PUNCH_CHECK(path_punch_accept_reply(mesh, src, &linklocal, nonce));
+		PUNCH_CHECK(path_punch_test_ans_exports() == exports);
+		PUNCH_CHECK(!src->mtutimeout.cb);
+
+		src->status.udp_confirmed = false;
+		memset(&src->address, 0, sizeof src->address);
+		path_punch_cancel(mesh, src);
+		src->peer_udp.hint_failed = false;
+		path_note_punch_endpoint(mesh, src, &pub);
+		PUNCH_CHECK(src->peer_udp.challenge.provenance == PUNCH_PROV_NMN_HINT);
+		nonce = src->peer_udp.challenge.nonce;
+		exports = path_punch_test_ans_exports();
+		PUNCH_CHECK(path_punch_accept_reply(mesh, src, &pub, nonce));
+		PUNCH_CHECK(path_punch_test_ans_exports() == exports + 1);
+		PUNCH_CHECK(src->status.udp_confirmed);
+		timeout_del(&mesh->loop, &src->mtutimeout);
+
+		src->status.udp_confirmed = false;
+		memset(&src->address, 0, sizeof src->address);
+		path_punch_cancel(mesh, src);
+		path_observe_punch_ingress(mesh, src, &priv);
+		nonce = src->peer_udp.challenge.nonce;
+		saved_force = src->devtool_force_meta;
+		src->devtool_force_meta = false;
+		src->status.reachable = false;
+		PUNCH_CHECK(!src->mtutimeout.cb);
+		PUNCH_CHECK(path_punch_accept_reply(mesh, src, &priv, nonce));
+		PUNCH_CHECK(src->mtutimeout.cb);
+		src->devtool_force_meta = saved_force;
+		src->status.reachable = true;
+		timeout_del(&mesh->loop, &src->mtutimeout);
+		PUNCH_CHECK(!path_punch_accept_reply(mesh, src, &priv, nonce));
+		PUNCH_CHECK(!src->mtutimeout.cb);
+
+		src->status.validkey = false;
+		src->status.udp_confirmed = false;
+		path_note_punch_endpoint(mesh, src, &pub);
+		PUNCH_CHECK(src->peer_udp.pending_hint.sa.sa_family != AF_UNSPEC);
+		PUNCH_CHECK(src->peer_udp.ingress.sa.sa_family != AF_UNSPEC);
+		src->status.validkey = true;
+		node_set_validkey(mesh, src, false);
+		PUNCH_CHECK(!src->peer_udp.pending_hint.sa.sa_family);
+		PUNCH_CHECK(!sockaddrcmp(&src->peer_udp.ingress, &priv));
+
+		src->status.validkey = true;
+		src->status.udp_confirmed = false;
+		src->status.reachable = true;
+		src->devtool_force_meta = true;
+		src->peer_udp.channel_count = 1;
+		src->peer_udp.hint_failed = false;
+		memset(&src->peer_udp.failed_ingress, 0, sizeof src->peer_udp.failed_ingress);
+		path_punch_cancel(mesh, src);
+		path_observe_punch_ingress(mesh, src, &priv);
+		path_note_punch_endpoint(mesh, src, &pub);
+		PUNCH_CHECK(src->peer_udp.challenge.provenance == PUNCH_PROV_AUTH_INGRESS);
+		path_punch_cancel(mesh, src);
+		src->address = pub;
+		saved_addr = src->address;
+		src->status.udp_confirmed = true;
+		src->udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+		path_note_udp_demoted_reason(mesh, src, "cover ingress demotion");
+		PUNCH_CHECK(src->peer_udp.challenge.provenance == PUNCH_PROV_AUTH_INGRESS);
+		PUNCH_CHECK(!sockaddrcmp(&src->peer_udp.challenge.endpoint, &priv));
+		PUNCH_CHECK(!sockaddrcmp(&src->address, &saved_addr));
+		PUNCH_CHECK(!src->status.udp_confirmed);
+
+		path_punch_cancel(mesh, src);
+		src->status.udp_confirmed = false;
+		src->devtool_force_meta = true;
+		src->peer_udp.hint_failed = true;
+		memset(&src->peer_udp.last_hint, 0, sizeof src->peer_udp.last_hint);
+		path_observe_punch_ingress(mesh, src, &priv);
+		src->peer_udp.challenge.attempts = 0;
+		src->peer_udp.challenge.deadline = mesh->loop.now;
+		src->peer_udp.challenge.deadline.tv_sec -= 1;
+		path_punch_challenge_timeout(mesh, src);
+		PUNCH_CHECK(!src->peer_udp.challenge.active);
+		PUNCH_CHECK(!src->punch_timer.cb);
+
+		path_punch_cancel(mesh, src);
+		timeout_del(&mesh->loop, &src->mtutimeout);
+		timeout_del(&mesh->loop, &src->punch_timer);
+		path_punch_cancel(mesh, src);
+
+		/* Nonce zero cannot bypass an active private challenge. A matching
+		   reply confirms that source. With no challenge, a local echo
+		   installs the reply source rather than a stale n->address. */
+		{
+			sockaddr_t echo_priv = str2sockaddr("10.8.8.8", "5000");
+			sockaddr_t echo_other = str2sockaddr("10.8.8.9", "5000");
+			sockaddr_t echo_stale = str2sockaddr("203.0.113.88", "9");
+			sockaddr_t echo_pub = str2sockaddr("198.51.100.8", "4000");
+			uint64_t echo_nonce;
+			unsigned echo_exports;
+
+			path_punch_cancel(mesh, src);
+			timeout_del(&mesh->loop, &src->mtutimeout);
+			src->devtool_force_meta = true;
+			src->status.validkey = true;
+			src->status.reachable = true;
+			src->status.udp_confirmed = false;
+			src->peer_udp.channel_count = 1;
+			src->session_id = 11;
+			src->mtuprobes = 0;
+			memset(&src->address, 0, sizeof src->address);
+			memset(&src->peer_udp.last_hint, 0, sizeof src->peer_udp.last_hint);
+			memset(&src->peer_udp.failed_ingress, 0, sizeof src->peer_udp.failed_ingress);
+			src->peer_udp.hint_failed = false;
+
+			path_observe_punch_ingress(mesh, src, &echo_priv);
+			PUNCH_CHECK(src->peer_udp.challenge.active);
+			PUNCH_CHECK(src->peer_udp.challenge.provenance == PUNCH_PROV_AUTH_INGRESS);
+			echo_nonce = src->peer_udp.challenge.nonce;
+			echo_exports = path_punch_test_ans_exports();
+			PUNCH_CHECK(path_try_confirm_udp_probe_reply(mesh, src, &echo_priv, 0));
+			PUNCH_CHECK(!src->status.udp_confirmed);
+			PUNCH_CHECK(!src->address.sa.sa_family);
+			PUNCH_CHECK(path_try_confirm_udp_probe_reply(mesh, src, &echo_other, echo_nonce));
+			PUNCH_CHECK(!src->status.udp_confirmed);
+			PUNCH_CHECK(path_punch_test_ans_exports() == echo_exports);
+			PUNCH_CHECK(path_try_confirm_udp_probe_reply(mesh, src, &echo_priv, echo_nonce));
+			PUNCH_CHECK(src->status.udp_confirmed);
+			PUNCH_CHECK(!sockaddrcmp(&src->address, &echo_priv));
+			PUNCH_CHECK(path_punch_test_ans_exports() == echo_exports);
+			timeout_del(&mesh->loop, &src->mtutimeout);
+
+			path_punch_cancel(mesh, src);
+			src->status.udp_confirmed = false;
+			src->address = echo_stale;
+			echo_exports = path_punch_test_ans_exports();
+			PUNCH_CHECK(!path_try_confirm_udp_probe_reply(mesh, src, &echo_priv, 0));
+			PUNCH_CHECK(src->status.udp_confirmed);
+			PUNCH_CHECK(!sockaddrcmp(&src->address, &echo_priv));
+			PUNCH_CHECK(path_punch_test_ans_exports() == echo_exports);
+
+			path_punch_cancel(mesh, src);
+			src->status.udp_confirmed = false;
+			memset(&src->address, 0, sizeof src->address);
+			PUNCH_CHECK(path_try_confirm_udp_probe_reply(mesh, src, &echo_pub, 0));
+			PUNCH_CHECK(!src->status.udp_confirmed);
+			PUNCH_CHECK(src->peer_udp.challenge.provenance == PUNCH_PROV_AUTH_INGRESS);
+			PUNCH_CHECK(!sockaddrcmp(&src->peer_udp.challenge.endpoint, &echo_pub));
+			path_punch_cancel(mesh, src);
+			timeout_del(&mesh->loop, &src->mtutimeout);
+			timeout_del(&mesh->loop, &src->punch_timer);
+		}
+	}
+
 	ok = true;
 
 done:
@@ -1617,6 +1800,7 @@ done:
 		timeout_del(&mesh->loop, &src->promotion_timer);
 		path_suspect_stop(mesh, src);
 		path_scheduler_cancel_node(mesh, src);
+		buffer_clear(&live.outbuf);
 		node_del(mesh, src);
 	}
 

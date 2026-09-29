@@ -69,12 +69,30 @@ struct meta_cutover {
 };
 
 static const char *cutover_state_name(meta_cutover_state_t state);
-static void upgrade_cutover_abort(meshlink_handle_t *mesh, node_t *n, const char *reason, bool replay);
+static bool upgrade_cutover_abort(meshlink_handle_t *mesh, node_t *n, const char *reason, bool replay);
+static bool cutover_fail_control_send;
+static bool cover_order_on;
+static char cover_order[8];
+
+static void cover_order_mark(char mark) {
+	size_t used;
+
+	if(!cover_order_on) {
+		return;
+	}
+
+	used = strlen(cover_order);
+
+	if(used + 1 < sizeof cover_order) {
+		cover_order[used] = mark;
+		cover_order[used + 1] = '\0';
+	}
+}
 static void upgrade_cutover_on_timeout(meshlink_handle_t *mesh, node_t *n);
-static void cutover_promote(meshlink_handle_t *mesh, node_t *n, bool send_ack, bool uncertain, bool close_old);
+static bool cutover_promote(meshlink_handle_t *mesh, node_t *n, bool send_ack, bool uncertain, bool close_old);
 static void cutover_enter_emergency_sync(meshlink_handle_t *mesh, node_t *n);
-static void cutover_finish_sync(meshlink_handle_t *mesh, node_t *n, bool uncertain);
-static bool upgrade_standby_replay(meshlink_handle_t *mesh, connection_t *c);
+static bool cutover_finish_sync(meshlink_handle_t *mesh, node_t *n, bool uncertain);
+static bool upgrade_standby_replay(meshlink_handle_t *mesh, connection_t *owner, connection_t *dispatch);
 static void upgrade_standby_drop_held(connection_t *c);
 static bool upgrade_standby_force_sync(meshlink_handle_t *mesh, connection_t *c);
 static struct meta_cutover *upgrade_cutover_create(node_t *n);
@@ -408,20 +426,35 @@ int upgrade_standby_hold(meshlink_handle_t *mesh, connection_t *c, const char *r
 	return 1;
 }
 
-static bool upgrade_standby_replay(meshlink_handle_t *mesh, connection_t *c) {
+/* Detach owner's held queue and dispatch it on dispatch, FIFO. Never frees
+   either connection. A failure while dispatch is already inside receive_request()
+   is reported through meta_replay_failed; otherwise the socket is shut down and
+   the META I/O path frees it later. */
+static bool upgrade_standby_replay(meshlink_handle_t *mesh, connection_t *owner, connection_t *dispatch) {
 	list_t *q;
 
-	if(!c || !c->standby_held) {
+	if(!owner || !owner->standby_held) {
 		return true;
 	}
 
-	q = c->standby_held;
-	c->standby_held = NULL;
-	c->standby_held_bytes = 0;
+	if(!dispatch) {
+		upgrade_standby_drop_held(owner);
+		return false;
+	}
+
+	q = owner->standby_held;
+	owner->standby_held = NULL;
+	owner->standby_held_bytes = 0;
+
+	if(q->head) {
+		cover_order_mark('I');
+		logger(mesh, MESHLINK_INFO, "META cutover replay inbound on %s", dispatch && dispatch->name ? dispatch->name : "?");
+	}
 
 	while(q->head) {
 		char *request = list_get_head(q);
-		bool ok = receive_request(mesh, c, request);
+		bool nested = dispatch->meta_receive_depth > 0;
+		bool ok = receive_request(mesh, dispatch, request);
 
 		list_delete_head(q);
 
@@ -431,6 +464,14 @@ static bool upgrade_standby_replay(meshlink_handle_t *mesh, connection_t *c) {
 			}
 
 			list_free(q);
+			cover_order_mark('F');
+
+			if(nested) {
+				dispatch->meta_replay_failed = true;
+			} else {
+				connection_defer_teardown(mesh, dispatch);
+			}
+
 			return false;
 		}
 	}
@@ -459,7 +500,7 @@ static void upgrade_standby_drop_held(connection_t *c) {
 
 static connection_t *find_spare(meshlink_handle_t *mesh, const node_t *n) {
 	for list_each(connection_t, c, mesh->connections) {
-		if(c->status.spare && c->status.active && c->node == n) {
+		if(c->status.spare && c->status.active && c->node == n && !c->meta_teardown && !c->meta_replay_failed) {
 			return c;
 		}
 	}
@@ -542,10 +583,12 @@ void upgrade_connection_closing(meshlink_handle_t *mesh, connection_t *c) {
 	struct meta_cutover *co = n ? n->meta_cutover : NULL;
 
 	if(c->status.spare) {
-		upgrade_standby_drop_held(c);
-
+		/* Abort owns the held queue when it can still replay onto the primary.
+		   Dropping here first would discard records the old socket can deliver. */
 		if(co && co->new_standby == c && co->state != META_CUTOVER_EMERGENCY_PROMOTE && co->state != META_CUTOVER_EMERGENCY_SYNC) {
 			upgrade_cutover_abort(mesh, n, "standby closed", true);
+		} else {
+			upgrade_standby_drop_held(c);
 		}
 
 		/* Not in the graph unless commit already moved it, and commit clears spare. */
@@ -580,9 +623,17 @@ void upgrade_connection_closing(meshlink_handle_t *mesh, connection_t *c) {
 	}
 
 	if(!co) {
+		connection_t *spare;
+
+		/* This close is the deferred teardown of a replay that already failed.
+		   The rejected standby is not a promotion candidate. */
+		if(c->meta_teardown || c->meta_replay_failed) {
+			return;
+		}
+
 		/* PREPARE never arrived. The standby is live, but this peer has no
 		   barrier id yet. Install it and wait for the initiator's EMERGENCY. */
-		connection_t *spare = find_spare(mesh, n);
+		spare = find_spare(mesh, n);
 
 		if(!spare || !spare->status.active || !may_promote(mesh, n)) {
 			return;
@@ -603,7 +654,11 @@ void upgrade_connection_closing(meshlink_handle_t *mesh, connection_t *c) {
 
 		upgrade_cutover_abort(mesh, n, "primary closed", false);
 
-		if(standby && standby->status.spare && standby->socket >= 0) {
+		/* meshlink_stop() is already walking mesh->connections. Terminating the
+		   spare here unlinks a list node that walk still holds. Stop closes it
+		   on its own iteration. A live mesh still drops the spare now, or it
+		   would sit until the drain timer with the barrier already gone. */
+		if(mesh->loop.running && standby && standby->status.spare && standby->socket >= 0) {
 			terminate_connection(mesh, standby, false);
 		}
 
@@ -741,6 +796,10 @@ static bool send_cutover(meshlink_handle_t *mesh, connection_t *c, int req, uint
 		name = "EMERGENCY";
 	}
 
+	if(cutover_fail_control_send) {
+		return false;
+	}
+
 	len = snprintf(buf, sizeof(buf), "%d %" PRIu64 "\n", req, id);
 
 	if(len < 0 || (size_t)len >= sizeof(buf)) {
@@ -783,6 +842,11 @@ static void flush_queue(meshlink_handle_t *mesh, connection_t *c, list_t *q) {
 		return;
 	}
 
+	if(q->head) {
+		cover_order_mark('O');
+		logger(mesh, MESHLINK_INFO, "META cutover replay outbound to %s", c && c->name ? c->name : "?");
+	}
+
 	while(q->head) {
 		meta_pending_record_t *r = list_get_head(q);
 
@@ -818,7 +882,8 @@ static void cutover_note_failure(meshlink_handle_t *mesh, node_t *n) {
 }
 
 static void cutover_rearm_standby(meshlink_handle_t *mesh, connection_t *standby) {
-	if(!standby || !standby->status.spare || !standby->status.active || standby->socket < 0) {
+	if(!standby || !standby->status.spare || !standby->status.active || standby->socket < 0
+	                || standby->meta_teardown || standby->meta_replay_failed) {
 		return;
 	}
 
@@ -832,15 +897,16 @@ static void cutover_rearm_standby(meshlink_handle_t *mesh, connection_t *standby
 	});
 }
 
-static void upgrade_cutover_abort(meshlink_handle_t *mesh, node_t *n, const char *reason, bool replay) {
+static bool upgrade_cutover_abort(meshlink_handle_t *mesh, node_t *n, const char *reason, bool replay) {
 	struct meta_cutover *co;
 	connection_t *old;
 	connection_t *standby;
 	list_t *q;
 	bool leave_standby;
+	bool replay_ok = true;
 
 	if(!n || !n->meta_cutover) {
-		return;
+		return false;
 	}
 
 	co = n->meta_cutover;
@@ -857,21 +923,30 @@ static void upgrade_cutover_abort(meshlink_handle_t *mesh, node_t *n, const char
 	free(co);
 
 	if(replay && old && old->status.active && n->connection == old) {
+		/* Outbound plaintext first, then held inbound, so a replayed request's
+		   reply cannot pass META that was already queued locally. The caller
+		   sends an overflow trigger only when this returns true. */
 		flush_queue(mesh, old, q);
+		replay_ok = upgrade_standby_replay(mesh, standby, old);
+
+		if(!replay_ok) {
+			connection_defer_teardown(mesh, standby);
+			leave_standby = false;
+		}
 	} else {
 		drop_queue(q);
+		upgrade_standby_drop_held(standby);
 	}
-
-	upgrade_standby_drop_held(standby);
 
 	if(leave_standby) {
 		cutover_rearm_standby(mesh, standby);
 	}
 
 	cutover_note_failure(mesh, n);
+	return replay_ok;
 }
 
-static void cutover_log_commit(meshlink_handle_t *mesh, node_t *n, connection_t *neu, uint64_t id, bool initiator, bool uncertain) {
+static bool cutover_log_commit(meshlink_handle_t *mesh, node_t *n, connection_t *neu, uint64_t id, bool initiator, bool uncertain) {
 	if(neu && neu->socket >= 0) {
 		path_consider_route_promotion(mesh, NULL, PATH_PROMOTION_META_DIRECT);
 
@@ -889,12 +964,16 @@ static void cutover_log_commit(meshlink_handle_t *mesh, node_t *n, connection_t 
 		node_kex_mark_uncertain(mesh, n);
 	}
 
-	if(neu && !upgrade_standby_replay(mesh, neu) && neu->socket >= 0 && neu->status.active) {
-		terminate_connection(mesh, neu, false);
+	if(!neu) {
+		return true;
 	}
+
+	/* Caller owns teardown. Replay must not free neu while receive_request()
+	   is still on it. */
+	return upgrade_standby_replay(mesh, neu, neu);
 }
 
-static void cutover_promote(meshlink_handle_t *mesh, node_t *n, bool send_ack, bool uncertain, bool close_old) {
+static bool cutover_promote(meshlink_handle_t *mesh, node_t *n, bool send_ack, bool uncertain, bool close_old) {
 	struct meta_cutover *co = n->meta_cutover;
 	connection_t *old;
 	connection_t *neu;
@@ -903,7 +982,7 @@ static void cutover_promote(meshlink_handle_t *mesh, node_t *n, bool send_ack, b
 	bool initiator;
 
 	if(!co || !co->new_standby) {
-		return;
+		return false;
 	}
 
 	co->state = META_CUTOVER_EMERGENCY_PROMOTE;
@@ -949,7 +1028,7 @@ static void cutover_promote(meshlink_handle_t *mesh, node_t *n, bool send_ack, b
 		add_connection_edge(mesh, neu);
 	}
 
-	cutover_log_commit(mesh, n, neu, id, initiator, uncertain);
+	return cutover_log_commit(mesh, n, neu, id, initiator, uncertain);
 }
 
 static void cutover_send_emergency(meshlink_handle_t *mesh, struct meta_cutover *co) {
@@ -1035,11 +1114,14 @@ static bool upgrade_standby_force_sync(meshlink_handle_t *mesh, connection_t *c)
 		send_cutover(mesh, c, REQ_META_CUTOVER_EMERGENCY, co->id);
 	}
 
-	cutover_promote(mesh, n, false, true, true);
+	if(!cutover_promote(mesh, n, false, true, true)) {
+		return false;
+	}
+
 	return n->connection == c && !c->status.spare;
 }
 
-static void cutover_finish_sync(meshlink_handle_t *mesh, node_t *n, bool uncertain) {
+static bool cutover_finish_sync(meshlink_handle_t *mesh, node_t *n, bool uncertain) {
 	struct meta_cutover *co = n->meta_cutover;
 	connection_t *neu;
 	list_t *q;
@@ -1047,7 +1129,7 @@ static void cutover_finish_sync(meshlink_handle_t *mesh, node_t *n, bool uncerta
 	bool initiator;
 
 	if(!co || !co->new_standby) {
-		return;
+		return false;
 	}
 
 	neu = co->new_standby;
@@ -1059,7 +1141,7 @@ static void cutover_finish_sync(meshlink_handle_t *mesh, node_t *n, bool uncerta
 	free(co);
 
 	flush_queue(mesh, neu, q);
-	cutover_log_commit(mesh, n, neu, id, initiator, uncertain);
+	return cutover_log_commit(mesh, n, neu, id, initiator, uncertain);
 }
 
 static void upgrade_cutover_on_timeout(meshlink_handle_t *mesh, node_t *n) {
@@ -1249,11 +1331,42 @@ bool meta_cutover_prepare_h(meshlink_handle_t *mesh, connection_t *c, const char
 	cutover_arm(mesh, co);
 	logger(mesh, MESHLINK_INFO, "META cutover recv PREPARE id=%" PRIu64 " from %s queue=%u", id, n->name, co->pending_records->count);
 
+	if(devtool_hold_cutover_ready) {
+		devtool_cutover_ready_held = true;
+		logger(mesh, MESHLINK_INFO, "META cutover holding READY id=%" PRIu64 " from %s", id, n->name);
+		return true;
+	}
+
 	if(!send_cutover(mesh, c, REQ_META_CUTOVER_READY, id)) {
 		upgrade_cutover_abort(mesh, n, "ready send failed", true);
 	}
 
 	return true;
+}
+
+bool upgrade_cutover_release_ready(meshlink_handle_t *mesh, node_t *n) {
+	struct meta_cutover *co;
+
+	if(!mesh || !n) {
+		return false;
+	}
+
+	co = n->meta_cutover;
+
+	if(!co || co->state != META_CUTOVER_RESP_WAIT_COMMIT || !co->old_primary || !co->id) {
+		return false;
+	}
+
+	if(!send_cutover(mesh, co->old_primary, REQ_META_CUTOVER_READY, co->id)) {
+		upgrade_cutover_abort(mesh, n, "ready send failed", true);
+		return false;
+	}
+
+	return true;
+}
+
+void upgrade_cutover_test_abort(meshlink_handle_t *mesh, node_t *n) {
+	upgrade_cutover_abort(mesh, n, "test", true);
 }
 
 bool meta_cutover_ready_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
@@ -1303,8 +1416,7 @@ bool meta_cutover_commit_h(meshlink_handle_t *mesh, connection_t *c, const char 
 	}
 
 	logger(mesh, MESHLINK_INFO, "META cutover recv COMMIT id=%" PRIu64 " from %s", id, n->name);
-	cutover_promote(mesh, n, true, false, true);
-	return true;
+	return cutover_promote(mesh, n, true, false, true);
 }
 
 bool meta_cutover_ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
@@ -1324,8 +1436,7 @@ bool meta_cutover_ack_h(meshlink_handle_t *mesh, connection_t *c, const char *re
 	}
 
 	logger(mesh, MESHLINK_INFO, "META cutover recv ACK id=%" PRIu64 " from %s", id, n->name);
-	cutover_promote(mesh, n, false, false, true);
-	return true;
+	return cutover_promote(mesh, n, false, false, true);
 }
 
 bool meta_cutover_emergency_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
@@ -1351,8 +1462,7 @@ bool meta_cutover_emergency_h(meshlink_handle_t *mesh, connection_t *c, const ch
 
 		logger(mesh, MESHLINK_INFO, "META cutover recv EMERGENCY id=%" PRIu64 " from %s", id, n->name);
 		cutover_send_emergency(mesh, co);
-		cutover_finish_sync(mesh, n, true);
-		return true;
+		return cutover_finish_sync(mesh, n, true);
 	}
 
 	if(co && c == co->new_standby && co->id == id
@@ -1361,8 +1471,7 @@ bool meta_cutover_emergency_h(meshlink_handle_t *mesh, connection_t *c, const ch
 		logger(mesh, MESHLINK_INFO, "META cutover recv EMERGENCY id=%" PRIu64 " from %s", id, n->name);
 		co->emergency_sent = true;
 		send_cutover(mesh, co->new_standby, REQ_META_CUTOVER_EMERGENCY, id);
-		cutover_promote(mesh, n, false, true, true);
-		return true;
+		return cutover_promote(mesh, n, false, true, true);
 	}
 
 	/* PREPARE never landed. This standby is the only authenticated direct socket. */
@@ -1376,8 +1485,7 @@ bool meta_cutover_emergency_h(meshlink_handle_t *mesh, connection_t *c, const ch
 		co->emergency_sent = true;
 		timeout_del(&mesh->loop, &c->drain_ev);
 		send_cutover(mesh, c, REQ_META_CUTOVER_EMERGENCY, id);
-		cutover_promote(mesh, n, false, true, true);
-		return true;
+		return cutover_promote(mesh, n, false, true, true);
 	}
 
 	return cutover_stale(mesh, c, "EMERGENCY");
@@ -1941,11 +2049,161 @@ bool upgrade_cutover_cover_unit(meshlink_handle_t *mesh) {
 	neu->standby_held = list_alloc(standby_held_free);
 	list_insert_tail(neu->standby_held, xstrdup("6\n"));
 
-	if(upgrade_standby_replay(mesh, neu) || neu->standby_held) {
+	if(upgrade_standby_replay(mesh, neu, neu) || neu->standby_held || !neu->meta_teardown) {
 		upgrade_standby_drop_held(neu);
 		free_connection(old);
 		free_connection(neu);
 		return false;
+	}
+
+	/* READY-release failure aborts immediately. Overflow delivers its trigger
+	   only after outbound-then-inbound replay. A failed replay retires both
+	   sockets, and a later primary close cannot promote that standby.
+	   Malformed and stale controls, and a timeout while the old primary is
+	   alive, stay on the canonical socket. */
+	{
+		list_action_t del = NULL;
+		bool tracked = false;
+		char trigger[] = "10 cover\n";
+
+#define COVER_BAIL() \
+	do { \
+		cover_order_on = false; \
+		cutover_fail_control_send = false; \
+		devtool_hold_cutover_ready = false; \
+		upgrade_standby_drop_held(neu); \
+		upgrade_node_cleanup(mesh, &n); \
+		if(tracked) { \
+			cover_untrack(mesh, neu, del); \
+		} \
+		timeout_del(&mesh->loop, &old->drain_ev); \
+		timeout_del(&mesh->loop, &neu->drain_ev); \
+		free_connection(old); \
+		free_connection(neu); \
+		return false; \
+	} while(0)
+
+		if(!mesh->connections) {
+			COVER_BAIL();
+		}
+
+		del = mesh->connections->delete;
+		list_insert_tail(mesh->connections, neu);
+		tracked = true;
+		n.connection = old;
+		old->status.active = true;
+		neu->status.spare = true;
+		neu->status.active = true;
+		neu->status.initiator = false;
+		old->meta_teardown = false;
+		neu->meta_teardown = false;
+		old->meta_replay_failed = false;
+		neu->meta_replay_failed = false;
+		n.key_delivery_uncertain = false;
+
+		if(!meta_cutover_ready_h(mesh, old, "18\n") || !meta_cutover_ready_h(mesh, old, "18 1\n")
+		                || n.meta_cutover || n.connection != old) {
+			COVER_BAIL();
+		}
+
+		if(!upgrade_cutover_begin(mesh, &n, old, neu)) {
+			COVER_BAIL();
+		}
+
+		upgrade_cutover_on_timeout(mesh, &n);
+
+		if(n.meta_cutover || n.connection != old || !neu->status.spare || neu->meta_teardown) {
+			COVER_BAIL();
+		}
+
+		devtool_hold_cutover_ready = true;
+		snprintf(request, sizeof(request), "%d 77\n", REQ_META_CUTOVER_PREPARE);
+
+		if(!meta_cutover_prepare_h(mesh, old, request) || !n.meta_cutover
+		                || n.meta_cutover->state != META_CUTOVER_RESP_WAIT_COMMIT) {
+			COVER_BAIL();
+		}
+
+		devtool_hold_cutover_ready = false;
+		cutover_fail_control_send = true;
+
+		if(upgrade_cutover_release_ready(mesh, &n) || n.meta_cutover || n.connection != old
+		                || old->meta_teardown || neu->meta_teardown) {
+			COVER_BAIL();
+		}
+
+		cutover_fail_control_send = false;
+
+		if(!upgrade_cutover_begin(mesh, &n, old, neu)) {
+			COVER_BAIL();
+		}
+
+		for(i = 0; i < META_CUTOVER_MAX_RECORDS; i++) {
+			char rec[32];
+			int len = snprintf(rec, sizeof(rec), "5 %d\n", i);
+
+			if(!upgrade_meta_enqueue_if_frozen(mesh, old, rec, len)) {
+				COVER_BAIL();
+			}
+		}
+
+		if(upgrade_standby_hold(mesh, neu, "9\n") != 1) {
+			COVER_BAIL();
+		}
+
+		cover_order[0] = '\0';
+		cover_order_on = true;
+
+		if(!send_meta(mesh, old, trigger, (int)strlen(trigger)) || strcmp(cover_order, "OI")
+		                || n.meta_cutover || n.connection != old || old->meta_teardown || neu->meta_teardown
+		                || neu->standby_held) {
+			COVER_BAIL();
+		}
+
+		cover_order_on = false;
+
+		if(!upgrade_cutover_begin(mesh, &n, old, neu)) {
+			COVER_BAIL();
+		}
+
+		for(i = 0; i < META_CUTOVER_MAX_RECORDS; i++) {
+			char rec[32];
+			int len = snprintf(rec, sizeof(rec), "5 %d\n", i);
+
+			if(!upgrade_meta_enqueue_if_frozen(mesh, old, rec, len)) {
+				COVER_BAIL();
+			}
+		}
+
+		if(upgrade_standby_hold(mesh, neu, "6\n") != 1) {
+			COVER_BAIL();
+		}
+
+		cover_order[0] = '\0';
+		cover_order_on = true;
+
+		if(send_meta(mesh, old, trigger, (int)strlen(trigger)) || strcmp(cover_order, "OIF")
+		                || n.meta_cutover || n.connection != old || !old->meta_teardown || !neu->meta_teardown
+		                || find_spare(mesh, &n)) {
+			COVER_BAIL();
+		}
+
+		cover_order_on = false;
+		upgrade_connection_closing(mesh, old);
+
+		if(n.meta_cutover || n.connection != old || !neu->meta_teardown) {
+			COVER_BAIL();
+		}
+
+		cover_untrack(mesh, neu, del);
+		tracked = false;
+		old->meta_teardown = false;
+		neu->meta_teardown = false;
+		old->meta_replay_failed = false;
+		neu->meta_replay_failed = false;
+		timeout_del(&mesh->loop, &old->drain_ev);
+		timeout_del(&mesh->loop, &neu->drain_ev);
+#undef COVER_BAIL
 	}
 
 	if(witness && witness->key_delivery_uncertain != witness_uncertain) {
