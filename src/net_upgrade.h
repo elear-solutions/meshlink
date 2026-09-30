@@ -48,9 +48,6 @@ void upgrade_probe_failed(struct meshlink_handle *mesh, node_t *n, const char *r
 /* Standby authenticated. Clears the in-flight probe and backoff. Migration is logged at commit. */
 void upgrade_probe_standby_ready(struct meshlink_handle *mesh, connection_t *c);
 
-/* Commit succeeded. One probe-succeeded event and one migration log. */
-void upgrade_probe_committed(struct meshlink_handle *mesh, connection_t *c);
-
 /* Called from ack_h() when a probe authenticated. Clears probe state and backoff.
    Does not log the barrier commit; that happens when the ordered cutover finishes. */
 void upgrade_probe_succeeded(struct meshlink_handle *mesh, connection_t *c);
