@@ -1150,8 +1150,6 @@ static unsigned nat_punch_cam;
 static unsigned nat_mtu_app;
 static unsigned nat_mtu_cam;
 static unsigned nat_log_seq;
-static bool nat_matrix_skipped;
-
 static void nat_count_log(meshlink_handle_t *mesh, meshlink_log_level_t level, const char *text) {
 	(void)level;
 
@@ -1205,8 +1203,7 @@ static bool nat_hole_punch_once(const char *prefix, bool app_symmetric, bool cam
 	devtool_node_status_t st;
 
 	if(!peers) {
-		fprintf(stderr, "SKIP nat hole punch %s: topology unavailable\n", prefix);
-		nat_matrix_skipped = true;
+		fprintf(stderr, "nat hole punch %s: topology unavailable\n", prefix);
 		return false;
 	}
 
@@ -1288,9 +1285,10 @@ static bool nat_hole_punch_once(const char *prefix, bool app_symmetric, bool cam
 		assert_after(nat_route_is(peers[1].mesh, app_cam, 1), 30);
 		assert_after(nat_route_is(peers[2].mesh, cam_app, 1), 30);
 
+		assert(nat_reflex_app >= 1);
+		assert(nat_reflex_cam >= 1);
+
 		if(asymmetric) {
-			assert(nat_reflex_app >= 1);
-			assert(nat_reflex_cam >= 1);
 			assert(nat_punch_app && nat_mtu_app > nat_punch_app);
 			assert(nat_punch_cam && nat_mtu_cam > nat_punch_cam);
 		}
@@ -1325,8 +1323,8 @@ static bool nat_hole_punch_once(const char *prefix, bool app_symmetric, bool cam
 
 static void test_nat_hole_punch(void) {
 	if(!netns_available()) {
-		fprintf(stderr, "SKIP udp-relay NAT hole punch: netns unavailable (cone/cone, endpoint/endpoint, cone->endpoint, endpoint->cone)\n");
-		nat_matrix_skipped = true;
+		fprintf(stderr, "udp-relay NAT hole punch: netns unavailable\n");
+		assert(netns_available());
 		return;
 	}
 
@@ -1335,7 +1333,7 @@ static void test_nat_hole_punch(void) {
 
 		snprintf(prefix, sizeof prefix, "natholeC%d", i);
 		printf("\n=== udp-relay NAT cone %d ===\n", i);
-		nat_hole_punch_once(prefix, false, false);
+		assert(nat_hole_punch_once(prefix, false, false));
 	}
 
 	for(int i = 0; i < 5; i++) {
@@ -1343,7 +1341,7 @@ static void test_nat_hole_punch(void) {
 
 		snprintf(prefix, sizeof prefix, "natholeS%d", i);
 		printf("\n=== udp-relay NAT symmetric %d ===\n", i);
-		nat_hole_punch_once(prefix, true, true);
+		assert(nat_hole_punch_once(prefix, true, true));
 	}
 
 	for(int i = 0; i < 3; i++) {
@@ -1351,10 +1349,10 @@ static void test_nat_hole_punch(void) {
 
 		snprintf(prefix, sizeof prefix, "natholeM%d", i);
 		printf("\n=== udp-relay NAT cone to endpoint-dependent %d ===\n", i);
-		nat_hole_punch_once(prefix, false, true);
+		assert(nat_hole_punch_once(prefix, false, true));
 		snprintf(prefix, sizeof prefix, "natholeN%d", i);
 		printf("\n=== udp-relay NAT endpoint-dependent to cone %d ===\n", i);
-		nat_hole_punch_once(prefix, true, false);
+		assert(nat_hole_punch_once(prefix, true, false));
 	}
 
 	printf("udp-relay NAT hole punch ok\n");
@@ -1457,11 +1455,6 @@ int main(void) {
 		assert(asprintf(&path, "udp_relay_conf.%d", i) != -1 && path);
 		assert(meshlink_destroy(path));
 		free(path);
-	}
-
-	if(nat_matrix_skipped) {
-		fprintf(stderr, "SKIP udp-relay: NAT matrix did not execute\n");
-		return 77;
 	}
 
 	return 0;

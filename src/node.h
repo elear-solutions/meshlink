@@ -114,7 +114,7 @@ typedef struct node_t {
 	/* Node-owned SPTPS recovery. Not tied to one META socket. */
 	struct timespec key_retry_at;           /* {0,0} = watchdog not armed */
 	uint8_t key_retry_step;                 /* index into 2,5,10,30,60s */
-	uint32_t key_retry_epoch;               /* increments on each send_req_key() */
+	uint32_t key_retry_epoch;               /* increments in node_kex_arm(), including send_req_key() and the responder handshake */
 	bool key_delivery_uncertain;            /* cutover lost the old primary before the barrier */
 	bool key_retry_wanted;                  /* inbound REQ_SPTPS asked for a retry; not channel demand */
 

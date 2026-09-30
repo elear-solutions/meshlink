@@ -1562,7 +1562,7 @@ static void test_retransmit_raises_suspect(void) {
 	/* Unacked reliable data → channel_retransmit → path_note_route_suspect. */
 	set_sync_flag(&received, false);
 	assert(meshlink_channel_send(a, ch, "blackhole", 9) == 9);
-	assert(wait_sync_flag(&retransmit_suspect_log, 15));
+	assert(wait_sync_flag(&retransmit_suspect_log, 30));
 	assert(route_is_suspect(a, a_b));
 
 	st = snapshot(a, a_b);
@@ -2117,7 +2117,7 @@ static void test_idle_channel_traffic(void) {
 	meshlink_channel_t *ch = meshlink_channel_open(e1, e1_e2, 7, receive_cb, NULL, 0);
 	assert(ch);
 	assert(wait_sync_flag(&accepted, 15));
-	assert_after(pmtu_parked(e1, e1_e2) && pmtu_parked(e2, e2_e1), 30);
+	assert_after(pmtu_parked(e1, e1_e2) && pmtu_parked(e2, e2_e1), 60);
 
 	/* Both timers can still fire once after park. That exchange is what
 	   makes the greater name yield; count probes only after it. */

@@ -444,8 +444,10 @@ void path_punch_challenge_timeout(struct meshlink_handle *mesh, struct node_t *n
 /* Unconfirmed probe dest: the in-flight challenge, else a hint that has not failed. */
 bool path_unconfirmed_punch_dest(const struct meshlink_handle *mesh, const struct node_t *n, sockaddr_t *out);
 /* Dest sampled immediately before the probe path_note_punch_endpoint just armed. */
-bool path_punch_last_probe_dest(sockaddr_t *out);
-unsigned path_punch_test_ans_exports(void);
+bool path_punch_last_probe_dest(struct meshlink_handle *mesh, sockaddr_t *out);
+unsigned path_punch_test_ans_exports(struct meshlink_handle *mesh);
+/* Scheduler dropped the slot. Fail a challenge that no longer has a timer. */
+void path_punch_fail_orphaned(struct meshlink_handle *mesh, struct node_t *node);
 
 /* First/last channel to an ordinary peer. acquire() is false (no count change)
    for backbone/UNKNOWN/self. Release always decrements a non-zero count so a

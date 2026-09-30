@@ -51,7 +51,8 @@ void upgrade_probe_standby_ready(struct meshlink_handle *mesh, connection_t *c);
 /* Commit succeeded. One probe-succeeded event and one migration log. */
 void upgrade_probe_committed(struct meshlink_handle *mesh, connection_t *c);
 
-/* Called from ack_h() when a probe authenticated. Clears probe state and backoff. */
+/* Called from ack_h() when a probe authenticated. Clears probe state and backoff.
+   Does not log the barrier commit; that happens when the ordered cutover finishes. */
 void upgrade_probe_succeeded(struct meshlink_handle *mesh, connection_t *c);
 
 /* True when an authenticated direct upgrade may keep the existing node SPTPS session.
@@ -67,21 +68,17 @@ bool upgrade_preserve_cover_unit(struct meshlink_handle *mesh) __attribute__((__
 #define UPGRADE_DRAIN_TIMEOUT_SEC 2
 void upgrade_begin_drain(struct meshlink_handle *mesh, connection_t *c);
 
-#define UPGRADE_SPARE_TIMEOUT_SEC META_CUTOVER_TIMEOUT_SEC
-
 /* Periodic sweep: start at most one probe per tick for an eligible node. */
 void upgrade_probe_sweep(struct meshlink_handle *mesh);
 
-/* The responder of a probe withholds its ACK during the SPTPS handshake and sends
-   it from ack_h() once the probe is held as a spare, so the prober only closes its
-   old connection when we are ready to take over without a gap. */
+/* The responder withholds ACK until the direct socket is a standby. The ordered
+   barrier, not this ACK, moves the node off the canonical socket. */
 bool upgrade_defers_ack(const connection_t *c) __attribute__((__warn_unused_result__));
 
 /* Both roles. c is authenticated and becomes the standby. The canonical socket
    stays node->connection until the ordered barrier commits. At most one standby:
    a newer probe evicts the older one. c must not be active yet. */
 void upgrade_hold_standby(struct meshlink_handle *mesh, connection_t *c, node_t *n, const char *hisport, int devclass);
-void upgrade_hold_spare(struct meshlink_handle *mesh, connection_t *c, node_t *n, const char *hisport, int devclass);
 
 /* Initiator: freeze ordinary META and send PREPARE on the old primary. */
 bool upgrade_cutover_begin(struct meshlink_handle *mesh, node_t *n, connection_t *old_primary, connection_t *standby);
@@ -127,8 +124,9 @@ void upgrade_drop_spare(struct meshlink_handle *mesh, node_t *n);
 /* The single hook terminate_connection() runs before it takes c down:
    - a probe that never authenticated -> upgrade_probe_failed()
    - a spare -> its prepared edge, which is not in the graph, is freed
-   - the node's connection while a spare is held -> the spare becomes
-     n->connection and its edge replaces the old one in one step
+   - the node's connection while a standby is held -> emergency sync
+     (install the standby, keep the FIFO frozen, send EMERGENCY) or abort.
+     It does not commit the barrier.
    Promotion is skipped while the event loop is not running (meshlink_stop,
    meshlink_close) and for blacklisted nodes: the spare is about to go too. */
 void upgrade_connection_closing(struct meshlink_handle *mesh, connection_t *c);

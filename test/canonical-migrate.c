@@ -1001,7 +1001,7 @@ static void test_third_node_does_not_seed_relay(void) {
 }
 
 /* T16: b holds a's probe as a spare and a, misbehaving, sends its ACK twice. The second
-   ACK must be rejected: handling it like the first would make upgrade_hold_spare() evict
+   ACK must be rejected: handling it like the first would make upgrade_hold_standby() evict
    the very connection it is about to hold and go on using it after it was freed. b drops
    the spare instead, and both sides still end up with exactly one, direct, connection. */
 static void test_repeated_ack_on_spare_is_rejected(void) {

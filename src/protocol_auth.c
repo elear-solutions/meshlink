@@ -478,7 +478,7 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 
 	/* ACK ends the handshake; a second one on a connection that is already active, or
 	   held as a spare, is a protocol violation. Running the activation again would leak
-	   the edge, and upgrade_hold_spare() would evict c itself and then keep using it. */
+	   the edge, and upgrade_hold_standby() would evict c itself and then keep using it. */
 
 	if(c->status.active) {
 		logger(mesh, MESHLINK_ERROR, "Got bad %s from %s: %s", "ACK", c->name, "connection already active");
@@ -527,9 +527,9 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		return false;
 	}
 
-	/* The peer is replacing its canonical connection to us with this direct one. Keep the
-	   old one until the peer closes it (it does so once it has our ACK), then
-	   terminate_connection() promotes this one so the node never leaves the graph. */
+	/* The peer is replacing its canonical connection with this direct one. Hold it
+	   as a standby until the ordered barrier commits. Closing the old socket is
+	   emergency sync, not an immediate promotion. */
 
 	bool deferred_ack = upgrade_defers_ack(c);
 	bool was_upgrade_probe = c->status.upgrade_probe;

@@ -3478,6 +3478,7 @@ bool path_policy_cover_unit(meshlink_handle_t *mesh, node_t *live) {
 	                && upgrade_cutover_cover_unit(mesh)
 	                && cover_scheduler(mesh)
 	                && punch_endpoint_cover_unit(mesh)
+	                && node_kex_cover_unit(mesh)
 	                && utcp_mtu_reentry_unit();
 	mesh->probe_max_transactions = saved_max;
 	return ok;

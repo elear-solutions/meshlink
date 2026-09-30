@@ -113,6 +113,7 @@ bool send_del_edge(struct meshlink_handle *mesh, struct connection_t *, const st
 bool send_req_key(struct meshlink_handle *mesh, struct node_t *);
 bool send_punch_endpoint_request(struct meshlink_handle *mesh, struct node_t *);
 bool punch_endpoint_cover_unit(struct meshlink_handle *mesh);
+bool node_kex_cover_unit(struct meshlink_handle *mesh);
 bool send_canonical_address(struct meshlink_handle *mesh, struct node_t *);
 bool send_external_ip_address(struct meshlink_handle *mesh, struct node_t *);
 bool send_raw_packet(struct meshlink_handle *mesh, struct connection_t *, const vpn_packet_t *);
@@ -139,7 +140,8 @@ bool meta_cutover_commit_h(struct meshlink_handle *mesh, struct connection_t *, 
 bool meta_cutover_ack_h(struct meshlink_handle *mesh, struct connection_t *, const char *);
 bool meta_cutover_emergency_h(struct meshlink_handle *mesh, struct connection_t *, const char *);
 
-/* Node SPTPS recovery. One watchdog, owned by the node, not by a META socket. */
+/* Node SPTPS recovery. One watchdog, owned by the node, not by a META socket.
+   node_kex_clear keeps key_retry_epoch. node_kex_on_session_change zeros it. */
 void node_kex_arm(struct meshlink_handle *mesh, struct node_t *n);
 void node_kex_clear(struct meshlink_handle *mesh, struct node_t *n);
 void node_kex_note_demand(struct meshlink_handle *mesh, struct node_t *n);

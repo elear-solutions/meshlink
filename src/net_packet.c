@@ -438,7 +438,7 @@ void send_punch_bootstrap(meshlink_handle_t *mesh, node_t *n) {
 
 	memset(&packet, 0, sizeof packet);
 	packet.probe = true;
-	packet.len = 64;
+	packet.len = PATH_PROMOTION_PROBE_LEN;
 	n->out_meta += packet.len + PROBE_OVERHEAD;
 	send_probe_to(mesh, n, &packet, sa);
 }

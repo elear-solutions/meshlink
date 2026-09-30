@@ -2466,21 +2466,27 @@ bool path_select_punch_hint(const meshlink_handle_t *mesh, const node_t *node, s
 	return false;
 }
 
-static sockaddr_t path_punch_last_probe;
-static bool path_punch_last_probe_valid;
-static unsigned path_punch_ans_exports;
-
-unsigned path_punch_test_ans_exports(void) {
-	return path_punch_ans_exports;
+unsigned path_punch_test_ans_exports(meshlink_handle_t *mesh) {
+	return mesh ? mesh->punch_ans_exports : 0;
 }
 
-bool path_punch_last_probe_dest(sockaddr_t *out) {
-	if(!out || !path_punch_last_probe_valid) {
+bool path_punch_last_probe_dest(meshlink_handle_t *mesh, sockaddr_t *out) {
+	if(!mesh || !out || !mesh->punch_witness_valid) {
 		return false;
 	}
 
-	path_copy_sockaddr(out, &path_punch_last_probe);
+	path_copy_sockaddr(out, &mesh->punch_witness);
 	return true;
+}
+
+void path_punch_fail_orphaned(meshlink_handle_t *mesh, node_t *node) {
+	if(!mesh || !node) {
+		return;
+	}
+
+	if(node->peer_udp.challenge.active && !node->punch_timer.cb) {
+		path_punch_challenge_timeout(mesh, node);
+	}
 }
 
 static bool path_punch_ingress_usable(const sockaddr_t *sa) {
@@ -2678,8 +2684,8 @@ static void path_punch_begin(meshlink_handle_t *mesh, node_t *n, const sockaddr_
 	n->peer_udp.challenge.demand_epoch = n->peer_udp.demand_epoch;
 	n->peer_udp.challenge.deadline = mesh->loop.now;
 	n->peer_udp.challenge.deadline.tv_sec += PATH_PROMOTION_DEADLINE_SEC;
-	path_punch_last_probe_valid = true;
-	path_copy_sockaddr(&path_punch_last_probe, sa);
+	mesh->punch_witness_valid = true;
+	path_copy_sockaddr(&mesh->punch_witness, sa);
 	path_punch_log_at(mesh, n, "Punch challenge for %s: %s port %s source=%s", sa, prov);
 
 	if(n->devtool_force_meta) {
@@ -2856,7 +2862,7 @@ bool path_punch_accept_reply(meshlink_handle_t *mesh, node_t *n, const sockaddr_
 	/* Authenticated ingress is local. Only a public rendezvous confirmation
 	   is still advertised, and only when that endpoint is eligible to export. */
 	if(prov != PUNCH_PROV_AUTH_INGRESS && path_punch_endpoint_usable(&ep)) {
-		path_punch_ans_exports++;
+		mesh->punch_ans_exports++;
 
 		if(n->status.reachable && n->nexthop && n->nexthop->connection && n->nexthop->connection->socket >= 0) {
 			sockaddr2str(&n->address, &address, &port);

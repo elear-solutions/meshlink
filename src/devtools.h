@@ -190,20 +190,20 @@ struct devtool_node_status {
 	uint32_t devtool_status_version;      /// DEVTOOL_NODE_STATUS_VERSION
 	int cutover_state;                    /// meta cutover state, 0 if idle
 	uint64_t cutover_id;                  /// barrier id, 0 if idle
-	bool cutover_timer_armed;
-	unsigned cutover_pending_records;
-	size_t cutover_pending_bytes;
-	bool cutover_has_standby;
-	uint8_t key_retry_step;
-	uint32_t key_retry_epoch;
-	bool key_retry_armed;
-	bool key_delivery_uncertain;
+	bool cutover_timer_armed;             /// barrier timer is scheduled
+	unsigned cutover_pending_records;     /// plaintext records held for the barrier
+	size_t cutover_pending_bytes;         /// bytes in that FIFO
+	bool cutover_has_standby;             /// a direct socket is held beside the canonical one
+	uint8_t key_retry_step;               /// index into the 2/5/10/30/60s ladder
+	uint32_t key_retry_epoch;             /// increments on each node_kex_arm()
+	bool key_retry_armed;                 /// watchdog deadline is set
+	bool key_delivery_uncertain;          /// old primary died before the barrier was proven
 	bool pending_punch_hint;              /// a hint is staged ahead of validkey
 
 	/* DEVTOOL_NODE_STATUS_VERSION 3. Append only. */
 	uint8_t punch_challenge_provenance;   /// 0 none, 1 NMN hint, 2 authenticated ingress
 	uint8_t punch_challenge_attempts;     /// probes actually sent for the current challenge
-	bool punch_challenge_active;
+	bool punch_challenge_active;          /// a punch nonce is outstanding
 	struct sockaddr_storage punch_challenge_endpoint; /// AF_UNSPEC if none
 };
 
