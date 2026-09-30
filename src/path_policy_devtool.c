@@ -3404,6 +3404,28 @@ static bool cover_scheduler(meshlink_handle_t *mesh) {
 		goto done;
 	}
 
+	/* Punch and channel promotion share a rank. Recovery still preempts both. */
+	path_scheduler_cancel_node(mesh, &a);
+	path_scheduler_cancel_node(mesh, &b);
+	path_scheduler_cancel_node(mesh, &z);
+	path_scheduler_set_budget(mesh, 4, 20, 2);
+
+	if(!path_scheduler_begin_transaction(mesh, &a, PATH_TXN_PROMOTION, PATH_TX_CHANNEL_PROMOTION, NULL)
+	                || !path_scheduler_begin_transaction(mesh, &b, PATH_TXN_PROMOTION, PATH_TX_CHANNEL_PROMOTION, NULL)
+	                || path_scheduler_begin_transaction(mesh, &z, PATH_TXN_PUNCH, PATH_TX_PUNCH, path_transaction_preempt)) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: punch evicted promotion");
+		ok = false;
+		goto done;
+	}
+
+	if(!path_scheduler_begin_transaction(mesh, &z, PATH_TXN_SUSPECT, PATH_TX_ACTIVE_ROUTE_RECOVERY, path_transaction_preempt)
+	                || !path_scheduler_has_transaction(mesh, &z, PATH_TXN_SUSPECT)
+	                || path_scheduler_has_transaction(mesh, &a, PATH_TXN_PROMOTION) == path_scheduler_has_transaction(mesh, &b, PATH_TXN_PROMOTION)) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: recovery preempts punch rank");
+		ok = false;
+		goto done;
+	}
+
 done:
 	path_scheduler_cancel_node(mesh, &a);
 	path_scheduler_cancel_node(mesh, &b);
@@ -3453,8 +3475,10 @@ bool path_policy_cover_unit(meshlink_handle_t *mesh, node_t *live) {
 	                && cover_suspect_epoch(mesh)
 	                && cover_route_usability_and_promotion(mesh)
 	                && cover_preserve(mesh)
+	                && upgrade_cutover_cover_unit(mesh)
 	                && cover_scheduler(mesh)
 	                && punch_endpoint_cover_unit(mesh)
+	                && node_kex_cover_unit(mesh)
 	                && utcp_mtu_reentry_unit();
 	mesh->probe_max_transactions = saved_max;
 	return ok;

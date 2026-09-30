@@ -52,11 +52,50 @@ address is filled from the fresh observation, otherwise from a confirmed
 active UDP endpoint. `recent[0]` is never the source of a forwarded hint.
 A forwarder that is not the backbone leaves an address already on the message alone. The backbone does not. It replaces a member-filled address with the same helper: a fresh observation, otherwise a confirmed active endpoint. It drops the address only when that helper has nothing.
 
-The receiver installs a hint only while its own channel demand is live and
-the peer key is valid. An unconfirmed peer adopts it as the probe
-destination and arms `send_mtu_probe()`. A confirmed peer keeps the working
-endpoint and stores the hint for a later demotion. The hint is not
-confirmed until its own reply arrives.
+The receiver accepts a hint only while its own channel demand is live.
+The hint is staged even when the peer key is not valid yet. Once the
+SPTPS handshake completes, the staged hint is applied as a rendezvous
+candidate. It is not written into `n->address`. An authenticated direct
+source seen locally is a peer-reflexive candidate and outranks the hint,
+including a hint that arrives while that challenge is in flight. A
+locally authenticated source may be private or link-local; that source
+is never stored as an NMN observation and never exported in `ANS_KEY`.
+
+The node proves one endpoint at a time. It sends a 64-byte probe, nonce
+at the existing probe offset, to that endpoint. Peers already echo probe
+payload bytes, so this needs no wire-format or protocol-minor change.
+The challenge has an absolute deadline of one promotion budget. Two
+actual sends, or that deadline, end it. Scheduler denial and preemption
+re-arm inside the deadline; they do not spin a 500 ms timer past it. A
+later or moving hint does not restart an in-flight peer-reflexive challenge.
+When that challenge fails, the latest hint is tried, then a separate
+64-byte bootstrap on the existing REQ_EXTERNAL and LAN rotation. That
+bootstrap does not arm the PMTU timer, touch PMTU counters, or set
+`udp_confirmed`. A failed source is not pinned for the observation
+freshness window.
+
+Confirmation is still a reply whose nonce and UDP source match the
+current challenge, and whose session, network, and demand epochs still
+match. That reply is what sets `udp_confirmed`, installs `n->address`,
+and starts PMTU, as one commit. Authenticated ingress is never exported
+in `ANS_KEY`, including when the source is public. A public rendezvous
+confirmation may still be advertised. The legacy local PMTU echo still
+confirms a loopback or private address when no punch challenge is in
+flight. It installs that reply source, not a stale `n->address`, and it
+does not emit `ANS_KEY` for that address. A nonce-zero echo does not
+confirm while a challenge is current, including a private or link-local
+challenge. A public ordinary-peer source with no challenge stays
+unconfirmed and arms `AUTH_INGRESS`. Receiving a request or an
+application datagram does not confirm, and it does not stop the NMN
+request ladder. A confirmed peer keeps the working endpoint and stores a
+newer hint for a later demotion. Demotion tries a remembered ingress
+that still matches the session, demand, and network epoch and has not
+already failed, then the latest hint, then the bootstrap rotation. It
+does not restore either candidate as a confirmed address. An identical
+hint does not restart the request ladder. Session change, demand end,
+network-epoch change, key loss, and freshness expiry drop a staged hint
+and the in-flight challenge. Key loss keeps remembered ingress so the
+same session can challenge it again.
 
 One peer shares one request ladder across every channel to it: immediate
 on the 0→1 transition, then 1, 2, 5, 10, and 30 seconds while direct UDP
@@ -71,8 +110,12 @@ transaction, and commit refuses to install relay when that direct carrier
 is already live. A local-UDP candidate is never replaced by WAN UDP or
 relay.
 
-Symmetric NAT still fails the punch. The probes go out, no reply comes
-back, and relay remains the route.
+Two endpoint-dependent NATs still fail the punch when neither side
+admits a bootstrap packet. The probes go out, no reply comes back, and
+relay remains the route. One endpoint-dependent NAT opposite a cone
+completes in both directions: the cone's stable mapping delivers the
+first packet, and the endpoint-dependent side is proved by a reciprocal
+probe to the source that packet arrived from.
 
 ## Consequences
 
@@ -81,6 +124,7 @@ back, and relay remains the route.
 - Idle peers emit neither endpoint requests nor peer probes.
 - Port-restricted cone NAT can move from relay to `direct-wan-udp` without
   a second 30-second residency behind a relay candidate.
-- Symmetric NAT stays on relay.
+- NMN hints only bootstrap. The preferred unconfirmed candidate is the authenticated peer-reflexive source, and only a matching reply from that endpoint confirms it.
+- Two endpoint-dependent NATs stay on relay when no bootstrap packet lands. A cone opposite an endpoint-dependent NAT confirms both ways.
 - Protocol minor 4 is required to emit `REQ_PUNCH_ENDPOINT`. Minor 3 keeps
   the old relay and opportunistic `ANS_KEY` behavior.

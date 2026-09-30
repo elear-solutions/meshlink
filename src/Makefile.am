@@ -64,7 +64,7 @@ libmeshlink_la_SOURCES = \
 	net_packet.c \
 	net_setup.c \
 	net_socket.c \
-	net_upgrade.c net_upgrade.h \
+	net_upgrade.c net_upgrade.h net_upgrade_internal.h net_upgrade_cover.c \
 	netutl.c netutl.h \
 	node.c node.h \
 	path_policy.c path_policy.h \
@@ -78,7 +78,7 @@ libmeshlink_la_SOURCES = \
 	protocol.c protocol.h \
 	protocol_auth.c \
 	protocol_edge.c \
-	protocol_key.c \
+	protocol_key.c protocol_key_internal.h protocol_key_cover.c \
 	protocol_misc.c \
 	relay.c relay.h relay_devtool.c relay_devtool.h \
 	route.c route.h \

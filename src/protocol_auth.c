@@ -478,7 +478,7 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 
 	/* ACK ends the handshake; a second one on a connection that is already active, or
 	   held as a spare, is a protocol violation. Running the activation again would leak
-	   the edge, and upgrade_hold_spare() would evict c itself and then keep using it. */
+	   the edge, and upgrade_hold_standby() would evict c itself and then keep using it. */
 
 	if(c->status.active) {
 		logger(mesh, MESHLINK_ERROR, "Got bad %s from %s: %s", "ACK", c->name, "connection already active");
@@ -527,9 +527,9 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		return false;
 	}
 
-	/* The peer is replacing its canonical connection to us with this direct one. Keep the
-	   old one until the peer closes it (it does so once it has our ACK), then
-	   terminate_connection() promotes this one so the node never leaves the graph. */
+	/* The peer is replacing its canonical connection with this direct one. Hold it
+	   as a standby until the ordered barrier commits. Closing the old socket is
+	   emergency sync, not an immediate promotion. */
 
 	bool deferred_ack = upgrade_defers_ack(c);
 	bool was_upgrade_probe = c->status.upgrade_probe;
@@ -538,8 +538,42 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	bool drain_old = was_upgrade_probe && old_was_canonical;
 
 	if(deferred_ack && n->connection && n->connection != c && n->connection->status.active) {
-		upgrade_hold_spare(mesh, c, n, hisport, devclass);
+		if(c->protocol_minor < PROT_MINOR_ORDERED_CUTOVER) {
+			logger(mesh, MESHLINK_INFO, "Refusing direct META upgrade from %s: protocol %d.%d", c->name, c->protocol_major, c->protocol_minor);
+			return false;
+		}
+
+		upgrade_hold_standby(mesh, c, n, hisport, devclass);
 		return send_ack(mesh, c);
+	}
+
+	/* Initiator: canonical stays primary. The direct socket is only a standby
+	   until PREPARE/READY/COMMIT/ACK moves the graph. */
+	if(was_upgrade_probe && old && old->status.active && path_meta_is_canonical(n, old)) {
+		if(old->protocol_minor < PROT_MINOR_ORDERED_CUTOVER) {
+			logger(mesh, MESHLINK_INFO, "Refusing direct META upgrade to %s: protocol %d.%d", n->name, old->protocol_major, old->protocol_minor);
+			return false;
+		}
+
+		c->node = n;
+		n->devclass = devclass;
+		n->status.dirty = true;
+		n->status.tiny = c->flags & PROTOCOL_TINY;
+
+		if(!connection_policy_may_accept_incoming(mesh, c, devclass)
+		                || !connection_policy_admit_incoming(mesh, c, devclass)) {
+			logger(mesh, MESHLINK_INFO, "Refusing excess or non-local META from %s", c->name);
+			return false;
+		}
+
+		upgrade_hold_standby(mesh, c, n, hisport, devclass);
+		upgrade_probe_standby_ready(mesh, c);
+
+		if(!upgrade_cutover_begin(mesh, n, old, c)) {
+			return false;
+		}
+
+		return true;
 	}
 
 	/* Bind node before admit so probe bypass and conflict checks see the peer.

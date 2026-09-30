@@ -160,6 +160,31 @@ typedef struct path_target_t {
 /* Three backbone keepalives. Older than this, an observation is not a punch hint. */
 #define PATH_UDP_OBSERVATION_FRESH_SEC    (PATH_BACKBONE_UDP_KEEPALIVE_SEC * 3)
 
+/* Where the endpoint under challenge came from. A rendezvous hint only
+   bootstraps; a peer-reflexive source is the address we actually received. */
+typedef enum punch_provenance_t {
+	PUNCH_PROV_NONE = 0,
+	PUNCH_PROV_NMN_HINT,
+	PUNCH_PROV_AUTH_INGRESS,
+} punch_provenance_t;
+
+/* Two sends, one promotion-round apart, then the challenge fails closed. */
+#define PATH_PUNCH_CHALLENGE_ATTEMPTS 2
+
+/* One in-flight proof. The nonce is never zero while active. Confirmation
+   requires the reply source to be this endpoint, not merely some packet. */
+typedef struct punch_challenge_t {
+	bool active;
+	punch_provenance_t provenance;
+	sockaddr_t endpoint;
+	uint64_t nonce;
+	uint8_t attempts;                       /* packets actually sent, not queued */
+	uint32_t session_id;
+	uint64_t network_epoch;
+	uint32_t demand_epoch;
+	struct timespec deadline;               /* absolute; denial cannot extend past this */
+} punch_challenge_t;
+
 /* Ordinary-peer UDP punching is refcounted from channels. Backbone UDP is not.
    Endpoint requests share one ladder per peer, not per channel. */
 typedef struct peer_path_demand_t {
@@ -172,7 +197,18 @@ typedef struct peer_path_demand_t {
 	uint32_t request_session;               /* session_id last requested */
 	uint64_t network_epoch;                 /* lan_network_epoch when the ladder was armed */
 	uint32_t demand_epoch;                  /* increments on each 0→1 demand */
-	sockaddr_t last_hint;                   /* last installed punch hint */
+	sockaddr_t last_hint;                   /* latest NMN rendezvous hint; not a confirmed address */
+	sockaddr_t pending_hint;                /* staged before validkey; AF_UNSPEC if none */
+	struct timespec pending_hint_at;        /* when pending_hint was staged */
+	uint32_t pending_hint_session;          /* session_id at staging */
+	uint64_t pending_hint_demand_epoch;     /* demand_epoch at staging */
+	punch_challenge_t challenge;            /* the one endpoint we are proving right now */
+	sockaddr_t ingress;                     /* latest authenticated direct source; AF_UNSPEC if none */
+	uint32_t ingress_session;               /* session_id when ingress was observed */
+	uint32_t ingress_demand_epoch;          /* demand_epoch when ingress was observed */
+	uint64_t ingress_network_epoch;         /* lan_network_epoch when ingress was observed */
+	sockaddr_t failed_ingress;              /* auth source that already failed this demand; not retried */
+	bool hint_failed;                       /* the current last_hint already failed its challenge */
 } peer_path_demand_t;
 
 #define CANONICAL_RESOLVE_TIMEOUT 2
@@ -379,12 +415,39 @@ bool path_get_fresh_udp_observation(const struct meshlink_handle *mesh, const st
 void path_clear_udp_observation(struct node_t *node);
 /* Observation, else a confirmed active UDP endpoint. Never recent[0]. */
 bool path_select_punch_hint(const struct meshlink_handle *mesh, const struct node_t *node, sockaddr_t *out, bool *from_observation);
-/* Install a hinted peer endpoint. Probes only while demand is live and UDP is unconfirmed. */
+/* Install a hinted peer endpoint. A hint bootstraps; it does not become n->address. */
 void path_note_punch_endpoint(struct meshlink_handle *mesh, struct node_t *node, const sockaddr_t *sa);
-/* Unconfirmed probe dest. The installed punch hint, when it is still usable. */
-bool path_unconfirmed_punch_dest(const struct node_t *n, sockaddr_t *out);
+/* Install a hint that arrived before validkey. No-op when nothing is staged. */
+void path_apply_pending_punch_hint(struct meshlink_handle *mesh, struct node_t *node);
+void path_clear_pending_punch_hint(struct node_t *node);
+/* Authenticated direct source. Remembered even before a key; challenged only
+   while punching is allowed. A repeated source does not restart the challenge. */
+void path_observe_punch_ingress(struct meshlink_handle *mesh, struct node_t *node, const sockaddr_t *endpoint);
+/* Start a challenge for an ingress observed before the key or the demand existed. */
+void path_punch_arm_ingress(struct meshlink_handle *mesh, struct node_t *node);
+/* Commit only when nonce and UDP source match the current challenge and the
+   session, network, and demand epochs still match. False leaves state alone. */
+bool path_punch_accept_reply(struct meshlink_handle *mesh, struct node_t *node, const sockaddr_t *from, uint64_t nonce);
+/* Unconfirmed ordinary-peer probe reply. True means the caller must stop:
+   an active challenge was accepted or rejected, or a public source stayed
+   on AUTH_INGRESS. False means a nonce-zero local reply (or a non-peer)
+   was confirmed and the current reply should finish PMTU. A local confirm
+   installs from, emits no ANS_KEY, and does not start another probe. */
+bool path_try_confirm_udp_probe_reply(struct meshlink_handle *mesh, struct node_t *node, const sockaddr_t *from, uint64_t nonce);
+/* Drop the in-flight challenge and its queued probes. Keeps the remembered ingress. */
+void path_punch_cancel(struct meshlink_handle *mesh, struct node_t *node);
+/* A challenge recorded while probes were held (devtool_force_meta) has no
+   timer. Call this once the hold is cleared so it sends. */
+void path_punch_release(struct meshlink_handle *mesh, struct node_t *node);
+/* Mesh-loop callback and the devtool hook for a challenge deadline. */
+void path_punch_challenge_timeout(struct meshlink_handle *mesh, struct node_t *node);
+/* Unconfirmed probe dest: the in-flight challenge, else a hint that has not failed. */
+bool path_unconfirmed_punch_dest(const struct meshlink_handle *mesh, const struct node_t *n, sockaddr_t *out);
 /* Dest sampled immediately before the probe path_note_punch_endpoint just armed. */
-bool path_punch_last_probe_dest(sockaddr_t *out);
+bool path_punch_last_probe_dest(struct meshlink_handle *mesh, sockaddr_t *out);
+unsigned path_punch_test_ans_exports(struct meshlink_handle *mesh);
+/* Scheduler dropped the slot. Fail a challenge that no longer has a timer. */
+void path_punch_fail_orphaned(struct meshlink_handle *mesh, struct node_t *node);
 
 /* First/last channel to an ordinary peer. acquire() is false (no count change)
    for backbone/UNKNOWN/self. Release always decrements a non-zero count so a

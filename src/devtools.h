@@ -97,6 +97,10 @@ typedef struct devtool_node_status devtool_node_status_t;
 /// Number of cached canonical endpoints (node_t.canonical_sa + canonical_extra).
 #define DEVTOOL_MAX_CANONICAL 8
 
+/** Append-only snapshot. Bump when fields are added. New fields go at the end.
+ *  devtool_get_node_status() writes devtool_status_version. */
+#define DEVTOOL_NODE_STATUS_VERSION 3
+
 /// The status of a node.
 struct devtool_node_status {
 	uint32_t status;
@@ -181,6 +185,26 @@ struct devtool_node_status {
 	int candidate_cooldown_remaining;     /// seconds until this endpoint may be tried again
 	uint16_t channel_mtu;                 /// current UTCP MTU (header + MSS), not chosen once
 	uint16_t relay_budget;                /// accepted type-8 vpn budget; 0 if none
+
+	/* DEVTOOL_NODE_STATUS_VERSION 2. Append only. */
+	uint32_t devtool_status_version;      /// DEVTOOL_NODE_STATUS_VERSION
+	int cutover_state;                    /// meta cutover state, 0 if idle
+	uint64_t cutover_id;                  /// barrier id, 0 if idle
+	bool cutover_timer_armed;             /// barrier timer is scheduled
+	unsigned cutover_pending_records;     /// plaintext records held for the barrier
+	size_t cutover_pending_bytes;         /// bytes in that FIFO
+	bool cutover_has_standby;             /// a direct socket is held beside the canonical one
+	uint8_t key_retry_step;               /// index into the 2/5/10/30/60s ladder
+	uint32_t key_retry_epoch;             /// increments on each node_kex_arm()
+	bool key_retry_armed;                 /// watchdog deadline is set
+	bool key_delivery_uncertain;          /// old primary died before the barrier was proven
+	bool pending_punch_hint;              /// a hint is staged ahead of validkey
+
+	/* DEVTOOL_NODE_STATUS_VERSION 3. Append only. */
+	uint8_t punch_challenge_provenance;   /// 0 none, 1 NMN hint, 2 authenticated ingress
+	uint8_t punch_challenge_attempts;     /// probes actually sent for the current challenge
+	bool punch_challenge_active;          /// a punch nonce is outstanding
+	struct sockaddr_storage punch_challenge_endpoint; /// AF_UNSPEC if none
 };
 
 /// Get the status of a node.
@@ -383,6 +407,27 @@ extern void (*devtool_upgrade_probe)(meshlink_handle_t *mesh, meshlink_node_t *n
  *  process-wide: set it right before the ACK to double; send_ack() clears it after use.
  */
 extern bool devtool_repeat_next_ack;
+
+/// When set, the responder records PREPARE but does not send READY.
+extern bool devtool_hold_cutover_ready;
+
+/// Set on the mesh thread once a READY was withheld. Tests poll this instead of logs.
+extern volatile bool devtool_cutover_ready_held;
+
+/// Send the withheld READY for node. Mesh mutex is taken internally.
+bool devtool_release_cutover_ready(struct meshlink_handle *mesh, struct meshlink_node *node);
+
+/// Shut the node's current META socket down. The I/O path frees it; this does not.
+bool devtool_shutdown_meta_primary(struct meshlink_handle *mesh, struct meshlink_node *node);
+
+/// Queue REQ_KEY on the node's current META connection.
+bool devtool_queue_req_key(struct meshlink_handle *mesh, struct meshlink_node *node);
+
+/// Feed one request into the spare, or the primary if there is no spare.
+bool devtool_inject_meta_request(struct meshlink_handle *mesh, struct meshlink_node *node, const char *request);
+
+/// Abort the live cutover and replay onto the old primary when it is still canonical.
+void devtool_abort_meta_cutover(struct meshlink_handle *mesh, struct meshlink_node *node);
 
 /// Force renewal of SPTPS sessions with the given node.
 /** This causes the SPTPS sessions for both the UDP and TCP connections to renew their keys.

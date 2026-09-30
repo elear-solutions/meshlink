@@ -368,6 +368,81 @@ void send_candidate_probe(meshlink_handle_t *mesh, node_t *n) {
 	send_probe_to(mesh, n, &packet, &n->promotion_candidate.endpoint);
 }
 
+bool send_punch_probe(meshlink_handle_t *mesh, node_t *n) {
+	vpn_packet_t packet;
+	char *host = NULL;
+	char *port = NULL;
+
+	if(!mesh || !n || !n->status.reachable || !n->status.validkey || n->devtool_force_meta) {
+		return false;
+	}
+
+	if(!n->peer_udp.challenge.active || !n->peer_udp.challenge.nonce) {
+		return false;
+	}
+
+	memset(&packet, 0, sizeof packet);
+	packet.probe = true;
+	memcpy(packet.data + PROBE_NONCE_OFFSET, &n->peer_udp.challenge.nonce, sizeof n->peer_udp.challenge.nonce);
+	packet.len = PATH_PROMOTION_PROBE_LEN;
+	n->out_meta += packet.len + PROBE_OVERHEAD;
+
+	if(mesh->log_level <= MESHLINK_INFO) {
+		sockaddr_t logged;
+
+		path_copy_sockaddr(&logged, &n->peer_udp.challenge.endpoint);
+		sockaddr2str(&logged, &host, &port);
+		logger(mesh, MESHLINK_INFO, "Sending punch probe to %s at %s port %s source=%s",
+		       n->name, host ? host : "?", port ? port : "?",
+		       n->peer_udp.challenge.provenance == PUNCH_PROV_AUTH_INGRESS ? "peer-reflexive" : "rendezvous");
+		free(host);
+		free(port);
+	}
+
+	send_probe_to(mesh, n, &packet, &n->peer_udp.challenge.endpoint);
+	return true;
+}
+
+/* Pre-confirmation only. A live challenge already has a destination. This walks
+   the same unconfirmed rotation as choose_udp_address() and does not start PMTU. */
+void send_punch_bootstrap(meshlink_handle_t *mesh, node_t *n) {
+	sockaddr_t scratch;
+	sockaddr_t sa_buf;
+	const sockaddr_t *sa = NULL;
+	int sock = -1;
+	vpn_packet_t packet;
+
+	if(!mesh || !n || !n->status.reachable || !n->status.validkey || n->devtool_force_meta || n->status.udp_confirmed) {
+		return;
+	}
+
+	if(!path_peer_udp_punching_allowed(mesh, n)) {
+		return;
+	}
+
+	if(path_unconfirmed_punch_dest(mesh, n, &scratch)) {
+		return;
+	}
+
+	/* choose_udp_address() walks the edge tree. A node that has not joined
+	   the graph yet has nothing to rotate through. */
+	if(!n->edge_tree || !mesh->listen_sockets || n->sock < 0 || n->sock >= mesh->listen_sockets) {
+		return;
+	}
+
+	choose_udp_address(mesh, n, &sa, &sock, &sa_buf);
+
+	if(!sa) {
+		return;
+	}
+
+	memset(&packet, 0, sizeof packet);
+	packet.probe = true;
+	packet.len = PATH_PROMOTION_PROBE_LEN;
+	n->out_meta += packet.len + PROBE_OVERHEAD;
+	send_probe_to(mesh, n, &packet, sa);
+}
+
 void send_suspect_probe(meshlink_handle_t *mesh, node_t *n) {
 	suspect_validation_t *s;
 
@@ -569,28 +644,9 @@ static void mtu_probe_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet
 		}
 
 		if(!n->status.udp_confirmed) {
-			char *address, *port;
-			sockaddr2str(&n->address, &address, &port);
-
-			if(n->nexthop && n->nexthop->connection) {
-				send_request(mesh, n->nexthop->connection, NULL, "%d %s %s . -1 -1 -1 0 %s %s", ANS_KEY, n->name, n->name, address, port);
-			} else {
-				logger(mesh, MESHLINK_WARNING, "Cannot send reflexive address to %s via %s", n->name, n->nexthop ? n->nexthop->name : n->name);
+			if(path_try_confirm_udp_probe_reply(mesh, n, &n->last_udp_from, nonce)) {
+				return;
 			}
-
-			free(address);
-			free(port);
-			n->status.udp_confirmed = true;
-
-			/* The confirmed UDP address is a direct path to the node (UDP and TCP share
-			   a port): remember it and see if it can replace a canonical meta connection. */
-
-			if(n->address.sa.sa_family != AF_UNSPEC && node_add_recent_address_cap(mesh, n, &n->address, ADDR_SRC_UDP_REFLEXIVE, PATH_CAP_UDP)) {
-				n->upgrade_recent_idx = 0;
-			}
-
-			path_note_udp_confirmed(mesh, n);
-			try_upgrade_probe(mesh, n);
 		} else {
 			path_observe_probe_reply(mesh, n, &n->last_udp_from, nonce);
 		}
@@ -704,6 +760,7 @@ static void receive_udppacket(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *
 
 	/* Direct, authenticated UDP only. META-carried and relayed SPTPS do not land here. */
 	path_note_authenticated_udp_observation(mesh, n, &n->last_udp_from);
+	path_observe_punch_ingress(mesh, n, &n->last_udp_from);
 }
 
 static void send_sptps_packet(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *origpkt) {
@@ -722,11 +779,8 @@ static void send_sptps_packet(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *
 
 		if(!n->status.waitingforkey) {
 			send_req_key(mesh, n);
-		} else if(n->last_req_key + 10 < mesh->loop.now.tv_sec) {
-			logger(mesh, MESHLINK_DEBUG, "No key from %s after 10 seconds, restarting SPTPS", n->name);
-			sptps_stop(&n->sptps);
-			n->status.waitingforkey = false;
-			send_req_key(mesh, n);
+		} else {
+			node_kex_consider(mesh, n);
 		}
 
 		return;
@@ -952,12 +1006,12 @@ void choose_udp_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **s
 	{
 		sockaddr_t punch;
 
-		if(path_unconfirmed_punch_dest(n, &punch)) {
+		if(path_unconfirmed_punch_dest(mesh, n, &punch)) {
 			path_copy_sockaddr(sa_buf, &punch);
 			*sa = sa_buf;
 
 			if(finish_udp_dest(mesh, sa, sock)) {
-				logger(mesh, MESHLINK_DEBUG, "UDP dest for %s: punch hint", n->name);
+				logger(mesh, MESHLINK_DEBUG, "UDP dest for %s: punch dest", n->name);
 				return;
 			}
 		}
@@ -1278,11 +1332,14 @@ bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t
 		if(!from->status.validkey) {
 			logger(mesh, MESHLINK_INFO, "SPTPS key exchange with %s successful", from->name);
 			node_set_validkey(mesh, from, true);
-			from->status.waitingforkey = false;
+			node_kex_clear(mesh, from);
 
 			if(from->utcp) {
 				utcp_reset_timers(from->utcp);
 			}
+
+			path_apply_pending_punch_hint(mesh, from);
+			path_punch_arm_ingress(mesh, from);
 		}
 
 		return true;
@@ -1427,11 +1484,15 @@ void handle_incoming_vpn_data(event_loop_t *loop, void *data, int flags) {
 		n = try_harder(mesh, &from, &pkt);
 
 		if(n) {
-			if(n->status.udp_confirmed && sockaddrcmp(&from, &n->address)) {
-				node_udp_cache_alias(mesh, n, &from);
+			/* An unconfirmed source is only an alias. n->address changes
+			   when a challenge reply proves that exact endpoint. */
+			if(n->status.udp_confirmed) {
+				if(sockaddrcmp(&from, &n->address)) {
+					node_udp_cache_alias(mesh, n, &from);
+				}
 			} else {
+				node_udp_cache_alias(mesh, n, &from);
 				path_learn_address_cap(mesh, n, &from, ADDR_SRC_UDP_REFLEXIVE, PATH_CAP_UDP);
-				update_node_udp_from(mesh, n, &from, ADDR_SRC_UDP_REFLEXIVE);
 			}
 		} else if(mesh->log_level <= MESHLINK_WARNING) {
 			hostname = sockaddr2hostname(&from);

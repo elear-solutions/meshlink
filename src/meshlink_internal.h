@@ -35,6 +35,7 @@
 #include "sptps.h"
 #include "xoshiro.h"
 
+#include <netdb.h>
 #include <pthread.h>
 
 #define MAXSOCKETS 4    /* Probably overkill... */
@@ -265,6 +266,15 @@ struct meshlink_handle {
 	meshlink_queue_t adns_done_queue;
 	signal_t adns_signal;
 	uint32_t canonical_resolve_seq;       /* Monotonic cookie; 0 is never assigned */
+
+	/* Per-mesh test witnesses. Not the route decision. */
+	sockaddr_t punch_witness;
+	bool punch_witness_valid;
+	unsigned punch_ans_exports;
+	char ans_witness_host[NI_MAXHOST];
+	char ans_witness_port[16];
+	bool ans_witness_rewritten;
+	bool ans_witness_has_addr;
 };
 
 static inline const char *mesh_conf_write_subdir(const struct meshlink_handle *mesh) {

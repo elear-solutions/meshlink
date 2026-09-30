@@ -68,6 +68,11 @@ void free_connection(connection_t *c) {
 	buffer_clear(&c->inbuf);
 	buffer_clear(&c->outbuf);
 
+	if(c->standby_held) {
+		list_delete_list(c->standby_held);
+		c->standby_held = NULL;
+	}
+
 	if(c->io.cb) {
 		abort();
 	}
