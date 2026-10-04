@@ -170,6 +170,11 @@ static void send_mtu_probe_handler(event_loop_t *loop, void *data) {
 			goto end;
 		}
 
+		if(path_rebind_try_rescue(mesh, n)) {
+			timeout = 1;
+			goto end;
+		}
+
 		logger(mesh, MESHLINK_INFO, "%s did not respond to UDP ping, restarting PMTU discovery", n->name);
 		path_note_udp_demoted_reason(mesh, n, "probe give-up");
 		n->mtuprobes = 1;
@@ -400,6 +405,41 @@ bool send_punch_probe(meshlink_handle_t *mesh, node_t *n) {
 	}
 
 	send_probe_to(mesh, n, &packet, &n->peer_udp.challenge.endpoint);
+	return true;
+}
+
+bool send_rebind_probe(meshlink_handle_t *mesh, node_t *n) {
+	vpn_packet_t packet;
+	char *host = NULL;
+	char *port = NULL;
+
+	if(!mesh || !n || !n->status.reachable || !n->status.validkey || n->devtool_force_meta) {
+		return false;
+	}
+
+	if(!n->udp_rebind.challenge_active || !n->udp_rebind.challenge_nonce) {
+		return false;
+	}
+
+	memset(&packet, 0, sizeof packet);
+	packet.probe = true;
+	memcpy(packet.data + PROBE_NONCE_OFFSET, &n->udp_rebind.challenge_nonce, sizeof n->udp_rebind.challenge_nonce);
+	randomize(packet.data + 14, PATH_PROMOTION_PROBE_LEN - 14);
+	packet.len = PATH_PROMOTION_PROBE_LEN;
+	n->out_meta += packet.len + PROBE_OVERHEAD;
+
+	if(mesh->log_level <= MESHLINK_INFO) {
+		sockaddr_t logged;
+
+		path_copy_sockaddr(&logged, &n->udp_rebind.challenge_endpoint);
+		sockaddr2str(&logged, &host, &port);
+		logger(mesh, MESHLINK_INFO, "Sending rebind probe to %s at %s port %s",
+		       n->name, host ? host : "?", port ? port : "?");
+		free(host);
+		free(port);
+	}
+
+	send_probe_to(mesh, n, &packet, &n->udp_rebind.challenge_endpoint);
 	return true;
 }
 
@@ -761,6 +801,7 @@ static void receive_udppacket(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *
 	/* Direct, authenticated UDP only. META-carried and relayed SPTPS do not land here. */
 	path_note_authenticated_udp_observation(mesh, n, &n->last_udp_from);
 	path_observe_punch_ingress(mesh, n, &n->last_udp_from);
+	path_observe_authenticated_rx(mesh, n, &n->last_udp_from);
 }
 
 static void send_sptps_packet(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *origpkt) {

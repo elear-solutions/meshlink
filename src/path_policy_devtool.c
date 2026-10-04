@@ -3426,6 +3426,36 @@ static bool cover_scheduler(meshlink_handle_t *mesh) {
 		goto done;
 	}
 
+	/* Rebind shares recovery rank but not suspect's cancel key. */
+	path_scheduler_cancel_node(mesh, &a);
+	path_scheduler_cancel_node(mesh, &b);
+	path_scheduler_cancel_node(mesh, &z);
+	path_scheduler_set_budget(mesh, 4, 20, 2);
+
+	if(!path_scheduler_begin_transaction(mesh, &z, PATH_TXN_REBIND, PATH_TX_REBIND, NULL)
+	                || !path_scheduler_begin_transaction(mesh, &z, PATH_TXN_SUSPECT, PATH_TX_ACTIVE_ROUTE_RECOVERY, NULL)) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: rebind beside suspect");
+		ok = false;
+		goto done;
+	}
+
+	path_scheduler_cancel(mesh, &z, PATH_TX_ACTIVE_ROUTE_RECOVERY);
+
+	if(!path_scheduler_has_transaction(mesh, &z, PATH_TXN_REBIND)
+	                || path_scheduler_has_transaction(mesh, &z, PATH_TXN_SUSPECT)) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: suspect cancel dropped rebind");
+		ok = false;
+		goto done;
+	}
+
+	path_scheduler_cancel(mesh, &z, PATH_TX_REBIND);
+
+	if(path_scheduler_has_transaction(mesh, &z, PATH_TXN_REBIND)) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: rebind cancel");
+		ok = false;
+		goto done;
+	}
+
 done:
 	path_scheduler_cancel_node(mesh, &a);
 	path_scheduler_cancel_node(mesh, &b);
@@ -3478,6 +3508,7 @@ bool path_policy_cover_unit(meshlink_handle_t *mesh, node_t *live) {
 	                && upgrade_cutover_cover_unit(mesh)
 	                && cover_scheduler(mesh)
 	                && punch_endpoint_cover_unit(mesh)
+	                && rebind_cover_unit(mesh)
 	                && node_kex_cover_unit(mesh)
 	                && utcp_mtu_reentry_unit();
 	mesh->probe_max_transactions = saved_max;

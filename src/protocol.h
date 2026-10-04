@@ -113,6 +113,7 @@ bool send_del_edge(struct meshlink_handle *mesh, struct connection_t *, const st
 bool send_req_key(struct meshlink_handle *mesh, struct node_t *);
 bool send_punch_endpoint_request(struct meshlink_handle *mesh, struct node_t *);
 bool punch_endpoint_cover_unit(struct meshlink_handle *mesh);
+bool rebind_cover_unit(struct meshlink_handle *mesh);
 bool node_kex_cover_unit(struct meshlink_handle *mesh);
 bool send_canonical_address(struct meshlink_handle *mesh, struct node_t *);
 bool send_external_ip_address(struct meshlink_handle *mesh, struct node_t *);

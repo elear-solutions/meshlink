@@ -1083,6 +1083,9 @@ static void test_path_preference(meshlink_handle_t **mesh) {
 
 static struct sync_flag nat_accepted;
 static struct sync_flag nat_received;
+static meshlink_channel_t *nat_cam_channel;
+static unsigned nat_relay_demotions;
+static unsigned nat_probe_giveups;
 
 static void nat_receive_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, const void *data, size_t len) {
 	(void)mesh;
@@ -1098,6 +1101,7 @@ static bool nat_accept_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, 
 	(void)port;
 	(void)data;
 	(void)len;
+	nat_cam_channel = channel;
 	meshlink_set_channel_receive_cb(mesh, channel, nat_receive_cb);
 	set_sync_flag(&nat_accepted, true);
 	return true;
@@ -1321,6 +1325,161 @@ static bool nat_hole_punch_once(const char *prefix, bool app_symmetric, bool cam
 	return true;
 }
 
+static uint32_t nat_migrated(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	devtool_node_status_t st;
+	uint32_t count;
+
+	devtool_get_node_status(mesh, node, &st);
+	count = st.rebind_migrated;
+	devtool_free_node_status(&st);
+	return count;
+}
+
+static void nat_rebind_log(meshlink_handle_t *mesh, meshlink_log_level_t level, const char *text) {
+	(void)mesh;
+	(void)level;
+
+	if(!text) {
+		return;
+	}
+
+	if(strstr(text, "-> relay-udp")) {
+		nat_relay_demotions++;
+	}
+
+	if(strstr(text, "probe give-up")) {
+		nat_probe_giveups++;
+	}
+}
+
+/* Cam keeps sending. App must follow each fresh WAN port without leaving direct UDP. */
+static bool nat_rebind_until(meshlink_handle_t *app, meshlink_node_t *cam, meshlink_handle_t *cam_mesh, uint32_t want) {
+	int i;
+
+	for(i = 0; i < 20; i++) {
+		if(!nat_route_is(app, cam, 1)) {
+			return false;
+		}
+
+		assert(meshlink_channel_send(cam_mesh, nat_cam_channel, "k", 1) == 1);
+
+		if(nat_migrated(app, cam) >= want) {
+			return true;
+		}
+
+		usleep(100000);
+	}
+
+	return nat_route_is(app, cam, 1) && nat_migrated(app, cam) >= want;
+}
+
+static void test_nat_rebind(void) {
+	peer_config_t *peers;
+	meshlink_node_t *app_cam;
+	meshlink_node_t *cam_app;
+	meshlink_channel_t *ch;
+	uint32_t restarts;
+	uint32_t migrated;
+	int i;
+
+	peers = setup_nat_hole_punch_asymm("natrebind", false, true);
+
+	if(!peers) {
+		fprintf(stderr, "nat rebind: topology unavailable\n");
+		assert(peers);
+		return;
+	}
+
+	nat_relay_demotions = 0;
+	nat_probe_giveups = 0;
+	nat_cam_channel = NULL;
+	meshlink_set_log_cb(peers[1].mesh, MESHLINK_INFO, nat_rebind_log);
+	init_sync_flag(&nat_accepted);
+	init_sync_flag(&nat_received);
+	meshlink_set_channel_accept_cb(peers[2].mesh, nat_accept_cb);
+
+	for(i = 0; i < 3; i++) {
+		assert(meshlink_start(peers[i].mesh));
+	}
+
+	assert_after((app_cam = meshlink_get_node(peers[1].mesh, "cam")) != NULL, 20);
+	assert_after((cam_app = meshlink_get_node(peers[2].mesh, "app")) != NULL, 20);
+	assert_after(meshlink_get_node_reachability(peers[1].mesh, app_cam, NULL, NULL), 20);
+	assert_after(devtool_backbone_udp_confirmed(peers[1].mesh) && devtool_backbone_udp_confirmed(peers[2].mesh), 20);
+
+	devtool_force_meta(peers[1].mesh, app_cam, true);
+	devtool_force_meta(peers[2].mesh, cam_app, true);
+	ch = meshlink_channel_open(peers[1].mesh, app_cam, 9, nat_receive_cb, NULL, 0);
+	assert(ch);
+	assert(wait_sync_flag(&nat_accepted, 20));
+	assert_after(nat_keyed(peers[1].mesh, app_cam) && nat_keyed(peers[2].mesh, cam_app), 20);
+	meshlink_channel_abort(peers[1].mesh, ch);
+	reset_sync_flag(&nat_accepted);
+	reset_sync_flag(&nat_received);
+	nat_cam_channel = NULL;
+
+	hint_address(peers[1].mesh, app_cam, "198.51.100.9", 9);
+	hint_address(peers[2].mesh, cam_app, "198.51.100.8", 9);
+	ch = meshlink_channel_open(peers[1].mesh, app_cam, 7, nat_receive_cb, NULL, 0);
+	assert(ch);
+	assert(wait_sync_flag(&nat_accepted, 20));
+	assert(nat_cam_channel);
+	devtool_force_meta(peers[1].mesh, app_cam, false);
+	devtool_force_meta(peers[2].mesh, cam_app, false);
+
+	for(i = 0; i < 3; i++) {
+		if(nat_route_is(peers[1].mesh, app_cam, 1) && nat_route_is(peers[2].mesh, cam_app, 1)) {
+			break;
+		}
+
+		devtool_age_route(peers[1].mesh, app_cam, 31);
+		devtool_age_candidate(peers[1].mesh, app_cam, 2);
+		devtool_path_route_tick(peers[1].mesh, app_cam);
+		devtool_age_route(peers[2].mesh, cam_app, 31);
+		devtool_age_candidate(peers[2].mesh, cam_app, 2);
+		devtool_path_route_tick(peers[2].mesh, cam_app);
+		assert(meshlink_channel_send(peers[2].mesh, nat_cam_channel, "up", 2) == 2);
+		sleep(2);
+	}
+
+	assert_after(nat_route_is(peers[1].mesh, app_cam, 1), 30);
+	assert_after(nat_route_is(peers[2].mesh, cam_app, 1), 30);
+	restarts = nat_restarts(peers[1].mesh, app_cam);
+	migrated = nat_migrated(peers[1].mesh, app_cam);
+	nat_relay_demotions = 0;
+	nat_probe_giveups = 0;
+
+	for(i = 1; i <= 5; i++) {
+		assert(nat_force_rebind());
+		assert(nat_rebind_until(peers[1].mesh, app_cam, peers[2].mesh, migrated + (uint32_t)i));
+		reset_sync_flag(&nat_received);
+		assert(meshlink_channel_send(peers[2].mesh, nat_cam_channel, "go", 2) == 2);
+		assert(wait_sync_flag(&nat_received, 2));
+	}
+
+	assert(nat_relay_demotions == 0);
+	assert(nat_probe_giveups == 0);
+	assert(nat_restarts(peers[1].mesh, app_cam) == restarts);
+	assert(nat_route_is(peers[1].mesh, app_cam, 1));
+
+	/* Idle: the mapping is deleted before the next datagram. Rescue or the
+	   quiet-window challenge migrates, and the route stays direct. */
+	sleep(1);
+	nat_relay_demotions = 0;
+	nat_probe_giveups = 0;
+	migrated = nat_migrated(peers[1].mesh, app_cam);
+	assert(nat_force_rebind());
+	assert(nat_rebind_until(peers[1].mesh, app_cam, peers[2].mesh, migrated + 1));
+	assert(nat_relay_demotions == 0);
+	assert(nat_probe_giveups == 0);
+	assert(nat_route_is(peers[1].mesh, app_cam, 1));
+	assert(nat_restarts(peers[1].mesh, app_cam) == restarts);
+
+	meshlink_channel_abort(peers[1].mesh, ch);
+	close_nat_hole_punch(peers);
+	printf("udp-relay NAT rebind ok\n");
+}
+
 static void test_nat_hole_punch(void) {
 	if(!netns_available()) {
 		fprintf(stderr, "udp-relay NAT hole punch: netns unavailable\n");
@@ -1355,6 +1514,7 @@ static void test_nat_hole_punch(void) {
 		assert(nat_hole_punch_once(prefix, true, false));
 	}
 
+	test_nat_rebind();
 	printf("udp-relay NAT hole punch ok\n");
 }
 
@@ -1447,6 +1607,7 @@ int main(void) {
 
 	test_path_preference(mesh);
 	test_reachability_flip_mss(mesh);
+
 	test_nat_hole_punch();
 
 	for(int i = 0; i < 3; i++) {

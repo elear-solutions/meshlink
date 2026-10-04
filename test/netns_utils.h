@@ -28,5 +28,8 @@ extern void close_relay_peer_nut(peer_config_t *peers);
 extern peer_config_t *setup_nat_hole_punch(const char *prefix, bool symmetric);
 extern peer_config_t *setup_nat_hole_punch_asymm(const char *prefix, bool app_symmetric, bool cam_symmetric);
 extern void close_nat_hole_punch(peer_config_t *peers);
+/// Delete UDP conntrack in the camera NAT namespace so the next send reallocates a port.
+/// False when conntrack is missing or the namespace is gone. Callers must assert, not skip.
+extern bool nat_force_rebind(void);
 
 #endif

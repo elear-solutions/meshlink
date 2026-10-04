@@ -166,7 +166,9 @@ typedef struct node_t {
 	path_candidate_retry_t candidate_retry; /* local-UDP endpoint cooldown; not wiped by carrier promotions */
 	timeout_t promotion_timer;
 	timeout_t punch_timer;                  /* reciprocal hole-punch challenge; not inside peer_udp */
+	timeout_t rebind_timer;                 /* confirmed-endpoint migration; not inside udp_rebind */
 	suspect_validation_t suspect_validation; /* nonce-epoch recovery; not PMTU */
+	udp_rebind_t udp_rebind;                /* live NAT rebind of a confirmed ordinary peer */
 	peer_path_demand_t peer_udp;            /* Channel refcount + grace for ordinary-peer UDP */
 	time_t pmtu_increase_next;              /* Earliest next full-size "is the path bigger now" probe */
 	sockaddr_t probe_dest_override;          /* Dest for a PKT_PROBE while override is active */

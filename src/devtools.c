@@ -446,6 +446,18 @@ static void devtool_get_reset_node_status(meshlink_handle_t *mesh, meshlink_node
 			       ? sizeof status->punch_challenge_endpoint : sizeof internal->peer_udp.challenge.endpoint);
 		}
 
+		status->rebind_challenge_active = internal->udp_rebind.challenge_active;
+		status->rebind_seen = internal->udp_rebind.seen;
+		status->rebind_migrated = internal->udp_rebind.migrated;
+		status->rebind_failed = internal->udp_rebind.failed;
+		memset(&status->rebind_candidate_endpoint, 0, sizeof status->rebind_candidate_endpoint);
+
+		if(internal->udp_rebind.candidate.sa.sa_family) {
+			memcpy(&status->rebind_candidate_endpoint, &internal->udp_rebind.candidate,
+			       sizeof internal->udp_rebind.candidate > sizeof status->rebind_candidate_endpoint
+			       ? sizeof status->rebind_candidate_endpoint : sizeof internal->udp_rebind.candidate);
+		}
+
 		status->devtool_status_version = DEVTOOL_NODE_STATUS_VERSION;
 
 		for list_each(connection_t, other, mesh->connections) {
@@ -1381,6 +1393,55 @@ void devtool_set_udp_confirmed(meshlink_handle_t *mesh, meshlink_node_t *node, b
 		send_mtu_probe(mesh, n);
 	}
 
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+void devtool_rebind_age_current_rx(meshlink_handle_t *mesh, meshlink_node_t *node, int age_ms) {
+	node_t *n;
+	int64_t sec;
+	int64_t ms;
+
+	if(!mesh || !node || age_ms < 0) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	n = (node_t *)node;
+	n->udp_rebind.current_rx_at = mesh->loop.now;
+	sec = age_ms / 1000;
+	ms = age_ms % 1000;
+	n->udp_rebind.current_rx_at.tv_sec -= sec;
+
+	if(n->udp_rebind.current_rx_at.tv_nsec < ms * 1000000L) {
+		n->udp_rebind.current_rx_at.tv_sec--;
+		n->udp_rebind.current_rx_at.tv_nsec += 1000000000L - ms * 1000000L;
+	} else {
+		n->udp_rebind.current_rx_at.tv_nsec -= ms * 1000000L;
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+void devtool_rebind_observe(meshlink_handle_t *mesh, meshlink_node_t *node, const struct sockaddr *sa) {
+	node_t *n;
+	sockaddr_t from;
+
+	if(!mesh || !node || !sa) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	n = (node_t *)node;
+	path_copy_sockaddr(&from, (const sockaddr_t *)sa);
+	path_observe_authenticated_rx(mesh, n, &from);
 	pthread_mutex_unlock(&mesh->mutex);
 }
 
