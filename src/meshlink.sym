@@ -105,6 +105,8 @@ devtool_fix_early_pmtu
 devtool_drop_next_direct_udp_records
 devtool_set_probe_reply_limit
 devtool_pmtu_raise_due
+devtool_rebind_age_current_rx
+devtool_rebind_observe
 devtool_probe_second_tokens
 devtool_probe_minute_tokens
 devtool_probe_active_transactions

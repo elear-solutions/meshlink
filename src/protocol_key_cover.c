@@ -1,5 +1,5 @@
 /*
-    protocol_key_cover.c -- punch endpoint and ANS_KEY cover unit
+    protocol_key_cover.c -- punch endpoint, ANS_KEY, and UDP rebind cover unit
     Copyright (C) 2026 Elear Solutions
 
     This program is free software; you can redistribute it and/or modify
@@ -870,19 +870,19 @@ bool rebind_cover_unit(meshlink_handle_t *mesh) {
 	other_ip = str2sockaddr("203.0.113.99", "54887");
 	late = str2sockaddr("203.0.113.50", "58402");
 
-	path_observe_authenticated_rx(mesh, n, &live);
+	path_rebind_observe_rx(mesh, n, &live);
 	REBIND_CHECK(!n->udp_rebind.challenge_active);
 	REBIND_CHECK(n->udp_rebind.seen == 0);
 
-	path_observe_authenticated_rx(mesh, n, &moved);
+	path_rebind_observe_rx(mesh, n, &moved);
 	REBIND_CHECK(!n->udp_rebind.challenge_active);
 	REBIND_CHECK(n->udp_rebind.seen == 1);
-	path_observe_authenticated_rx(mesh, n, &moved);
+	path_rebind_observe_rx(mesh, n, &moved);
 	REBIND_CHECK(n->udp_rebind.seen == 1);
 	REBIND_CHECK(n->udp_rebind.candidate_packets == 2);
 
 	n->udp_rebind.current_rx_at.tv_sec -= 1;
-	path_observe_authenticated_rx(mesh, n, &moved);
+	path_rebind_observe_rx(mesh, n, &moved);
 	REBIND_CHECK(n->udp_rebind.challenge_active);
 	REBIND_CHECK(n->udp_rebind.challenge_nonce != 0);
 	nonce = n->udp_rebind.challenge_nonce;
@@ -902,12 +902,12 @@ bool rebind_cover_unit(meshlink_handle_t *mesh) {
 	REBIND_CHECK(n->mtuprobes == 31);
 	REBIND_CHECK(n->udp_rebind.migrated == 1);
 
-	path_observe_authenticated_rx(mesh, n, &late);
+	path_rebind_observe_rx(mesh, n, &late);
 	REBIND_CHECK(!n->udp_rebind.challenge_active);
 	REBIND_CHECK(!sockaddrcmp(&n->address, &moved));
 
 	n->udp_rebind.current_rx_at.tv_sec -= 1;
-	path_observe_authenticated_rx(mesh, n, &other_ip);
+	path_rebind_observe_rx(mesh, n, &other_ip);
 	REBIND_CHECK(!n->udp_rebind.challenge_active);
 	REBIND_CHECK(!sockaddrcmp(&n->address, &moved));
 	REBIND_CHECK(n->minmtu == 1414);
@@ -917,19 +917,19 @@ bool rebind_cover_unit(meshlink_handle_t *mesh) {
 	pinned = n->address;
 	moved = str2sockaddr("203.0.113.50", "53682");
 	n->udp_rebind.current_rx_at.tv_sec -= 1;
-	path_observe_authenticated_rx(mesh, n, &moved);
+	path_rebind_observe_rx(mesh, n, &moved);
 	n->udp_rebind.challenge_deadline = mesh->loop.now;
 	n->udp_rebind.challenge_deadline.tv_sec -= 1;
 	path_rebind_challenge_timeout(mesh, n);
 	REBIND_CHECK(!n->udp_rebind.challenge_active);
 	REBIND_CHECK(n->udp_rebind.failed == 1);
 	REBIND_CHECK(!sockaddrcmp(&n->address, &pinned));
-	path_observe_authenticated_rx(mesh, n, &moved);
+	path_rebind_observe_rx(mesh, n, &moved);
 	REBIND_CHECK(!n->udp_rebind.challenge_active);
 
 	rebind_plant(mesh, n, "51000");
 	moved = str2sockaddr("203.0.113.50", "51001");
-	path_observe_authenticated_rx(mesh, n, &moved);
+	path_rebind_observe_rx(mesh, n, &moved);
 	REBIND_CHECK(n->udp_rebind.seen >= 1);
 	REBIND_CHECK(!n->udp_rebind.challenge_active);
 	REBIND_CHECK(path_rebind_try_rescue(mesh, n));
@@ -946,7 +946,7 @@ bool rebind_cover_unit(meshlink_handle_t *mesh) {
 	rebind_plant(mesh, n, "52000");
 	moved = str2sockaddr("203.0.113.50", "52001");
 	n->udp_rebind.current_rx_at.tv_sec -= 1;
-	path_observe_authenticated_rx(mesh, n, &moved);
+	path_rebind_observe_rx(mesh, n, &moved);
 	REBIND_CHECK(n->udp_rebind.challenge_active);
 	n->session_id = 99;
 	path_rebind_challenge_timeout(mesh, n);
@@ -956,7 +956,7 @@ bool rebind_cover_unit(meshlink_handle_t *mesh) {
 	rebind_plant(mesh, n, "53000");
 	moved = str2sockaddr("203.0.113.50", "53001");
 	n->udp_rebind.current_rx_at.tv_sec -= 1;
-	path_observe_authenticated_rx(mesh, n, &moved);
+	path_rebind_observe_rx(mesh, n, &moved);
 	node_set_validkey(mesh, n, false);
 	REBIND_CHECK(!n->udp_rebind.challenge_active);
 	n->status.validkey = true;
@@ -964,7 +964,7 @@ bool rebind_cover_unit(meshlink_handle_t *mesh) {
 	rebind_plant(mesh, n, "54000");
 	moved = str2sockaddr("203.0.113.50", "54001");
 	n->udp_rebind.current_rx_at.tv_sec -= 1;
-	path_observe_authenticated_rx(mesh, n, &moved);
+	path_rebind_observe_rx(mesh, n, &moved);
 	n->udp_rebind.challenge_network_epoch = mesh->lan_network_epoch + 3;
 	path_route_tick(mesh, n);
 	REBIND_CHECK(!n->udp_rebind.challenge_active);
@@ -972,7 +972,7 @@ bool rebind_cover_unit(meshlink_handle_t *mesh) {
 	rebind_plant(mesh, n, "55000");
 	moved = str2sockaddr("203.0.113.50", "55001");
 	n->udp_rebind.current_rx_at.tv_sec -= 1;
-	path_observe_authenticated_rx(mesh, n, &moved);
+	path_rebind_observe_rx(mesh, n, &moved);
 	path_clear_udp_observation(n);
 	REBIND_CHECK(!n->udp_rebind.challenge_active);
 
@@ -980,11 +980,11 @@ bool rebind_cover_unit(meshlink_handle_t *mesh) {
 	n->devclass = DEV_CLASS_BACKBONE;
 	moved = str2sockaddr("203.0.113.50", "56001");
 	n->udp_rebind.current_rx_at.tv_sec -= 1;
-	path_observe_authenticated_rx(mesh, n, &moved);
+	path_rebind_observe_rx(mesh, n, &moved);
 	REBIND_CHECK(n->udp_rebind.seen == 0);
 	REBIND_CHECK(!n->udp_rebind.challenge_active);
 	n->devclass = DEV_CLASS_UNKNOWN;
-	path_observe_authenticated_rx(mesh, n, &moved);
+	path_rebind_observe_rx(mesh, n, &moved);
 	REBIND_CHECK(!n->udp_rebind.challenge_active);
 
 	rebind_plant(mesh, n, "57000");
@@ -996,7 +996,7 @@ bool rebind_cover_unit(meshlink_handle_t *mesh) {
 		snprintf(port, sizeof port, "%u", 58000 + i);
 		moved = str2sockaddr("203.0.113.50", port);
 		n->udp_rebind.current_rx_at.tv_sec -= 1;
-		path_observe_authenticated_rx(mesh, n, &moved);
+		path_rebind_observe_rx(mesh, n, &moved);
 		REBIND_CHECK(n->udp_rebind.challenge_active);
 		nonce = n->udp_rebind.challenge_nonce;
 		REBIND_CHECK(path_rebind_accept_reply(mesh, n, &moved, nonce));

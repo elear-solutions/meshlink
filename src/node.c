@@ -43,6 +43,15 @@ void init_nodes(meshlink_handle_t *mesh) {
 }
 
 void exit_nodes(meshlink_handle_t *mesh) {
+	if(mesh->nodes) {
+		/* free_node() aborts if a timer is still armed. Punch and promotion
+		   are dropped when reachability flips; a confirmed peer can still
+		   hold a rebind challenge until the tree is destroyed. */
+		for splay_each(node_t, n, mesh->nodes) {
+			timeout_del(&mesh->loop, &n->rebind_timer);
+		}
+	}
+
 	if(mesh->node_udp_cache) {
 		hash_free(mesh->node_udp_cache);
 	}
@@ -188,7 +197,7 @@ void free_node(node_t *n) {
 	ecdsa_free(n->ecdsa);
 	sptps_stop(&n->sptps);
 
-	if(n->mtutimeout.cb || n->promotion_timer.cb || n->punch_timer.cb || n->suspect_validation.timer.cb) {
+	if(n->mtutimeout.cb || n->promotion_timer.cb || n->punch_timer.cb || n->suspect_validation.timer.cb || n->rebind_timer.cb) {
 		abort();
 	}
 

@@ -977,7 +977,7 @@ static void receive_udppacket(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *
 	/* Direct, authenticated UDP only. META-carried and relayed SPTPS do not land here. */
 	path_note_authenticated_udp_observation(mesh, n, &n->last_udp_from);
 	path_observe_punch_ingress(mesh, n, &n->last_udp_from);
-	path_observe_authenticated_rx(mesh, n, &n->last_udp_from);
+	path_rebind_observe_rx(mesh, n, &n->last_udp_from);
 }
 
 static void send_sptps_packet(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *origpkt) {

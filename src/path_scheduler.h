@@ -89,7 +89,7 @@ typedef struct path_probe_budget_t {
 
 /* Mesh-wide probe admission. Due-time stays on per-node timers; this is the gate.
    Validation state machines hold a slot from begin() until end(); keepalive
-   packets only consume packet tokens. Promotion, suspect, and punch may preempt the
+   packets only consume packet tokens. Promotion, suspect, punch, and rebind may preempt the
    globally lowest-priority live slot, including other nodes. Preemption drops
    that victim's queued packets and runs the owner callback so the state
    machine cannot keep emitting or committing outside the cap. */

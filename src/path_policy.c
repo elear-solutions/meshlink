@@ -53,6 +53,8 @@ static bool path_punch_endpoint_usable(const sockaddr_t *sa);
 static void path_punch_note_demotion(meshlink_handle_t *mesh, node_t *n);
 static void path_punch_rearm(meshlink_handle_t *mesh, node_t *n);
 static void path_punch_fail(meshlink_handle_t *mesh, node_t *n);
+static void path_rebind_rearm(meshlink_handle_t *mesh, node_t *n);
+static void path_rebind_fail(meshlink_handle_t *mesh, node_t *n);
 static bool hop_udp_ready(const node_t *hop);
 static bool path_fill_direct_udp(meshlink_handle_t *mesh, const node_t *n, path_target_t *out);
 static bool path_fill_local_meta(meshlink_handle_t *mesh, const node_t *n, path_target_t *out);
@@ -1981,11 +1983,18 @@ void path_transaction_preempt(meshlink_handle_t *mesh, node_t *node, path_transa
 		break;
 
 	case PATH_TXN_REBIND:
-		/* The slot is already gone. Timeout emits again or fails at the deadline. */
-		if(node->udp_rebind.challenge_active) {
-			path_rebind_challenge_timeout(mesh, node);
+		/* The slot is already gone. Denial still ends at the deadline. */
+		if(!node->udp_rebind.challenge_active) {
+			break;
 		}
 
+		if(node->udp_rebind.challenge_attempts >= PATH_REBIND_ATTEMPTS
+		                || timespec_after_or_equal(&mesh->loop.now, &node->udp_rebind.challenge_deadline)) {
+			path_rebind_fail(mesh, node);
+			break;
+		}
+
+		path_rebind_rearm(mesh, node);
 		break;
 
 	case PATH_TXN_PUNCH:
@@ -3996,6 +4005,16 @@ void path_rebind_cancel(meshlink_handle_t *mesh, node_t *n) {
 	path_rebind_clear_candidate(n);
 }
 
+void path_rebind_fail_orphaned(meshlink_handle_t *mesh, node_t *node) {
+	if(!mesh || !node) {
+		return;
+	}
+
+	if(node->udp_rebind.challenge_active && !node->rebind_timer.cb) {
+		path_rebind_challenge_timeout(mesh, node);
+	}
+}
+
 static int64_t path_rebind_quiet_ms(const meshlink_handle_t *mesh, const node_t *n) {
 	if(!n->udp_rebind.current_rx_at.tv_sec && !n->udp_rebind.current_rx_at.tv_nsec) {
 		return PATH_REBIND_QUIET_MS;
@@ -4013,6 +4032,8 @@ static bool path_rebind_should_challenge(const meshlink_handle_t *mesh, const no
 		return true;
 	}
 
+	/* 32 is an in-flight liveness probe. 31 is settled PMTU. ADR 0010
+	   challenges while that probe is outstanding. */
 	return n->mtuprobes == 32;
 }
 
@@ -4208,7 +4229,6 @@ static void path_rebind_begin(meshlink_handle_t *mesh, node_t *n, const sockaddr
 static void path_rebind_commit(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *ep) {
 	sockaddr_t old;
 	sockaddr_t neu;
-	bool same_ip;
 	path_tier_t next;
 	path_tier_t was;
 	int64_t elapsed;
@@ -4217,11 +4237,10 @@ static void path_rebind_commit(meshlink_handle_t *mesh, node_t *n, const sockadd
 	char *new_host = NULL;
 	char *new_port = NULL;
 
-	/* from may alias n->last_udp_from. update_node_udp_from forgets that
+	/* ep may alias n->last_udp_from. update_node_udp_from forgets that
 	   before it copies, so snapshot both ends first. */
 	path_copy_sockaddr(&old, &n->address);
 	path_copy_sockaddr(&neu, ep);
-	same_ip = old.sa.sa_family && !sockaddrcmp_noport(&old, &neu);
 	elapsed = n->udp_rebind.candidate_first_at.tv_sec || n->udp_rebind.candidate_first_at.tv_nsec
 	          ? timespec_ms_between(&n->udp_rebind.candidate_first_at, &mesh->loop.now) : 0;
 
@@ -4249,14 +4268,6 @@ static void path_rebind_commit(meshlink_handle_t *mesh, node_t *n, const sockadd
 	path_suspect_stop(mesh, n);
 	path_note_authenticated_route_success(mesh, n);
 	channel_refresh_carrier(mesh, n);
-
-	if(!same_ip) {
-		n->minmtu = 0;
-		n->maxmtu = MTU;
-		n->mtu = MTU;
-		n->mtuprobes = 0;
-		send_mtu_probe(mesh, n);
-	}
 
 	if(n->udp_rebind.migrated < UINT32_MAX) {
 		n->udp_rebind.migrated++;
@@ -4368,7 +4379,7 @@ bool path_rebind_try_rescue(meshlink_handle_t *mesh, node_t *n) {
 	return true;
 }
 
-void path_observe_authenticated_rx(meshlink_handle_t *mesh, node_t *node, const sockaddr_t *endpoint) {
+void path_rebind_observe_rx(meshlink_handle_t *mesh, node_t *node, const sockaddr_t *endpoint) {
 	sockaddr_t ep;
 	bool fresh;
 	int64_t quiet;

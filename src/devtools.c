@@ -1444,7 +1444,7 @@ void devtool_rebind_observe(meshlink_handle_t *mesh, meshlink_node_t *node, cons
 
 	n = (node_t *)node;
 	path_copy_sockaddr(&from, (const sockaddr_t *)sa);
-	path_observe_authenticated_rx(mesh, n, &from);
+	path_rebind_observe_rx(mesh, n, &from);
 	pthread_mutex_unlock(&mesh->mutex);
 }
 
@@ -1466,6 +1466,7 @@ void devtool_force_meta(meshlink_handle_t *mesh, meshlink_node_t *node, bool ena
 		timeout_del(&mesh->loop, &n->mtutimeout);
 		timeout_del(&mesh->loop, &n->promotion_timer);
 		path_punch_cancel(mesh, n);
+		path_rebind_cancel(mesh, n);
 		path_suspect_stop(mesh, n);
 		n->mtuprobes = 31;
 		n->status.udp_confirmed = false;

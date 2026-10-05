@@ -97,7 +97,8 @@ static bool path_scheduler_keepalive_priority(path_transaction_priority_t priori
 }
 
 /* Packet identity stays the enum. Punch and channel promotion share a rank so
-   neither evicts the other; active-route recovery still outranks both. */
+   neither evicts the other. PATH_TX_REBIND shares recovery rank with
+   active-route recovery; that rank still outranks punch and promotion. */
 static int path_scheduler_rank(path_transaction_priority_t priority) {
 	switch(priority) {
 	case PATH_TX_BACKBONE_REQUIRED:
@@ -654,7 +655,7 @@ void path_scheduler_cancel_node(meshlink_handle_t *mesh, node_t *node) {
 
 	/* Dropping the slot must not leave an active challenge with no timer. */
 	path_punch_fail_orphaned(mesh, node);
-	path_rebind_cancel(mesh, node);
+	path_rebind_fail_orphaned(mesh, node);
 }
 
 path_sched_admit_t path_scheduler_emit_packet(meshlink_handle_t *mesh, path_sched_txn_t *txn, const path_probe_request_t *pkt) {

@@ -481,7 +481,7 @@ void path_punch_challenge_timeout(struct meshlink_handle *mesh, struct node_t *n
 /* Authenticated direct UDP from a confirmed ordinary peer. Same source refreshes
    liveness. A new source is a rebind candidate; a nonce reply is what moves
    n->address. Relay and backbone peers are ignored. */
-void path_observe_authenticated_rx(struct meshlink_handle *mesh, struct node_t *node, const sockaddr_t *endpoint);
+void path_rebind_observe_rx(struct meshlink_handle *mesh, struct node_t *node, const sockaddr_t *endpoint);
 /* Commit only on nonce and source match, with session and network epoch unchanged.
    False leaves the challenge alone so another probe reply can still match. */
 bool path_rebind_accept_reply(struct meshlink_handle *mesh, struct node_t *node, const sockaddr_t *from, uint64_t nonce);
@@ -491,6 +491,8 @@ bool path_rebind_try_rescue(struct meshlink_handle *mesh, struct node_t *node);
 void path_rebind_cancel(struct meshlink_handle *mesh, struct node_t *node);
 /* Mesh-loop callback and the devtool hook for a rebind deadline. */
 void path_rebind_challenge_timeout(struct meshlink_handle *mesh, struct node_t *node);
+/* Scheduler dropped the slot. Fail a challenge that no longer has a timer. */
+void path_rebind_fail_orphaned(struct meshlink_handle *mesh, struct node_t *node);
 /* Unconfirmed probe dest: the in-flight challenge, else a hint that has not failed. */
 bool path_unconfirmed_punch_dest(const struct meshlink_handle *mesh, const struct node_t *n, sockaddr_t *out);
 /* Dest sampled immediately before the probe path_note_punch_endpoint just armed. */
