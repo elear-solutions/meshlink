@@ -450,6 +450,9 @@ static void devtool_get_reset_node_status(meshlink_handle_t *mesh, meshlink_node
 		status->rebind_seen = internal->udp_rebind.seen;
 		status->rebind_migrated = internal->udp_rebind.migrated;
 		status->rebind_failed = internal->udp_rebind.failed;
+		status->fallback_oversize_redirects = internal->fallback_oversize_redirects;
+		status->relay_oversize_drops = internal->relay_oversize_drops;
+		status->pmtu_raise_pending = internal->pmtu_raise_pending;
 		memset(&status->rebind_candidate_endpoint, 0, sizeof status->rebind_candidate_endpoint);
 
 		if(internal->udp_rebind.candidate.sa.sa_family) {
@@ -2229,6 +2232,51 @@ bool devtool_fix_early_pmtu(meshlink_handle_t *mesh, meshlink_node_t *node, uint
 	}
 
 	return ok;
+}
+
+bool devtool_drop_next_direct_udp_records(meshlink_handle_t *mesh, meshlink_node_t *node, unsigned count) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	((node_t *)node)->devtool_drop_direct_udp_records = count;
+	pthread_mutex_unlock(&mesh->mutex);
+	return true;
+}
+
+bool devtool_set_probe_reply_limit(meshlink_handle_t *mesh, meshlink_node_t *node, uint16_t max_len) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	((node_t *)node)->devtool_probe_reply_limit = max_len;
+	pthread_mutex_unlock(&mesh->mutex);
+	return true;
+}
+
+bool devtool_pmtu_raise_due(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	((node_t *)node)->pmtu_increase_next = 0;
+	pthread_mutex_unlock(&mesh->mutex);
+	return true;
 }
 
 bool devtool_liveness_probe_warranted(meshlink_handle_t *mesh, meshlink_node_t *node) {

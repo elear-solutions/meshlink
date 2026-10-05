@@ -216,6 +216,17 @@ static size_t direct_mss(uint16_t payload) {
 	return payload - sizeof(stability_packethdr_t) - UTCP_HDR;
 }
 
+static size_t relay_inner_mss(uint16_t hop_minmtu, const char *origin, const char *destination) {
+	size_t prefix21 = 2 + strlen(origin) + strlen(destination) + RELAY_INNER_MIN;
+	size_t overhead = prefix21 + sizeof(stability_packethdr_t) + UTCP_HDR;
+
+	if(hop_minmtu <= overhead) {
+		return 0;
+	}
+
+	return hop_minmtu - overhead;
+}
+
 /* --- T1: channel size follows the settled carrier ------------------------- */
 
 static void test_fixed_channel_size(void) {
@@ -1586,6 +1597,116 @@ static void test_retransmit_raises_suspect(void) {
 	printf("path-stability T18a ok: retransmit raised suspect; later send left it set\n");
 }
 
+/* --- T22: an MSS-sized retransmit still arrives while the route is suspect --- */
+
+static uint8_t t22_buf[2048];
+static size_t t22_got;
+static size_t t22_expect;
+static struct sync_flag t22_suspect;
+
+static void t22_receive_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, const void *data, size_t len) {
+	(void)mesh;
+	(void)channel;
+
+	if(data && t22_got + len <= sizeof t22_buf) {
+		memcpy(t22_buf + t22_got, data, len);
+		t22_got += len;
+	}
+}
+
+static bool t22_accept_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, uint16_t port, const void *data, size_t len) {
+	(void)port;
+	(void)data;
+	(void)len;
+	meshlink_set_channel_receive_cb(mesh, channel, t22_receive_cb);
+	set_sync_flag(&accepted, true);
+	return true;
+}
+
+static void t22_log_cb(meshlink_handle_t *mesh, meshlink_log_level_t level, const char *text) {
+	(void)mesh;
+	(void)level;
+
+	if(text && strstr(text, "route-suspect") && strstr(text, "reliable retransmit")) {
+		set_sync_flag(&t22_suspect, true);
+	}
+}
+
+static bool t22_arrived(void) {
+	return t22_got == t22_expect;
+}
+
+static bool route_is_direct_udp(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	devtool_node_status_t st = snapshot(mesh, node);
+	bool ok = st.active_route_kind == ROUTE_DIRECT_UDP
+	          && st.udp_status == DEVTOOL_UDP_WORKING
+	          && st.mtuprobes >= 31;
+	devtool_free_node_status(&st);
+	return ok;
+}
+
+static void test_oversize_suspect_retransmit(void) {
+	printf("\n=== path-stability T22: oversize suspect retransmit still arrives ===\n");
+
+	meshlink_handle_t *bb, *a, *b;
+	stability_open_trio("path_stability_t22_conf", "path-stability-22", &bb, &a, &b);
+
+	init_sync_flag(&accepted);
+	init_sync_flag(&t22_suspect);
+	meshlink_set_channel_accept_cb(b, t22_accept_cb);
+	meshlink_set_log_cb(a, MESHLINK_INFO, t22_log_cb);
+
+	assert_after(meshlink_get_node(a, "baz") && meshlink_get_node(a, "foo"), 15);
+	meshlink_node_t *a_b = meshlink_get_node(a, "baz");
+	meshlink_node_t *a_bb = meshlink_get_node(a, "foo");
+	assert(a_b && a_bb);
+	assert_after(node_is_reachable(a, a_b), 15);
+	assert_after(node_is_keyed(a, a_bb), 20);
+	assert(devtool_has_live_fallback(a, a_b));
+
+	meshlink_channel_t *ch = meshlink_channel_open(a, a_b, 7, t22_receive_cb, NULL, 0);
+	assert(ch);
+	assert(wait_sync_flag(&accepted, 15));
+	/* Residency has to expire before the channel MSS is the direct one. */
+	assert_after(route_is_direct_udp(a, a_b), 70);
+
+	devtool_node_status_t hop = snapshot(a, a_bb);
+	size_t mss = meshlink_channel_get_mss(a, ch);
+	size_t relay_mss = relay_inner_mss(hop.minmtu, "bar", "baz");
+	devtool_free_node_status(&hop);
+	assert(mss > relay_mss);
+	assert(mss <= sizeof t22_buf);
+
+	/* A retransmit during setup may already have marked the route. The drop
+	   below has to be the one that raises suspicion, so wait until it is clear. */
+	assert_after(!route_is_suspect(a, a_b), 5);
+
+	uint8_t payload[2048];
+
+	for(size_t i = 0; i < mss; i++) {
+		payload[i] = (uint8_t)(i * 17 + 3);
+	}
+
+	t22_got = 0;
+	t22_expect = mss;
+	set_sync_flag(&t22_suspect, false);
+	assert(devtool_drop_next_direct_udp_records(a, a_b, 1));
+	assert(meshlink_channel_send(a, ch, payload, mss) == (ssize_t)mss);
+	assert_after(t22_arrived(), 6);
+	assert(check_sync_flag(&t22_suspect));
+	assert(memcmp(t22_buf, payload, mss) == 0);
+
+	devtool_node_status_t st = snapshot(a, a_b);
+	assert(st.fallback_oversize_redirects >= 1);
+	assert(st.active_route_kind == ROUTE_DIRECT_UDP);
+	assert(st.udp_status == DEVTOOL_UDP_WORKING);
+	devtool_free_node_status(&st);
+
+	meshlink_channel_abort(a, ch);
+	stability_close_trio("path_stability_t22_conf", bb, a, b);
+	printf("path-stability T22 ok: %zu-byte retransmit arrived, redirects %u\n", mss, 1);
+}
+
 /* --- T19: many peers stay inside global txn + packet budgets -------------- */
 
 static unsigned count_active_candidates(meshlink_handle_t *mesh, meshlink_node_t **peers, int n) {
@@ -2167,6 +2288,104 @@ static void test_idle_channel_traffic(void) {
 	printf("path-stability T21 ok: liveness %u/%u, resumed pings %u/%u\n", dlive1, dlive2, dping1, dping2);
 }
 
+/* --- T23: a lost maxmtu+8 raise is not a dead path ------------------------- */
+
+static struct sync_flag t23_giveup;
+static struct sync_flag t23_raise_sent;
+static struct sync_flag t23_raised;
+
+static void t23_log_cb(meshlink_handle_t *mesh, meshlink_log_level_t level, const char *text) {
+	(void)mesh;
+	(void)level;
+
+	if(!text) {
+		return;
+	}
+
+	if(strstr(text, "baz did not respond to UDP ping")) {
+		set_sync_flag(&t23_giveup, true);
+	}
+
+	if(strstr(text, "Sending MTU probe length 1208 to baz")) {
+		set_sync_flag(&t23_raise_sent, true);
+	}
+
+	if(strstr(text, "Increase in PMTU to baz")) {
+		set_sync_flag(&t23_raised, true);
+	}
+}
+
+static bool t23_mtu_is(meshlink_handle_t *mesh, meshlink_node_t *node, uint16_t mtu) {
+	devtool_node_status_t st = snapshot(mesh, node);
+	bool ok = st.maxmtu == mtu;
+	devtool_free_node_status(&st);
+	return ok;
+}
+
+static void test_lost_pmtu_raise_is_not_giveup(void) {
+	printf("\n=== path-stability T23: lost PMTU raise does not give up ===\n");
+
+	meshlink_handle_t *bb, *a, *b;
+	stability_open_trio("path_stability_t23_conf", "path-stability-23", &bb, &a, &b);
+	set_fast_pings(bb);
+	set_fast_pings(a);
+	set_fast_pings(b);
+
+	init_sync_flag(&accepted);
+	init_sync_flag(&t23_giveup);
+	init_sync_flag(&t23_raise_sent);
+	init_sync_flag(&t23_raised);
+	meshlink_set_channel_accept_cb(b, accept_cb);
+	meshlink_set_log_cb(a, MESHLINK_DEBUG, t23_log_cb);
+
+	assert_after(meshlink_get_node(a, "baz") && meshlink_get_node(b, "bar"), 15);
+	meshlink_node_t *a_b = meshlink_get_node(a, "baz");
+	meshlink_node_t *b_a = meshlink_get_node(b, "bar");
+	assert(a_b && b_a);
+	assert_after(node_is_reachable(a, a_b), 15);
+	assert_after(node_is_keyed(a, meshlink_get_node(a, "foo")), 20);
+
+	meshlink_channel_t *ch = meshlink_channel_open(a, a_b, 7, receive_cb, NULL, 0);
+	assert(ch);
+	assert(wait_sync_flag(&accepted, 15));
+	assert_after(route_is_direct_udp(a, a_b) && pmtu_parked(b, b_a), 70);
+
+	set_sync_flag(&t23_giveup, false);
+	set_sync_flag(&t23_raise_sent, false);
+	assert(devtool_set_probe_reply_limit(b, b_a, 1200));
+	assert(devtool_fix_early_pmtu(a, a_b, 1200));
+	assert(devtool_pmtu_raise_due(a, a_b));
+	unsigned live = devtool_liveness_probes_sent(a, a_b);
+	sleep(8);
+
+	assert(check_sync_flag(&t23_raise_sent));
+	assert(!check_sync_flag(&t23_giveup));
+	assert(devtool_liveness_probes_sent(a, a_b) > live);
+
+	devtool_node_status_t st = snapshot(a, a_b);
+	assert(st.udp_status == DEVTOOL_UDP_WORKING);
+	assert(st.active_route_kind == ROUTE_DIRECT_UDP);
+	assert(st.minmtu == 1200 && st.maxmtu == 1200);
+	assert(st.mtuprobes >= 30);
+	assert(st.pmtu_raise_pending == 1208);
+	devtool_free_node_status(&st);
+
+	assert(devtool_set_probe_reply_limit(b, b_a, 0));
+	set_sync_flag(&t23_raised, false);
+	assert(devtool_pmtu_raise_due(a, a_b));
+	assert_after(t23_mtu_is(a, a_b, 1208), 8);
+	assert(check_sync_flag(&t23_raised));
+
+	set_sync_flag(&t23_giveup, false);
+	assert(devtool_set_probe_reply_limit(b, b_a, 1));
+	assert(wait_sync_flag(&t23_giveup, 10));
+	assert(devtool_set_probe_reply_limit(b, b_a, 0));
+
+	meshlink_channel_abort(a, ch);
+	stability_close_trio("path_stability_t23_conf", bb, a, b);
+	printf("path-stability T23 ok: lost raise kept UDP, real silence still gives up\n");
+}
+
 static uint8_t demote_buf[2048];
 static size_t demote_got;
 
@@ -2291,8 +2510,10 @@ int main(void) {
 	test_backbone_not_starved();
 	test_promotion_request_cap();
 	test_retransmit_raises_suspect();
+	test_oversize_suspect_retransmit();
 	test_meta_ping_is_one_sided();
 	test_idle_channel_traffic();
+	test_lost_pmtu_raise_is_not_giveup();
 	test_many_peers_stay_in_budget();
 
 	printf("\npath-stability: all checks passed\n");

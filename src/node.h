@@ -171,11 +171,18 @@ typedef struct node_t {
 	udp_rebind_t udp_rebind;                /* live NAT rebind of a confirmed ordinary peer */
 	peer_path_demand_t peer_udp;            /* Channel refcount + grace for ordinary-peer UDP */
 	time_t pmtu_increase_next;              /* Earliest next full-size "is the path bigger now" probe */
+	uint16_t pmtu_raise_pending;            /* Outstanding maxmtu+8 probe length; 0 if none */
 	sockaddr_t probe_dest_override;          /* Dest for a PKT_PROBE while override is active */
 	bool probe_dest_override_active;        /* Armed around one send_udppacket, then cleared */
 	sockaddr_t app_udp_override;            /* Committed application UDP dest for one send */
 	bool app_udp_override_active;           /* Armed around one application/type-8 UDP send */
 	bool devtool_force_meta;                /* Test-only persistent application-route override */
+	uint32_t fallback_oversize_redirects;   /* Suspect fallback could not carry the record */
+	uint32_t relay_oversize_drops;          /* Type-8 records dropped for hop MTU */
+	time_t fallback_oversize_logged_at;     /* Last redirect INFO; at most once per 10s */
+	time_t relay_oversize_logged_at;        /* Last oversize-drop INFO; at most once per 10s */
+	uint16_t devtool_probe_reply_limit;     /* Test: drop probe requests longer than this; 0 = off */
+	unsigned devtool_drop_direct_udp_records; /* Test: next N direct-UDP application sends are discarded */
 
 	// Graph-related member variables
 	time_t last_reachable;

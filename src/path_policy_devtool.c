@@ -21,6 +21,7 @@
 #include "path_policy.h"
 #include "path_policy_devtool.h"
 #include "protocol.h"
+#include "relay.h"
 #include "sptps.h"
 #include "splay_tree.h"
 #include "utcp.h"
@@ -2580,6 +2581,182 @@ done:
 #undef CHECK_S
 }
 
+static bool cover_fallback_record_fit(meshlink_handle_t *mesh) {
+	node_t hop;
+	node_t *dest = NULL;
+	connection_t hopconn;
+	node_t *saved_bb;
+	backbone_udp_path_t saved_udp;
+	path_target_t target;
+	sockaddr_t wan;
+	uint32_t prefix21 = 0;
+	uint32_t redirects;
+	bool ok = true;
+
+#define CHECK_F(cond) do { \
+	if(!(cond)) { \
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: %s", #cond); \
+		ok = false; \
+		goto done; \
+	} \
+} while(0)
+
+	memset(&hop, 0, sizeof hop);
+	memset(&hopconn, 0, sizeof hopconn);
+	saved_bb = mesh->backbone.node;
+	saved_udp = mesh->backbone_udp;
+
+	dest = new_node();
+	dest->name = xstrdup("d");
+	dest->mesh = mesh;
+	dest->devclass = DEV_CLASS_STATIONARY;
+	dest->status.reachable = true;
+	dest->status.validkey = true;
+	dest->status.udp_confirmed = true;
+	dest->udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+	dest->minmtu = 1430;
+	dest->mtu = 1430;
+	dest->mtuprobes = 31;
+	set_v4(&wan, "203.0.113.55", 9);
+	path_copy_sockaddr(&dest->address, &wan);
+	dest->active_route.kind = DATA_ROUTE_DIRECT_UDP;
+	path_copy_sockaddr(&dest->active_route.udp_endpoint, &wan);
+	splay_insert(mesh->nodes, dest);
+
+	hop.name = scratch("cover-fit-hop");
+	hop.mesh = mesh;
+	hop.status.reachable = true;
+	hop.status.validkey = true;
+	hop.status.udp_confirmed = true;
+	hop.udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+	hop.address_source = ADDR_SRC_AUTH_DIRECT;
+	hop.minmtu = 1442;
+	hop.mtuprobes = 31;
+	set_v4(&hop.address, "203.0.113.80", 9);
+	hopconn.status.active = true;
+	hopconn.node = &hop;
+	hop.connection = &hopconn;
+	hop.active_route.kind = DATA_ROUTE_DIRECT_UDP;
+	path_copy_sockaddr(&hop.active_route.udp_endpoint, &hop.address);
+
+	mesh->backbone.node = &hop;
+	mesh->backbone_udp.node = &hop;
+	mesh->backbone_udp.confirmed = true;
+	mesh->backbone_udp.source = ADDR_SRC_AUTH_DIRECT;
+	path_copy_sockaddr(&mesh->backbone_udp.endpoint, &hop.address);
+
+	CHECK_F(mesh->self && mesh->self->name);
+	CHECK_F(relay_prefix21(mesh->self->name, dest->name, &prefix21));
+	CHECK_F(prefix21 < 1442);
+
+	path_note_route_suspect(mesh, dest, "reliable retransmit");
+	CHECK_F(dest->active_route.suspect);
+	CHECK_F(path_active_send_target(mesh, dest, &target));
+	CHECK_F(target.temporary_fallback);
+	CHECK_F(target.kind == DATA_ROUTE_RELAY && target.relay_carrier == RELAY_CARRIER_UDP);
+
+	CHECK_F(path_send_target_for_record(mesh, dest, 1430 + SPTPS_DATAGRAM_OVERHEAD, &target));
+	CHECK_F(target.kind == DATA_ROUTE_DIRECT_UDP && !target.temporary_fallback);
+	CHECK_F(dest->fallback_oversize_redirects == 1);
+
+	redirects = dest->fallback_oversize_redirects;
+	CHECK_F(path_send_target_for_record(mesh, dest, 592 + SPTPS_DATAGRAM_OVERHEAD, &target));
+	CHECK_F(target.temporary_fallback);
+	CHECK_F(target.kind == DATA_ROUTE_RELAY && target.relay_carrier == RELAY_CARRIER_UDP);
+	CHECK_F(dest->fallback_oversize_redirects == redirects);
+
+	{
+		size_t max_plain = 1442 - prefix21;
+
+		CHECK_F(path_send_target_for_record(mesh, dest, max_plain + SPTPS_DATAGRAM_OVERHEAD, &target));
+		CHECK_F(target.kind == DATA_ROUTE_RELAY && target.temporary_fallback);
+		CHECK_F(path_send_target_for_record(mesh, dest, max_plain + 1 + SPTPS_DATAGRAM_OVERHEAD, &target));
+		CHECK_F(target.kind == DATA_ROUTE_DIRECT_UDP && !target.temporary_fallback);
+	}
+
+	dest->relay_budget = 1000;
+	CHECK_F(path_send_target_for_record(mesh, dest, 1001 + SPTPS_DATAGRAM_OVERHEAD, &target));
+	CHECK_F(target.kind == DATA_ROUTE_DIRECT_UDP && !target.temporary_fallback);
+	dest->relay_budget = 0;
+
+	path_suspect_stop(mesh, dest);
+	dest->active_route.suspect = false;
+	dest->minmtu = 1411;
+	dest->mtu = 1411;
+	dest->active_route.kind = DATA_ROUTE_RELAY;
+	dest->active_route.relay_carrier = RELAY_CARRIER_UDP;
+	dest->active_route.first_hop = &hop;
+	path_copy_sockaddr(&dest->active_route.udp_endpoint, &hop.address);
+	hop.minmtu = (uint16_t)(1418 + prefix21 + 16);
+	path_note_route_suspect(mesh, dest, "reliable retransmit");
+	CHECK_F(dest->active_route.suspect);
+	redirects = dest->fallback_oversize_redirects;
+	CHECK_F(path_send_target_for_record(mesh, dest, 1418 + SPTPS_DATAGRAM_OVERHEAD, &target));
+	CHECK_F(target.kind == DATA_ROUTE_RELAY && target.relay_carrier == RELAY_CARRIER_UDP);
+	CHECK_F(!target.temporary_fallback);
+	CHECK_F(dest->fallback_oversize_redirects == redirects + 1);
+	redirects = dest->fallback_oversize_redirects;
+	CHECK_F(path_send_target_for_record(mesh, dest, 1400 + SPTPS_DATAGRAM_OVERHEAD, &target));
+	CHECK_F(target.kind == DATA_ROUTE_DIRECT_UDP && target.temporary_fallback);
+	CHECK_F(dest->fallback_oversize_redirects == redirects);
+
+	path_suspect_stop(mesh, dest);
+	path_suspect_stop(mesh, &hop);
+	hop.minmtu = 1442;
+	hop.status.udp_confirmed = true;
+	hop.active_route.suspect = false;
+	dest->minmtu = 1430;
+	dest->mtu = 1430;
+	dest->status.udp_confirmed = true;
+	dest->active_route.kind = DATA_ROUTE_DIRECT_UDP;
+	dest->active_route.relay_carrier = RELAY_CARRIER_NONE;
+	dest->active_route.first_hop = NULL;
+	dest->active_route.suspect = false;
+	set_v4(&wan, "203.0.113.55", 9);
+	path_copy_sockaddr(&dest->address, &wan);
+	set_v4(&wan, "203.0.113.55", 10);
+	path_copy_sockaddr(&dest->active_route.udp_endpoint, &wan);
+	/* Confirmed direct would outrank the relay. Drop it so the only UDP
+	   fallback is the relay, which cannot carry the oversize record. */
+	dest->status.udp_confirmed = false;
+	path_note_route_suspect(mesh, dest, "reliable retransmit");
+	redirects = dest->fallback_oversize_redirects;
+	CHECK_F(path_send_target_for_record(mesh, dest, 1430 + SPTPS_DATAGRAM_OVERHEAD, &target));
+	CHECK_F(target.temporary_fallback);
+	CHECK_F(target.kind == DATA_ROUTE_RELAY);
+	CHECK_F(target.relay_carrier == RELAY_CARRIER_META_DIRECT
+	                || target.relay_carrier == RELAY_CARRIER_META_CANONICAL);
+	CHECK_F(dest->fallback_oversize_redirects == redirects + 1);
+	redirects = dest->fallback_oversize_redirects;
+	hop.connection = NULL;
+	CHECK_F(path_send_target_for_record(mesh, dest, 1430 + SPTPS_DATAGRAM_OVERHEAD, &target));
+	CHECK_F(target.temporary_fallback);
+	CHECK_F(target.kind == DATA_ROUTE_RELAY && target.relay_carrier == RELAY_CARRIER_UDP);
+	CHECK_F(dest->fallback_oversize_redirects == redirects);
+
+	memset(&target, 0, sizeof target);
+	target.kind = DATA_ROUTE_DIRECT_LOCAL_META;
+	CHECK_F(path_target_fits_record(mesh, dest, &target, 2000));
+	target.kind = DATA_ROUTE_RELAY;
+	target.relay_carrier = RELAY_CARRIER_META_DIRECT;
+	CHECK_F(path_target_fits_record(mesh, dest, &target, 2000));
+	target.kind = DATA_ROUTE_NONE;
+	CHECK_F(!path_target_fits_record(mesh, dest, &target, 64));
+
+done:
+	path_suspect_stop(mesh, dest);
+	path_suspect_stop(mesh, &hop);
+
+	if(dest) {
+		splay_delete(mesh->nodes, dest);
+	}
+
+	mesh->backbone.node = saved_bb;
+	mesh->backbone_udp = saved_udp;
+	return ok;
+#undef CHECK_F
+}
+
 static unsigned cover_sched_runs;
 static char cover_sched_order[8][8];
 static unsigned cover_sched_order_n;
@@ -3503,12 +3680,14 @@ bool path_policy_cover_unit(meshlink_handle_t *mesh, node_t *live) {
 	                && cover_transport(mesh)
 	                && cover_active_route(mesh)
 	                && cover_suspect_epoch(mesh)
+	                && cover_fallback_record_fit(mesh)
 	                && cover_route_usability_and_promotion(mesh)
 	                && cover_preserve(mesh)
 	                && upgrade_cutover_cover_unit(mesh)
 	                && cover_scheduler(mesh)
 	                && punch_endpoint_cover_unit(mesh)
 	                && rebind_cover_unit(mesh)
+	                && net_devtool_pmtu_liveness_cover_unit(mesh, live)
 	                && node_kex_cover_unit(mesh)
 	                && utcp_mtu_reentry_unit();
 	mesh->probe_max_transactions = saved_max;

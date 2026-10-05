@@ -527,6 +527,15 @@ void path_note_selected_route(struct meshlink_handle *mesh, struct node_t *n, co
    there is nothing usable and the caller should drop. Requires mesh->mutex. */
 bool path_active_send_target(struct meshlink_handle *mesh, struct node_t *n, path_target_t *out);
 
+/* True when an SPTPS datagram of sptps_len bytes fits on this carrier.
+   Shorter than the SPTPS overhead always fits. Requires mesh->mutex. */
+bool path_target_fits_record(const struct meshlink_handle *mesh, const struct node_t *n, const path_target_t *target, size_t sptps_len);
+
+/* path_active_send_target, except a temporary suspect fallback that cannot
+   carry this record is replaced by the suspected primary, then by META.
+   The original fallback is kept only when nothing else can take it. */
+bool path_send_target_for_record(struct meshlink_handle *mesh, struct node_t *n, size_t sptps_len, path_target_t *out);
+
 /* Copy the recorded route if it is still instantiable. Suspect plus a live
    fallback fills temporary_fallback without committing. Unusable recorded
    identity selects and commits a fallback. Requires mesh->mutex. */
