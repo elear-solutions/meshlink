@@ -1,5 +1,5 @@
 /*
-    protocol_key_cover.c -- punch endpoint and ANS_KEY cover unit
+    protocol_key_cover.c -- punch endpoint, ANS_KEY, and UDP rebind cover unit
     Copyright (C) 2026 Elear Solutions
 
     This program is free software; you can redistribute it and/or modify
@@ -807,5 +807,218 @@ done:
 	path_scheduler_cancel_node(mesh, &peer);
 	path_scheduler_cancel_node(mesh, &route);
 #undef PUNCH_CHECK
+	return ok;
+}
+
+static void rebind_plant(meshlink_handle_t *mesh, node_t *n, const char *port) {
+	memset(&n->udp_rebind, 0, sizeof n->udp_rebind);
+	memset(&n->active_route, 0, sizeof n->active_route);
+	n->status.udp_confirmed = true;
+	n->status.validkey = true;
+	n->status.reachable = true;
+	n->devtool_force_meta = true;
+	n->devclass = DEV_CLASS_STATIONARY;
+	n->session_id = 11;
+	n->minmtu = 1414;
+	n->maxmtu = 1414;
+	n->mtu = 1414;
+	n->mtuprobes = 31;
+	n->address = str2sockaddr("203.0.113.50", port);
+	n->udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+	n->active_route.kind = DATA_ROUTE_DIRECT_UDP;
+	n->active_route.udp_endpoint = n->address;
+	n->active_route.endpoint_source = ADDR_SRC_UDP_REFLEXIVE;
+	n->active_route.selected_at = mesh->loop.now;
+	n->active_route.selected_at.tv_sec -= 100;
+	n->udp_rebind.current_rx_at = mesh->loop.now;
+}
+
+bool rebind_cover_unit(meshlink_handle_t *mesh) {
+	node_t *n = NULL;
+	int saved_class = 0;
+	struct timespec selected;
+	sockaddr_t live;
+	sockaddr_t moved;
+	sockaddr_t other_ip;
+	sockaddr_t late;
+	sockaddr_t pinned;
+	uint64_t nonce;
+	bool ok = false;
+	unsigned i;
+
+	if(!mesh || !mesh->self) {
+		return false;
+	}
+
+#define REBIND_CHECK(cond) do { \
+	if(!(cond)) { \
+		logger(mesh, MESHLINK_ERROR, "rebind_cover_unit failed: %s", #cond); \
+		goto done; \
+	} \
+} while(0)
+
+	saved_class = mesh->self->devclass;
+	mesh->self->devclass = DEV_CLASS_STATIONARY;
+	n = new_node();
+	n->name = xstrdup("rebindsrc");
+	n->mesh = mesh;
+	node_add(mesh, n);
+	rebind_plant(mesh, n, "58402");
+	selected = n->active_route.selected_at;
+	live = n->address;
+	moved = str2sockaddr("203.0.113.50", "54887");
+	other_ip = str2sockaddr("203.0.113.99", "54887");
+	late = str2sockaddr("203.0.113.50", "58402");
+
+	path_rebind_observe_rx(mesh, n, &live);
+	REBIND_CHECK(!n->udp_rebind.challenge_active);
+	REBIND_CHECK(n->udp_rebind.seen == 0);
+
+	path_rebind_observe_rx(mesh, n, &moved);
+	REBIND_CHECK(!n->udp_rebind.challenge_active);
+	REBIND_CHECK(n->udp_rebind.seen == 1);
+	path_rebind_observe_rx(mesh, n, &moved);
+	REBIND_CHECK(n->udp_rebind.seen == 1);
+	REBIND_CHECK(n->udp_rebind.candidate_packets == 2);
+
+	n->udp_rebind.current_rx_at.tv_sec -= 1;
+	path_rebind_observe_rx(mesh, n, &moved);
+	REBIND_CHECK(n->udp_rebind.challenge_active);
+	REBIND_CHECK(n->udp_rebind.challenge_nonce != 0);
+	nonce = n->udp_rebind.challenge_nonce;
+	REBIND_CHECK(!path_rebind_accept_reply(mesh, n, &moved, nonce ^ 1));
+	REBIND_CHECK(!sockaddrcmp(&n->address, &live));
+	REBIND_CHECK(!path_rebind_accept_reply(mesh, n, &live, nonce));
+	REBIND_CHECK(n->udp_rebind.challenge_active);
+	REBIND_CHECK(path_rebind_accept_reply(mesh, n, &moved, nonce));
+	REBIND_CHECK(n->status.udp_confirmed);
+	REBIND_CHECK(!n->udp_rebind.challenge_active);
+	REBIND_CHECK(!sockaddrcmp(&n->address, &moved));
+	REBIND_CHECK(!sockaddrcmp(&n->active_route.udp_endpoint, &moved));
+	REBIND_CHECK(n->active_route.kind == DATA_ROUTE_DIRECT_UDP);
+	REBIND_CHECK(n->active_route.selected_at.tv_sec == selected.tv_sec);
+	REBIND_CHECK(n->active_route.selected_at.tv_nsec == selected.tv_nsec);
+	REBIND_CHECK(n->minmtu == 1414);
+	REBIND_CHECK(n->mtuprobes == 31);
+	REBIND_CHECK(n->udp_rebind.migrated == 1);
+
+	path_rebind_observe_rx(mesh, n, &late);
+	REBIND_CHECK(!n->udp_rebind.challenge_active);
+	REBIND_CHECK(!sockaddrcmp(&n->address, &moved));
+
+	n->udp_rebind.current_rx_at.tv_sec -= 1;
+	path_rebind_observe_rx(mesh, n, &other_ip);
+	REBIND_CHECK(!n->udp_rebind.challenge_active);
+	REBIND_CHECK(!sockaddrcmp(&n->address, &moved));
+	REBIND_CHECK(n->minmtu == 1414);
+	REBIND_CHECK(n->mtuprobes == 31);
+
+	rebind_plant(mesh, n, "49444");
+	pinned = n->address;
+	moved = str2sockaddr("203.0.113.50", "53682");
+	n->udp_rebind.current_rx_at.tv_sec -= 1;
+	path_rebind_observe_rx(mesh, n, &moved);
+	n->udp_rebind.challenge_deadline = mesh->loop.now;
+	n->udp_rebind.challenge_deadline.tv_sec -= 1;
+	path_rebind_challenge_timeout(mesh, n);
+	REBIND_CHECK(!n->udp_rebind.challenge_active);
+	REBIND_CHECK(n->udp_rebind.failed == 1);
+	REBIND_CHECK(!sockaddrcmp(&n->address, &pinned));
+	path_rebind_observe_rx(mesh, n, &moved);
+	REBIND_CHECK(!n->udp_rebind.challenge_active);
+
+	rebind_plant(mesh, n, "51000");
+	moved = str2sockaddr("203.0.113.50", "51001");
+	path_rebind_observe_rx(mesh, n, &moved);
+	REBIND_CHECK(n->udp_rebind.seen >= 1);
+	REBIND_CHECK(!n->udp_rebind.challenge_active);
+	REBIND_CHECK(path_rebind_try_rescue(mesh, n));
+	REBIND_CHECK(n->status.udp_confirmed);
+	REBIND_CHECK(n->udp_rebind.challenge_active);
+	n->udp_rebind.challenge_deadline = mesh->loop.now;
+	n->udp_rebind.challenge_deadline.tv_sec -= 1;
+	path_rebind_challenge_timeout(mesh, n);
+	REBIND_CHECK(!path_rebind_try_rescue(mesh, n));
+	path_note_udp_demoted_reason(mesh, n, "probe give-up");
+	REBIND_CHECK(!n->status.udp_confirmed);
+	REBIND_CHECK(!n->udp_rebind.challenge_active);
+
+	rebind_plant(mesh, n, "52000");
+	moved = str2sockaddr("203.0.113.50", "52001");
+	n->udp_rebind.current_rx_at.tv_sec -= 1;
+	path_rebind_observe_rx(mesh, n, &moved);
+	REBIND_CHECK(n->udp_rebind.challenge_active);
+	n->session_id = 99;
+	path_rebind_challenge_timeout(mesh, n);
+	REBIND_CHECK(!n->udp_rebind.challenge_active);
+	n->session_id = 11;
+
+	rebind_plant(mesh, n, "53000");
+	moved = str2sockaddr("203.0.113.50", "53001");
+	n->udp_rebind.current_rx_at.tv_sec -= 1;
+	path_rebind_observe_rx(mesh, n, &moved);
+	node_set_validkey(mesh, n, false);
+	REBIND_CHECK(!n->udp_rebind.challenge_active);
+	n->status.validkey = true;
+
+	rebind_plant(mesh, n, "54000");
+	moved = str2sockaddr("203.0.113.50", "54001");
+	n->udp_rebind.current_rx_at.tv_sec -= 1;
+	path_rebind_observe_rx(mesh, n, &moved);
+	n->udp_rebind.challenge_network_epoch = mesh->lan_network_epoch + 3;
+	path_route_tick(mesh, n);
+	REBIND_CHECK(!n->udp_rebind.challenge_active);
+
+	rebind_plant(mesh, n, "55000");
+	moved = str2sockaddr("203.0.113.50", "55001");
+	n->udp_rebind.current_rx_at.tv_sec -= 1;
+	path_rebind_observe_rx(mesh, n, &moved);
+	path_clear_udp_observation(n);
+	REBIND_CHECK(!n->udp_rebind.challenge_active);
+
+	rebind_plant(mesh, n, "56000");
+	n->devclass = DEV_CLASS_BACKBONE;
+	moved = str2sockaddr("203.0.113.50", "56001");
+	n->udp_rebind.current_rx_at.tv_sec -= 1;
+	path_rebind_observe_rx(mesh, n, &moved);
+	REBIND_CHECK(n->udp_rebind.seen == 0);
+	REBIND_CHECK(!n->udp_rebind.challenge_active);
+	n->devclass = DEV_CLASS_UNKNOWN;
+	path_rebind_observe_rx(mesh, n, &moved);
+	REBIND_CHECK(!n->udp_rebind.challenge_active);
+
+	rebind_plant(mesh, n, "57000");
+	n->udp_rebind.migrated = 0;
+
+	for(i = 0; i < PATH_REBIND_FLAP_WARN; i++) {
+		char port[8];
+
+		snprintf(port, sizeof port, "%u", 58000 + i);
+		moved = str2sockaddr("203.0.113.50", port);
+		n->udp_rebind.current_rx_at.tv_sec -= 1;
+		path_rebind_observe_rx(mesh, n, &moved);
+		REBIND_CHECK(n->udp_rebind.challenge_active);
+		nonce = n->udp_rebind.challenge_nonce;
+		REBIND_CHECK(path_rebind_accept_reply(mesh, n, &moved, nonce));
+	}
+
+	REBIND_CHECK(n->udp_rebind.migrated == PATH_REBIND_FLAP_WARN);
+	REBIND_CHECK(n->status.udp_confirmed);
+	REBIND_CHECK(n->active_route.kind == DATA_ROUTE_DIRECT_UDP);
+	ok = true;
+
+done:
+	mesh->self->devclass = saved_class;
+
+	if(n) {
+		timeout_del(&mesh->loop, &n->mtutimeout);
+		timeout_del(&mesh->loop, &n->rebind_timer);
+		timeout_del(&mesh->loop, &n->punch_timer);
+		path_suspect_stop(mesh, n);
+		path_rebind_cancel(mesh, n);
+		node_del(mesh, n);
+	}
+
+#undef REBIND_CHECK
 	return ok;
 }

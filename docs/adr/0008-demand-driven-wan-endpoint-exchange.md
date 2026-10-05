@@ -126,5 +126,6 @@ probe to the source that packet arrived from.
   a second 30-second residency behind a relay candidate.
 - NMN hints only bootstrap. The preferred unconfirmed candidate is the authenticated peer-reflexive source, and only a matching reply from that endpoint confirms it.
 - Two endpoint-dependent NATs stay on relay when no bootstrap packet lands. A cone opposite an endpoint-dependent NAT confirms both ways.
+- A confirmed endpoint that later rebinds is migrated in place. See ADR 0010. Confirmation is not a permanent pin.
 - Protocol minor 4 is required to emit `REQ_PUNCH_ENDPOINT`. Minor 3 keeps
   the old relay and opportunistic `ANS_KEY` behavior.

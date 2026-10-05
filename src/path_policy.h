@@ -171,6 +171,42 @@ typedef enum punch_provenance_t {
 /* Two sends, one promotion-round apart, then the challenge fails closed. */
 #define PATH_PUNCH_CHALLENGE_ATTEMPTS 2
 
+/* Confirmed-endpoint migration. The quiet window refuses a second live path.
+   The nonce proof is the same bar as the original confirm. Same-IP keeps PMTU. */
+#define PATH_REBIND_QUIET_MS            500
+#define PATH_REBIND_PROBE_GAP_MS        250
+#define PATH_REBIND_ATTEMPTS              3
+#define PATH_REBIND_DEADLINE_MS        1500
+#define PATH_REBIND_HOLDDOWN_SEC          5
+#define PATH_REBIND_FLAP_WINDOW_SEC      60
+#define PATH_REBIND_FLAP_WARN             6
+#define PATH_REBIND_MIGRATION_RING        8
+
+/* One candidate and one nonce challenge. Counters survive cancel. */
+typedef struct udp_rebind_t {
+	struct timespec current_rx_at;          /* last authenticated datagram from n->address */
+	sockaddr_t candidate;
+	struct timespec candidate_first_at;
+	struct timespec candidate_last_at;
+	uint32_t candidate_packets;
+	bool challenge_active;
+	sockaddr_t challenge_endpoint;
+	uint64_t challenge_nonce;
+	uint8_t challenge_attempts;
+	struct timespec challenge_deadline;
+	uint32_t challenge_session;
+	uint64_t challenge_network_epoch;
+	sockaddr_t held_endpoint;               /* failed candidate; not retried until held_until */
+	struct timespec held_until;
+	struct timespec migrations[PATH_REBIND_MIGRATION_RING];
+	uint8_t migration_pos;
+	uint8_t migration_fill;
+	uint32_t seen;
+	uint32_t migrated;
+	uint32_t failed;
+	bool rescue;                            /* demotion is waiting on this challenge */
+} udp_rebind_t;
+
 /* One in-flight proof. The nonce is never zero while active. Confirmation
    requires the reply source to be this endpoint, not merely some packet. */
 typedef struct punch_challenge_t {
@@ -441,6 +477,22 @@ void path_punch_cancel(struct meshlink_handle *mesh, struct node_t *node);
 void path_punch_release(struct meshlink_handle *mesh, struct node_t *node);
 /* Mesh-loop callback and the devtool hook for a challenge deadline. */
 void path_punch_challenge_timeout(struct meshlink_handle *mesh, struct node_t *node);
+
+/* Authenticated direct UDP from a confirmed ordinary peer. Same source refreshes
+   liveness. A new source is a rebind candidate; a nonce reply is what moves
+   n->address. Relay and backbone peers are ignored. */
+void path_rebind_observe_rx(struct meshlink_handle *mesh, struct node_t *node, const sockaddr_t *endpoint);
+/* Commit only on nonce and source match, with session and network epoch unchanged.
+   False leaves the challenge alone so another probe reply can still match. */
+bool path_rebind_accept_reply(struct meshlink_handle *mesh, struct node_t *node, const sockaddr_t *from, uint64_t nonce);
+/* True when a fresh candidate should postpone demotion. Starts or awaits its challenge. */
+bool path_rebind_try_rescue(struct meshlink_handle *mesh, struct node_t *node);
+/* Drop the challenge, timer, and candidate. Counters and hold-down stay. */
+void path_rebind_cancel(struct meshlink_handle *mesh, struct node_t *node);
+/* Mesh-loop callback and the devtool hook for a rebind deadline. */
+void path_rebind_challenge_timeout(struct meshlink_handle *mesh, struct node_t *node);
+/* Scheduler dropped the slot. Fail a challenge that no longer has a timer. */
+void path_rebind_fail_orphaned(struct meshlink_handle *mesh, struct node_t *node);
 /* Unconfirmed probe dest: the in-flight challenge, else a hint that has not failed. */
 bool path_unconfirmed_punch_dest(const struct meshlink_handle *mesh, const struct node_t *n, sockaddr_t *out);
 /* Dest sampled immediately before the probe path_note_punch_endpoint just armed. */
@@ -476,6 +528,15 @@ void path_note_selected_route(struct meshlink_handle *mesh, struct node_t *n, co
 /* Resolve where this destination's next application record goes. False means
    there is nothing usable and the caller should drop. Requires mesh->mutex. */
 bool path_active_send_target(struct meshlink_handle *mesh, struct node_t *n, path_target_t *out);
+
+/* True when an SPTPS datagram of sptps_len bytes fits on this carrier.
+   Shorter than the SPTPS overhead always fits. Requires mesh->mutex. */
+bool path_target_fits_record(const struct meshlink_handle *mesh, const struct node_t *n, const path_target_t *target, size_t sptps_len);
+
+/* path_active_send_target, except a temporary suspect fallback that cannot
+   carry this record is replaced by the suspected primary, then by META.
+   The original fallback is kept only when nothing else can take it. */
+bool path_send_target_for_record(struct meshlink_handle *mesh, struct node_t *n, size_t sptps_len, path_target_t *out);
 
 /* Copy the recorded route if it is still instantiable. Suspect plus a live
    fallback fills temporary_fallback without committing. Unusable recorded

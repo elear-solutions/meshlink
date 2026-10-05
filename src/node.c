@@ -43,6 +43,15 @@ void init_nodes(meshlink_handle_t *mesh) {
 }
 
 void exit_nodes(meshlink_handle_t *mesh) {
+	if(mesh->nodes) {
+		/* free_node() aborts if a timer is still armed. Punch and promotion
+		   are dropped when reachability flips; a confirmed peer can still
+		   hold a rebind challenge until the tree is destroyed. */
+		for splay_each(node_t, n, mesh->nodes) {
+			timeout_del(&mesh->loop, &n->rebind_timer);
+		}
+	}
+
 	if(mesh->node_udp_cache) {
 		hash_free(mesh->node_udp_cache);
 	}
@@ -127,6 +136,7 @@ void node_set_validkey(meshlink_handle_t *mesh, node_t *n, bool valid) {
 	n->status.validkey = valid;
 
 	if(!valid) {
+		path_rebind_cancel(mesh, n);
 		path_punch_cancel(mesh, n);
 		/* Same-session rekey keeps remembered ingress so the next demand can
 		   challenge it again. A staged hint belongs to the key that is gone. */
@@ -187,7 +197,7 @@ void free_node(node_t *n) {
 	ecdsa_free(n->ecdsa);
 	sptps_stop(&n->sptps);
 
-	if(n->mtutimeout.cb || n->promotion_timer.cb || n->punch_timer.cb || n->suspect_validation.timer.cb) {
+	if(n->mtutimeout.cb || n->promotion_timer.cb || n->punch_timer.cb || n->suspect_validation.timer.cb || n->rebind_timer.cb) {
 		abort();
 	}
 
@@ -250,10 +260,12 @@ void node_del(meshlink_handle_t *mesh, node_t *n) {
 	node_udp_cache_forget(mesh, n);
 	node_clear_inbound_prev_nexthop(mesh, n);
 	node_clear_route_references(mesh, n);
+	path_rebind_cancel(mesh, n);
 	path_punch_cancel(mesh, n);
 	timeout_del(&mesh->loop, &n->mtutimeout);
 	timeout_del(&mesh->loop, &n->promotion_timer);
 	timeout_del(&mesh->loop, &n->punch_timer);
+	timeout_del(&mesh->loop, &n->rebind_timer);
 	path_suspect_stop(mesh, n);
 	memset(&n->peer_udp, 0, sizeof n->peer_udp);
 	path_scheduler_cancel_node(mesh, n);

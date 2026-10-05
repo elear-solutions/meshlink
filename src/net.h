@@ -148,6 +148,7 @@ bool node_write_config(struct meshlink_handle *mesh, struct node_t *, bool new_k
 void send_mtu_probe(struct meshlink_handle *mesh, struct node_t *);
 void send_candidate_probe(struct meshlink_handle *mesh, struct node_t *n);
 bool send_punch_probe(struct meshlink_handle *mesh, struct node_t *n);
+bool send_rebind_probe(struct meshlink_handle *mesh, struct node_t *n);
 /* 64-byte pre-confirmation probe on the REQ_EXTERNAL/LAN rotation.
    No PMTU timer, counters, route change, or udp_confirmed. */
 void send_punch_bootstrap(struct meshlink_handle *mesh, struct node_t *n);

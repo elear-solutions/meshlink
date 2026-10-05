@@ -183,10 +183,12 @@ static void check_reachability(meshlink_handle_t *mesh) {
 			n->mtuprobes = 0;
 			n->relay_budget = 0;
 
+			path_rebind_cancel(mesh, n);
 			path_punch_cancel(mesh, n);
 			timeout_del(&mesh->loop, &n->mtutimeout);
 			timeout_del(&mesh->loop, &n->promotion_timer);
 			timeout_del(&mesh->loop, &n->punch_timer);
+			timeout_del(&mesh->loop, &n->rebind_timer);
 			memset(&n->promotion_candidate, 0, sizeof n->promotion_candidate);
 			path_suspect_stop(mesh, n);
 			path_scheduler_cancel_node(mesh, n);
@@ -227,10 +229,12 @@ static void check_reachability(meshlink_handle_t *mesh) {
 			n->mtuprobes = 0;
 			n->relay_budget = 0;
 
+			path_rebind_cancel(mesh, n);
 			path_punch_cancel(mesh, n);
 			timeout_del(&mesh->loop, &n->mtutimeout);
 			timeout_del(&mesh->loop, &n->promotion_timer);
 			timeout_del(&mesh->loop, &n->punch_timer);
+			timeout_del(&mesh->loop, &n->rebind_timer);
 			memset(&n->promotion_candidate, 0, sizeof n->promotion_candidate);
 			path_suspect_stop(mesh, n);
 			path_scheduler_cancel_node(mesh, n);

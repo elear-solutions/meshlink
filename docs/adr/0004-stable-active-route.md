@@ -112,6 +112,14 @@ interval. Relay forwarding does not accelerate probing.
 - Fallback is not hitless. Unreliable records already handed to a failed
   route may be lost. Reliable channels recover by retransmission, and
   recovery is immediate only when a fallback connection is already up.
+- A temporary suspect fallback carries a record only when that carrier can.
+  Otherwise the record goes on the suspected primary, then on META, and it
+  is never silently dropped. The suspected primary keeps its size until
+  suspect expiry actually demotes it.
+- Parked PMTU liveness is always a 64-byte probe. The occasional maxmtu+8
+  raise rides beside it, and losing that reply never demotes the path.
+  A nonce reply from the parked endpoint counts as liveness and does not
+  resize the MTU.
 - A peer has one META connection, except during the bounded ADR 0003
   handover window.
 - Generic `min_connects`/`max_connects` autoconnect is gone. META

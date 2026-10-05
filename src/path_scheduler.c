@@ -92,17 +92,20 @@ static bool path_scheduler_keepalive_priority(path_transaction_priority_t priori
 	return priority == PATH_TX_BACKBONE_REQUIRED
 	       || priority == PATH_TX_ACTIVE_ROUTE_RECOVERY
 	       || priority == PATH_TX_CHANNEL_PROMOTION
-	       || priority == PATH_TX_PUNCH;
+	       || priority == PATH_TX_PUNCH
+	       || priority == PATH_TX_REBIND;
 }
 
 /* Packet identity stays the enum. Punch and channel promotion share a rank so
-   neither evicts the other; active-route recovery still outranks both. */
+   neither evicts the other. PATH_TX_REBIND shares recovery rank with
+   active-route recovery; that rank still outranks punch and promotion. */
 static int path_scheduler_rank(path_transaction_priority_t priority) {
 	switch(priority) {
 	case PATH_TX_BACKBONE_REQUIRED:
 		return 0;
 
 	case PATH_TX_ACTIVE_ROUTE_RECOVERY:
+	case PATH_TX_REBIND:
 		return 1;
 
 	case PATH_TX_CHANNEL_PROMOTION:
@@ -188,7 +191,8 @@ static bool path_scheduler_skip_minute(const path_sched_txn_t *txn) {
 	return txn && (txn->type == PATH_TXN_PMTU_DISCOVERY
 	               || txn->type == PATH_TXN_PROMOTION
 	               || txn->type == PATH_TXN_SUSPECT
-	               || txn->type == PATH_TXN_PUNCH);
+	               || txn->type == PATH_TXN_PUNCH
+	               || txn->type == PATH_TXN_REBIND);
 }
 
 static path_sched_txn_t *path_scheduler_preempt_victim(meshlink_handle_t *mesh, path_transaction_priority_t incoming) {
@@ -538,7 +542,7 @@ path_sched_txn_t *path_scheduler_begin_transaction(meshlink_handle_t *mesh, node
 		   priority stays FIFO: the first occupant is not displaced.
 		   Eviction drops queued packets and notifies the owner so the
 		   victim state machine cannot run outside the cap. */
-		if(type == PATH_TXN_PROMOTION || type == PATH_TXN_SUSPECT || type == PATH_TXN_PUNCH) {
+		if(type == PATH_TXN_PROMOTION || type == PATH_TXN_SUSPECT || type == PATH_TXN_PUNCH || type == PATH_TXN_REBIND) {
 			victim = path_scheduler_preempt_victim(mesh, priority);
 		}
 
@@ -594,6 +598,9 @@ static path_transaction_type_t path_scheduler_type_for_priority(path_transaction
 	case PATH_TX_PUNCH:
 		return PATH_TXN_PUNCH;
 
+	case PATH_TX_REBIND:
+		return PATH_TXN_REBIND;
+
 	case PATH_TX_LIVENESS:
 	case PATH_TX_PMTU_INCREASE:
 		return PATH_TXN_PMTU_DISCOVERY;
@@ -648,6 +655,7 @@ void path_scheduler_cancel_node(meshlink_handle_t *mesh, node_t *node) {
 
 	/* Dropping the slot must not leave an active challenge with no timer. */
 	path_punch_fail_orphaned(mesh, node);
+	path_rebind_fail_orphaned(mesh, node);
 }
 
 path_sched_admit_t path_scheduler_emit_packet(meshlink_handle_t *mesh, path_sched_txn_t *txn, const path_probe_request_t *pkt) {

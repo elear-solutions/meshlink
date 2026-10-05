@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -473,6 +474,41 @@ peer_config_t *setup_nat_hole_punch_asymm(const char *prefix, bool app_symmetric
 	assert(meshlink_add_invitation_address(peers[0].mesh, "203.0.113.1", NULL));
 	invite_peers(peers, 3);
 	return peers;
+}
+
+bool nat_force_rebind(void) {
+	static const char *bins[] = {"/usr/sbin/conntrack", "/sbin/conntrack", "/usr/bin/conntrack", NULL};
+	const char *bin = NULL;
+	char *command = NULL;
+	int rc;
+	int i;
+
+	if(!nat_netns_name[1]) {
+		return false;
+	}
+
+	for(i = 0; bins[i]; i++) {
+		if(access(bins[i], X_OK) == 0) {
+			bin = bins[i];
+			break;
+		}
+	}
+
+	if(!bin) {
+		fprintf(stderr, "nat_force_rebind: conntrack is not installed\n");
+		return false;
+	}
+
+	assert(asprintf(&command, "/bin/ip netns exec %s %s -D -p udp >/dev/null 2>&1", nat_netns_name[1], bin) > 0);
+	rc = system(command);
+	free(command);
+
+	if(rc == -1 || !WIFEXITED(rc)) {
+		return false;
+	}
+
+	/* 0: entries deleted. 1: table already empty. Anything else is a real failure. */
+	return WEXITSTATUS(rc) == 0 || WEXITSTATUS(rc) == 1;
 }
 
 void close_nat_hole_punch(peer_config_t *peers) {
