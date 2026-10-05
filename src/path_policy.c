@@ -5119,6 +5119,148 @@ bool path_active_send_target(meshlink_handle_t *mesh, node_t *n, path_target_t *
 	return path_resolve_active_route(mesh, n, out);
 }
 
+static const char *path_target_send_name(const path_target_t *t) {
+	if(!t) {
+		return path_tier_name(PATH_TIER_NONE);
+	}
+
+	switch(t->kind) {
+	case DATA_ROUTE_DIRECT_UDP:
+		return path_tier_name(t->local ? PATH_TIER_DIRECT_LOCAL_UDP : PATH_TIER_DIRECT_WAN_UDP);
+
+	case DATA_ROUTE_DIRECT_LOCAL_META:
+		return data_route_kind_name(DATA_ROUTE_DIRECT_LOCAL_META);
+
+	case DATA_ROUTE_RELAY:
+		if(t->relay_carrier == RELAY_CARRIER_UDP) {
+			return path_tier_name(PATH_TIER_RELAY_UDP);
+		}
+
+		if(t->relay_carrier == RELAY_CARRIER_META_CANONICAL) {
+			return path_tier_name(PATH_TIER_META_CANONICAL);
+		}
+
+		return path_tier_name(PATH_TIER_META_DIRECT);
+
+	case DATA_ROUTE_NONE:
+	default:
+		return path_tier_name(PATH_TIER_NONE);
+	}
+}
+
+bool path_target_fits_record(const meshlink_handle_t *mesh, const node_t *n, const path_target_t *t, size_t sptps_len) {
+	size_t plain;
+	uint16_t limit;
+
+	if(!mesh || !n || !t) {
+		return false;
+	}
+
+	if(sptps_len < SPTPS_DATAGRAM_OVERHEAD) {
+		return true;
+	}
+
+	plain = sptps_len - SPTPS_DATAGRAM_OVERHEAD;
+
+	switch(t->kind) {
+	case DATA_ROUTE_DIRECT_UDP:
+		limit = n->minmtu ? n->minmtu : MINMTU;
+
+		if(n->mtu && n->mtu < limit) {
+			limit = n->mtu;
+		}
+
+		if(limit < MINMTU) {
+			limit = MINMTU;
+		}
+
+		return plain <= limit;
+
+	case DATA_ROUTE_RELAY:
+		if(t->relay_carrier != RELAY_CARRIER_UDP) {
+			return true;
+		}
+
+		{
+			const node_t *hop = t->first_hop;
+			uint32_t prefix21 = 0;
+			uint16_t hop_limit;
+
+			if(!hop || !mesh->self || !mesh->self->name || !n->name
+			                || !relay_prefix21(mesh->self->name, n->name, &prefix21)) {
+				return false;
+			}
+
+			hop_limit = hop->minmtu > MINMTU ? hop->minmtu : MINMTU;
+
+			if((uint32_t)plain + prefix21 > hop_limit) {
+				return false;
+			}
+
+			if(n->relay_budget && plain > n->relay_budget) {
+				return false;
+			}
+
+			return true;
+		}
+
+	case DATA_ROUTE_DIRECT_LOCAL_META:
+		return true;
+
+	case DATA_ROUTE_NONE:
+	default:
+		return false;
+	}
+}
+
+static void path_count_fallback_redirect(meshlink_handle_t *mesh, node_t *n, size_t sptps_len, const path_target_t *chosen) {
+	if(n->fallback_oversize_redirects < UINT32_MAX) {
+		n->fallback_oversize_redirects++;
+	}
+
+	if(mesh->loop.now.tv_sec < n->fallback_oversize_logged_at + 10) {
+		return;
+	}
+
+	n->fallback_oversize_logged_at = mesh->loop.now.tv_sec;
+	logger(mesh, MESHLINK_INFO, "Suspect fallback for %s cannot carry %zu bytes; sending on %s",
+	       n->name, sptps_len, path_target_send_name(chosen));
+}
+
+bool path_send_target_for_record(meshlink_handle_t *mesh, node_t *n, size_t sptps_len, path_target_t *out) {
+	path_target_t primary;
+	path_target_t meta;
+
+	if(!path_active_send_target(mesh, n, out)) {
+		return false;
+	}
+
+	if(!out->temporary_fallback || path_target_fits_record(mesh, n, out, sptps_len)) {
+		return true;
+	}
+
+	if(path_recorded_usable(mesh, n)) {
+		path_route_to_target(&n->active_route, &primary, false);
+
+		if(path_target_fits_record(mesh, n, &primary, sptps_len)) {
+			*out = primary;
+			path_count_fallback_redirect(mesh, n, sptps_len, out);
+			return true;
+		}
+	}
+
+	memset(&meta, 0, sizeof meta);
+
+	if(path_fill_relay_meta(mesh, n, &meta) || path_fill_dest_meta(mesh, n, &meta)) {
+		meta.temporary_fallback = true;
+		*out = meta;
+		path_count_fallback_redirect(mesh, n, sptps_len, out);
+		return true;
+	}
+
+	return path_active_send_target(mesh, n, out);
+}
+
 void path_record_active_route(meshlink_handle_t *mesh, node_t *n, const path_target_t *target) {
 	if(!mesh || !n || !target) {
 		return;

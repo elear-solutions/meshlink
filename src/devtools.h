@@ -99,7 +99,7 @@ typedef struct devtool_node_status devtool_node_status_t;
 
 /** Append-only snapshot. Bump when fields are added. New fields go at the end.
  *  devtool_get_node_status() writes devtool_status_version. */
-#define DEVTOOL_NODE_STATUS_VERSION 4
+#define DEVTOOL_NODE_STATUS_VERSION 5
 
 /// The status of a node.
 struct devtool_node_status {
@@ -212,6 +212,11 @@ struct devtool_node_status {
 	uint32_t rebind_seen;                 /// distinct authenticated sources after confirm
 	uint32_t rebind_migrated;             /// nonce-proved endpoint swaps
 	uint32_t rebind_failed;               /// challenges that missed their deadline
+
+	/* DEVTOOL_NODE_STATUS_VERSION 5. Append only. */
+	uint32_t fallback_oversize_redirects; /// suspect fallback could not carry a record
+	uint32_t relay_oversize_drops;        /// type-8 records dropped for hop MTU
+	uint16_t pmtu_raise_pending;          /// outstanding maxmtu+8 probe length; 0 if none
 };
 
 /// Get the status of a node.
@@ -717,6 +722,15 @@ bool devtool_accept_pmtu_increase(struct meshlink_handle *mesh, struct meshlink_
 
 /// Plant `len` as a collapsed PMTU (minmtu == maxmtu) at 8 probes and run Fixing MTU.
 bool devtool_fix_early_pmtu(struct meshlink_handle *mesh, struct meshlink_node *node, uint16_t len);
+
+/// Discard the next `count` direct-UDP application records to `node`. 0 clears it.
+bool devtool_drop_next_direct_udp_records(struct meshlink_handle *mesh, struct meshlink_node *node, unsigned count);
+
+/// Drop probe requests longer than `max_len` instead of echoing them. 0 disables the limit.
+bool devtool_set_probe_reply_limit(struct meshlink_handle *mesh, struct meshlink_node *node, uint16_t max_len);
+
+/// Make the next parked PMTU tick send a maxmtu+8 raise beside the liveness probe.
+bool devtool_pmtu_raise_due(struct meshlink_handle *mesh, struct meshlink_node *node);
 
 unsigned devtool_probe_second_tokens(struct meshlink_handle *mesh);
 unsigned devtool_probe_minute_tokens(struct meshlink_handle *mesh);
