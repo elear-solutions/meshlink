@@ -180,6 +180,11 @@ void path_liveness_tick(meshlink_handle_t *mesh, node_t *n) {
 		return;
 	}
 
+	if(n->liveness.state != LIVENESS_PROBING && path_plpmtu_probe_recent(mesh, n)) {
+		arm_ms(mesh, &n->liveness.timer, liveness_timer, n, PATH_PLPMTU_LIVENESS_GUARD_MS);
+		return;
+	}
+
 	if(n->liveness.state != LIVENESS_PROBING) {
 		n->liveness.state = LIVENESS_PROBING;
 		n->liveness.tries = 0;
@@ -404,6 +409,11 @@ void path_keepalive_tick(meshlink_handle_t *mesh, node_t *n) {
 
 	if(!keepalive_eligible(mesh, n)) {
 		path_keepalive_stop(mesh, n);
+		return;
+	}
+
+	if(path_plpmtu_probe_recent(mesh, n)) {
+		arm_ms(mesh, &n->keepalive.timer, keepalive_timer, n, PATH_PLPMTU_LIVENESS_GUARD_MS);
 		return;
 	}
 

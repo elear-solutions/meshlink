@@ -302,6 +302,7 @@ static int raise_sec(const node_t *n) {
 }
 
 static void clear_probe(node_t *n) {
+	n->plpmtu.pending_size = 0;
 	n->plpmtu.probe_size = 0;
 	n->plpmtu.probe_nonce = 0;
 	n->plpmtu.probe_tries = 0;
@@ -329,6 +330,7 @@ static void settle(meshlink_handle_t *mesh, node_t *n, const char *how) {
 	n->plpmtu.state = PLPMTU_COMPLETE;
 	clear_probe(n);
 	n->plpmtu.bh_verifying = false;
+	n->plpmtu.raising = false;
 	cache_store(mesh, n);
 	publish(mesh, n);
 	logger(mesh, MESHLINK_INFO, "PLPMTU of %s settled at %u (largest failed %u)%s%s",
@@ -336,16 +338,35 @@ static void settle(meshlink_handle_t *mesh, node_t *n, const char *how) {
 	arm_raise(mesh, n);
 }
 
+static bool liveness_guard(const meshlink_handle_t *mesh, const node_t *n);
+
 static bool emit_size(meshlink_handle_t *mesh, node_t *n, uint16_t size) {
 	path_probe_request_t req;
 	path_sched_txn_t *txn = NULL;
 	path_sched_admit_t admit;
-	uint64_t nonce = fresh_nonce();
+	uint64_t nonce;
+	uint64_t old_nonce = n->plpmtu.probe_nonce;
+	uint16_t old_size = n->plpmtu.probe_size;
+	struct timespec old_sent_at = n->plpmtu.probe_sent_at;
+	struct timespec old_oversize_at = n->plpmtu.last_oversize_sent_at;
+
+	n->plpmtu.pending_size = size;
+
+	if(liveness_guard(mesh, n)) {
+		arm_ms(mesh, &n->plpmtu.timer, plpmtu_timer, n, PATH_PLPMTU_LIVENESS_GUARD_MS);
+		return false;
+	}
 
 	if(n->plpmtu.state == PLPMTU_SEARCHING || n->plpmtu.state == PLPMTU_VERIFY || n->plpmtu.state == PLPMTU_BASE) {
 		txn = path_scheduler_begin_transaction(mesh, n, PATH_TXN_PLPMTU_SEARCH, PATH_TX_PLPMTU_PROBE, path_transaction_preempt);
 	}
 
+	if(!txn) {
+		arm_ms(mesh, &n->plpmtu.timer, plpmtu_timer, n, PATH_PLPMTU_PROBE_TIMEOUT_MS);
+		return false;
+	}
+
+	nonce = fresh_nonce();
 	memset(&req, 0, sizeof req);
 	req.node = n;
 	req.length = size < 64 ? 64 : size;
@@ -366,11 +387,16 @@ static bool emit_size(meshlink_handle_t *mesh, node_t *n, uint16_t size) {
 	admit = path_scheduler_emit_packet(mesh, txn, &req);
 
 	if(admit != PATH_SCHED_SENT) {
-		clear_probe(n);
-		arm_ms(mesh, &n->plpmtu.timer, plpmtu_timer, n, 1000);
+		/* Retain the previous attempt so a late reply can still prove it. */
+		n->plpmtu.probe_nonce = old_nonce;
+		n->plpmtu.probe_size = old_size;
+		n->plpmtu.probe_sent_at = old_sent_at;
+		n->plpmtu.last_oversize_sent_at = old_oversize_at;
+		arm_ms(mesh, &n->plpmtu.timer, plpmtu_timer, n, PATH_PLPMTU_PROBE_TIMEOUT_MS);
 		return false;
 	}
 
+	n->plpmtu.pending_size = 0;
 	n->plpmtu.probes_sent++;
 
 	if(req.length > n->plpmtu.size) {
@@ -384,7 +410,8 @@ static bool emit_size(meshlink_handle_t *mesh, node_t *n, uint16_t size) {
 static bool liveness_guard(const meshlink_handle_t *mesh, const node_t *n) {
 	int64_t age;
 
-	if(n->liveness.state == LIVENESS_PROBING) {
+	if(n->liveness.state == LIVENESS_PROBING
+	                || (n == mesh->backbone_udp.node && mesh->backbone_udp.liveness_nonce)) {
 		return true;
 	}
 
@@ -411,12 +438,34 @@ static bool liveness_guard(const meshlink_handle_t *mesh, const node_t *n) {
 	return false;
 }
 
+bool path_plpmtu_probe_recent(const meshlink_handle_t *mesh, const node_t *n) {
+	int64_t age;
+
+	if(!n->plpmtu.probe_sent_at.tv_sec) {
+		return false;
+	}
+
+	age = ms_between(&n->plpmtu.probe_sent_at, &mesh->loop.now);
+	return age >= 0 && age < PATH_PLPMTU_LIVENESS_GUARD_MS;
+}
+
+static void failed_raise(node_t *n) {
+	if(n->plpmtu.raising) {
+		if(n->plpmtu.raise_backoff < 16) {
+			n->plpmtu.raise_backoff++;
+		}
+
+		n->plpmtu.raising = false;
+	}
+}
+
 static void fail_outstanding(meshlink_handle_t *mesh, node_t *n) {
 	uint16_t failed = n->plpmtu.probe_size;
 	bool base_probe = failed && failed <= PATH_PLPMTU_BASE;
 	bool bh = n->plpmtu.bh_verifying;
 	uint16_t old = n->plpmtu.size;
 
+	failed_raise(n);
 	n->plpmtu.probes_lost += PATH_PLPMTU_MAX_PROBES;
 
 	if(!n->plpmtu.largest_failed || failed < n->plpmtu.largest_failed) {
@@ -451,7 +500,6 @@ static void fail_outstanding(meshlink_handle_t *mesh, node_t *n) {
 
 	if(n->plpmtu.state == PLPMTU_VERIFY) {
 		n->plpmtu.size = PATH_PLPMTU_BASE;
-		n->plpmtu.largest_failed = 0;
 		n->plpmtu.state = PLPMTU_SEARCHING;
 		publish(mesh, n);
 		arm_ms(mesh, &n->plpmtu.timer, plpmtu_timer, n, PATH_PLPMTU_STEP_GAP_MS);
@@ -493,11 +541,18 @@ void path_plpmtu_tick(meshlink_handle_t *mesh, node_t *n) {
 		return;
 	}
 
+	if(n->plpmtu.pending_size) {
+		emit_size(mesh, n, n->plpmtu.pending_size);
+		return;
+	}
+
 	if(n->plpmtu.state == PLPMTU_COMPLETE || n->plpmtu.state == PLPMTU_ERROR) {
 		if(mesh->loop.now.tv_sec < n->plpmtu.raise_at.tv_sec) {
 			arm_raise(mesh, n);
 			return;
 		}
+
+		n->plpmtu.raising = true;
 
 		if(n->plpmtu.state == PLPMTU_ERROR) {
 			n->plpmtu.size = PATH_PLPMTU_BASE;
@@ -511,11 +566,6 @@ void path_plpmtu_tick(meshlink_handle_t *mesh, node_t *n) {
 		}
 
 		n->plpmtu.state = PLPMTU_SEARCHING;
-	}
-
-	if(liveness_guard(mesh, n)) {
-		arm_ms(mesh, &n->plpmtu.timer, plpmtu_timer, n, PATH_PLPMTU_LIVENESS_GUARD_MS);
-		return;
 	}
 
 	step = next_step(n);
@@ -605,9 +655,7 @@ void path_plpmtu_on_confirmed(meshlink_handle_t *mesh, node_t *n) {
 	hit = cache_get(n, &ip, fp);
 	now = time(NULL);
 
-	if(hit && now - hit->updated_at <= PATH_PLPMTU_TRUST_SEC) {
-		n->plpmtu.state = PLPMTU_COMPLETE;
-		n->plpmtu.size = hit->size;
+	if(hit) {
 		n->plpmtu.largest_failed = hit->largest_failed;
 		n->plpmtu.hostile = hit->flags & PATH_MTU_CACHE_HOSTILE;
 		n->plpmtu.raise_backoff = hit->raise_backoff;
@@ -616,7 +664,11 @@ void path_plpmtu_on_confirmed(meshlink_handle_t *mesh, node_t *n) {
 		if(hit->keepalive_ms >= PATH_KEEPALIVE_FLOOR_MS) {
 			n->keepalive.interval_ms = hit->keepalive_ms;
 		}
+	}
 
+	if(hit && now - hit->updated_at <= PATH_PLPMTU_TRUST_SEC) {
+		n->plpmtu.state = PLPMTU_COMPLETE;
+		n->plpmtu.size = hit->size;
 		publish(mesh, n);
 		logger(mesh, MESHLINK_INFO, "PLPMTU of %s settled at %u (largest failed %u) cached",
 		       n->name, n->plpmtu.size, n->plpmtu.largest_failed);
@@ -627,7 +679,6 @@ void path_plpmtu_on_confirmed(meshlink_handle_t *mesh, node_t *n) {
 	if(hit) {
 		n->plpmtu.state = PLPMTU_VERIFY;
 		n->plpmtu.size = PATH_PLPMTU_BASE;
-		n->plpmtu.cache_hits++;
 		publish(mesh, n);
 		emit_size(mesh, n, hit->size);
 		return;
@@ -648,6 +699,16 @@ void path_plpmtu_observe_ack(meshlink_handle_t *mesh, node_t *n, const sockaddr_
 
 	if(sockaddrcmp(from, &n->address)) {
 		return;
+	}
+
+	if(n->plpmtu.raising && !n->plpmtu.hostile) {
+		n->plpmtu.raise_backoff = 0;
+		n->plpmtu.raising = false;
+	}
+
+	/* A delivered size supersedes an older failure at that same bound. */
+	if(n->plpmtu.largest_failed && len >= n->plpmtu.largest_failed) {
+		n->plpmtu.largest_failed = 0;
 	}
 
 	prev = n->plpmtu.size;
@@ -676,6 +737,7 @@ void path_plpmtu_note_emsgsize(meshlink_handle_t *mesh, node_t *n, uint16_t payl
 		return;
 	}
 
+	failed_raise(n);
 	n->plpmtu.emsgsize++;
 
 	if(!n->plpmtu.largest_failed || payload < n->plpmtu.largest_failed) {
@@ -687,7 +749,7 @@ void path_plpmtu_note_emsgsize(meshlink_handle_t *mesh, node_t *n, uint16_t payl
 		publish(mesh, n);
 	}
 
-	if(n->plpmtu.probe_size >= payload) {
+	if(n->plpmtu.probe_size >= payload || n->plpmtu.pending_size >= payload) {
 		clear_probe(n);
 		n->plpmtu.state = PLPMTU_SEARCHING;
 		arm_ms(mesh, &n->plpmtu.timer, plpmtu_timer, n, PATH_PLPMTU_STEP_GAP_MS);
@@ -767,6 +829,8 @@ void path_plpmtu_note_suspect_cleared(meshlink_handle_t *mesh, node_t *n) {
 	}
 
 	n->plpmtu.bh_evidence = 0;
+	clear_probe(n);
+	n->plpmtu.raising = false;
 	n->plpmtu.bh_verifying = true;
 	n->plpmtu.state = PLPMTU_SEARCHING;
 	emit_size(mesh, n, n->plpmtu.size ? n->plpmtu.size : PATH_PLPMTU_BASE);

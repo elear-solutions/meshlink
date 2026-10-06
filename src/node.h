@@ -77,11 +77,13 @@ typedef struct path_plpmtu_t {
 	uint16_t size;
 	uint16_t largest_failed;
 	uint16_t probe_size;
+	uint16_t pending_size; /* Timer-owned target awaiting admission. */
 	uint64_t probe_nonce;
 	uint8_t probe_tries;
 	uint8_t raise_backoff;
 	bool hostile;
 	bool bh_verifying;
+	bool raising;
 	struct timespec probe_sent_at, raise_at, last_oversize_sent_at, bh_first_at;
 	uint8_t bh_evidence;
 	sockaddr_t path_ip;

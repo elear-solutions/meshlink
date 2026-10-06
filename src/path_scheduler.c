@@ -707,7 +707,8 @@ path_sched_admit_t path_scheduler_emit_packet(meshlink_handle_t *mesh, path_sche
 		return PATH_SCHED_SENT;
 	}
 
-	if(req.priority == PATH_TX_KEEPALIVE) {
+	/* These state machines own retries and cannot track queued sends. */
+	if(req.priority == PATH_TX_KEEPALIVE || req.priority == PATH_TX_PLPMTU_PROBE) {
 		return PATH_SCHED_DENIED;
 	}
 

@@ -3394,7 +3394,7 @@ static bool cover_scheduler(meshlink_handle_t *mesh) {
 		path_scheduler_end_type(mesh, &q[2], PATH_TXN_SUSPECT);
 	}
 
-	/* 2. Queued PMTU sizes/broadcast survive drain. */
+	/* 2. Health requests can queue; timer-owned size probes cannot. */
 	path_scheduler_set_budget(mesh, 0, 0, 8);
 	cover_sched_runs = 0;
 	cover_sched_order_n = 0;
@@ -3408,8 +3408,8 @@ static bool cover_scheduler(meshlink_handle_t *mesh) {
 
 	req = cover_req(&m, PATH_TX_PLPMTU_PROBE, 1400, true);
 
-	if(path_scheduler_emit_packet(mesh, NULL, &req) != PATH_SCHED_QUEUED) {
-		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: pmtu increase queue");
+	if(path_scheduler_emit_packet(mesh, NULL, &req) != PATH_SCHED_DENIED) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: pmtu increase queued");
 		ok = false;
 		goto done;
 	}
@@ -3418,9 +3418,8 @@ static bool cover_scheduler(meshlink_handle_t *mesh) {
 	mesh->probe_budget.minute_tokens = 60;
 	path_scheduler_drain(mesh);
 
-	if(cover_sched_runs != 2
-	                || cover_sched_len[0] != 100 || cover_sched_bcast[0]
-	                || cover_sched_len[1] != 1400 || !cover_sched_bcast[1]) {
+	if(cover_sched_runs != 1
+	                || cover_sched_len[0] != 100 || cover_sched_bcast[0]) {
 		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: queued pmtu sizes");
 		ok = false;
 		goto done;

@@ -250,7 +250,7 @@ static bool plpmtu_cover(meshlink_handle_t *mesh) {
 	CHECK(lose_outstanding(mesh, &n));
 	CHECK(n.plpmtu.state == PLPMTU_SEARCHING);
 	CHECK(n.plpmtu.size == PATH_PLPMTU_BASE);
-	CHECK(!n.plpmtu.largest_failed);
+	CHECK(n.plpmtu.largest_failed == 1419);
 	advance_ms(mesh, PATH_PLPMTU_STEP_GAP_MS);
 	path_plpmtu_tick(mesh, &n);
 	CHECK(n.plpmtu.probe_size == 1259);
@@ -396,6 +396,228 @@ done:
 	bury(mesh, &n);
 	bury(mesh, &hop);
 	bury(mesh, &dest);
+	return ok;
+}
+
+/* Regression: scheduler starvation must neither queue a stale size probe nor
+   consume a try; deferred verification must retain its intended size. */
+static bool plpmtu_admission_cover(meshlink_handle_t *mesh) {
+	node_t n;
+	node_t blocker;
+	uint64_t nonce;
+	uint32_t sent;
+	unsigned queued = mesh->probe_queue->count;
+	unsigned saved_max = mesh->probe_max_transactions;
+	bool ok = false;
+
+	memset(&blocker, 0, sizeof blocker);
+	plant(&n, mesh, "ws1-admission", 0xcb007130);
+	path_plpmtu_on_confirmed(mesh, &n);
+	path_scheduler_set_budget(mesh, 0, 100, 8);
+	path_plpmtu_tick(mesh, &n);
+	CHECK(mesh->probe_queue->count == queued);
+	CHECK(!n.plpmtu.probe_size && !n.plpmtu.probe_nonce && n.plpmtu.pending_size == 1259);
+	CHECK(!n.plpmtu.probes_sent && !n.plpmtu.probe_tries);
+	CHECK(!n.plpmtu.last_oversize_sent_at.tv_sec);
+
+	path_scheduler_set_budget(mesh, 100, 100, 8);
+	path_plpmtu_tick(mesh, &n);
+	CHECK(n.plpmtu.probe_size == 1259 && n.plpmtu.probe_nonce);
+	CHECK(n.plpmtu.probes_sent == 1);
+	nonce = n.plpmtu.probe_nonce;
+	advance_ms(mesh, PATH_PLPMTU_PROBE_TIMEOUT_MS);
+	path_scheduler_set_budget(mesh, 0, 100, 8);
+	path_plpmtu_tick(mesh, &n);
+	CHECK(mesh->probe_queue->count == queued);
+	CHECK(n.plpmtu.probe_nonce == nonce && n.plpmtu.probe_size == 1259);
+	CHECK(!n.plpmtu.probe_tries && n.plpmtu.probes_sent == 1);
+	/* A late reply is still accepted after admission denied its retry. */
+	path_plpmtu_observe_ack(mesh, &n, &n.address, nonce, 1259);
+	CHECK(n.plpmtu.size == 1259);
+
+	path_scheduler_set_budget(mesh, 100, 100, 8);
+	path_plpmtu_tick(mesh, &n);
+	CHECK(n.plpmtu.probe_size == 1339);
+	sent = n.plpmtu.probes_sent;
+	advance_ms(mesh, PATH_PLPMTU_PROBE_TIMEOUT_MS);
+	n.liveness.state = LIVENESS_PROBING;
+	n.keepalive.last_probe_at = mesh->loop.now;
+	path_plpmtu_tick(mesh, &n);
+	CHECK(n.plpmtu.probes_sent == sent && !n.plpmtu.probe_tries);
+	n.liveness.state = LIVENESS_IDLE;
+	path_plpmtu_tick(mesh, &n);
+	CHECK(n.plpmtu.probes_sent == sent);
+	advance_ms(mesh, PATH_PLPMTU_LIVENESS_GUARD_MS);
+	path_plpmtu_tick(mesh, &n);
+	CHECK(n.plpmtu.probes_sent == sent + 1 && n.plpmtu.probe_tries == 1);
+	/* Reverse timer order: health probes defer after an actual size send. */
+	path_liveness_tick(mesh, &n);
+	CHECK(n.liveness.state != LIVENESS_PROBING && !n.liveness.probes_sent);
+	n.keepalive.last_tx_at.tv_sec = 0;
+	path_keepalive_tick(mesh, &n);
+	CHECK(!n.keepalive.sent);
+	advance_ms(mesh, PATH_PLPMTU_LIVENESS_GUARD_MS);
+	path_liveness_tick(mesh, &n);
+	CHECK(n.liveness.probes_sent == 1);
+	path_liveness_stop(mesh, &n);
+	advance_ms(mesh, PATH_PLPMTU_PROBE_TIMEOUT_MS);
+	path_plpmtu_tick(mesh, &n);
+	CHECK(n.plpmtu.probes_sent == sent + 2 && n.plpmtu.probe_tries == 2);
+	advance_ms(mesh, PATH_PLPMTU_PROBE_TIMEOUT_MS);
+	path_plpmtu_tick(mesh, &n);
+	CHECK(n.plpmtu.state == PLPMTU_COMPLETE && n.plpmtu.probes_lost == 3);
+	CHECK(n.plpmtu.probes_sent == sent + 2);
+
+	/* A full transaction pool must defer the first size probe too. */
+	bury(mesh, &n);
+	plant(&n, mesh, "ws1-admission", 0xcb007130);
+	plant(&blocker, mesh, "ws1-blocker", 0xcb007131);
+	path_scheduler_set_budget(mesh, 100, 100, 1);
+	CHECK(path_scheduler_begin_transaction(mesh, &blocker, PATH_TXN_SUSPECT,
+	                PATH_TX_ACTIVE_ROUTE_RECOVERY, path_transaction_preempt));
+	path_plpmtu_on_confirmed(mesh, &n);
+	path_plpmtu_tick(mesh, &n);
+	CHECK(!n.plpmtu.probe_nonce && !n.plpmtu.probes_sent && !n.plpmtu.probe_size);
+	path_scheduler_end_type(mesh, &blocker, PATH_TXN_SUSPECT);
+	path_plpmtu_tick(mesh, &n);
+	CHECK(n.plpmtu.probe_size == 1259 && n.plpmtu.probes_sent == 1);
+
+	/* Black-hole verification must keep the current size when deferred. */
+	n.plpmtu.size = 1399;
+	n.liveness.state = LIVENESS_PROBING;
+	path_plpmtu_note_large_suspect_send(mesh, &n, 1300);
+	path_plpmtu_note_large_suspect_send(mesh, &n, 1300);
+	path_plpmtu_note_suspect_cleared(mesh, &n);
+	CHECK(n.plpmtu.bh_verifying && n.plpmtu.pending_size == 1399);
+	CHECK(!n.plpmtu.probe_nonce && !n.plpmtu.probe_size);
+	n.liveness.state = LIVENESS_IDLE;
+	path_plpmtu_tick(mesh, &n);
+	CHECK(n.plpmtu.probe_size == 1399);
+
+	/* ERROR recovery is guarded too, even though it sends the base size. */
+	path_plpmtu_pause(mesh, &n);
+	n.plpmtu.state = PLPMTU_ERROR;
+	n.plpmtu.size = MINMTU;
+	n.plpmtu.bh_verifying = false;
+	n.plpmtu.largest_failed = PATH_PLPMTU_BASE;
+	n.plpmtu.raise_at = mesh->loop.now;
+	n.liveness.state = LIVENESS_PROBING;
+	sent = n.plpmtu.probes_sent;
+	path_plpmtu_tick(mesh, &n);
+	CHECK(!n.plpmtu.probe_size && n.plpmtu.pending_size == PATH_PLPMTU_BASE);
+	CHECK(n.plpmtu.probes_sent == sent);
+	n.liveness.state = LIVENESS_IDLE;
+	/* Backbone health windows also block all size sends. */
+	node_t *saved_bb = mesh->backbone_udp.node;
+	uint64_t saved_nonce = mesh->backbone_udp.liveness_nonce;
+	mesh->backbone_udp.node = &n;
+	mesh->backbone_udp.liveness_nonce = 1;
+	path_plpmtu_tick(mesh, &n);
+	bool deferred = !n.plpmtu.probe_size && n.plpmtu.probes_sent == sent;
+	mesh->backbone_udp.node = saved_bb;
+	mesh->backbone_udp.liveness_nonce = saved_nonce;
+	CHECK(deferred);
+	path_plpmtu_tick(mesh, &n);
+	CHECK(n.plpmtu.probe_size == PATH_PLPMTU_BASE);
+	path_plpmtu_observe_ack(mesh, &n, &n.address, n.plpmtu.probe_nonce, PATH_PLPMTU_BASE);
+	CHECK(!n.plpmtu.largest_failed && !n.plpmtu.raise_backoff);
+	ok = true;
+
+done:
+	bury(mesh, &n);
+	bury(mesh, &blocker);
+	path_scheduler_set_budget(mesh, 1000, 1000, saved_max);
+	return ok;
+}
+
+static bool plpmtu_cache_raise_cover(meshlink_handle_t *mesh) {
+	node_t n;
+	int slot;
+	bool ok = false;
+
+	plant(&n, mesh, "ws1-cache-raise", 0xcb007132);
+	path_plpmtu_on_confirmed(mesh, &n);
+	n.plpmtu.size = 1399;
+	n.plpmtu.largest_failed = 1419;
+	n.plpmtu.hostile = true;
+	n.plpmtu.raise_backoff = 5;
+	n.keepalive.interval_ms = 5000;
+	path_plpmtu_stop(mesh, &n);
+	slot = cache_slot(&n, 0xcb007132);
+	CHECK(slot >= 0);
+	n.mtu_cache[slot].updated_at = time(NULL) - PATH_PLPMTU_TRUST_SEC - 1;
+	n.keepalive.interval_ms = PATH_KEEPALIVE_INITIAL_MS;
+	n.liveness.state = LIVENESS_PROBING;
+	path_plpmtu_on_confirmed(mesh, &n);
+	CHECK(n.plpmtu.state == PLPMTU_VERIFY && !n.plpmtu.probe_nonce);
+	CHECK(n.plpmtu.size == PATH_PLPMTU_BASE && n.plpmtu.pending_size == 1399);
+	CHECK(n.keepalive.interval_ms == 5000);
+	n.liveness.state = LIVENESS_IDLE;
+	path_plpmtu_tick(mesh, &n);
+	CHECK(n.plpmtu.probe_size == 1399);
+	path_plpmtu_observe_ack(mesh, &n, &n.address, n.plpmtu.probe_nonce, 1399);
+	CHECK(n.plpmtu.hostile && n.plpmtu.largest_failed == 1419 && n.plpmtu.raise_backoff == 5);
+	CHECK(n.mtu_cache[slot].flags == PATH_MTU_CACHE_HOSTILE);
+	CHECK(n.mtu_cache[slot].largest_failed == 1419 && n.mtu_cache[slot].raise_backoff == 5);
+	CHECK(n.mtu_cache[slot].keepalive_ms == 5000);
+
+	/* A local MTU limit cancels a deferred cached target before admission. */
+	path_plpmtu_stop(mesh, &n);
+	n.mtu_cache[slot].updated_at = time(NULL) - PATH_PLPMTU_TRUST_SEC - 1;
+	n.liveness.state = LIVENESS_PROBING;
+	path_plpmtu_on_confirmed(mesh, &n);
+	CHECK(n.plpmtu.pending_size == 1399);
+	path_plpmtu_note_emsgsize(mesh, &n, 1300);
+	CHECK(!n.plpmtu.pending_size && n.plpmtu.largest_failed == 1300);
+	n.liveness.state = LIVENESS_IDLE;
+	/* Restore this cache fixture for the independent loss case. */
+	n.plpmtu.size = 1399;
+	n.plpmtu.largest_failed = 1419;
+
+	/* Verification losses tighten the bound and retain unrelated lessons. */
+	path_plpmtu_stop(mesh, &n);
+	n.mtu_cache[slot].updated_at = time(NULL) - PATH_PLPMTU_TRUST_SEC - 1;
+	path_plpmtu_on_confirmed(mesh, &n);
+	CHECK(lose_outstanding(mesh, &n));
+	CHECK(n.plpmtu.size == PATH_PLPMTU_BASE && n.plpmtu.largest_failed == 1399);
+	CHECK(n.plpmtu.hostile && n.plpmtu.raise_backoff == 5 && n.keepalive.interval_ms == 5000);
+
+	/* First failure waits 10 minutes; failed raises double up to the cap. */
+	bury(mesh, &n);
+	plant(&n, mesh, "ws1-cache-raise", 0xcb007132);
+	path_plpmtu_on_confirmed(mesh, &n);
+	path_plpmtu_tick(mesh, &n);
+	CHECK(lose_outstanding(mesh, &n));
+	CHECK(n.plpmtu.raise_at.tv_sec - mesh->loop.now.tv_sec == PATH_PLPMTU_RAISE_SEC);
+	for(int round = 1; round <= 8; round++) {
+		mesh->loop.now = n.plpmtu.raise_at;
+		path_plpmtu_tick(mesh, &n);
+		CHECK(n.plpmtu.probe_size == 1259);
+		CHECK(lose_outstanding(mesh, &n));
+		int expected = PATH_PLPMTU_RAISE_SEC << round;
+		if(expected > PATH_PLPMTU_RAISE_MAX_SEC) {
+			expected = PATH_PLPMTU_RAISE_MAX_SEC;
+		}
+		CHECK(n.plpmtu.raise_at.tv_sec - mesh->loop.now.tv_sec == expected);
+	}
+	mesh->loop.now = n.plpmtu.raise_at;
+	path_plpmtu_tick(mesh, &n);
+	path_plpmtu_observe_ack(mesh, &n, &n.address, n.plpmtu.probe_nonce, 1259);
+	CHECK(n.plpmtu.size == 1259 && !n.plpmtu.raise_backoff);
+	path_plpmtu_tick(mesh, &n);
+	CHECK(lose_outstanding(mesh, &n));
+	CHECK(n.plpmtu.raise_at.tv_sec - mesh->loop.now.tv_sec == PATH_PLPMTU_RAISE_SEC);
+	/* ICMP failures follow the same backoff without inventing packet loss. */
+	mesh->loop.now = n.plpmtu.raise_at;
+	path_plpmtu_tick(mesh, &n);
+	path_plpmtu_note_emsgsize(mesh, &n, n.plpmtu.probe_size);
+	path_plpmtu_tick(mesh, &n);
+	CHECK(n.plpmtu.state == PLPMTU_COMPLETE && n.plpmtu.raise_backoff == 1);
+	CHECK(n.plpmtu.raise_at.tv_sec - mesh->loop.now.tv_sec == 2 * PATH_PLPMTU_RAISE_SEC);
+	ok = true;
+
+done:
+	bury(mesh, &n);
 	return ok;
 }
 
@@ -769,6 +991,8 @@ bool path_ws1_cover_unit(meshlink_handle_t *mesh) {
 	mesh->self->devclass = DEV_CLASS_STATIONARY;
 
 	ok = plpmtu_cover(mesh)
+	     && plpmtu_admission_cover(mesh)
+	     && plpmtu_cache_raise_cover(mesh)
 	     && liveness_cover(mesh)
 	     && keepalive_cover(mesh)
 	     && wire_cover(mesh)

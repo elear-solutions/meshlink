@@ -178,7 +178,13 @@ static int path_backbone_udp_pingtimeout(meshlink_handle_t *mesh, const node_t *
 }
 
 static void path_backbone_udp_packet(meshlink_handle_t *mesh, const path_probe_request_t *req) {
-	(void)req;
+	/* A queued backbone request may drain immediately after a size send. */
+	if(path_plpmtu_probe_recent(mesh, req->node)) {
+		path_backbone_udp_arm(mesh, 0, PATH_PLPMTU_LIVENESS_GUARD_MS * 1000000L);
+		return;
+	}
+
+	req->node->keepalive.last_probe_at = mesh->loop.now;
 	mesh->backbone_udp.liveness_nonce = path_fresh_nonce();
 	send_backbone_udp_probe(mesh);
 }
@@ -248,6 +254,11 @@ static void path_backbone_udp_timer(event_loop_t *loop, void *data) {
 	}
 
 	if(p->confirmed) {
+		if(path_plpmtu_probe_recent(mesh, n)) {
+			path_backbone_udp_arm(mesh, 0, PATH_PLPMTU_LIVENESS_GUARD_MS * 1000000L);
+			return;
+		}
+
 		if(p->liveness_nonce) {
 			p->unanswered++;
 
