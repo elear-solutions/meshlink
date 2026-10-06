@@ -280,6 +280,9 @@ int main(void) {
 	wait_hop_udp(mesh[2], "foo");
 	assert(devtool_force_relay_path(mesh[2], meshlink_get_node(mesh[2], "bar"), meshlink_get_node(mesh[2], "foo")));
 
+	/* The backbone may be reachable before bar's edge has propagated.
+	   Wait for the destination to be up before expecting its down event. */
+	assert_after(meshlink_get_node_reachability(mesh[2], meshlink_get_node(mesh[2], "bar"), NULL, NULL), 20);
 	set_sync_flag(&dest_down, false);
 	meshlink_stop(mesh[1]);
 	assert(wait_sync_flag(&dest_down, 20));
