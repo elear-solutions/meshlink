@@ -99,16 +99,33 @@ typedef struct devtool_node_status devtool_node_status_t;
 
 /** Append-only snapshot. Bump when fields are added. New fields go at the end.
  *  devtool_get_node_status() writes devtool_status_version. */
-#define DEVTOOL_NODE_STATUS_VERSION 5
+#define DEVTOOL_NODE_STATUS_VERSION 6
+
+typedef enum {
+	DEVTOOL_PLPMTU_DISABLED = 0,
+	DEVTOOL_PLPMTU_BASE,
+	DEVTOOL_PLPMTU_VERIFY,
+	DEVTOOL_PLPMTU_SEARCHING,
+	DEVTOOL_PLPMTU_COMPLETE,
+	DEVTOOL_PLPMTU_ERROR
+} devtool_plpmtu_state_t;
+
+typedef struct devtool_plpmtu_cache_entry {
+	uint8_t family;
+	uint8_t addr[16];
+	uint16_t size;
+	uint16_t largest_failed;
+	uint8_t flags;
+	uint8_t raise_backoff;
+	uint32_t keepalive_ms;
+	int64_t updated_at;
+	uint32_t net_fp;
+} devtool_plpmtu_cache_entry_t;
 
 /// The status of a node.
 struct devtool_node_status {
 	uint32_t status;
 	struct sockaddr_storage address;
-	uint16_t mtu;
-	uint16_t minmtu;
-	uint16_t maxmtu;
-	int mtuprobes;
 
 	enum {
 		DEVTOOL_UDP_FAILED = -2,     /// UDP tried but failed
@@ -216,7 +233,27 @@ struct devtool_node_status {
 	/* DEVTOOL_NODE_STATUS_VERSION 5. Append only. */
 	uint32_t fallback_oversize_redirects; /// suspect fallback could not carry a record
 	uint32_t relay_oversize_drops;        /// type-8 records dropped for hop MTU
-	uint16_t pmtu_raise_pending;          /// outstanding maxmtu+8 probe length; 0 if none
+
+	/* DEVTOOL_NODE_STATUS_VERSION 6. Append only. */
+	devtool_plpmtu_state_t plpmtu_state;
+	uint16_t plpmtu_size;
+	uint16_t plpmtu_largest_failed;
+	uint16_t plpmtu_probe_size;
+	bool plpmtu_hostile;
+	int plpmtu_raise_in_sec;
+	uint32_t plpmtu_probes_sent;
+	uint32_t plpmtu_probes_lost;
+	uint32_t plpmtu_probes_oversize;
+	uint32_t plpmtu_black_holes;
+	uint32_t plpmtu_emsgsize;
+	uint32_t plpmtu_cache_hits;
+	int liveness_state;
+	uint32_t liveness_probes_sent;
+	uint32_t liveness_retries;
+	uint32_t liveness_giveups;
+	uint32_t keepalive_interval_ms;
+	uint32_t keepalives_sent;
+	uint32_t keepalive_expiries;
 };
 
 /// Get the status of a node.
@@ -586,13 +623,8 @@ bool devtool_force_relay_path(struct meshlink_handle *mesh, struct meshlink_node
  */
 bool devtool_send_raw_record(struct meshlink_handle *mesh, struct meshlink_node *to, uint8_t type, const void *data, size_t len);
 
-/// Set a node's measured minimum packet size.
-/** @param mesh  Mesh handle.
- *  @param node  Node to update.
- *  @param mtu   New minmtu value.
- *  @return      true on success.
- */
-bool devtool_set_minmtu(struct meshlink_handle *mesh, struct meshlink_node *node, uint16_t mtu);
+/// Plant a settled PLPMTU. 0 disables it. Otherwise size must be in [MINMTU, MTU].
+bool devtool_set_plpmtu(struct meshlink_handle *mesh, struct meshlink_node *node, uint16_t size);
 
 /// Drop every origin-and-destination report-table entry.
 /** @param mesh  Mesh handle.
@@ -717,20 +749,23 @@ unsigned devtool_meta_pings_sent(struct meshlink_handle *mesh, struct meshlink_n
 /// Parked 64-byte liveness probes this node has emitted toward `node`.
 unsigned devtool_liveness_probes_sent(struct meshlink_handle *mesh, struct meshlink_node *node);
 
-/// Plant `settled` as the PMTU and accept a reply of settled+8 without restarting discovery.
-bool devtool_accept_pmtu_increase(struct meshlink_handle *mesh, struct meshlink_node *node, uint16_t settled);
-
-/// Plant `len` as a collapsed PMTU (minmtu == maxmtu) at 8 probes and run Fixing MTU.
-bool devtool_fix_early_pmtu(struct meshlink_handle *mesh, struct meshlink_node *node, uint16_t len);
-
 /// Discard the next `count` direct-UDP application records to `node`. 0 clears it.
 bool devtool_drop_next_direct_udp_records(struct meshlink_handle *mesh, struct meshlink_node *node, unsigned count);
 
-/// Drop probe requests longer than `max_len` instead of echoing them. 0 disables the limit.
-bool devtool_set_probe_reply_limit(struct meshlink_handle *mesh, struct meshlink_node *node, uint16_t max_len);
+/// Drop SIZE_REQUEST probes longer than `limit`. 0 disables the limit.
+bool devtool_drop_size_probes_above(struct meshlink_handle *mesh, struct meshlink_node *node, uint16_t limit);
 
-/// Make the next parked PMTU tick send a maxmtu+8 raise beside the liveness probe.
-bool devtool_pmtu_raise_due(struct meshlink_handle *mesh, struct meshlink_node *node);
+/// Drop the next `count` LIVENESS echo replies. 0 clears it.
+bool devtool_drop_liveness_replies(struct meshlink_handle *mesh, struct meshlink_node *node, uint8_t count);
+
+/// Make the next PLPMTU tick treat the raise timer as due.
+bool devtool_plpmtu_raise_due(struct meshlink_handle *mesh, struct meshlink_node *node);
+
+/// Plant the idle keepalive interval, in milliseconds.
+bool devtool_set_keepalive_interval(struct meshlink_handle *mesh, struct meshlink_node *node, uint32_t ms);
+
+/// Copy one per-IP MTU cache entry. False when index is out of range.
+bool devtool_plpmtu_cache_entry(struct meshlink_handle *mesh, struct meshlink_node *node, int index, devtool_plpmtu_cache_entry_t *out);
 
 unsigned devtool_probe_second_tokens(struct meshlink_handle *mesh);
 unsigned devtool_probe_minute_tokens(struct meshlink_handle *mesh);

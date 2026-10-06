@@ -106,6 +106,7 @@ static int path_scheduler_rank(path_transaction_priority_t priority) {
 
 	case PATH_TX_ACTIVE_ROUTE_RECOVERY:
 	case PATH_TX_REBIND:
+	case PATH_TX_KEEPALIVE:
 		return 1;
 
 	case PATH_TX_CHANNEL_PROMOTION:
@@ -115,7 +116,7 @@ static int path_scheduler_rank(path_transaction_priority_t priority) {
 	case PATH_TX_LIVENESS:
 		return 3;
 
-	case PATH_TX_PMTU_INCREASE:
+	case PATH_TX_PLPMTU_PROBE:
 		return 4;
 
 	default:
@@ -188,7 +189,7 @@ static path_sched_txn_t *path_scheduler_find_txn(meshlink_handle_t *mesh, const 
 
 /* Admitted validation shares 4 pkt/s and skips the parked 20/min bucket. */
 static bool path_scheduler_skip_minute(const path_sched_txn_t *txn) {
-	return txn && (txn->type == PATH_TXN_PMTU_DISCOVERY
+	return txn && (txn->type == PATH_TXN_PLPMTU_SEARCH
 	               || txn->type == PATH_TXN_PROMOTION
 	               || txn->type == PATH_TXN_SUSPECT
 	               || txn->type == PATH_TXN_PUNCH
@@ -220,6 +221,10 @@ static bool path_scheduler_can_send(meshlink_handle_t *mesh, const path_probe_re
 		return mesh->probe_budget.backbone_second_tokens > 0;
 	}
 
+	if(req->priority == PATH_TX_KEEPALIVE) {
+		return mesh->probe_budget.keepalive_tokens > 0;
+	}
+
 	if(!mesh->probe_budget.second_tokens) {
 		return false;
 	}
@@ -235,6 +240,14 @@ static void path_scheduler_consume(meshlink_handle_t *mesh, const path_probe_req
 	if(req->priority == PATH_TX_BACKBONE_REQUIRED) {
 		if(mesh->probe_budget.backbone_second_tokens) {
 			mesh->probe_budget.backbone_second_tokens--;
+		}
+
+		return;
+	}
+
+	if(req->priority == PATH_TX_KEEPALIVE) {
+		if(mesh->probe_budget.keepalive_tokens) {
+			mesh->probe_budget.keepalive_tokens--;
 		}
 
 		return;
@@ -446,6 +459,12 @@ void path_scheduler_refill(meshlink_handle_t *mesh) {
 		b->backbone_refill_at = mesh->loop.now;
 		b->backbone_refill_at.tv_sec += 1;
 	}
+
+	if(!b->keepalive_refill_at.tv_sec || path_scheduler_timespec_ge(&mesh->loop.now, &b->keepalive_refill_at)) {
+		b->keepalive_tokens = PATH_SCHED_KEEPALIVE_PPS;
+		b->keepalive_refill_at = mesh->loop.now;
+		b->keepalive_refill_at.tv_sec += 1;
+	}
 }
 
 void path_scheduler_drain(meshlink_handle_t *mesh) {
@@ -602,8 +621,15 @@ static path_transaction_type_t path_scheduler_type_for_priority(path_transaction
 		return PATH_TXN_REBIND;
 
 	case PATH_TX_LIVENESS:
-	case PATH_TX_PMTU_INCREASE:
-		return PATH_TXN_PMTU_DISCOVERY;
+		*have_type = false;
+		return PATH_TXN_PROMOTION;
+
+	case PATH_TX_PLPMTU_PROBE:
+		return PATH_TXN_PLPMTU_SEARCH;
+
+	case PATH_TX_KEEPALIVE:
+		*have_type = false;
+		return PATH_TXN_PROMOTION;
 
 	default:
 		*have_type = false;
@@ -679,6 +705,10 @@ path_sched_admit_t path_scheduler_emit_packet(meshlink_handle_t *mesh, path_sche
 		path_scheduler_dispatch(mesh, &req);
 		path_scheduler_drain(mesh);
 		return PATH_SCHED_SENT;
+	}
+
+	if(req.priority == PATH_TX_KEEPALIVE) {
+		return PATH_SCHED_DENIED;
 	}
 
 	return path_scheduler_enqueue(mesh, &req);

@@ -72,6 +72,9 @@ libmeshlink_la_SOURCES = \
 	path_scheduler.c path_scheduler.h \
 	path_types.h \
 	path_backbone_udp.c \
+	path_plpmtu.c path_plpmtu.h path_plpmtu_cover.c \
+	path_liveness.c path_liveness.h \
+	path_probe.h \
 	submesh.c submesh.h \
 	packmsg.h \
 	prf.c prf.h \

@@ -16,10 +16,10 @@ Status values:
 | F0 | Confirmed peers pinned to a dead NAT port | Fixed (PR #125) | — |
 | F1 | Suspect fallback silently drops retransmits, so channels stall | Fixed | — |
 | F2 | The `maxmtu + 8` raise replaces liveness, causing false give-ups | Fixed | — (follow-up in WS1) |
-| F3 | Oversized datagrams make the camera's NAT re-map; PMTU discovery causes most of it | Open | WS1 |
-| F4 | Slow climb to direct at startup and after restarts | Open | WS1 (PMTU gate), WS3 (route choice) |
-| F5 | Liveness is one probe per window; one lost reply demotes the path | Open | WS1 |
-| F6 | The camera's NAT expires idle mappings faster than our ping cadence | Open | WS1 |
+| F3 | Oversized datagrams make the camera's NAT re-map; PMTU discovery causes most of it | Fix ready | WS1 |
+| F4 | Slow climb to direct at startup and after restarts | Partly fixed (MSS); route choice still open | WS1 (MSS), WS3 (route choice) |
+| F5 | Liveness is one probe per window; one lost reply demotes the path | Fix ready | WS1 |
+| F6 | The camera's NAT expires idle mappings faster than our ping cadence | Fix ready | WS1 |
 | F7 | The NMN delivers relayed records over META, never UDP | Open | WS2 |
 | M1–M7 | Minor items | Open / By design / Not meshlink | WS4 |
 
@@ -103,7 +103,7 @@ The only difference between `elear-develop` and PR #125 is rebind, and rebind is
 ---
 
 ## F3: Oversized datagrams make the camera's NAT re-map; PMTU discovery causes most of it
-**Status:** Open. **Priority:** 1. **Seen in:** C1, C2.
+**Status:** Fix ready (WS1 on `ws1-plpmtud-liveness`, not yet field-confirmed). **Priority:** 1. **Seen in:** C1, C2.
 
 This is now the root of nearly every oscillation. F4, F5 and the length of each relay episode all follow from it.
 
@@ -143,7 +143,9 @@ Options considered and folded into WS1: converge on loss, keep PMTU on give-up, 
 **Verification:** see the WS1 test matrix. The field check is no churn bursts at session start, and 3 or fewer migrations per session on Hemanth's path.
 
 ## F4: Slow climb to direct at startup and after restarts
-**Status:** Open. **Priority:** 4. **Seen in:** C1, C2.
+**Status:** Partly fixed. **Priority:** 4. **Seen in:** C1, C2.
+
+MSS is what waited on PMTU. Promotion to direct is not gated on it. WS1 publishes the 1211-byte base as soon as UDP is confirmed, so `channel_compute_mtu` can use it before the search finishes. The route-choice leftovers stay in WS3.
 
 **Evidence:**
 - **Startup choice depends on start order:**
@@ -151,7 +153,7 @@ Options considered and folded into WS1: converge on loss, keep PMTU on give-up, 
   - All phone→camera data then goes as `REQ_KEY … 21` over TCP through the NMN, for 70s and 100s in C1 and 71s in C2.
   - When the phone starts first, it commits `relay-udp` (C2 run 3: 74s before direct).
 - **No step down to relay-udp:** the backbone-UDP candidate is pre-empted by the direct-UDP candidate, so `meta-direct` never moves to `relay-udp`.
-- **Direct is gated on PMTU:** promotion only happens about 5s after "Fixing MTU". Candidate starts before that (every ~10s, each on the camera's then-current port) all go nowhere.
+- **MSS was gated on PMTU:** the channel stayed on the floor until "Fixing MTU", about 5s after the candidate had already started. Promotion itself was not waiting on that log. WS1 removes the MSS wait by publishing the base immediately.
 - **After a camera restart (C2 run 1, 12:30:48):** the phone never got back to direct before the app was closed at about 12:31:53. That is where the restart cycle in C2 started.
 
 **Fix:**
@@ -163,7 +165,7 @@ Options considered and folded into WS1: converge on loss, keep PMTU on give-up, 
 **Coming risk:** once the phone goes direct earlier, any remaining churn costs about 500ms of phone→camera data per rebind (the quiet window). WS1 removes the churn, so this should not show up; check for it in the first field capture after WS1.
 
 ## F5: Liveness is one probe per window; one lost reply demotes the path
-**Status:** Open. **Priority:** 2. **Seen in:** C2.
+**Status:** Fix ready (WS1, not yet field-confirmed). **Priority:** 2. **Seen in:** C2.
 
 **Evidence (C2, 12:36:11–12:37:05):**
 - At 12:36:11.596 the camera sent its 64-byte liveness probe and its 1439-byte raise in the same millisecond.
@@ -176,7 +178,7 @@ Options considered and folded into WS1: converge on loss, keep PMTU on give-up, 
 **Fix:** WS1. Liveness becomes its own state machine with 3 tries per window. A give-up demotes the route but never touches PLPMTU, and liveness is never sent in the same tick as a size probe.
 
 ## F6: The camera's NAT expires idle mappings faster than our ping cadence
-**Status:** Open. **Priority:** 2. **Seen in:** C1 (one case), C2.
+**Status:** Fix ready (WS1 adaptive keepalive, not yet field-confirmed). **Priority:** 2. **Seen in:** C1 (one case), C2.
 
 **Evidence (C2, 12:38:15–12:39:32):**
 - The stream stopped at about 12:38:15. After that, the camera's only packet toward the phone was its reply to the phone's 12:38:25 ping.
@@ -319,23 +321,16 @@ Rules for every workstream:
   - The learned value is persisted with the PLPMTU entry.
 - **Backbone UDP:** keeps its required keepalive (currently 25s), but uses the same adaptive rule. Only peers whose NATs expire faster pay for a shorter interval, which keeps the load on the NMN proportional across a global fleet.
 
-**Delivery: one plan, three PRs.**
-- **PR A: split the state machines and remove the gate.**
-  - Separate liveness and PLPMTU state, replacing the overloaded `mtuprobes`.
-  - Liveness retries; a give-up keeps PLPMTU.
-  - Start at base 1232 and promote direct without waiting for PMTU.
-  - The idle keepalive with the adaptive interval.
-  - The in-memory per-remote-IP cache.
-- **PR B: the new search.**
-  - The ladder and refine search, 3 tries per size, `largest_failed`, and raise backoff.
-  - The one-direction 64-byte size acknowledgement (wire change, `PROT_MINOR` bump).
-  - Hostile-path detection and data-plane black-hole detection.
-  - Remove the old echo-based discovery.
-- **PR C: persistence and observability.**
-  - Persist the cache on disk, per node per remote IP.
-  - Devtool status fields and counters.
-- **ADRs:** a new ADR for PLPMTUD and liveness. It records the keepalive change against ADR 0010 and updates ADR 0004's consequences about parked PMTU liveness.
-- **Field captures:** after PR B and after PR C.
+**Delivery:** implemented together on `ws1-plpmtud-liveness` (not split into three PRs in the tree). `PROT_MINOR` is 6. ADR 0011 records the decisions. Field capture C3 is still to be run.
+
+- Liveness, PLPMTU and keepalive are separate machines. `mtuprobes` is gone.
+- A liveness give-up keeps the learned size.
+- Search starts at payload 1211 (UDP 1232) and walks a fixed ladder. There is no binary refine.
+- Size probes are one-direction `SIZE_REQUEST` / 64-byte `SIZE_ACK`. An echo longer than 64 bytes is dropped.
+- Hostile paths and data-plane black holes hold or drop the size without a full rediscovery.
+- Both ends send an adaptive idle keepalive. The interval shrinks after a confirmed idle expiry and grows back toward the cap.
+- The per-node per-remote-IP cache is in the host config trailer. `MESHLINK_STORAGE_DISABLED` and `KEYS_ONLY` keep it in memory only.
+- Devtool node status is version 6.
 
 **WS1 test matrix (netns, in the `meshlink-arm64` container):**
 - **Black hole:** DF packets above N are dropped with no ICMP. Data flows at base from the first second, and the search settles with at most 3 tries per size.
@@ -384,7 +379,7 @@ Rules for every workstream:
 The logs are large (C2's phone log is 175 MB), so each analysis first builds compact extracts:
 - **Phone:** keep only `ct_meshlink_logger_cb` lines, strip CR, and reduce each line to `<epoch_ms> <pid> <message>`. Each pid is one app run.
 - **Camera:** keep only `ct_meshlink_logger_cb` lines and reduce each to `<epoch_ms> <message>`. Each file is one camera run.
-- **Key-event timeline:** filter on `Path route`, `Path UDP`, `UDP rebind`, `Punch`, `Fixing MTU`, `Increase in PMTU`, `did not respond`, `Suspect fallback`, `became (un)reachable`, `meshlink_open_ex` and `Error sending`, and print readable IST times.
+- **Key-event timeline:** filter on `Path route`, `Path UDP`, `UDP rebind`, `Punch`, `PLPMTU of`, `UDP keepalive interval`, `did not respond`, `Suspect fallback`, `became (un)reachable`, `meshlink_open_ex` and `Error sending`, and print readable IST times.
 - **Per-direction traffic in 5s buckets:** count `Sending packet of … to N` (direct, or followed by `Relaying type-8 via UDP`), `Received packet of … from N`, and `REQ_KEY from 0: 15 <src> <dst> 21` (delivered over META).
-- **PMTU cycles:** group `Sending MTU probe length L to N at <non-broadcast>` lines until `Fixing MTU of N`, and count probes larger than the settled MTU.
+- **PMTU cycles:** group `Sending MTU probe length L to N at <non-broadcast>` lines until `PLPMTU of N settled`, and count probes larger than the settled size. `PLPMTU of N raised` is a step up. `PLPMTU of N: path is hostile` and `black hole detected` are the phase-B holds.
 - **App-layer symptoms:** `meshlink_channel_send failed`, `MediaStreamChannel: onStatusChanged`, and `meshlink_channel_abort`.

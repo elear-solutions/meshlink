@@ -63,6 +63,76 @@ typedef struct udp_observation_t {
 } udp_observation_t;
 
 
+typedef enum {
+	PLPMTU_DISABLED = 0,
+	PLPMTU_BASE,
+	PLPMTU_VERIFY,
+	PLPMTU_SEARCHING,
+	PLPMTU_COMPLETE,
+	PLPMTU_ERROR
+} path_plpmtu_state_t;
+
+typedef struct path_plpmtu_t {
+	path_plpmtu_state_t state;
+	uint16_t size;
+	uint16_t largest_failed;
+	uint16_t probe_size;
+	uint64_t probe_nonce;
+	uint8_t probe_tries;
+	uint8_t raise_backoff;
+	bool hostile;
+	bool bh_verifying;
+	struct timespec probe_sent_at, raise_at, last_oversize_sent_at, bh_first_at;
+	uint8_t bh_evidence;
+	sockaddr_t path_ip;
+	timeout_t timer;
+	uint32_t probes_sent, probes_lost, probes_oversize, black_holes, emsgsize, cache_hits, hostile_marks;
+} path_plpmtu_t;
+
+typedef enum {
+	LIVENESS_IDLE = 0,
+	LIVENESS_PARKED,
+	LIVENESS_PROBING
+} path_liveness_state_t;
+
+typedef struct path_liveness_t {
+	path_liveness_state_t state;
+	uint64_t nonce;
+	uint8_t tries;
+	struct timespec first_try_at;
+	uint32_t idle_gap_ms;
+	timeout_t timer;
+	uint32_t probes_sent, retries, giveups;
+	bool gave_up;
+} path_liveness_t;
+
+typedef struct path_keepalive_t {
+	uint32_t interval_ms;
+	struct timespec last_tx_at, last_rx_at, last_grow_at, last_probe_at;
+	uint32_t pending_gap_ms;
+	sockaddr_t pending_ip;
+	struct timespec pending_since;
+	timeout_t timer;
+	uint32_t sent, expiries;
+} path_keepalive_t;
+
+typedef struct path_local_discovery_t {
+	uint64_t nonce;
+	uint8_t tries;
+	bool active, exhausted;
+	timeout_t timer;
+} path_local_discovery_t;
+
+typedef struct path_mtu_cache_entry_t {
+	uint8_t family;
+	uint8_t addr[16];
+	uint16_t size, largest_failed;
+	uint8_t flags, raise_backoff;
+	uint32_t keepalive_ms;
+	int64_t updated_at;
+	uint32_t net_fp;
+} path_mtu_cache_entry_t;
+
 typedef struct node_t {
 	// Public member variables
 	char *name;                             /* name of this node */
@@ -70,7 +140,6 @@ typedef struct node_t {
 
 	// Private member variables
 	node_status_t status;
-	uint16_t minmtu;                        /* Probed minimum MTU */
 	uint16_t relay_budget;                  /* Accepted type-8 vpn budget; raises channel MSS on UDP relay */
 	dev_class_t devclass;
 
@@ -93,13 +162,12 @@ typedef struct node_t {
 	uint64_t in_meta;                       /* Bytes received from meta-connections, heartbeat packets etc. */
 	uint64_t out_meta;                      /* Bytes sent on meta-connections, heartbeat packets etc. */
 
-	// MTU probes
-	timeout_t mtutimeout;                   /* Probe event */
-	int mtuprobes;                          /* Number of probes */
-	unsigned liveness_probes_sent;          /* Parked 64-byte liveness probes actually emitted */
-	uint16_t mtu;                           /* Maximum size of packets to send to this node */
-	uint16_t maxmtu;                        /* Probed maximum MTU */
 	uint16_t mtu_probe_request_len;         /* Outbound probe-request payload length; set only around sptps_send_record for dest-IP DEBUG log */
+	path_plpmtu_t plpmtu;
+	path_liveness_t liveness;
+	path_keepalive_t keepalive;
+	path_local_discovery_t local_discovery;
+	path_mtu_cache_entry_t mtu_cache[PATH_MTU_CACHE_ENTRIES];
 
 	// Type-8 DEBUG log scratch (borrowed; set only around sptps_send_record)
 	const char *relay_send_origin;          /* Origin name for type-8 DEBUG log */
@@ -170,8 +238,6 @@ typedef struct node_t {
 	suspect_validation_t suspect_validation; /* nonce-epoch recovery; not PMTU */
 	udp_rebind_t udp_rebind;                /* live NAT rebind of a confirmed ordinary peer */
 	peer_path_demand_t peer_udp;            /* Channel refcount + grace for ordinary-peer UDP */
-	time_t pmtu_increase_next;              /* Earliest next full-size "is the path bigger now" probe */
-	uint16_t pmtu_raise_pending;            /* Outstanding maxmtu+8 probe length; 0 if none */
 	sockaddr_t probe_dest_override;          /* Dest for a PKT_PROBE while override is active */
 	bool probe_dest_override_active;        /* Armed around one send_udppacket, then cleared */
 	sockaddr_t app_udp_override;            /* Committed application UDP dest for one send */
@@ -181,7 +247,8 @@ typedef struct node_t {
 	uint32_t relay_oversize_drops;          /* Type-8 records dropped for hop MTU */
 	time_t fallback_oversize_logged_at;     /* Last redirect INFO; at most once per 10s */
 	time_t relay_oversize_logged_at;        /* Last oversize-drop INFO; at most once per 10s */
-	uint16_t devtool_probe_reply_limit;     /* Test: drop probe requests longer than this; 0 = off */
+	uint16_t devtool_drop_size_probes_above; /* Test: receiver drops SIZE_REQUEST longer than this; 0 = off */
+	uint8_t devtool_drop_liveness_replies;  /* Test: drop this many LIVENESS echoes */
 	unsigned devtool_drop_direct_udp_records; /* Test: next N direct-UDP application sends are discarded */
 
 	// Graph-related member variables

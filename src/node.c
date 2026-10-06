@@ -44,11 +44,17 @@ void init_nodes(meshlink_handle_t *mesh) {
 
 void exit_nodes(meshlink_handle_t *mesh) {
 	if(mesh->nodes) {
-		/* free_node() aborts if a timer is still armed. Punch and promotion
-		   are dropped when reachability flips; a confirmed peer can still
-		   hold a rebind challenge until the tree is destroyed. */
+		/* free_node() aborts if a timer is still armed. Reachability drops
+		   punch and promotion; shutdown still has to drop whatever is left. */
 		for splay_each(node_t, n, mesh->nodes) {
+			timeout_del(&mesh->loop, &n->plpmtu.timer);
+			timeout_del(&mesh->loop, &n->liveness.timer);
+			timeout_del(&mesh->loop, &n->keepalive.timer);
+			timeout_del(&mesh->loop, &n->local_discovery.timer);
+			timeout_del(&mesh->loop, &n->promotion_timer);
+			timeout_del(&mesh->loop, &n->punch_timer);
 			timeout_del(&mesh->loop, &n->rebind_timer);
+			timeout_del(&mesh->loop, &n->suspect_validation.timer);
 		}
 	}
 
@@ -68,9 +74,8 @@ node_t *new_node(void) {
 	node_t *n = xzalloc(sizeof(*n));
 
 	n->edge_tree = new_edge_tree();
-	n->mtu = MTU;
-	n->maxmtu = MTU;
 	n->devclass = DEV_CLASS_UNKNOWN;
+	n->keepalive.interval_ms = PATH_KEEPALIVE_INITIAL_MS;
 	n->udp_tier = PATH_TIER_NONE;
 	n->last_path_tier = PATH_TIER_NONE;
 	n->active_route.kind = DATA_ROUTE_NONE;
@@ -197,7 +202,7 @@ void free_node(node_t *n) {
 	ecdsa_free(n->ecdsa);
 	sptps_stop(&n->sptps);
 
-	if(n->mtutimeout.cb || n->promotion_timer.cb || n->punch_timer.cb || n->suspect_validation.timer.cb || n->rebind_timer.cb) {
+	if(n->plpmtu.timer.cb || n->liveness.timer.cb || n->keepalive.timer.cb || n->local_discovery.timer.cb || n->promotion_timer.cb || n->punch_timer.cb || n->suspect_validation.timer.cb || n->rebind_timer.cb) {
 		abort();
 	}
 
@@ -262,7 +267,10 @@ void node_del(meshlink_handle_t *mesh, node_t *n) {
 	node_clear_route_references(mesh, n);
 	path_rebind_cancel(mesh, n);
 	path_punch_cancel(mesh, n);
-	timeout_del(&mesh->loop, &n->mtutimeout);
+	timeout_del(&mesh->loop, &n->plpmtu.timer);
+	timeout_del(&mesh->loop, &n->liveness.timer);
+	timeout_del(&mesh->loop, &n->keepalive.timer);
+	timeout_del(&mesh->loop, &n->local_discovery.timer);
 	timeout_del(&mesh->loop, &n->promotion_timer);
 	timeout_del(&mesh->loop, &n->punch_timer);
 	timeout_del(&mesh->loop, &n->rebind_timer);

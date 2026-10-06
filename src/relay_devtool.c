@@ -408,13 +408,13 @@ static void relay_cover_handle_record(meshlink_handle_t *mesh, node_t *from, nod
 	hop->status.udp_confirmed = true;
 	hop->status.validkey = true;
 	hop->status.temp_udp_confirmed = false;
-	hop->minmtu = MINMTU;
+	hop->plpmtu.size = MINMTU;
 	(void)relay_handle_record(mesh, from, ctx->bigwrap, (uint16_t)ctx->wlen);
 	dest->nexthop = dest;
 	dest->status.udp_confirmed = true;
 	dest->status.validkey = true;
 	dest->status.temp_udp_confirmed = false;
-	dest->minmtu = MINMTU;
+	dest->plpmtu.size = MINMTU;
 	(void)relay_handle_record(mesh, from, ctx->bigwrap, (uint16_t)ctx->wlen);
 
 }
@@ -433,7 +433,7 @@ static void relay_cover_maybe_report(meshlink_handle_t *mesh, node_t *from, node
 	dest->status.validkey = true;
 	dest->status.temp_udp_confirmed = false;
 	(void)relay_prefix21(from->name, dest->name, &ctx->prefix21);
-	(void)relay_sub_u32(dest->minmtu > MINMTU ? dest->minmtu : MINMTU, ctx->prefix21, &ctx->budget);
+	(void)relay_sub_u32(dest->plpmtu.size > MINMTU ? dest->plpmtu.size : MINMTU, ctx->prefix21, &ctx->budget);
 	(void)relay_devtool_seed_report(mesh, from->name, dest->name, 0, true);
 	ctx->e = relay_report_find(mesh, from->name, dest->name);
 
@@ -502,9 +502,9 @@ static void relay_cover_req_mtu(meshlink_handle_t *mesh, node_t *from, node_t *d
 	   channel_compute_mtu(), not this return value. */
 	uint16_t fixed = relay_fixed_channel_mtu(mesh, dest);
 	dest->status.udp_confirmed = true;
-	dest->minmtu = 0;
+	dest->plpmtu.size = 0;
 	assert(relay_fixed_channel_mtu(mesh, dest) == fixed);
-	dest->minmtu = MTU;
+	dest->plpmtu.size = MTU;
 	assert(relay_fixed_channel_mtu(mesh, dest) == fixed);
 	dest->status.udp_confirmed = false;
 	dest->status.reachable = false;
@@ -581,7 +581,7 @@ static void relay_cover_hard_send_block(meshlink_handle_t *mesh, node_t *from, n
 		dest->status.udp_confirmed = true;
 		dest->status.validkey = true;
 		dest->status.temp_udp_confirmed = false;
-		dest->minmtu = MINMTU;
+		dest->plpmtu.size = MINMTU;
 		relay_maybe_report(mesh, huge, dest, false);
 		relay_maybe_report(mesh, "no_such_origin", dest, false);
 		from->nexthop = NULL;
@@ -608,7 +608,7 @@ static void relay_cover_hard_send_block(meshlink_handle_t *mesh, node_t *from, n
 		if(extra) {
 			bool extra_uc = extra->status.udp_confirmed;
 			bool extra_vk = extra->status.validkey;
-			uint16_t extra_mtu = extra->minmtu;
+			uint16_t extra_mtu = extra->plpmtu.size;
 			ctx->wlen = sizeof(ctx->bigwrap);
 			(void)relay_encode(from->name, dest->name, ctx->big, sizeof(ctx->big), ctx->bigwrap, &ctx->wlen);
 			dest->nexthop = extra;
@@ -616,11 +616,11 @@ static void relay_cover_hard_send_block(meshlink_handle_t *mesh, node_t *from, n
 			extra->status.udp_confirmed = true;
 			extra->status.validkey = true;
 			extra->status.temp_udp_confirmed = false;
-			extra->minmtu = MINMTU;
+			extra->plpmtu.size = MINMTU;
 			(void)relay_handle_record(mesh, from, ctx->bigwrap, (uint16_t)ctx->wlen);
 			extra->status.udp_confirmed = extra_uc;
 			extra->status.validkey = extra_vk;
-			extra->minmtu = extra_mtu;
+			extra->plpmtu.size = extra_mtu;
 		}
 	}
 
@@ -633,7 +633,7 @@ static void relay_cover_report_null(meshlink_handle_t *mesh, node_t *from, node_
 	dest->status.udp_confirmed = true;
 	dest->status.validkey = true;
 	dest->status.temp_udp_confirmed = false;
-	dest->minmtu = MINMTU;
+	dest->plpmtu.size = MINMTU;
 	relay_maybe_report(mesh, from->name, dest, false);
 	relay_devtool_force_report_null_connection(mesh, false);
 
@@ -734,14 +734,14 @@ static void relay_cover_restore(meshlink_handle_t *mesh, node_t *from, node_t *d
 	dest->status.udp_confirmed = ctx->saved_uc;
 	dest->status.reachable = ctx->saved_reach;
 	dest->relay_budget = ctx->saved_budget;
-	dest->minmtu = ctx->saved_minmtu;
-	hop->minmtu = ctx->saved_hminmtu;
+	dest->plpmtu.size = ctx->saved_minmtu;
+	hop->plpmtu.size = ctx->saved_hminmtu;
 	dest->sptps.outstate = ctx->saved_out;
 	from->status.validkey = ctx->saved_hvalid;
 	from->sptps.state = ctx->saved_state;
 	hop->status.udp_confirmed = ctx->saved_huc;
 	hop->connection = ctx->saved_conn;
-	hop->mtuprobes = ctx->saved_probes;
+	hop->plpmtu.probes_sent = ctx->saved_probes;
 }
 
 static void relay_cover_exit_uninitialized(void) {
@@ -765,12 +765,12 @@ bool relay_devtool_cover_unit(meshlink_handle_t *mesh, node_t *from, node_t *des
 	ctx.saved_uc = dest->status.udp_confirmed;
 	ctx.saved_reach = dest->status.reachable;
 	ctx.saved_budget = dest->relay_budget;
-	ctx.saved_minmtu = dest->minmtu;
-	ctx.saved_hminmtu = hop->minmtu;
+	ctx.saved_minmtu = dest->plpmtu.size;
+	ctx.saved_hminmtu = hop->plpmtu.size;
 	ctx.saved_out = dest->sptps.outstate;
 	ctx.saved_huc = hop->status.udp_confirmed;
 	ctx.saved_hvalid = from->status.validkey;
-	ctx.saved_probes = hop->mtuprobes;
+	ctx.saved_probes = hop->plpmtu.probes_sent;
 	ctx.saved_conn = hop->connection;
 	ctx.saved_state = from->sptps.state;
 	dest->prev_nexthop = hop;

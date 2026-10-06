@@ -17,6 +17,8 @@
 #include "net.h"
 #include "netutl.h"
 #include "node.h"
+#include "path_liveness.h"
+#include "path_plpmtu.h"
 #include "path_policy.h"
 
 #include <string.h>
@@ -127,7 +129,9 @@ void path_backbone_udp_arm(meshlink_handle_t *mesh, int sec, long nsec) {
 }
 
 static void path_backbone_udp_arm_keepalive(meshlink_handle_t *mesh) {
-	int base = mesh->backbone_udp_keepalive_sec > 0 ? mesh->backbone_udp_keepalive_sec : PATH_BACKBONE_UDP_KEEPALIVE_SEC;
+	int base = mesh->backbone_udp_keepalive_sec > 0
+	           ? mesh->backbone_udp_keepalive_sec
+	           : (int)(path_keepalive_backbone_interval_ms(mesh, mesh->backbone_udp.node) / 1000);
 	int span = base / 5;
 	int delay;
 
@@ -253,6 +257,7 @@ static void path_backbone_udp_timer(event_loop_t *loop, void *data) {
 				p->unanswered = 0;
 
 				if(n->status.udp_confirmed) {
+					path_keepalive_note_giveup(mesh, n, path_keepalive_backbone_interval_ms(mesh, n));
 					path_note_udp_demoted_reason(mesh, n, "backbone-udp-timeout");
 				} else {
 					p->confirmed = false;
@@ -334,10 +339,12 @@ void path_backbone_udp_stop(meshlink_handle_t *mesh) {
 	timeout_del(&mesh->loop, &path->timer);
 
 	if(node) {
-		timeout_del(&mesh->loop, &node->mtutimeout);
+		path_plpmtu_stop(mesh, node);
+		path_liveness_stop(mesh, node);
+		path_keepalive_stop(mesh, node);
 		path_scheduler_cancel(mesh, node, PATH_TX_BACKBONE_REQUIRED);
 		path_scheduler_cancel(mesh, node, PATH_TX_LIVENESS);
-		path_scheduler_cancel(mesh, node, PATH_TX_PMTU_INCREASE);
+		path_scheduler_cancel(mesh, node, PATH_TX_PLPMTU_PROBE);
 	}
 
 	if(owns_active_endpoint) {
@@ -436,10 +443,6 @@ void path_backbone_udp_observe_reply(meshlink_handle_t *mesh, node_t *n, const s
 
 		path_note_udp_confirmed(mesh, n);
 		logger(mesh, MESHLINK_INFO, "Backbone UDP mapping to %s confirmed", n->name);
-
-		if(!n->mtutimeout.cb && !n->devtool_force_meta) {
-			send_mtu_probe(mesh, n);
-		}
 	}
 
 	path_backbone_udp_arm_keepalive(mesh);

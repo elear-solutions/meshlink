@@ -33,6 +33,8 @@ static void probe_log_cb(meshlink_handle_t *mesh, meshlink_log_level_t level, co
 	} else if(strstr(text, "Sending MTU probe reply")) {
 		probe_reply_logs++;
 		set_sync_flag(&probe_reply_flag, true);
+	} else if(strstr(text, "PLPMTU of ")) {
+		set_sync_flag(&probe_log_flag, true);
 	}
 }
 

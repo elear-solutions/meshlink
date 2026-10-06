@@ -29,6 +29,7 @@
 #include "netutl.h"
 #include "node.h"
 #include "packmsg.h"
+#include "path_plpmtu.h"
 #include "path_policy.h"
 #include "protocol.h"
 #include "relay.h"
@@ -181,6 +182,17 @@ bool node_read_public_key(meshlink_handle_t *mesh, node_t *n) {
 	/* Optional provenance and capability arrays after the original host-config tail. */
 	unpack_recent_sources(&in, n, count, known_count, MAX_RECENT - known_count);
 	unpack_recent_caps(&in, n, count, known_count, MAX_RECENT - known_count);
+	{
+		node_t discard;
+
+		memset(&discard, 0, sizeof discard);
+
+		if(mesh->storage_policy == MESHLINK_STORAGE_DISABLED || mesh->storage_policy == MESHLINK_STORAGE_KEYS_ONLY) {
+			path_mtu_cache_unpack(&discard, &in);
+		} else {
+			path_mtu_cache_unpack(n, &in);
+		}
+	}
 
 	path_refresh_canonical_endpoint(n);
 	path_sanitize_recent(mesh, n);
@@ -271,6 +283,17 @@ bool node_read_from_config(meshlink_handle_t *mesh, node_t *n, const config_t *c
 
 	unpack_recent_sources(&in, n, count, 0, MAX_RECENT);
 	unpack_recent_caps(&in, n, count, 0, MAX_RECENT);
+	{
+		node_t discard;
+
+		memset(&discard, 0, sizeof discard);
+
+		if(mesh->storage_policy == MESHLINK_STORAGE_DISABLED || mesh->storage_policy == MESHLINK_STORAGE_KEYS_ONLY) {
+			path_mtu_cache_unpack(&discard, &in);
+		} else {
+			path_mtu_cache_unpack(n, &in);
+		}
+	}
 
 	path_refresh_canonical_endpoint(n);
 	path_sanitize_recent(mesh, n);
@@ -299,7 +322,7 @@ bool node_write_config(meshlink_handle_t *mesh, node_t *n, bool new_key) {
 		break;
 	}
 
-	uint8_t buf[4096];
+	uint8_t buf[8192];
 	packmsg_output_t out = {buf, sizeof(buf)};
 
 	packmsg_add_uint32(&out, MESHLINK_CONFIG_VERSION);
@@ -345,6 +368,13 @@ bool node_write_config(meshlink_handle_t *mesh, node_t *n, bool new_key) {
 
 	for(uint32_t i = 0; i < count; i++) {
 		packmsg_add_uint8(&out, n->recent_cap[i]);
+	}
+
+	/* Optional trailer. KEYS_ONLY and self stay memory-only. Old files omit it. */
+	if(n != mesh->self && mesh->storage_policy != MESHLINK_STORAGE_KEYS_ONLY) {
+		path_mtu_cache_pack(n, &out);
+	} else {
+		packmsg_add_array(&out, 0);
 	}
 
 	if(!packmsg_output_ok(&out)) {

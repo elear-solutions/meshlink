@@ -22,8 +22,10 @@ discovery from zero. One rediscovery in a field capture settled at 726
 because only the small replies made it back during the dead window.
 Each event costs 30 to 45 seconds instead of about one round trip.
 
-A keepalive does not prevent the remap. The camera's public port
-changed while it was still sending.
+A keepalive does not prevent a remap that happens while the path is
+still sending. The camera's public port changed under load. ADR 0011
+adds an idle keepalive for the other case, where the mapping expires
+because nothing was sent. That does not change the rebind rules here.
 
 ## Decision
 

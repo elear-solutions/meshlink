@@ -4,6 +4,7 @@
 #undef NDEBUG
 #endif
 
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/types.h>
@@ -14,6 +15,8 @@
 
 #include "../src/meshlink.h"
 #include "netns_utils.h"
+
+#include <string.h>
 #include "utils.h"
 
 static int ip = 1;
@@ -509,6 +512,243 @@ bool nat_force_rebind(void) {
 
 	/* 0: entries deleted. 1: table already empty. Anything else is a real failure. */
 	return WEXITSTATUS(rc) == 0 || WEXITSTATUS(rc) == 1;
+}
+
+static const char *ipt_bin(void) {
+	return access("/usr/sbin/iptables-legacy", X_OK) == 0 ? "/usr/sbin/iptables-legacy" : "iptables";
+}
+
+bool netns_set_dev_mtu(const char *ns, const char *dev, int mtu) {
+	char *command = NULL;
+	int rc;
+
+	if(!ns || !dev || mtu < 68) {
+		return false;
+	}
+
+	assert(asprintf(&command, "/bin/ip netns exec %s ip link set dev %s mtu %d", ns, dev, mtu) > 0);
+	rc = system(command);
+	free(command);
+	return rc == 0;
+}
+
+bool netns_drop_udp_over(const char *ns, const char *chain, int ip_len) {
+	char *command = NULL;
+	int rc;
+
+	if(!ns || !chain || ip_len < 1) {
+		return false;
+	}
+
+	assert(asprintf(&command,
+	                "/bin/ip netns exec %s %s -A %s -p udp -m length --length %d:65535 -j DROP",
+	                ns, ipt_bin(), chain, ip_len) > 0);
+	rc = system(command);
+	free(command);
+	return rc == 0;
+}
+
+bool nat_set_link_mtu(int side, int mtu) {
+	if(side < 0 || side > 1 || !nat_netns_name[side]) {
+		return false;
+	}
+
+	return netns_set_dev_mtu(nat_netns_name[side], "eth0", mtu);
+}
+
+bool nat_drop_udp_over(int side, int ip_len) {
+	if(side < 0 || side > 1 || !nat_netns_name[side]) {
+		return false;
+	}
+
+	return netns_drop_udp_over(nat_netns_name[side], "FORWARD", ip_len);
+}
+
+static bool nat_udp_egress(int side, int ip_len, bool remove, const char *dest) {
+	char *command = NULL;
+	int rc;
+
+	if(side < 0 || side > 1 || !nat_netns_name[side] || ip_len < 1) {
+		return false;
+	}
+
+	if(dest) {
+		assert(asprintf(&command,
+		                "/bin/ip netns exec %s %s -%s FORWARD -i lan -o eth0 -d %s -p udp -m length --length %d:65535 -j DROP",
+		                nat_netns_name[side], ipt_bin(), remove ? "D" : "A", dest, ip_len) > 0);
+	} else {
+		assert(asprintf(&command,
+		                "/bin/ip netns exec %s %s -%s FORWARD -i lan -o eth0 -p udp -m length --length %d:65535 -j DROP",
+		                nat_netns_name[side], ipt_bin(), remove ? "D" : "A", ip_len) > 0);
+	}
+
+	rc = system(command);
+	free(command);
+	return rc == 0;
+}
+
+bool nat_drop_udp_egress(int side, int ip_len) {
+	return nat_udp_egress(side, ip_len, false, NULL);
+}
+
+bool nat_undrop_udp_egress(int side, int ip_len) {
+	return nat_udp_egress(side, ip_len, true, NULL);
+}
+
+bool nat_undrop_udp_over(int side, int ip_len) {
+	char *command = NULL;
+	int rc;
+
+	if(side < 0 || side > 1 || !nat_netns_name[side] || ip_len < 1) {
+		return false;
+	}
+
+	assert(asprintf(&command,
+	                "/bin/ip netns exec %s %s -D FORWARD -p udp -m length --length %d:65535 -j DROP",
+	                nat_netns_name[side], ipt_bin(), ip_len) > 0);
+	rc = system(command);
+	free(command);
+	return rc == 0;
+}
+
+bool nat_set_conntrack_udp_timeout(int side, int sec) {
+	char *command = NULL;
+	FILE *fp;
+	char line[64];
+	int got = -1;
+	const char *ns;
+
+	if(side < 0 || side > 1 || !nat_netns_name[side] || sec < 1) {
+		return false;
+	}
+
+	ns = nat_netns_name[side];
+	assert(asprintf(&command,
+	                "/bin/ip netns exec %s sysctl -w net.netfilter.nf_conntrack_udp_timeout=%d >/dev/null && "
+	                "/bin/ip netns exec %s sysctl -w net.netfilter.nf_conntrack_udp_timeout_stream=%d >/dev/null && "
+	                "/bin/ip netns exec %s sysctl -n net.netfilter.nf_conntrack_udp_timeout",
+	                ns, sec, ns, sec, ns) > 0);
+	fp = popen(command, "r");
+	free(command);
+
+	if(!fp) {
+		return false;
+	}
+
+	if(fgets(line, sizeof line, fp)) {
+		got = atoi(line);
+	}
+
+	pclose(fp);
+	return got == sec;
+}
+
+static pthread_t nat_punisher_thread;
+static volatile int nat_punisher_stop;
+static int nat_punisher_side;
+static unsigned long nat_punisher_last;
+/* The other peer's WAN address. Side 1 is the cam NAT, so its app flow is to .2. */
+static const char *nat_punish_dest(int side) {
+	return side == 1 ? "203.0.113.2" : "203.0.113.3";
+}
+
+static bool nat_force_rebind_dst(int side, const char *dst) {
+	static const char *bins[] = {"/usr/sbin/conntrack", "/sbin/conntrack", "/usr/bin/conntrack", NULL};
+	const char *bin = NULL;
+	char *command = NULL;
+	int rc;
+	int i;
+
+	if(!nat_netns_name[side] || !dst) {
+		return false;
+	}
+
+	for(i = 0; bins[i]; i++) {
+		if(access(bins[i], X_OK) == 0) {
+			bin = bins[i];
+			break;
+		}
+	}
+
+	if(!bin) {
+		return false;
+	}
+
+	assert(asprintf(&command, "/bin/ip netns exec %s %s -D -p udp -d %s >/dev/null 2>&1", nat_netns_name[side], bin, dst) > 0);
+	rc = system(command);
+	free(command);
+	return rc != -1 && WIFEXITED(rc);
+}
+
+static unsigned long nat_forward_packets(int side) {
+	char *command = NULL;
+	FILE *fp;
+	char line[512];
+	unsigned long pkts = 0;
+
+	assert(asprintf(&command, "/bin/ip netns exec %s %s -L FORWARD -v -x -n", nat_netns_name[side], ipt_bin()) > 0);
+	fp = popen(command, "r");
+	free(command);
+
+	if(!fp) {
+		return 0;
+	}
+
+	while(fgets(line, sizeof line, fp)) {
+		unsigned long n = 0;
+
+		/* The policy line also has a packet count. Only the DROP rule is a punish. */
+		if(!strstr(line, "DROP")) {
+			continue;
+		}
+
+		if(sscanf(line, "%lu", &n) == 1 && n > pkts) {
+			pkts = n;
+		}
+	}
+
+	pclose(fp);
+	return pkts;
+}
+
+static void *nat_punisher_main(void *arg) {
+	(void)arg;
+
+	while(!nat_punisher_stop) {
+		unsigned long pkts = nat_forward_packets(nat_punisher_side);
+
+		if(pkts > nat_punisher_last) {
+			nat_punisher_last = pkts;
+			/* Only the flow toward the other peer. A full UDP flush also
+			   rebinds the relay path and marks PLPMTU hostile at the base. */
+			nat_force_rebind_dst(nat_punisher_side, nat_punish_dest(nat_punisher_side));
+		}
+
+		usleep(200000);
+	}
+
+	return NULL;
+}
+
+bool nat_oversize_punisher_start(int side, int ip_len) {
+	if(!nat_udp_egress(side, ip_len, false, nat_punish_dest(side))) {
+		return false;
+	}
+
+	nat_punisher_side = side;
+	nat_punisher_stop = 0;
+	nat_punisher_last = nat_forward_packets(side);
+	return pthread_create(&nat_punisher_thread, NULL, nat_punisher_main, NULL) == 0;
+}
+
+void nat_oversize_punisher_stop(void) {
+	if(!nat_punisher_thread) {
+		return;
+	}
+
+	nat_punisher_stop = 1;
+	pthread_join(nat_punisher_thread, NULL);
+	nat_punisher_thread = 0;
 }
 
 void close_nat_hole_punch(peer_config_t *peers) {

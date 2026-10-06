@@ -18,6 +18,7 @@
 #include "netutl.h"
 #include "node.h"
 #include "net_upgrade.h"
+#include "path_plpmtu.h"
 #include "path_policy.h"
 #include "path_policy_devtool.h"
 #include "protocol.h"
@@ -1625,7 +1626,7 @@ static bool cover_demand(meshlink_handle_t *mesh) {
 		CHECK(!path_liveness_probe_warranted(mesh, &dummy));
 	}
 
-	timeout_del(&mesh->loop, &dummy.mtutimeout);
+	timeout_del(&mesh->loop, &dummy.plpmtu.timer);
 	timeout_del(&mesh->loop, &dummy.promotion_timer);
 	path_suspect_stop(mesh, &dummy);
 	return true;
@@ -2614,9 +2615,8 @@ static bool cover_fallback_record_fit(meshlink_handle_t *mesh) {
 	dest->status.validkey = true;
 	dest->status.udp_confirmed = true;
 	dest->udp_tier = PATH_TIER_DIRECT_WAN_UDP;
-	dest->minmtu = 1430;
-	dest->mtu = 1430;
-	dest->mtuprobes = 31;
+	dest->plpmtu.size = 1430;
+	dest->plpmtu.state = PLPMTU_COMPLETE;
 	set_v4(&wan, "203.0.113.55", 9);
 	path_copy_sockaddr(&dest->address, &wan);
 	dest->active_route.kind = DATA_ROUTE_DIRECT_UDP;
@@ -2630,8 +2630,9 @@ static bool cover_fallback_record_fit(meshlink_handle_t *mesh) {
 	hop.status.udp_confirmed = true;
 	hop.udp_tier = PATH_TIER_DIRECT_WAN_UDP;
 	hop.address_source = ADDR_SRC_AUTH_DIRECT;
-	hop.minmtu = 1442;
-	hop.mtuprobes = 31;
+	hop.plpmtu.size = 1442;
+	hop.plpmtu.state = PLPMTU_COMPLETE;
+	hop.status.udp_confirmed = true;
 	set_v4(&hop.address, "203.0.113.80", 9);
 	hopconn.status.active = true;
 	hopconn.node = &hop;
@@ -2681,13 +2682,15 @@ static bool cover_fallback_record_fit(meshlink_handle_t *mesh) {
 
 	path_suspect_stop(mesh, dest);
 	dest->active_route.suspect = false;
-	dest->minmtu = 1411;
-	dest->mtu = 1411;
+	dest->plpmtu.size = 1411;
+	dest->plpmtu.state = PLPMTU_COMPLETE;
 	dest->active_route.kind = DATA_ROUTE_RELAY;
 	dest->active_route.relay_carrier = RELAY_CARRIER_UDP;
 	dest->active_route.first_hop = &hop;
 	path_copy_sockaddr(&dest->active_route.udp_endpoint, &hop.address);
-	hop.minmtu = (uint16_t)(1418 + prefix21 + 16);
+	hop.plpmtu.size = (uint16_t)(1418 + prefix21 + 16);
+	hop.plpmtu.state = PLPMTU_COMPLETE;
+	hop.status.udp_confirmed = true;
 	path_note_route_suspect(mesh, dest, "reliable retransmit");
 	CHECK_F(dest->active_route.suspect);
 	redirects = dest->fallback_oversize_redirects;
@@ -2702,11 +2705,13 @@ static bool cover_fallback_record_fit(meshlink_handle_t *mesh) {
 
 	path_suspect_stop(mesh, dest);
 	path_suspect_stop(mesh, &hop);
-	hop.minmtu = 1442;
+	hop.plpmtu.size = 1442;
+	hop.plpmtu.state = PLPMTU_COMPLETE;
+	hop.status.udp_confirmed = true;
 	hop.status.udp_confirmed = true;
 	hop.active_route.suspect = false;
-	dest->minmtu = 1430;
-	dest->mtu = 1430;
+	dest->plpmtu.size = 1430;
+	dest->plpmtu.state = PLPMTU_COMPLETE;
 	dest->status.udp_confirmed = true;
 	dest->active_route.kind = DATA_ROUTE_DIRECT_UDP;
 	dest->active_route.relay_carrier = RELAY_CARRIER_NONE;
@@ -2905,8 +2910,8 @@ static bool cover_scheduler(meshlink_handle_t *mesh) {
 	path_scheduler_end_transaction(mesh, t2);
 
 	/* Promotion preempts that node's live PMTU slot rather than waiting out discovery. */
-	if(!path_scheduler_begin_transaction(mesh, &q[0], PATH_TXN_PMTU_DISCOVERY, PATH_TX_LIVENESS, NULL)
-	                || !path_scheduler_begin_transaction(mesh, &q[1], PATH_TXN_PMTU_DISCOVERY, PATH_TX_LIVENESS, NULL)) {
+	if(!path_scheduler_begin_transaction(mesh, &q[0], PATH_TXN_PLPMTU_SEARCH, PATH_TX_LIVENESS, NULL)
+	                || !path_scheduler_begin_transaction(mesh, &q[1], PATH_TXN_PLPMTU_SEARCH, PATH_TX_LIVENESS, NULL)) {
 		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: pmtu fill");
 		ok = false;
 		goto done;
@@ -2916,18 +2921,18 @@ static bool cover_scheduler(meshlink_handle_t *mesh) {
 
 	if(!t2
 	                || mesh->probe_budget.active_transactions != PATH_SCHED_MAX_TRANSACTIONS
-	                || path_scheduler_begin_transaction(mesh, &q[0], PATH_TXN_PMTU_DISCOVERY, PATH_TX_LIVENESS, NULL)) {
+	                || path_scheduler_begin_transaction(mesh, &q[0], PATH_TXN_PLPMTU_SEARCH, PATH_TX_LIVENESS, NULL)) {
 		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: pmtu preemption");
 		ok = false;
 		goto done;
 	}
 
-	path_scheduler_end_type(mesh, &q[1], PATH_TXN_PMTU_DISCOVERY);
+	path_scheduler_end_type(mesh, &q[1], PATH_TXN_PLPMTU_SEARCH);
 	path_scheduler_end_transaction(mesh, t2);
 
 	/* Recovery preempts the globally lowest-priority transaction, any node. */
-	if(!path_scheduler_begin_transaction(mesh, &q[0], PATH_TXN_PMTU_DISCOVERY, PATH_TX_LIVENESS, NULL)
-	                || !path_scheduler_begin_transaction(mesh, &q[1], PATH_TXN_PMTU_DISCOVERY, PATH_TX_LIVENESS, NULL)) {
+	if(!path_scheduler_begin_transaction(mesh, &q[0], PATH_TXN_PLPMTU_SEARCH, PATH_TX_LIVENESS, NULL)
+	                || !path_scheduler_begin_transaction(mesh, &q[1], PATH_TXN_PLPMTU_SEARCH, PATH_TX_LIVENESS, NULL)) {
 		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: pmtu refill");
 		ok = false;
 		goto done;
@@ -2937,15 +2942,15 @@ static bool cover_scheduler(meshlink_handle_t *mesh) {
 
 	if(!t3
 	                || mesh->probe_budget.active_transactions != PATH_SCHED_MAX_TRANSACTIONS
-	                || (path_scheduler_begin_transaction(mesh, &q[0], PATH_TXN_PMTU_DISCOVERY, PATH_TX_LIVENESS, NULL)
-	                    && path_scheduler_begin_transaction(mesh, &q[1], PATH_TXN_PMTU_DISCOVERY, PATH_TX_LIVENESS, NULL))) {
+	                || (path_scheduler_begin_transaction(mesh, &q[0], PATH_TXN_PLPMTU_SEARCH, PATH_TX_LIVENESS, NULL)
+	                    && path_scheduler_begin_transaction(mesh, &q[1], PATH_TXN_PLPMTU_SEARCH, PATH_TX_LIVENESS, NULL))) {
 		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: cross-node recovery preemption");
 		ok = false;
 		goto done;
 	}
 
-	path_scheduler_end_type(mesh, &q[0], PATH_TXN_PMTU_DISCOVERY);
-	path_scheduler_end_type(mesh, &q[1], PATH_TXN_PMTU_DISCOVERY);
+	path_scheduler_end_type(mesh, &q[0], PATH_TXN_PLPMTU_SEARCH);
+	path_scheduler_end_type(mesh, &q[1], PATH_TXN_PLPMTU_SEARCH);
 	path_scheduler_end_transaction(mesh, t3);
 
 	if(!path_scheduler_begin_transaction(mesh, &q[0], PATH_TXN_PROMOTION, PATH_TX_CHANNEL_PROMOTION, NULL)
@@ -2972,8 +2977,8 @@ static bool cover_scheduler(meshlink_handle_t *mesh) {
 
 	/* Two PMTU/promotions occupy all slots, then a third node retransmits.
 	   Recovery must start and must not demote probe-free. */
-	if(!path_scheduler_begin_transaction(mesh, &q[0], PATH_TXN_PMTU_DISCOVERY, PATH_TX_LIVENESS, NULL)
-	                || !path_scheduler_begin_transaction(mesh, &q[1], PATH_TXN_PMTU_DISCOVERY, PATH_TX_LIVENESS, NULL)) {
+	if(!path_scheduler_begin_transaction(mesh, &q[0], PATH_TXN_PLPMTU_SEARCH, PATH_TX_LIVENESS, NULL)
+	                || !path_scheduler_begin_transaction(mesh, &q[1], PATH_TXN_PLPMTU_SEARCH, PATH_TX_LIVENESS, NULL)) {
 		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: pmtu occupy");
 		ok = false;
 		goto done;
@@ -3012,8 +3017,8 @@ static bool cover_scheduler(meshlink_handle_t *mesh) {
 
 	path_suspect_stop(mesh, &q[4]);
 	q[4].active_route.suspect = false;
-	path_scheduler_end_type(mesh, &q[0], PATH_TXN_PMTU_DISCOVERY);
-	path_scheduler_end_type(mesh, &q[1], PATH_TXN_PMTU_DISCOVERY);
+	path_scheduler_end_type(mesh, &q[0], PATH_TXN_PLPMTU_SEARCH);
+	path_scheduler_end_type(mesh, &q[1], PATH_TXN_PLPMTU_SEARCH);
 	path_scheduler_end_type(mesh, &q[4], PATH_TXN_SUSPECT);
 
 	/* Equal-priority recovery cannot steal a slot; do not mark or demote. */
@@ -3401,7 +3406,7 @@ static bool cover_scheduler(meshlink_handle_t *mesh) {
 		goto done;
 	}
 
-	req = cover_req(&m, PATH_TX_PMTU_INCREASE, 1400, true);
+	req = cover_req(&m, PATH_TX_PLPMTU_PROBE, 1400, true);
 
 	if(path_scheduler_emit_packet(mesh, NULL, &req) != PATH_SCHED_QUEUED) {
 		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: pmtu increase queue");
@@ -3481,7 +3486,7 @@ static bool cover_scheduler(meshlink_handle_t *mesh) {
 
 	/* Admitted PMTU packets skip the minute bucket; parked liveness does not. */
 	path_scheduler_set_budget(mesh, 4, 0, 8);
-	t0 = path_scheduler_begin_transaction(mesh, &m, PATH_TXN_PMTU_DISCOVERY, PATH_TX_LIVENESS, NULL);
+	t0 = path_scheduler_begin_transaction(mesh, &m, PATH_TXN_PLPMTU_SEARCH, PATH_TX_LIVENESS, NULL);
 	cover_sched_runs = 0;
 	req = cover_req(&m, PATH_TX_LIVENESS, 64, false);
 
@@ -3564,7 +3569,7 @@ static bool cover_scheduler(meshlink_handle_t *mesh) {
 	path_scheduler_set_budget(mesh, 0, 0, 8);
 	mesh->probe_budget.backbone_second_tokens = 1;
 	cover_sched_runs = 0;
-	req = cover_req(&z, PATH_TX_PMTU_INCREASE, 64, false);
+	req = cover_req(&z, PATH_TX_PLPMTU_PROBE, 64, false);
 
 	if(path_scheduler_emit_packet(mesh, NULL, &req) == PATH_SCHED_SENT
 	                || !path_scheduler_begin_transaction(mesh, &a, PATH_TXN_META_UPGRADE, PATH_TX_BACKBONE_REQUIRED, NULL)) {
@@ -3687,7 +3692,7 @@ bool path_policy_cover_unit(meshlink_handle_t *mesh, node_t *live) {
 	                && cover_scheduler(mesh)
 	                && punch_endpoint_cover_unit(mesh)
 	                && rebind_cover_unit(mesh)
-	                && net_devtool_pmtu_liveness_cover_unit(mesh, live)
+	                && path_ws1_cover_unit(mesh)
 	                && node_kex_cover_unit(mesh)
 	                && utcp_mtu_reentry_unit();
 	mesh->probe_max_transactions = saved_max;

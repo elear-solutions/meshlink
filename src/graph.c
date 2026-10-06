@@ -51,6 +51,8 @@
 #include "meshlink_internal.h"
 #include "netutl.h"
 #include "node.h"
+#include "path_liveness.h"
+#include "path_plpmtu.h"
 #include "path_policy.h"
 #include "protocol.h"
 #include "relay.h"
@@ -177,15 +179,14 @@ static void check_reachability(meshlink_handle_t *mesh) {
 			n->last_req_key = -3600;
 
 			n->status.udp_confirmed = false;
-			n->mtu = MTU;
-			n->maxmtu = MTU;
-			n->minmtu = 0;
-			n->mtuprobes = 0;
 			n->relay_budget = 0;
 
+			path_plpmtu_stop(mesh, n);
+			path_liveness_stop(mesh, n);
+			path_keepalive_stop(mesh, n);
+			path_local_discovery_stop(mesh, n);
 			path_rebind_cancel(mesh, n);
 			path_punch_cancel(mesh, n);
-			timeout_del(&mesh->loop, &n->mtutimeout);
 			timeout_del(&mesh->loop, &n->promotion_timer);
 			timeout_del(&mesh->loop, &n->punch_timer);
 			timeout_del(&mesh->loop, &n->rebind_timer);
@@ -223,15 +224,14 @@ static void check_reachability(meshlink_handle_t *mesh) {
 			}
 
 			n->status.udp_confirmed = false;
-			n->mtu = MTU;
-			n->maxmtu = MTU;
-			n->minmtu = 0;
-			n->mtuprobes = 0;
 			n->relay_budget = 0;
 
+			path_plpmtu_stop(mesh, n);
+			path_liveness_stop(mesh, n);
+			path_keepalive_stop(mesh, n);
+			path_local_discovery_stop(mesh, n);
 			path_rebind_cancel(mesh, n);
 			path_punch_cancel(mesh, n);
-			timeout_del(&mesh->loop, &n->mtutimeout);
 			timeout_del(&mesh->loop, &n->promotion_timer);
 			timeout_del(&mesh->loop, &n->punch_timer);
 			timeout_del(&mesh->loop, &n->rebind_timer);

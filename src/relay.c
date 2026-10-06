@@ -18,6 +18,7 @@
 #include "net.h"
 #include "netutl.h"
 #include "node.h"
+#include "path_plpmtu.h"
 #include "path_policy.h"
 #include "protocol.h"
 #include "relay.h"
@@ -435,7 +436,8 @@ void relay_maybe_report(meshlink_handle_t *mesh, const char *origin, struct node
 	}
 
 	uint32_t prefix21 = (uint32_t)relay_prefix_len(origin, dest->name) + RELAY_INNER_MIN;
-	uint32_t base = dest->minmtu > MINMTU ? dest->minmtu : MINMTU;
+	uint16_t plp = path_plpmtu_size(dest);
+	uint32_t base = plp ? plp : MINMTU;
 	uint32_t budget;
 
 	if(!relay_sub_u32(base, prefix21, &budget)) {
@@ -560,7 +562,8 @@ bool relay_handle_record(meshlink_handle_t *mesh, node_t *from, const void *data
 		return true;
 	}
 
-	uint16_t limit = out->minmtu > MINMTU ? out->minmtu : MINMTU;
+	uint16_t plp = path_plpmtu_size(out);
+	uint16_t limit = plp ? plp : MINMTU;
 
 	relay_touch_traffic(mesh, origin_name, dest_name);
 

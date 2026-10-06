@@ -29,6 +29,8 @@
 #include "node.h"
 #include "connection_policy.h"
 #include "discovery.h"
+#include "path_liveness.h"
+#include "path_plpmtu.h"
 #include "path_policy.h"
 #include "path_policy_devtool.h"
 #include "protocol.h"
@@ -307,10 +309,6 @@ static void devtool_get_reset_node_status(meshlink_handle_t *mesh, meshlink_node
 	if(status) {
 		memcpy(&status->status, &internal->status, sizeof status->status);
 		memcpy(&status->address, &internal->address, sizeof status->address);
-		status->mtu = internal->mtu;
-		status->minmtu = internal->minmtu;
-		status->maxmtu = internal->maxmtu;
-		status->mtuprobes = internal->mtuprobes;
 		status->in_data = internal->in_data;
 		status->out_data = internal->out_data;
 		status->in_forward = internal->in_forward;
@@ -452,7 +450,26 @@ static void devtool_get_reset_node_status(meshlink_handle_t *mesh, meshlink_node
 		status->rebind_failed = internal->udp_rebind.failed;
 		status->fallback_oversize_redirects = internal->fallback_oversize_redirects;
 		status->relay_oversize_drops = internal->relay_oversize_drops;
-		status->pmtu_raise_pending = internal->pmtu_raise_pending;
+		status->plpmtu_state = (devtool_plpmtu_state_t)internal->plpmtu.state;
+		status->plpmtu_size = internal->plpmtu.size;
+		status->plpmtu_largest_failed = internal->plpmtu.largest_failed;
+		status->plpmtu_probe_size = internal->plpmtu.probe_size;
+		status->plpmtu_hostile = internal->plpmtu.hostile;
+		status->plpmtu_raise_in_sec = internal->plpmtu.raise_at.tv_sec > mesh->loop.now.tv_sec
+		                              ? (int)(internal->plpmtu.raise_at.tv_sec - mesh->loop.now.tv_sec) : 0;
+		status->plpmtu_probes_sent = internal->plpmtu.probes_sent;
+		status->plpmtu_probes_lost = internal->plpmtu.probes_lost;
+		status->plpmtu_probes_oversize = internal->plpmtu.probes_oversize;
+		status->plpmtu_black_holes = internal->plpmtu.black_holes;
+		status->plpmtu_emsgsize = internal->plpmtu.emsgsize;
+		status->plpmtu_cache_hits = internal->plpmtu.cache_hits;
+		status->liveness_state = (int)internal->liveness.state;
+		status->liveness_probes_sent = internal->liveness.probes_sent;
+		status->liveness_retries = internal->liveness.retries;
+		status->liveness_giveups = internal->liveness.giveups;
+		status->keepalive_interval_ms = internal->keepalive.interval_ms;
+		status->keepalives_sent = internal->keepalive.sent;
+		status->keepalive_expiries = internal->keepalive.expiries;
 		memset(&status->rebind_candidate_endpoint, 0, sizeof status->rebind_candidate_endpoint);
 
 		if(internal->udp_rebind.candidate.sa.sa_family) {
@@ -486,9 +503,9 @@ static void devtool_get_reset_node_status(meshlink_handle_t *mesh, meshlink_node
 			status->udp_status = DEVTOOL_UDP_UNKNOWN;
 		} else if(internal->status.udp_confirmed) {
 			status->udp_status = DEVTOOL_UDP_WORKING;
-		} else if(internal->mtuprobes > 30) {
+		} else if(internal->local_discovery.exhausted || internal->liveness.gave_up) {
 			status->udp_status = DEVTOOL_UDP_FAILED;
-		} else if(internal->mtuprobes > 0) {
+		} else if(internal->local_discovery.active || internal->peer_udp.challenge.active) {
 			status->udp_status = DEVTOOL_UDP_TRYING;
 		} else {
 			status->udp_status = DEVTOOL_UDP_UNKNOWN;
@@ -1343,8 +1360,8 @@ bool devtool_force_relay_path(meshlink_handle_t *mesh, meshlink_node_t *dest, me
 	d->status.forced_relay = true;
 	d->status.udp_confirmed = false;
 	h->status.udp_confirmed = true;
-	timeout_del(&mesh->loop, &d->mtutimeout);
-	d->mtuprobes = 0;
+	path_plpmtu_pause(mesh, d);
+	path_liveness_stop(mesh, d);
 	d->relay_budget = 0;
 	channel_refresh_mtu(mesh, d);
 	commit_ranked_route(mesh, d);
@@ -1391,9 +1408,9 @@ void devtool_set_udp_confirmed(meshlink_handle_t *mesh, meshlink_node_t *node, b
 		commit_ranked_route(mesh, n);
 	} else if(n->active_route.kind == DATA_ROUTE_DIRECT_UDP) {
 		commit_ranked_route(mesh, n);
-	} else if(!n->devtool_force_meta && n->status.validkey && n->status.reachable && !n->mtutimeout.cb
-	                && path_peer_udp_punching_allowed(mesh, n)) {
-		send_mtu_probe(mesh, n);
+	} else if(!n->devtool_force_meta && n->status.validkey && n->status.reachable
+	                && path_peer_udp_punching_allowed(mesh, n) && path_address_is_local(&n->address)) {
+		path_local_discovery_start(mesh, n);
 	}
 
 	pthread_mutex_unlock(&mesh->mutex);
@@ -1463,12 +1480,13 @@ void devtool_force_meta(meshlink_handle_t *mesh, meshlink_node_t *node, bool ena
 	n->devtool_force_meta = enabled;
 
 	if(enabled) {
-		timeout_del(&mesh->loop, &n->mtutimeout);
+		path_plpmtu_pause(mesh, n);
+		path_liveness_stop(mesh, n);
+		path_keepalive_stop(mesh, n);
 		timeout_del(&mesh->loop, &n->promotion_timer);
 		path_punch_cancel(mesh, n);
 		path_rebind_cancel(mesh, n);
 		path_suspect_stop(mesh, n);
-		n->mtuprobes = 31;
 		n->status.udp_confirmed = false;
 		n->status.want_udp = false;
 		n->udp_tier = PATH_TIER_NONE;
@@ -1479,9 +1497,7 @@ void devtool_force_meta(meshlink_handle_t *mesh, meshlink_node_t *node, bool ena
 			mesh->backbone_udp.confirmed = false;
 			mesh->backbone_udp.liveness_nonce = 0;
 		}
-	} else if(n->status.validkey && n->status.reachable && !n->mtutimeout.cb) {
-		n->mtuprobes = 0;
-
+	} else if(n->status.validkey && n->status.reachable) {
 		if(n == mesh->backbone_udp.node || connection_policy_backbone_udp_required(mesh, n)) {
 			path_backbone_udp_start(mesh, n);
 		} else if(path_peer_udp_punching_allowed(mesh, n)) {
@@ -1651,8 +1667,8 @@ bool devtool_send_raw_record(meshlink_handle_t *mesh, meshlink_node_t *to, uint8
 	return ok;
 }
 
-bool devtool_set_minmtu(meshlink_handle_t *mesh, meshlink_node_t *node, uint16_t mtu) {
-	if(!mesh || !node) {
+bool devtool_set_plpmtu(meshlink_handle_t *mesh, meshlink_node_t *node, uint16_t size) {
+	if(!mesh || !node || (size && (size < MINMTU || size > MTU))) {
 		meshlink_errno = MESHLINK_EINVAL;
 		return false;
 	}
@@ -1662,7 +1678,8 @@ bool devtool_set_minmtu(meshlink_handle_t *mesh, meshlink_node_t *node, uint16_t
 	}
 
 	node_t *n = (node_t *)node;
-	n->minmtu = mtu;
+	n->plpmtu.state = size ? PLPMTU_COMPLETE : PLPMTU_DISABLED;
+	n->plpmtu.size = size;
 	update_node_pmtu(mesh, n);
 	pthread_mutex_unlock(&mesh->mutex);
 	return true;
@@ -1891,7 +1908,7 @@ int devtool_select_dest_with_udp(meshlink_handle_t *mesh, meshlink_node_t *dest,
 	d->status.udp_confirmed = dest_udp;
 
 	if(!dest_udp) {
-		timeout_del(&mesh->loop, &d->mtutimeout);
+		timeout_del(&mesh->loop, &d->plpmtu.timer);
 	}
 
 	if(h && h != d) {
@@ -1900,7 +1917,7 @@ int devtool_select_dest_with_udp(meshlink_handle_t *mesh, meshlink_node_t *dest,
 		h->status.udp_confirmed = hop_udp;
 
 		if(!hop_udp) {
-			timeout_del(&mesh->loop, &h->mtutimeout);
+			timeout_del(&mesh->loop, &h->plpmtu.timer);
 		}
 
 		if(hop_udp && h->status.validkey) {
@@ -2186,53 +2203,9 @@ unsigned devtool_liveness_probes_sent(meshlink_handle_t *mesh, meshlink_node_t *
 		abort();
 	}
 
-	count = ((node_t *)node)->liveness_probes_sent;
+	count = ((node_t *)node)->liveness.probes_sent;
 	pthread_mutex_unlock(&mesh->mutex);
 	return count;
-}
-
-bool devtool_accept_pmtu_increase(meshlink_handle_t *mesh, meshlink_node_t *node, uint16_t settled) {
-	bool ok;
-
-	if(!mesh || !node) {
-		meshlink_errno = MESHLINK_EINVAL;
-		return false;
-	}
-
-	if(pthread_mutex_lock(&mesh->mutex) != 0) {
-		abort();
-	}
-
-	ok = net_devtool_accept_pmtu_increase(mesh, (node_t *)node, settled);
-	pthread_mutex_unlock(&mesh->mutex);
-
-	if(!ok) {
-		meshlink_errno = MESHLINK_EINVAL;
-	}
-
-	return ok;
-}
-
-bool devtool_fix_early_pmtu(meshlink_handle_t *mesh, meshlink_node_t *node, uint16_t len) {
-	bool ok;
-
-	if(!mesh || !node) {
-		meshlink_errno = MESHLINK_EINVAL;
-		return false;
-	}
-
-	if(pthread_mutex_lock(&mesh->mutex) != 0) {
-		abort();
-	}
-
-	ok = net_devtool_fix_early_pmtu(mesh, (node_t *)node, len);
-	pthread_mutex_unlock(&mesh->mutex);
-
-	if(!ok) {
-		meshlink_errno = MESHLINK_EINVAL;
-	}
-
-	return ok;
 }
 
 bool devtool_drop_next_direct_udp_records(meshlink_handle_t *mesh, meshlink_node_t *node, unsigned count) {
@@ -2250,7 +2223,7 @@ bool devtool_drop_next_direct_udp_records(meshlink_handle_t *mesh, meshlink_node
 	return true;
 }
 
-bool devtool_set_probe_reply_limit(meshlink_handle_t *mesh, meshlink_node_t *node, uint16_t max_len) {
+bool devtool_drop_size_probes_above(meshlink_handle_t *mesh, meshlink_node_t *node, uint16_t limit) {
 	if(!mesh || !node) {
 		meshlink_errno = MESHLINK_EINVAL;
 		return false;
@@ -2260,12 +2233,12 @@ bool devtool_set_probe_reply_limit(meshlink_handle_t *mesh, meshlink_node_t *nod
 		abort();
 	}
 
-	((node_t *)node)->devtool_probe_reply_limit = max_len;
+	((node_t *)node)->devtool_drop_size_probes_above = limit;
 	pthread_mutex_unlock(&mesh->mutex);
 	return true;
 }
 
-bool devtool_pmtu_raise_due(meshlink_handle_t *mesh, meshlink_node_t *node) {
+bool devtool_drop_liveness_replies(meshlink_handle_t *mesh, meshlink_node_t *node, uint8_t count) {
 	if(!mesh || !node) {
 		meshlink_errno = MESHLINK_EINVAL;
 		return false;
@@ -2275,7 +2248,68 @@ bool devtool_pmtu_raise_due(meshlink_handle_t *mesh, meshlink_node_t *node) {
 		abort();
 	}
 
-	((node_t *)node)->pmtu_increase_next = 0;
+	((node_t *)node)->devtool_drop_liveness_replies = count;
+	pthread_mutex_unlock(&mesh->mutex);
+	return true;
+}
+
+bool devtool_plpmtu_raise_due(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	node_t *n = (node_t *)node;
+
+	n->plpmtu.raise_at.tv_sec = 0;
+	n->plpmtu.raise_at.tv_nsec = 0;
+	path_plpmtu_tick(mesh, n);
+	pthread_mutex_unlock(&mesh->mutex);
+	return true;
+}
+
+bool devtool_set_keepalive_interval(meshlink_handle_t *mesh, meshlink_node_t *node, uint32_t ms) {
+	if(!mesh || !node || ms < PATH_KEEPALIVE_FLOOR_MS) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	((node_t *)node)->keepalive.interval_ms = ms;
+	pthread_mutex_unlock(&mesh->mutex);
+	return true;
+}
+
+bool devtool_plpmtu_cache_entry(meshlink_handle_t *mesh, meshlink_node_t *node, int index, devtool_plpmtu_cache_entry_t *out) {
+	const path_mtu_cache_entry_t *e;
+
+	if(!mesh || !node || !out || index < 0 || index >= PATH_MTU_CACHE_ENTRIES) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	e = &((node_t *)node)->mtu_cache[index];
+	memset(out, 0, sizeof *out);
+	out->family = e->family;
+	memcpy(out->addr, e->addr, sizeof out->addr);
+	out->size = e->size;
+	out->largest_failed = e->largest_failed;
+	out->flags = e->flags;
+	out->raise_backoff = e->raise_backoff;
+	out->keepalive_ms = e->keepalive_ms;
+	out->updated_at = e->updated_at;
+	out->net_fp = e->net_fp;
 	pthread_mutex_unlock(&mesh->mutex);
 	return true;
 }

@@ -116,10 +116,10 @@ interval. Relay forwarding does not accelerate probing.
   Otherwise the record goes on the suspected primary, then on META, and it
   is never silently dropped. The suspected primary keeps its size until
   suspect expiry actually demotes it.
-- Parked PMTU liveness is always a 64-byte probe. The occasional maxmtu+8
-  raise rides beside it, and losing that reply never demotes the path.
-  A nonce reply from the parked endpoint counts as liveness and does not
-  resize the MTU.
+- Liveness is its own machine (ADR 0011), not a PMTU counter. It sends up
+  to three 64-byte probes per window. Losing one reply does not demote the
+  path. A give-up demotes the route and keeps the learned PLPMTU. A nonce
+  reply from the confirmed endpoint counts and does not resize the MTU.
 - A peer has one META connection, except during the bounded ADR 0003
   handover window.
 - Generic `min_connects`/`max_connects` autoconnect is gone. META
@@ -134,7 +134,7 @@ interval. Relay forwarding does not accelerate probing.
   peer UDP punching does not.
 - The global scheduler admits probe packets and transactions. Due times
   stay on the per-node `promotion_timer`, `suspect_validation.timer`,
-  and `mtutimeout`.
+  and the PLPMTU, liveness and keepalive timers.
 - `path_record_active_route()` records a temporary fallback and does
   not commit it as the active route.
 - Per-address UDP and META health matrices and planned-route generations

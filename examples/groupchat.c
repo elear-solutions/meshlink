@@ -254,13 +254,13 @@ static void parse_command(meshlink_handle_t *mesh, char *buf) {
 
 			char mtustate = ' ';
 
-			if(status.minmtu) {
-				if(status.minmtu != status.maxmtu) {
+			if(status.plpmtu_size) {
+				if(status.plpmtu_largest_failed && status.plpmtu_largest_failed != status.plpmtu_size) {
 					mtustate = '~';
 				}
 			};
 
-			fprintf(stderr, "Status of node: %-16s  %-12s  %c%5d\n", nodes[i]->name, desc, mtustate, status.maxmtu);
+			fprintf(stderr, "Status of node: %-16s  %-12s  %c%5d\n", nodes[i]->name, desc, mtustate, status.plpmtu_size);
 		}
 
 		free(nodes);
