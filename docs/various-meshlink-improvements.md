@@ -21,7 +21,8 @@ Status values:
 | F5 | Liveness is one probe per window; one lost reply demotes the path | Fix ready | WS1 |
 | F6 | The camera's NAT expires idle mappings faster than our ping cadence | Fix ready | WS1 |
 | F7 | The NMN delivers relayed records over META, never UDP | Open | WS2 |
-| M1–M7 | Minor items | Open / By design / Not meshlink | WS4 |
+| F8 | Route promotion continues while the destination is unreachable | Open | WS3 |
+| M1–M8 | Minor items | Open / By design / Not meshlink | WS4 |
 
 Order: WS1 → WS2 → WS3, with WS4 whenever convenient.
 
@@ -31,8 +32,11 @@ Order: WS1 → WS2 → WS3, with WS4 whenever convenient.
 |----|------|-------|--------|-------|
 | C1 | 2026-10-04 22:17–22:38 IST | phone = node 1, Hemanth's camera = node 4, Ashish's camera = node 2, NMN = node 0 | nodes on `validated-udp-rebind` (PR #125); NMN on `elear-develop` | `android-meshlink-001.txt`, `hemanth-camera-meshlink-00{1,2,3}.txt`, `ashish-camera-meshlink-001.txt` |
 | C2 | 2026-10-05 12:24–12:42 IST | phone = node 5, Hemanth's camera = node 4, NMN = node 0 | nodes with the F1 and F2 fixes on top of PR #125; NMN on `elear-develop` | `android-meshlink-003.txt`, `hemanth-camera-meshlink-00{4,5,6}.txt` |
+| L1 (local) | 2026-10-06 22:34:09–22:37:53 IST; camera log covers 22:36:51–22:37:45 | Android emulator = node 6, local camera simulator = node 2, NMN = node 0 | WS1 endpoint builds; NMN advertises protocol 17.6; exact build SHAs not recorded | `android-meshlink-ws1-001.txt`, `camera-meshlink-ws1-001.txt` |
 
-The only difference between `elear-develop` and PR #125 is rebind, and rebind is switched off on any pair that includes the backbone (`path_is_ordinary_peer_pair`). So the stale NMN build behaves the same as the new code for every finding below.
+For C1 and C2, the only difference between `elear-develop` and PR #125 is rebind, and rebind is switched off on any pair that includes the backbone (`path_is_ordinary_peer_pair`). So the stale NMN build behaves the same as the new code for the findings from those captures.
+
+L1 is a local check with the endpoints on the same host, using the Ubuntu Docker container and QEMU. It does not exercise Hemanth's Jio path or replace the pending WS1 field capture C3. The camera clock appears roughly 0.8s ahead of Android; cross-endpoint timings need that adjustment. The camera uses `KEYS_ONLY` storage, so L1 cannot confirm its PLPMTU persistence across process restarts.
 
 ### Environment
 - **Phone:** home network, public `183.83.170.151`, endpoint-independent NAT. The public port is stable (`11390` in C1, `10066` in C2).
@@ -212,6 +216,23 @@ This revises the ADR 0010 position that keepalives don't help. That position sti
 
 **Verification:** a relay test asserts that the last leg is UDP (no `REQ_KEY … 21` at the destination) once both peers have confirmed backbone UDP.
 
+## F8: Route promotion continues while the destination is unreachable
+**Status:** Open. **Workstream:** WS3. **Seen in:** L1.
+
+**Evidence (Android, all timestamps on the same clock):**
+- At 22:36:08.972, node 2 becomes unreachable after `DEL_EDGE` from the NMN (`android-meshlink-ws1-001.txt`, line 102845).
+- At 22:36:12.947, Android starts a backbone-UDP route candidate for node 2 (line 102856).
+- At 22:36:18.008, it promotes that candidate and logs `Path route: 2 none -> relay-udp (commit)` (line 102858).
+- Node 2 remains unreachable until 22:36:51.600 (line 102894).
+
+**Mechanism:** `path_route_tick()` runs for offline peers too. `path_consider_route_promotion()` and `path_commit_candidate()` do not check destination reachability. A retained route and channel demand let the live backbone carrier qualify even though the destination is offline. Committing it writes `active_route.selected_at`, restarting route residency.
+
+**Impact:** incorrect route-state transitions and promotion admission while the destination is offline. `path_active_send_target()` checks reachability, so this capture is not evidence of packets being sent to the offline camera. The residency change can affect later recovery; an added recovery delay was not demonstrated in L1.
+
+**Fix:** prevent candidate creation and commitment for unreachable destinations, and retire any pending promotion when reachability is lost. Keep the learned PLPMTU cache intact.
+
+**Verification:** disconnect a peer while retaining channel demand, run route ticks and backbone-readiness callbacks, and assert that no promotion starts or commits and the residency timestamp does not advance. Reconnect the peer and verify normal route selection and data delivery.
+
 ---
 
 ## Minor
@@ -225,6 +246,23 @@ This revises the ADR 0010 position that keepalives don't help. That position sti
 | M5 | At startup the node KEX retry steps from 1 to 3 within 85ms. Harmless: KEX completes 40ms later. | Open | C2 |
 | M6 | Ashish's camera ↔ Hemanth's camera stay on relay: both NATs are endpoint-dependent (Docker Desktop and Jio). | By design | C1 |
 | M7 | Stream-open failures ("Tunnel Open resource command status failed", "Media streaming is not ready") happen only within a few seconds of a camera restart. | Not meshlink | C1, C2 |
+| M8 | Android's AF_NETLINK bind-failure fallback leaves the socket open. Discovery also degrades in the local Docker/QEMU setup; details below. | Open | L1 |
+
+### M8: Netlink bind-failure socket leak and discovery limitations
+**Status:** Open. **Workstream:** WS4. **Seen in:** L1.
+
+**Evidence:** all three Android app starts log `Could not bind AF_NETLINK socket: Permission denied` (`android-meshlink-ws1-001.txt`, lines 34, 59794 and 76439).
+
+**Mechanism:** in `discovery_start()` (`src/discovery.c`), socket creation succeeds but binding the netlink notification groups fails. The fallback calls `scan_ifaddrs()` without closing the failed socket or registering it with the event loop. That leaks one descriptor per failed discovery start. The three starts in L1 are separate app processes, so the capture does not demonstrate accumulated descriptor pressure.
+
+**Related environment limitations:**
+- The netlink fallback discovers the initial interfaces but does not subscribe to subsequent interface/address notifications. Android does call `meshlink_hint_network_change()` in L1, providing an application-driven fallback.
+- The camera logs `Could not set outgoing multicast interface on IPv4 socket` twice (`camera-meshlink-ws1-001.txt`, lines 56 and 130). Those mDNS sends return early. The log omits errno, so the cause is not established.
+- These are discovery limitations, not evidence that ordinary UDP is broken. They are distinct from M3's broadcast/multicast PMTU probes.
+
+**Fix:** close the netlink socket on bind failure. Include errno and interface context in multicast-interface failure logs, and verify the application network-change fallback when native notifications are unavailable.
+
+**Verification:** force netlink bind failure, repeat discovery start/stop, and assert that the open-descriptor count remains stable. Verify that a network-change hint refreshes the address set and advances the network epoch. Exercise multicast-interface failure and check that its diagnostic identifies the interface and error without disrupting ordinary UDP.
 
 ---
 
@@ -241,8 +279,8 @@ Rules for every workstream:
 |----|-------|----------|------------|--------|
 | WS1 | Path MTU and liveness rework | F3, F5, F6, F4 (PMTU gate), F2 follow-up | — | Designed; plan next |
 | WS2 | Relay data plane | F7, relay MTU | WS1 PR A; NMN deployed first | Not started |
-| WS3 | Route selection at startup | F4 (route choice) | WS1 | Not started |
-| WS4 | Hygiene | M1, M2 (meshlink side), M3, M4, M5 | — | Not started |
+| WS3 | Route selection at startup and after reachability changes | F4 (route choice), F8 | WS1 | Not started |
+| WS4 | Hygiene | M1, M2 (meshlink side), M3, M4, M5, M8 | — | Not started |
 
 ### WS1: Path MTU and liveness rework
 
@@ -363,9 +401,10 @@ Rules for every workstream:
 - **Rollout:** deploy the NMN first.
 - **Tests:** a relay test asserts that the last leg is UDP; a test asserts the relay budget follows the smaller leg.
 
-### WS3: Route selection at startup (F4 leftovers)
+### WS3: Route selection at startup and after reachability changes (F4 leftovers, F8)
 - Once backbone UDP confirms, re-rank `meta-direct` → `relay-udp`, so data never stays on TCP through the NMN just because of start order.
 - Don't let a direct-UDP candidate pre-empt the backbone-UDP step down.
+- **F8:** prevent offline destinations from starting or committing promotions; test disconnect, background route ticks and reconnect with retained channel demand.
 - Re-measure after WS1, because promoting direct at base may already remove most of F4.
 
 ### WS4: Hygiene
@@ -374,6 +413,7 @@ Rules for every workstream:
 - **M3:** don't send broadcast or multicast PMTU probes to peers we only know by WAN address.
 - **M4:** coalesce `Requesting punch endpoint` per peer.
 - **M5:** review the KEX retry ladder stepping at startup.
+- **M8:** close the netlink socket on bind failure, improve multicast-interface diagnostics, and verify network-change hints when native discovery notifications are unavailable.
 
 ## Appendix: how the captures were analysed
 The logs are large (C2's phone log is 175 MB), so each analysis first builds compact extracts:
