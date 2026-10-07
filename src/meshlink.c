@@ -4170,7 +4170,7 @@ static bool blacklist(meshlink_handle_t *mesh, node_t *n) {
 
 	utcp_reset_all_connections(n->utcp);
 
-	path_plpmtu_forget(mesh, n);
+	path_plpmtu_stop(mesh, n);
 	path_liveness_stop(mesh, n);
 	path_keepalive_stop(mesh, n);
 	path_local_discovery_stop(mesh, n);

@@ -128,10 +128,26 @@ void path_backbone_udp_arm(meshlink_handle_t *mesh, int sec, long nsec) {
 	}
 }
 
+int path_backbone_udp_keepalive_base_sec(meshlink_handle_t *mesh) {
+	node_t *n = mesh ? mesh->backbone_udp.node : NULL;
+
+	/* A learned or restored interval takes precedence over the 25s default.
+	   backbone_udp_keepalive_sec still shortens tests before anything is learned. */
+	if(n && n->keepalive.interval_ms) {
+		int learned = (int)(path_keepalive_backbone_interval_ms(mesh, n) / 1000);
+
+		return learned > 0 ? learned : 1;
+	}
+
+	if(mesh && mesh->backbone_udp_keepalive_sec > 0) {
+		return mesh->backbone_udp_keepalive_sec;
+	}
+
+	return PATH_BACKBONE_UDP_KEEPALIVE_SEC;
+}
+
 static void path_backbone_udp_arm_keepalive(meshlink_handle_t *mesh) {
-	int base = mesh->backbone_udp_keepalive_sec > 0
-	           ? mesh->backbone_udp_keepalive_sec
-	           : (int)(path_keepalive_backbone_interval_ms(mesh, mesh->backbone_udp.node) / 1000);
+	int base = path_backbone_udp_keepalive_base_sec(mesh);
 	int span = base / 5;
 	int delay;
 

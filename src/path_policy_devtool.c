@@ -3690,7 +3690,7 @@ bool path_policy_cover_unit(meshlink_handle_t *mesh, node_t *live) {
 	                && cover_scheduler(mesh)
 	                && punch_endpoint_cover_unit(mesh)
 	                && rebind_cover_unit(mesh)
-	                && path_ws1_cover_unit(mesh)
+	                && path_plpmtu_cover_unit(mesh)
 	                && node_kex_cover_unit(mesh)
 	                && utcp_mtu_reentry_unit();
 	mesh->probe_max_transactions = saved_max;

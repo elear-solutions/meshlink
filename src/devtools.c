@@ -463,7 +463,7 @@ static void devtool_get_reset_node_status(meshlink_handle_t *mesh, meshlink_node
 		status->plpmtu_black_holes = internal->plpmtu.black_holes;
 		status->plpmtu_emsgsize = internal->plpmtu.emsgsize;
 		status->plpmtu_cache_hits = internal->plpmtu.cache_hits;
-		status->liveness_state = (int)internal->liveness.state;
+		status->liveness_state = (devtool_liveness_state_t)internal->liveness.state;
 		status->liveness_probes_sent = internal->liveness.probes_sent;
 		status->liveness_retries = internal->liveness.retries;
 		status->liveness_giveups = internal->liveness.giveups;
@@ -1678,6 +1678,7 @@ bool devtool_set_plpmtu(meshlink_handle_t *mesh, meshlink_node_t *node, uint16_t
 	}
 
 	node_t *n = (node_t *)node;
+	path_plpmtu_pause(mesh, n);
 	n->plpmtu.state = size ? PLPMTU_COMPLETE : PLPMTU_DISABLED;
 	n->plpmtu.size = size;
 	update_node_pmtu(mesh, n);
@@ -1908,7 +1909,7 @@ int devtool_select_dest_with_udp(meshlink_handle_t *mesh, meshlink_node_t *dest,
 	d->status.udp_confirmed = dest_udp;
 
 	if(!dest_udp) {
-		timeout_del(&mesh->loop, &d->plpmtu.timer);
+		path_plpmtu_pause(mesh, d);
 	}
 
 	if(h && h != d) {
@@ -1917,7 +1918,7 @@ int devtool_select_dest_with_udp(meshlink_handle_t *mesh, meshlink_node_t *dest,
 		h->status.udp_confirmed = hop_udp;
 
 		if(!hop_udp) {
-			timeout_del(&mesh->loop, &h->plpmtu.timer);
+			path_plpmtu_pause(mesh, h);
 		}
 
 		if(hop_udp && h->status.validkey) {

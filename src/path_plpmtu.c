@@ -1,6 +1,11 @@
 /*
     path_plpmtu.c -- per-path packetization-layer MTU
     Copyright (C) 2026 Elear Solutions
+
+    This program is free software; you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation; either version 2 of the License, or
+    (at your option) any later version.
 */
 
 #include "system.h"
@@ -16,50 +21,21 @@
 #include "netutl.h"
 #include "node.h"
 #include "packmsg.h"
+#include "path_liveness.h"
 #include "path_plpmtu.h"
 #include "path_probe.h"
 #include "path_scheduler.h"
 #include "relay.h"
 
-extern void net_probe_sched_send(meshlink_handle_t *mesh, const path_probe_request_t *req);
+#define fresh_nonce path_probe_fresh_nonce
+#define ms_between path_ms_between
+#define arm_ms path_timer_arm_ms
+#define disarm path_timer_disarm
 
 static const uint16_t path_plpmtu_ladder[] = {
-	1259, 1339, 1379, 1399, 1419, 1431, MTU
+	PATH_PLPMTU_STEP_1259, PATH_PLPMTU_STEP_1339, PATH_PLPMTU_STEP_1379, PATH_PLPMTU_STEP_1399,
+	PATH_PLPMTU_STEP_1419, PATH_PLPMTU_STEP_1431, MTU
 };
-
-static uint64_t fresh_nonce(void) {
-	uint64_t nonce = 0;
-
-	do {
-		randomize(&nonce, sizeof nonce);
-	} while(!nonce);
-
-	return nonce;
-}
-
-static int64_t ms_between(const struct timespec *from, const struct timespec *to) {
-	return (int64_t)(to->tv_sec - from->tv_sec) * 1000
-	       + (to->tv_nsec - from->tv_nsec) / 1000000;
-}
-
-static void arm_ms(meshlink_handle_t *mesh, timeout_t *t, timeout_cb_t cb, void *data, int ms) {
-	struct timespec tv = {
-		.tv_sec = ms / 1000,
-		.tv_nsec = (long)(ms % 1000) * 1000000L
-	};
-
-	if(t->cb) {
-		timeout_set(&mesh->loop, t, &tv);
-	} else {
-		timeout_add(&mesh->loop, t, cb, data, &tv);
-	}
-}
-
-static void disarm(meshlink_handle_t *mesh, timeout_t *t) {
-	if(t->cb) {
-		timeout_del(&mesh->loop, t);
-	}
-}
 
 static void ip_only(sockaddr_t *sa) {
 	if(!sa) {
@@ -239,7 +215,7 @@ uint16_t path_plpmtu_size(const node_t *n) {
 uint32_t path_local_network_fp(const meshlink_handle_t *mesh) {
 	const char *s;
 	const char *end;
-	uint32_t h = 2166136261u;
+	uint32_t h = PATH_PLPMTU_FNV_OFFSET;
 
 	if(!mesh || !mesh->self || !mesh->self->external_ip_address) {
 		return 0;
@@ -258,7 +234,7 @@ uint32_t path_local_network_fp(const meshlink_handle_t *mesh) {
 
 	for(; s < end; s++) {
 		h ^= (uint8_t) * s;
-		h *= 16777619u;
+		h *= PATH_PLPMTU_FNV_PRIME;
 	}
 
 	return h ? h : 1;
@@ -370,7 +346,7 @@ static bool emit_size(meshlink_handle_t *mesh, node_t *n, uint16_t size) {
 	nonce = fresh_nonce();
 	memset(&req, 0, sizeof req);
 	req.node = n;
-	req.length = size < 64 ? 64 : size;
+	req.length = size < PROBE_FIXED_LEN ? PROBE_FIXED_LEN : size;
 	req.priority = PATH_TX_PLPMTU_PROBE;
 	req.send = net_probe_sched_send;
 	req.probe_kind = PROBE_KIND_SIZE_REQUEST;
@@ -453,7 +429,7 @@ bool path_plpmtu_probe_recent(const meshlink_handle_t *mesh, const node_t *n) {
 
 static void failed_raise(node_t *n) {
 	if(n->plpmtu.raising) {
-		if(n->plpmtu.raise_backoff < 16) {
+		if(n->plpmtu.raise_backoff < PATH_PLPMTU_RAISE_BACKOFF_CAP) {
 			n->plpmtu.raise_backoff++;
 		}
 
@@ -746,11 +722,8 @@ void path_plpmtu_observe_ack(meshlink_handle_t *mesh, node_t *n, const sockaddr_
 	}
 
 	prev = n->plpmtu.size;
-	/* A delivered size is not evidence of an oversize-induced black hole.
-	   Its endpoint observation may merely reveal an earlier idle remap. */
-	if(len > prev) {
-		memset(&n->plpmtu.last_oversize_sent_at, 0, sizeof n->plpmtu.last_oversize_sent_at);
-	}
+	/* Leave last_oversize_sent_at set. The size ACK's endpoint is observed
+	   after this returns, and a recent oversized send explains that remap. */
 	n->plpmtu.size = len;
 	clear_probe(n);
 	n->plpmtu.probe_tries = 0;
@@ -814,7 +787,7 @@ void path_plpmtu_note_local_remap(meshlink_handle_t *mesh, node_t *n) {
 	n->plpmtu.hostile = true;
 	n->plpmtu.hostile_marks++;
 
-	if(n->plpmtu.raise_backoff < 16) {
+	if(n->plpmtu.raise_backoff < PATH_PLPMTU_RAISE_BACKOFF_CAP) {
 		n->plpmtu.raise_backoff++;
 	}
 

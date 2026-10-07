@@ -147,38 +147,15 @@ typedef struct path_target_t {
 #define PATH_CANDIDATE_PROBE_INTERVAL_SEC 1
 #define PATH_PROMOTION_PROBE_LEN        64
 #define PATH_ROUTE_MIN_RESIDENCY_SEC     30
-#define PATH_PLPMTU_BASE               1211
-#define PATH_PLPMTU_MAX_PROBES            3
-#define PATH_PLPMTU_PROBE_TIMEOUT_MS   1000
-#define PATH_PLPMTU_STEP_GAP_MS         200
-#define PATH_PLPMTU_LIVENESS_GUARD_MS   250
-#define PATH_PLPMTU_RAISE_SEC           600
-#define PATH_PLPMTU_RAISE_MAX_SEC     86400
-#define PATH_PLPMTU_TRUST_SEC           600
-#define PATH_PLPMTU_CACHE_MAX_AGE_SEC 86400
-#define PATH_MTU_CACHE_ENTRIES            4
-#define PATH_MTU_CACHE_HOSTILE         0x01
-/* Intervals written by the sender-owned keepalive algorithm (17.7). */
-enum { PATH_MTU_CACHE_KEEPALIVE_V2 = 0x02 };
-#define PATH_PLPMTU_HOSTILE_WINDOW_MS  2000
-#define PATH_PLPMTU_BH_WINDOW_SEC        30
-#define PATH_PLPMTU_BH_EVIDENCE           2
-#define PATH_LIVENESS_TRIES               3
-#define PATH_KEEPALIVE_INITIAL_MS     15000
-#define PATH_KEEPALIVE_BACKBONE_INITIAL_MS (PATH_BACKBONE_UDP_KEEPALIVE_SEC * 1000)
-#define PATH_KEEPALIVE_FLOOR_MS        5000
-#define PATH_KEEPALIVE_SHRINK_PCT        60
-#define PATH_KEEPALIVE_GROW_PCT         120
-#define PATH_KEEPALIVE_GROW_SEC        3600
-#define PATH_KEEPALIVE_PEER_DEMAND_SEC   60
-#define PATH_KEEPALIVE_EXPIRY_CONFIRM_SEC 30
-#define PATH_KEEPALIVE_JITTER_PCT        10
-#define PATH_LOCAL_DISCOVERY_TRIES       10
-#define PATH_LOCAL_DISCOVERY_BROADCAST_TRIES 3
+
+/* ADR 0011 knobs live with their machines. Included here so existing
+   path_policy.h users keep seeing them. */
+#include "path_plpmtu.h"
+#include "path_liveness.h"
+
 #define PATH_SUSPECT_PROBES               2
 #define PATH_SUSPECT_WINDOW_MS         1000
 #define PATH_HEALTHY_RESET_SEC           60
-#define PATH_BACKBONE_UDP_KEEPALIVE_SEC  25
 #define PATH_BACKBONE_UDP_ESTABLISH_SEC   1
 #define PATH_BACKBONE_UDP_ESTABLISH_MISS  3
 #define PATH_BACKBONE_UDP_KEEPALIVE_MISS  2
@@ -365,6 +342,7 @@ void path_note_udp_demoted(struct meshlink_handle *mesh, struct node_t *n);
 void path_note_udp_demoted_reason(struct meshlink_handle *mesh, struct node_t *n, const char *reason);
 
 /* Required backbone UDP relay mapping. connection_policy starts/stops it. */
+int path_backbone_udp_keepalive_base_sec(struct meshlink_handle *mesh);
 void path_backbone_udp_start(struct meshlink_handle *mesh, struct node_t *bb);
 void path_backbone_udp_stop(struct meshlink_handle *mesh);
 void path_backbone_udp_reset(struct meshlink_handle *mesh, struct node_t *n);

@@ -55,18 +55,18 @@ void path_probe_write_endpoint(uint8_t *data, const sockaddr_t *endpoint) {
 	memset(out, 0, PROBE_ENDPOINT_LEN);
 
 	if(endpoint->sa.sa_family == AF_INET) {
-		out[1] = 4;
+		out[1] = PROBE_ADDR_FAMILY_IPV4;
 		memcpy(out + 2, &endpoint->in.sin_port, 2);
 		memcpy(out + 4, &endpoint->in.sin_addr, 4);
 	} else if(endpoint->sa.sa_family == AF_INET6) {
-		out[1] = 6;
+		out[1] = PROBE_ADDR_FAMILY_IPV6;
 		memcpy(out + 2, &endpoint->in6.sin6_port, 2);
 		memcpy(out + 4, &endpoint->in6.sin6_addr, 16);
 	} else {
 		return;
 	}
 
-	out[0] = 0xa7;
+	out[0] = PROBE_ENDPOINT_MARKER;
 }
 
 bool path_probe_read_endpoint(const uint8_t *data, sockaddr_t *endpoint) {
@@ -74,15 +74,15 @@ bool path_probe_read_endpoint(const uint8_t *data, sockaddr_t *endpoint) {
 
 	memset(endpoint, 0, sizeof *endpoint);
 
-	if(in[0] != 0xa7 || (!in[2] && !in[3])) {
+	if(in[0] != PROBE_ENDPOINT_MARKER || (!in[2] && !in[3])) {
 		return false;
 	}
 
-	if(in[1] == 4) {
+	if(in[1] == PROBE_ADDR_FAMILY_IPV4) {
 		endpoint->in.sin_family = AF_INET;
 		memcpy(&endpoint->in.sin_port, in + 2, 2);
 		memcpy(&endpoint->in.sin_addr, in + 4, 4);
-	} else if(in[1] == 6) {
+	} else if(in[1] == PROBE_ADDR_FAMILY_IPV6) {
 		endpoint->in6.sin6_family = AF_INET6;
 		memcpy(&endpoint->in6.sin6_port, in + 2, 2);
 		memcpy(&endpoint->in6.sin6_addr, in + 4, 16);
@@ -130,8 +130,8 @@ void net_probe_sched_send(meshlink_handle_t *mesh, const path_probe_request_t *r
 	packet.data[0] = req->probe_kind;
 	packet.data[PROBE_PURPOSE_OFFSET] = req->probe_purpose;
 	memcpy(packet.data + PROBE_NONCE_OFFSET, &req->probe_nonce, sizeof req->probe_nonce);
-	if((size_t)len > 14) {
-		randomize(packet.data + 14, (size_t)len - 14);
+	if((size_t)len > PROBE_PAD_OFFSET) {
+		randomize(packet.data + PROBE_PAD_OFFSET, (size_t)len - PROBE_PAD_OFFSET);
 	}
 	packet.len = (uint16_t)len;
 	n->out_meta += packet.len + PROBE_OVERHEAD;
@@ -405,12 +405,123 @@ static void send_probe_reply(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *p
 	n->status.temp_udp_confirmed = false;
 }
 
+static void probe_handle_echo_request(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet, uint16_t len, uint8_t purpose, uint64_t nonce) {
+	sockaddr_t observed;
+
+	if(len > PROBE_FIXED_LEN) {
+		return;
+	}
+
+	if(purpose == PROBE_PURPOSE_LIVENESS) {
+		path_liveness_observe_peer_request(mesh, n, &n->last_udp_from);
+	}
+
+	if(purpose == PROBE_PURPOSE_REBIND && nonce && path_probe_read_endpoint(packet->data, &observed)) {
+		path_keepalive_observe_local_endpoint(mesh, n, &n->last_udp_from, &observed);
+	}
+
+	packet->data[0] = PROBE_KIND_ECHO_REPLY;
+	path_probe_write_endpoint(packet->data, &n->last_udp_from);
+	send_probe_reply(mesh, n, packet);
+}
+
+static void probe_handle_size_request(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet, uint16_t len, uint8_t purpose, uint64_t nonce) {
+	uint16_t ack_len;
+
+	if(n->devtool_drop_size_probes_above && len > n->devtool_drop_size_probes_above) {
+		return;
+	}
+
+	ack_len = len;
+	memset(packet->data, 0, PROBE_FIXED_LEN);
+	packet->data[0] = PROBE_KIND_SIZE_ACK;
+	packet->data[PROBE_PURPOSE_OFFSET] = purpose;
+	memcpy(packet->data + PROBE_NONCE_OFFSET, &nonce, sizeof nonce);
+	packet->data[PROBE_ACKLEN_OFFSET] = (uint8_t)(ack_len >> 8);
+	packet->data[PROBE_ACKLEN_OFFSET + 1] = (uint8_t)ack_len;
+	path_probe_write_endpoint(packet->data, &n->last_udp_from);
+	packet->len = PROBE_FIXED_LEN;
+	send_probe_reply(mesh, n, packet);
+}
+
+static void probe_handle_echo_reply(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet, uint8_t purpose, uint64_t nonce, const sockaddr_t *from_snap) {
+	sockaddr_t observed;
+
+	if(purpose == PROBE_PURPOSE_LIVENESS && n->devtool_drop_liveness_replies) {
+		n->devtool_drop_liveness_replies--;
+		return;
+	}
+
+	if(n == mesh->backbone_udp.node) {
+		uint64_t want = mesh->backbone_udp.liveness_nonce;
+
+		if(want && nonce == want && !sockaddrcmp(from_snap, &mesh->backbone_udp.endpoint)) {
+			bool have_observed = path_probe_read_endpoint(packet->data, &observed);
+			path_backbone_udp_observe_reply(mesh, n, from_snap, nonce, have_observed ? &observed : NULL);
+			return;
+		}
+
+		if(!mesh->backbone_udp.confirmed) {
+			return;
+		}
+	}
+
+	if(purpose == PROBE_PURPOSE_PLPMTU_RECOVERY) {
+		if(nonce && nonce == n->plpmtu.recovery_nonce && !sockaddrcmp(from_snap, &n->address)) {
+			path_liveness_observe_reply(mesh, n, from_snap, nonce, PROBE_PURPOSE_NONE);
+			if(path_probe_read_endpoint(packet->data, &observed)) {
+				path_keepalive_observe_local_endpoint(mesh, n, from_snap, &observed);
+			}
+		}
+		return;
+	}
+
+	if(!n->status.udp_confirmed) {
+		if(path_local_discovery_accept(mesh, n, from_snap, nonce, purpose)) {
+			if(path_probe_read_endpoint(packet->data, &observed)) {
+				path_keepalive_observe_local_endpoint(mesh, n, from_snap, &observed);
+			}
+			return;
+		}
+
+		if(path_try_confirm_udp_probe_reply(mesh, n, from_snap, nonce)) {
+			if(path_probe_read_endpoint(packet->data, &observed)) {
+				path_keepalive_observe_local_endpoint(mesh, n, from_snap, &observed);
+			}
+		}
+
+		return;
+	}
+
+	{
+		bool mine = purpose == PROBE_PURPOSE_LIVENESS && nonce && nonce == n->liveness.nonce
+		            && !sockaddrcmp(from_snap, &n->address);
+		path_observe_probe_reply(mesh, n, from_snap, nonce);
+		path_liveness_observe_reply(mesh, n, from_snap, nonce, purpose);
+		if(mine && path_probe_read_endpoint(packet->data, &observed)) {
+			path_keepalive_observe_local_endpoint(mesh, n, from_snap, &observed);
+		}
+	}
+}
+
+static void probe_handle_size_ack(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet, uint64_t nonce, const sockaddr_t *from_snap) {
+	sockaddr_t observed;
+	uint16_t got = (uint16_t)((packet->data[PROBE_ACKLEN_OFFSET] << 8) | packet->data[PROBE_ACKLEN_OFFSET + 1]);
+	bool valid = nonce && nonce == n->plpmtu.probe_nonce && got == n->plpmtu.probe_size
+	             && !sockaddrcmp(from_snap, &n->address);
+
+	path_plpmtu_observe_ack(mesh, n, from_snap, nonce, got);
+
+	if(valid && path_probe_read_endpoint(packet->data, &observed)) {
+		path_keepalive_observe_local_endpoint(mesh, n, from_snap, &observed);
+	}
+}
+
 void probe_record_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet, uint16_t len) {
 	uint8_t kind;
 	uint8_t purpose;
 	uint64_t nonce = 0;
 	sockaddr_t from_snap;
-	sockaddr_t observed;
 
 	n->in_meta += len + PROBE_OVERHEAD;
 
@@ -425,41 +536,12 @@ void probe_record_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet, ui
 	logger(mesh, MESHLINK_DEBUG, "Got MTU probe length %d from %s", packet->len, n->name);
 
 	if(kind == PROBE_KIND_ECHO_REQUEST) {
-		if(len > PROBE_FIXED_LEN) {
-			return;
-		}
-
-		if(purpose == PROBE_PURPOSE_LIVENESS) {
-			path_liveness_observe_peer_request(mesh, n, &n->last_udp_from);
-		}
-
-		if(purpose == PROBE_PURPOSE_REBIND && nonce && path_probe_read_endpoint(packet->data, &observed)) {
-			path_keepalive_observe_local_endpoint(mesh, n, &n->last_udp_from, &observed);
-		}
-
-		packet->data[0] = PROBE_KIND_ECHO_REPLY;
-		path_probe_write_endpoint(packet->data, &n->last_udp_from);
-		send_probe_reply(mesh, n, packet);
+		probe_handle_echo_request(mesh, n, packet, len, purpose, nonce);
 		return;
 	}
 
 	if(kind == PROBE_KIND_SIZE_REQUEST) {
-		uint16_t ack_len;
-
-		if(n->devtool_drop_size_probes_above && len > n->devtool_drop_size_probes_above) {
-			return;
-		}
-
-		ack_len = len;
-		memset(packet->data, 0, PROBE_FIXED_LEN);
-		packet->data[0] = PROBE_KIND_SIZE_ACK;
-		packet->data[PROBE_PURPOSE_OFFSET] = purpose;
-		memcpy(packet->data + PROBE_NONCE_OFFSET, &nonce, sizeof nonce);
-		packet->data[PROBE_ACKLEN_OFFSET] = (uint8_t)(ack_len >> 8);
-		packet->data[PROBE_ACKLEN_OFFSET + 1] = (uint8_t)ack_len;
-		path_probe_write_endpoint(packet->data, &n->last_udp_from);
-		packet->len = PROBE_FIXED_LEN;
-		send_probe_reply(mesh, n, packet);
+		probe_handle_size_request(mesh, n, packet, len, purpose, nonce);
 		return;
 	}
 
@@ -477,71 +559,14 @@ void probe_record_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet, ui
 		return;
 	}
 
-	if(kind == PROBE_KIND_ECHO_REPLY && purpose == PROBE_PURPOSE_LIVENESS && n->devtool_drop_liveness_replies) {
-		n->devtool_drop_liveness_replies--;
-		return;
-	}
-
 	path_copy_sockaddr(&from_snap, &n->last_udp_from);
 
-	if(kind == PROBE_KIND_ECHO_REPLY && n == mesh->backbone_udp.node) {
-		uint64_t want = mesh->backbone_udp.liveness_nonce;
-
-		if(want && nonce == want && !sockaddrcmp(&from_snap, &mesh->backbone_udp.endpoint)) {
-			bool have_observed = path_probe_read_endpoint(packet->data, &observed);
-			path_backbone_udp_observe_reply(mesh, n, &from_snap, nonce, have_observed ? &observed : NULL);
-			return;
-		}
-
-		if(!mesh->backbone_udp.confirmed) {
-			return;
-		}
-	}
-
-	if(kind == PROBE_KIND_ECHO_REPLY && purpose == PROBE_PURPOSE_PLPMTU_RECOVERY) {
-		if(nonce && nonce == n->plpmtu.recovery_nonce && !sockaddrcmp(&from_snap, &n->address)) {
-			path_liveness_observe_reply(mesh, n, &from_snap, nonce, PROBE_PURPOSE_NONE);
-			if(path_probe_read_endpoint(packet->data, &observed)) {
-				path_keepalive_observe_local_endpoint(mesh, n, &from_snap, &observed);
-			}
-		}
+	if(kind == PROBE_KIND_ECHO_REPLY) {
+		probe_handle_echo_reply(mesh, n, packet, purpose, nonce, &from_snap);
 		return;
 	}
 
-	if(kind == PROBE_KIND_ECHO_REPLY && !n->status.udp_confirmed) {
-		if(path_local_discovery_accept(mesh, n, &from_snap, nonce, purpose)) {
-			if(path_probe_read_endpoint(packet->data, &observed)) {
-				path_keepalive_observe_local_endpoint(mesh, n, &from_snap, &observed);
-			}
-			return;
-		}
-
-		if(path_try_confirm_udp_probe_reply(mesh, n, &from_snap, nonce)) {
-			if(path_probe_read_endpoint(packet->data, &observed)) {
-				path_keepalive_observe_local_endpoint(mesh, n, &from_snap, &observed);
-			}
-			return;
-		}
-	} else if(kind == PROBE_KIND_ECHO_REPLY && n->status.udp_confirmed) {
-		bool mine = purpose == PROBE_PURPOSE_LIVENESS && nonce && nonce == n->liveness.nonce
-		            && !sockaddrcmp(&from_snap, &n->address);
-		path_observe_probe_reply(mesh, n, &from_snap, nonce);
-		path_liveness_observe_reply(mesh, n, &from_snap, nonce, purpose);
-		if(mine && path_probe_read_endpoint(packet->data, &observed)) {
-			path_keepalive_observe_local_endpoint(mesh, n, &from_snap, &observed);
-		}
-	}
-
-	if(kind == PROBE_KIND_SIZE_ACK) {
-		uint16_t got = (uint16_t)((packet->data[PROBE_ACKLEN_OFFSET] << 8) | packet->data[PROBE_ACKLEN_OFFSET + 1]);
-
-		bool valid = nonce && nonce == n->plpmtu.probe_nonce && got == n->plpmtu.probe_size
-		             && !sockaddrcmp(&from_snap, &n->address);
-		path_plpmtu_observe_ack(mesh, n, &from_snap, nonce, got);
-		if(valid && path_probe_read_endpoint(packet->data, &observed)) {
-			path_keepalive_observe_local_endpoint(mesh, n, &from_snap, &observed);
-		}
-	}
+	probe_handle_size_ack(mesh, n, packet, nonce, &from_snap);
 }
 
 /* VPN packet I/O */

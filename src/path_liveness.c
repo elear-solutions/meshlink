@@ -1,6 +1,11 @@
 /*
     path_liveness.c -- path liveness, idle keepalive, local discovery
     Copyright (C) 2026 Elear Solutions
+
+    This program is free software; you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation; either version 2 of the License, or
+    (at your option) any later version.
 */
 
 #include "system.h"
@@ -21,16 +26,13 @@
 #include "path_scheduler.h"
 #include "protocol.h"
 
-extern void net_probe_sched_send(meshlink_handle_t *mesh, const path_probe_request_t *req);
-
 static bool same_ip_portless(const sockaddr_t *a, const sockaddr_t *b);
-static bool discovery_did_broadcast;
 
-bool path_local_discovery_did_broadcast(void) {
-	return discovery_did_broadcast;
+bool path_local_discovery_did_broadcast(const meshlink_handle_t *mesh) {
+	return mesh && mesh->discovery_did_broadcast;
 }
 
-static uint64_t fresh_nonce(void) {
+uint64_t path_probe_fresh_nonce(void) {
 	uint64_t nonce = 0;
 
 	do {
@@ -40,12 +42,12 @@ static uint64_t fresh_nonce(void) {
 	return nonce;
 }
 
-static int64_t ms_between(const struct timespec *from, const struct timespec *to) {
+int64_t path_ms_between(const struct timespec *from, const struct timespec *to) {
 	return (int64_t)(to->tv_sec - from->tv_sec) * 1000
 	       + (to->tv_nsec - from->tv_nsec) / 1000000;
 }
 
-static void arm_ms(meshlink_handle_t *mesh, timeout_t *t, timeout_cb_t cb, void *data, int ms) {
+void path_timer_arm_ms(meshlink_handle_t *mesh, timeout_t *t, timeout_cb_t cb, void *data, int ms) {
 	struct timespec tv = {
 		.tv_sec = ms / 1000,
 		.tv_nsec = (long)(ms % 1000) * 1000000L
@@ -61,13 +63,24 @@ static void arm_ms(meshlink_handle_t *mesh, timeout_t *t, timeout_cb_t cb, void 
 	} else {
 		timeout_add(&mesh->loop, t, cb, data, &tv);
 	}
+
+	/* The mesh thread drops mesh->mutex around pselect. A timer inserted
+	   off-thread is invisible until something wakes the loop. */
+	if(mesh->threadstarted && mesh->loop.pipefd[1] != -1 && !pthread_equal(mesh->thread, pthread_self())) {
+		signal_trigger(&mesh->loop, &mesh->datafromapp);
+	}
 }
 
-static void disarm(meshlink_handle_t *mesh, timeout_t *t) {
+void path_timer_disarm(meshlink_handle_t *mesh, timeout_t *t) {
 	if(t->cb) {
 		timeout_del(&mesh->loop, t);
 	}
 }
+
+#define fresh_nonce path_probe_fresh_nonce
+#define ms_between path_ms_between
+#define arm_ms path_timer_arm_ms
+#define disarm path_timer_disarm
 
 static int ping_interval(const meshlink_handle_t *mesh, const node_t *n) {
 	int interval = mesh->dev_class_traits[n->devclass].pinginterval;
@@ -78,13 +91,13 @@ static int ping_interval(const meshlink_handle_t *mesh, const node_t *n) {
 static int ping_timeout(const meshlink_handle_t *mesh, const node_t *n) {
 	int timeout = mesh->dev_class_traits[n->devclass].pingtimeout;
 
-	return timeout > 0 ? timeout : 5;
+	return timeout > 0 ? timeout : PATH_LIVENESS_FALLBACK_PING_TIMEOUT_SEC;
 }
 
 static int try_gap_ms(const meshlink_handle_t *mesh, const node_t *n) {
 	int gap = ping_timeout(mesh, n) * 1000 / PATH_LIVENESS_TRIES;
 
-	return gap < 500 ? 500 : gap;
+	return gap < PATH_LIVENESS_TRY_GAP_FLOOR_MS ? PATH_LIVENESS_TRY_GAP_FLOOR_MS : gap;
 }
 
 static bool emit_echo(meshlink_handle_t *mesh, node_t *n, uint8_t purpose, uint64_t nonce, bool broadcast, path_transaction_priority_t prio) {
@@ -147,11 +160,11 @@ static void keepalive_apply_pending(meshlink_handle_t *mesh, node_t *n) {
 				arm_ms(mesh, &n->keepalive.timer, keepalive_timer, n, (int)shrunk);
 			}
 			logger(mesh, MESHLINK_INFO, "UDP keepalive interval for %s set to %ums after idle expiry", n->name, shrunk);
+			n->keepalive.last_grow_at = mesh->loop.now;
 		}
 	}
 
 	n->keepalive.pending_gap_ms = 0;
-	n->keepalive.last_grow_at = mesh->loop.now;
 }
 
 void path_liveness_on_confirmed(meshlink_handle_t *mesh, node_t *n) {
@@ -248,7 +261,8 @@ void path_liveness_observe_reply(meshlink_handle_t *mesh, node_t *n, const socka
 
 	/* SIZE_ACK callers pass PURPOSE_NONE. A reply from another port never counts. */
 	if(!mine && purpose != PROBE_PURPOSE_SUSPECT && purpose != PROBE_PURPOSE_REBIND
-	                && purpose != PROBE_PURPOSE_NONE && purpose != PROBE_PURPOSE_PROMOTION) {
+	                && purpose != PROBE_PURPOSE_NONE && purpose != PROBE_PURPOSE_PROMOTION
+	                && purpose != PROBE_PURPOSE_PUNCH) {
 		return;
 	}
 
@@ -600,11 +614,11 @@ void path_local_discovery_tick(meshlink_handle_t *mesh, node_t *n) {
 
 	broadcast = n->local_discovery.tries < PATH_LOCAL_DISCOVERY_BROADCAST_TRIES && n->prevedge;
 	bool sent = emit_echo(mesh, n, PROBE_PURPOSE_LOCAL_DISCOVERY, n->local_discovery.nonce, broadcast, PATH_TX_LIVENESS);
-	discovery_did_broadcast = sent && broadcast;
+	mesh->discovery_did_broadcast = sent && broadcast;
 	if(sent) {
 		n->local_discovery.tries++;
 	}
-	arm_ms(mesh, &n->local_discovery.timer, discovery_timer, n, 1000);
+	arm_ms(mesh, &n->local_discovery.timer, discovery_timer, n, PATH_LOCAL_DISCOVERY_REARM_MS);
 }
 
 static void discovery_timer(event_loop_t *loop, void *data) {

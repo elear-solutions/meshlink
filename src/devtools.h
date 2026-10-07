@@ -110,6 +110,12 @@ typedef enum {
 	DEVTOOL_PLPMTU_ERROR
 } devtool_plpmtu_state_t;
 
+typedef enum {
+	DEVTOOL_LIVENESS_IDLE = 0,
+	DEVTOOL_LIVENESS_PARKED,
+	DEVTOOL_LIVENESS_PROBING
+} devtool_liveness_state_t;
+
 typedef struct devtool_plpmtu_cache_entry {
 	uint8_t family;
 	uint8_t addr[16];
@@ -247,7 +253,7 @@ struct devtool_node_status {
 	uint32_t plpmtu_black_holes;
 	uint32_t plpmtu_emsgsize;
 	uint32_t plpmtu_cache_hits;
-	int liveness_state;
+	devtool_liveness_state_t liveness_state;
 	uint32_t liveness_probes_sent;
 	uint32_t liveness_retries;
 	uint32_t liveness_giveups;
@@ -598,9 +604,8 @@ bool devtool_graph_may_seed_udp(struct meshlink_handle *mesh, struct meshlink_no
 
 /// Pretend dest is only reachable via nexthop UDP (for relay tests).
 /** Pins dest's nexthop, clears dest's direct UDP confirmation, marks nexthop
- *  UDP-confirmed, stops dest probes, resets dest probe count, and clears dest's
- *  stored relay budget. Does not write minmtu. nexthop must already have a
- *  valid key.
+ *  UDP-confirmed, pauses dest PLPMTU, stops dest liveness, and clears dest's
+ *  relay budget. nexthop must already have a valid key.
  *
  *  @param mesh     Mesh handle.
  *  @param dest     Node that should be reached only via nexthop.

@@ -1,6 +1,11 @@
 /*
     path_plpmtu_cover.c -- PLPMTU, liveness, keepalive and probe wire cover
     Copyright (C) 2026 Elear Solutions
+
+    This program is free software; you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation; either version 2 of the License, or
+    (at your option) any later version.
 */
 
 #include "system.h"
@@ -24,7 +29,7 @@
 
 #define CHECK(cond) do { \
 		if(!(cond)) { \
-			logger(mesh, MESHLINK_ERROR, "path_ws1_cover_unit failed: %s", #cond); \
+			logger(mesh, MESHLINK_ERROR, "path_plpmtu_cover_unit failed: %s", #cond); \
 			goto done; \
 		} \
 	} while(0)
@@ -813,7 +818,7 @@ static bool liveness_cover(meshlink_handle_t *mesh) {
 	path_liveness_observe_reply(mesh, &n, &other, n.liveness.nonce, PROBE_PURPOSE_LIVENESS);
 	CHECK(n.liveness.state == LIVENESS_PROBING);
 	path_liveness_observe_reply(mesh, &n, &n.address, 0x111, PROBE_PURPOSE_PUNCH);
-	CHECK(n.liveness.state == LIVENESS_PROBING);
+	CHECK(n.liveness.state == LIVENESS_PARKED);
 	path_liveness_observe_reply(mesh, &n, &n.address, 0x222, PROBE_PURPOSE_SUSPECT);
 	CHECK(n.liveness.state == LIVENESS_PARKED);
 
@@ -922,7 +927,7 @@ static bool liveness_cover(meshlink_handle_t *mesh) {
 
 	for(t = 0; t < PATH_LOCAL_DISCOVERY_TRIES; t++) {
 		path_local_discovery_tick(mesh, &n);
-		CHECK(path_local_discovery_did_broadcast() == (t < PATH_LOCAL_DISCOVERY_BROADCAST_TRIES));
+		CHECK(path_local_discovery_did_broadcast(mesh) == (t < PATH_LOCAL_DISCOVERY_BROADCAST_TRIES));
 	}
 
 	path_local_discovery_tick(mesh, &n);
@@ -1139,6 +1144,24 @@ static bool keepalive_cover(meshlink_handle_t *mesh) {
 	CHECK(cache_slot(&n, 0xcb00710c) >= 0);
 	CHECK(n.mtu_cache[cache_slot(&n, 0xcb00710c)].keepalive_ms == 9000);
 
+	/* A raising size ACK keeps the oversize stamp so the endpoint observation is not an idle expiry. */
+	n.keepalive.interval_ms = 15000;
+	n.keepalive.expiries = 1;
+	n.keepalive.pending_gap_ms = 15000;
+	n.keepalive.pending_since = mesh->loop.now;
+	path_copy_sockaddr(&n.keepalive.pending_ip, &n.address);
+	n.plpmtu.state = PLPMTU_SEARCHING;
+	n.plpmtu.size = PATH_PLPMTU_BASE;
+	n.plpmtu.probe_nonce = 0xabc;
+	n.plpmtu.probe_size = PATH_PLPMTU_STEP_1399;
+	n.plpmtu.last_oversize_sent_at = mesh->loop.now;
+	path_plpmtu_observe_ack(mesh, &n, &n.address, 0xabc, PATH_PLPMTU_STEP_1399);
+	CHECK(n.plpmtu.size == PATH_PLPMTU_STEP_1399);
+	CHECK(n.plpmtu.last_oversize_sent_at.tv_sec);
+	local.in.sin_port = htons(5003);
+	path_keepalive_observe_local_endpoint(mesh, &n, &n.address, &local);
+	CHECK(n.keepalive.interval_ms == 15000 && n.keepalive.expiries == 1);
+
 	/* A mapping that survives the gap, stale evidence, a new public IP,
 	   and an oversize-induced remap must not shorten the idle interval. */
 	for(int reason = 0; reason < 6; reason++) {
@@ -1197,6 +1220,13 @@ static bool keepalive_cover(meshlink_handle_t *mesh) {
 	n.keepalive.last_grow_at.tv_sec -= PATH_KEEPALIVE_GROW_SEC;
 	CHECK(path_keepalive_backbone_interval_ms(mesh, &n) == PATH_KEEPALIVE_BACKBONE_INITIAL_MS * 72 / 100);
 	CHECK(n.mtu_cache[cache_slot(&n, 0xcb00710c)].keepalive_ms == n.keepalive.interval_ms);
+	mesh->backbone_udp_keepalive_sec = PATH_BACKBONE_UDP_KEEPALIVE_SEC;
+	CHECK(path_backbone_udp_keepalive_base_sec(mesh) == (int)(n.keepalive.interval_ms / 1000));
+	n.keepalive.interval_ms = 0;
+	mesh->backbone_udp_keepalive_sec = 2;
+	CHECK(path_backbone_udp_keepalive_base_sec(mesh) == 2);
+	mesh->backbone_udp_keepalive_sec = PATH_BACKBONE_UDP_KEEPALIVE_SEC;
+	n.keepalive.interval_ms = PATH_KEEPALIVE_BACKBONE_INITIAL_MS * 72 / 100;
 
 	ok = true;
 
@@ -1325,7 +1355,7 @@ done:
 	return ok;
 }
 
-bool path_ws1_cover_unit(meshlink_handle_t *mesh) {
+bool path_plpmtu_cover_unit(meshlink_handle_t *mesh) {
 	struct timespec saved_now;
 	unsigned char saved_budget[sizeof mesh->probe_budget];
 	int saved_class;

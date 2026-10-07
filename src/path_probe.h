@@ -4,6 +4,11 @@
 /*
     path_probe.h -- PKT_PROBE payload layout
     Copyright (C) 2026 Elear Solutions
+
+    This program is free software; you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation; either version 2 of the License, or
+    (at your option) any later version.
 */
 
 #include <stdint.h>
@@ -25,6 +30,10 @@
    IPv4 uses the first four address bytes; IPv6 uses all sixteen. */
 #define PROBE_ENDPOINT_OFFSET 12
 #define PROBE_ENDPOINT_LEN 20
+#define PROBE_ENDPOINT_MARKER 0xa7
+#define PROBE_ADDR_FAMILY_IPV4 4
+#define PROBE_ADDR_FAMILY_IPV6 6
+#define PROBE_PAD_OFFSET 14
 
 #define PROBE_PURPOSE_NONE            0
 #define PROBE_PURPOSE_LIVENESS        1
