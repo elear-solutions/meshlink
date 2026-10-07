@@ -126,11 +126,13 @@ void path_liveness_stop(meshlink_handle_t *mesh, node_t *n) {
 
 static void keepalive_apply_pending(meshlink_handle_t *mesh, node_t *n) {
 	uint32_t gap = n->keepalive.pending_gap_ms;
+	int64_t age = ms_between(&n->keepalive.pending_since, &mesh->loop.now);
 
 	if(gap && n->keepalive.pending_since.tv_sec
-	                && mesh->loop.now.tv_sec - n->keepalive.pending_since.tv_sec <= PATH_KEEPALIVE_EXPIRY_CONFIRM_SEC
+	                && gap >= n->keepalive.interval_ms
+	                && age >= 0 && age <= (int64_t)PATH_KEEPALIVE_EXPIRY_CONFIRM_SEC * 1000
 	                && same_ip_portless(&n->keepalive.pending_ip, &n->address)) {
-		uint32_t shrunk = gap * PATH_KEEPALIVE_SHRINK_PCT / 100;
+		uint32_t shrunk = (uint64_t)gap * PATH_KEEPALIVE_SHRINK_PCT / 100;
 
 		if(shrunk < n->keepalive.interval_ms) {
 			if(shrunk < PATH_KEEPALIVE_FLOOR_MS) {
@@ -141,6 +143,9 @@ static void keepalive_apply_pending(meshlink_handle_t *mesh, node_t *n) {
 			n->keepalive.expiries++;
 			n->status.dirty = true;
 			path_plpmtu_remember_keepalive(mesh, n);
+			if(n != mesh->backbone_udp.node) {
+				arm_ms(mesh, &n->keepalive.timer, keepalive_timer, n, (int)shrunk);
+			}
 			logger(mesh, MESHLINK_INFO, "UDP keepalive interval for %s set to %ums after idle expiry", n->name, shrunk);
 		}
 	}
@@ -153,9 +158,6 @@ void path_liveness_on_confirmed(meshlink_handle_t *mesh, node_t *n) {
 	if(!mesh || !n || !n->status.udp_confirmed) {
 		return;
 	}
-
-	/* Backbone never parks, but a re-establish still learns the idle gap. */
-	keepalive_apply_pending(mesh, n);
 
 	if(n == mesh->backbone_udp.node) {
 		path_liveness_stop(mesh, n);
@@ -190,14 +192,6 @@ void path_liveness_tick(meshlink_handle_t *mesh, node_t *n) {
 		n->liveness.tries = 0;
 		n->liveness.nonce = fresh_nonce();
 		n->liveness.first_try_at = mesh->loop.now;
-
-		if(n->keepalive.last_tx_at.tv_sec) {
-			int64_t gap = ms_between(&n->keepalive.last_tx_at, &mesh->loop.now);
-
-			n->liveness.idle_gap_ms = gap > 0 ? (uint32_t)gap : 0;
-		} else {
-			n->liveness.idle_gap_ms = 0;
-		}
 	}
 
 	/* All tries have to be sent. A 1s pingtimeout cannot fit three 500ms
@@ -210,7 +204,6 @@ void path_liveness_tick(meshlink_handle_t *mesh, node_t *n) {
 
 		n->liveness.giveups++;
 		n->liveness.gave_up = true;
-		path_keepalive_note_giveup(mesh, n, n->liveness.idle_gap_ms);
 		logger(mesh, MESHLINK_INFO, "%s did not respond to UDP ping", n->name);
 		path_liveness_stop(mesh, n);
 		n->liveness.gave_up = true;
@@ -267,6 +260,7 @@ void path_liveness_observe_reply(meshlink_handle_t *mesh, node_t *n, const socka
 	n->liveness.nonce = 0;
 	n->liveness.tries = 0;
 	n->liveness.gave_up = false;
+	path_scheduler_cancel(mesh, n, PATH_TX_LIVENESS);
 	arm_ms(mesh, &n->liveness.timer, liveness_timer, n, ping_interval(mesh, n) * 1000);
 }
 
@@ -358,14 +352,40 @@ void path_keepalive_on_confirmed(meshlink_handle_t *mesh, node_t *n) {
 		                           ? PATH_KEEPALIVE_BACKBONE_INITIAL_MS
 		                           : PATH_KEEPALIVE_INITIAL_MS;
 	}
+	if(!n->keepalive.last_grow_at.tv_sec) {
+		n->keepalive.last_grow_at = mesh->loop.now;
+	}
+	if(!n->keepalive.last_tx_at.tv_sec) {
+		/* Confirmation bounds the initial gap even if its outbound probe
+		   preceded assignment of the confirmed endpoint. */
+		n->keepalive.last_tx_at = mesh->loop.now;
+	}
 
-	keepalive_apply_pending(mesh, n);
 	arm_ms(mesh, &n->keepalive.timer, keepalive_timer, n, (int)n->keepalive.interval_ms);
 }
 
-void path_keepalive_note_tx(meshlink_handle_t *mesh, node_t *n) {
-	if(!mesh || !n) {
+void path_keepalive_note_tx(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *to) {
+	uint32_t interval;
+	int64_t gap;
+
+	if(!mesh || !n || !from_confirmed(n, to)) {
 		return;
+	}
+
+	interval = n->keepalive.interval_ms ? n->keepalive.interval_ms
+	           : n == mesh->backbone_udp.node ? PATH_KEEPALIVE_BACKBONE_INITIAL_MS : PATH_KEEPALIVE_INITIAL_MS;
+	gap = n->keepalive.last_tx_at.tv_sec ? ms_between(&n->keepalive.last_tx_at, &mesh->loop.now) : 0;
+	if(gap >= PATH_KEEPALIVE_FLOOR_MS) {
+		logger(mesh, MESHLINK_DEBUG, "UDP outbound idle gap for %s: %lldms (keepalive %ums)", n->name, (long long)gap, interval);
+	}
+
+	/* A silence at the remote end says nothing about our own NAT. Save our
+	   outbound idle gap; learn only if the peer subsequently observes our
+	   source port changing. Short gaps must not manufacture an idle expiry. */
+	if(gap >= interval && gap >= PATH_KEEPALIVE_FLOOR_MS && gap <= UINT32_MAX) {
+		n->keepalive.pending_gap_ms = (uint32_t)gap;
+		n->keepalive.pending_since = mesh->loop.now;
+		path_copy_sockaddr(&n->keepalive.pending_ip, &n->address);
 	}
 
 	n->keepalive.last_tx_at = mesh->loop.now;
@@ -387,14 +407,65 @@ void path_keepalive_note_rx(meshlink_handle_t *mesh, node_t *n) {
 	}
 }
 
-void path_keepalive_note_giveup(meshlink_handle_t *mesh, node_t *n, uint32_t idle_gap_ms) {
-	if(!mesh || !n || idle_gap_ms < PATH_KEEPALIVE_FLOOR_MS) {
+void path_keepalive_observe_local_endpoint(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *from, const sockaddr_t *endpoint) {
+	bool known;
+	bool remapped;
+	bool oversized;
+	int64_t age;
+
+	if(!mesh || !n || !endpoint || !n->status.udp_confirmed || !n->status.validkey || !from_confirmed(n, from)
+	                || (endpoint->sa.sa_family != AF_INET && endpoint->sa.sa_family != AF_INET6)) {
 		return;
 	}
 
-	n->keepalive.pending_gap_ms = idle_gap_ms;
-	n->keepalive.pending_since = mesh->loop.now;
-	path_copy_sockaddr(&n->keepalive.pending_ip, &n->address);
+	known = n->keepalive.local_endpoint.sa.sa_family
+	        && n->keepalive.local_endpoint_epoch == mesh->lan_network_epoch
+	        && !sockaddrcmp(&n->keepalive.local_endpoint_peer, from);
+	remapped = known && same_ip_portless(&n->keepalive.local_endpoint, endpoint)
+	           && sockaddrcmp(&n->keepalive.local_endpoint, endpoint);
+	age = ms_between(&n->plpmtu.last_oversize_sent_at, &mesh->loop.now);
+	oversized = n->plpmtu.last_oversize_sent_at.tv_sec
+	            && age >= 0 && age <= (int64_t)PATH_KEEPALIVE_EXPIRY_CONFIRM_SEC * 1000;
+
+	if(remapped) {
+		logger(mesh, MESHLINK_DEBUG, "UDP source port changed for %s: idle evidence %ums, recent oversize %d",
+		       n->name, n->keepalive.pending_gap_ms, oversized);
+		path_plpmtu_note_local_remap(mesh, n);
+
+		if(!oversized) {
+			keepalive_apply_pending(mesh, n);
+		}
+	}
+
+	/* An unchanged endpoint proves that this idle gap survived. An IP or
+	   network change starts a new observation baseline, not an expiry. */
+	n->keepalive.pending_gap_ms = 0;
+	path_copy_sockaddr(&n->keepalive.local_endpoint, endpoint);
+	path_copy_sockaddr(&n->keepalive.local_endpoint_peer, from);
+	n->keepalive.local_endpoint_epoch = mesh->lan_network_epoch;
+}
+
+static uint32_t keepalive_interval(meshlink_handle_t *mesh, node_t *n, uint32_t cap) {
+	uint32_t interval = n->keepalive.interval_ms ? n->keepalive.interval_ms : cap;
+
+	if(n->keepalive.last_grow_at.tv_sec
+	                && mesh->loop.now.tv_sec - n->keepalive.last_grow_at.tv_sec >= PATH_KEEPALIVE_GROW_SEC) {
+		uint32_t grown = (uint64_t)interval * PATH_KEEPALIVE_GROW_PCT / 100;
+
+		if(grown > cap) {
+			grown = cap;
+		}
+
+		if(grown > interval) {
+			n->keepalive.interval_ms = grown;
+			interval = grown;
+			n->status.dirty = true;
+			path_plpmtu_remember_keepalive(mesh, n);
+		}
+
+		n->keepalive.last_grow_at = mesh->loop.now;
+	}
+	return interval;
 }
 
 void path_keepalive_tick(meshlink_handle_t *mesh, node_t *n) {
@@ -417,25 +488,7 @@ void path_keepalive_tick(meshlink_handle_t *mesh, node_t *n) {
 		return;
 	}
 
-	interval = n->keepalive.interval_ms ? n->keepalive.interval_ms : PATH_KEEPALIVE_INITIAL_MS;
-
-	if(n->keepalive.last_grow_at.tv_sec
-	                && mesh->loop.now.tv_sec - n->keepalive.last_grow_at.tv_sec >= PATH_KEEPALIVE_GROW_SEC) {
-		uint32_t grown = interval * PATH_KEEPALIVE_GROW_PCT / 100;
-		uint32_t cap = PATH_KEEPALIVE_INITIAL_MS;
-
-		if(grown > cap) {
-			grown = cap;
-		}
-
-		if(grown > interval) {
-			n->keepalive.interval_ms = grown;
-			interval = grown;
-			n->status.dirty = true;
-		}
-
-		n->keepalive.last_grow_at = mesh->loop.now;
-	}
+	interval = keepalive_interval(mesh, n, PATH_KEEPALIVE_INITIAL_MS);
 
 	idle = n->keepalive.last_tx_at.tv_sec ? ms_between(&n->keepalive.last_tx_at, &mesh->loop.now) : (int64_t)interval;
 
@@ -455,7 +508,6 @@ void path_keepalive_tick(meshlink_handle_t *mesh, node_t *n) {
 
 	if(path_scheduler_emit_packet(mesh, NULL, &req) == PATH_SCHED_SENT) {
 		n->keepalive.sent++;
-		n->keepalive.last_tx_at = mesh->loop.now;
 		n->keepalive.last_probe_at = mesh->loop.now;
 	}
 
@@ -467,12 +519,12 @@ static void keepalive_timer(event_loop_t *loop, void *data) {
 	path_keepalive_tick(loop->data, data);
 }
 
-uint32_t path_keepalive_backbone_interval_ms(const meshlink_handle_t *mesh, const node_t *n) {
+uint32_t path_keepalive_backbone_interval_ms(meshlink_handle_t *mesh, node_t *n) {
 	if(!mesh || !n || !n->keepalive.interval_ms) {
 		return PATH_KEEPALIVE_BACKBONE_INITIAL_MS;
 	}
 
-	return n->keepalive.interval_ms;
+	return keepalive_interval(mesh, n, PATH_KEEPALIVE_BACKBONE_INITIAL_MS);
 }
 
 void path_local_discovery_stop(meshlink_handle_t *mesh, node_t *n) {
@@ -547,9 +599,11 @@ void path_local_discovery_tick(meshlink_handle_t *mesh, node_t *n) {
 	}
 
 	broadcast = n->local_discovery.tries < PATH_LOCAL_DISCOVERY_BROADCAST_TRIES && n->prevedge;
-	discovery_did_broadcast = broadcast;
-	emit_echo(mesh, n, PROBE_PURPOSE_LOCAL_DISCOVERY, n->local_discovery.nonce, broadcast, PATH_TX_LIVENESS);
-	n->local_discovery.tries++;
+	bool sent = emit_echo(mesh, n, PROBE_PURPOSE_LOCAL_DISCOVERY, n->local_discovery.nonce, broadcast, PATH_TX_LIVENESS);
+	discovery_did_broadcast = sent && broadcast;
+	if(sent) {
+		n->local_discovery.tries++;
+	}
 	arm_ms(mesh, &n->local_discovery.timer, discovery_timer, n, 1000);
 }
 

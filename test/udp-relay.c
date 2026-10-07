@@ -1334,12 +1334,10 @@ static uint32_t nat_migrated(meshlink_handle_t *mesh, meshlink_node_t *node) {
 }
 
 static void nat_rebind_log(meshlink_handle_t *mesh, meshlink_log_level_t level, const char *text) {
-	(void)mesh;
-	(void)level;
-
 	if(!text) {
 		return;
 	}
+	log_cb(mesh, level, text);
 
 	if(strstr(text, "direct-wan-udp -> relay-udp") || strstr(text, "direct-local-udp -> relay-udp")) {
 		nat_relay_demotions++;
@@ -1578,7 +1576,7 @@ static void nat_arm(int kind) {
 	}
 }
 
-static peer_config_t *nat_bringup_direct(const char *prefix, int arm, meshlink_node_t **app_cam_out, meshlink_node_t **cam_app_out, meshlink_channel_t **ch_out) {
+static peer_config_t *nat_bringup(const char *prefix, int arm, bool direct, meshlink_node_t **app_cam_out, meshlink_node_t **cam_app_out, meshlink_channel_t **ch_out) {
 	peer_config_t *peers;
 	meshlink_node_t *app_cam;
 	meshlink_node_t *cam_app;
@@ -1616,7 +1614,7 @@ static peer_config_t *nat_bringup_direct(const char *prefix, int arm, meshlink_n
 	assert(wait_sync_flag(&nat_accepted, 20));
 	assert(nat_cam_channel);
 
-	for(i = 0; i < 15; i++) {
+	for(i = 0; direct && i < 15; i++) {
 		if(nat_route_is(peers[1].mesh, app_cam, 1) && nat_route_is(peers[2].mesh, cam_app, 1)) {
 			break;
 		}
@@ -1631,12 +1629,18 @@ static peer_config_t *nat_bringup_direct(const char *prefix, int arm, meshlink_n
 		sleep(1);
 	}
 
-	assert(nat_route_is(peers[1].mesh, app_cam, 1));
-	assert(nat_route_is(peers[2].mesh, cam_app, 1));
+	if(direct) {
+		assert(nat_route_is(peers[1].mesh, app_cam, 1));
+		assert(nat_route_is(peers[2].mesh, cam_app, 1));
+	}
 	*app_cam_out = app_cam;
 	*cam_app_out = cam_app;
 	*ch_out = ch;
 	return peers;
+}
+
+static peer_config_t *nat_bringup_direct(const char *prefix, int arm, meshlink_node_t **app_cam_out, meshlink_node_t **cam_app_out, meshlink_channel_t **ch_out) {
+	return nat_bringup(prefix, arm, true, app_cam_out, cam_app_out, ch_out);
 }
 
 static bool nat_plpmtu_settled(meshlink_handle_t *mesh, meshlink_node_t *node, uint16_t size, devtool_node_status_t *out) {
@@ -1682,25 +1686,22 @@ static void test_plpmtu_asymmetric(void) {
 }
 
 /* Oversize probes are dropped and the flow is deleted, so the next packet rebinds. */
-static void test_plpmtu_hostile_nat(void) {
+static void test_plpmtu_hostile_nat(bool startup) {
 	peer_config_t *peers;
 	meshlink_node_t *app_cam;
 	meshlink_node_t *cam_app;
 	meshlink_channel_t *ch;
 	devtool_node_status_t st;
-	uint32_t migrated;
 	struct timespec started;
 	struct timespec now;
 	bool hostile = false;
 
-	printf("\n=== udp-relay PLPMTU hostile NAT ===\n");
-	peers = nat_bringup_direct("plpmtuhostile", NAT_ARM_PUNISH_1449, &app_cam, &cam_app, &ch);
-	migrated = nat_migrated(peers[1].mesh, app_cam);
+	printf("\n=== udp-relay PLPMTU hostile NAT %s ===\n", startup ? "before promotion" : "direct");
+	peers = nat_bringup(startup ? "plpmtustart" : "plpmtuhostile", NAT_ARM_PUNISH_1449, !startup, &app_cam, &cam_app, &ch);
 	clock_gettime(CLOCK_MONOTONIC, &started);
 
-	/* Small packets have to keep coming. The rebind challenge waits until the
-	   old port has been quiet for 500ms, and the hostile mark only sticks
-	   for 2s after the oversized probe. */
+	/* No application sends to expose the remap. At startup, hold route
+	   residency so recovery has to work while the channel remains relayed. */
 	while(!hostile) {
 		int64_t elapsed;
 
@@ -1711,26 +1712,29 @@ static void test_plpmtu_hostile_nat(void) {
 			break;
 		}
 
-		assert(nat_route_is(peers[1].mesh, app_cam, 1));
-		assert(nat_route_is(peers[2].mesh, cam_app, 1));
-		reset_sync_flag(&nat_received);
-		assert(meshlink_channel_send(peers[2].mesh, nat_cam_channel, "s", 1) == 1);
-		assert(wait_sync_flag(&nat_received, 2));
+		if(startup) {
+			assert(!nat_route_is(peers[2].mesh, cam_app, 1));
+			devtool_age_route(peers[2].mesh, cam_app, -60);
+		}
 
 		if(nat_plpmtu_settled(peers[2].mesh, cam_app, 1399, &st)) {
 			hostile = st.plpmtu_hostile && st.plpmtu_probes_lost <= 1;
 			devtool_free_node_status(&st);
 		}
 
-		/* The rebind challenge waits out 500ms of silence on the old port.
-		   Another packet in that range is what makes the new port visible. */
 		usleep(500000);
 	}
 
 	assert(hostile);
-	assert(nat_migrated(peers[1].mesh, app_cam) - migrated <= 2);
+	assert(nat_migrated(peers[1].mesh, app_cam) <= 3);
 	assert(nat_probe_giveups == 0);
 	assert(nat_relay_demotions == 0);
+	devtool_get_node_status(peers[1].mesh, app_cam, &st);
+	assert(st.keepalive_expiries == 0);
+	devtool_free_node_status(&st);
+	devtool_get_node_status(peers[2].mesh, cam_app, &st);
+	assert(st.keepalive_expiries == 0);
+	devtool_free_node_status(&st);
 	nat_oversize_punisher_stop();
 
 	meshlink_channel_abort(peers[1].mesh, ch);
@@ -1797,6 +1801,9 @@ static void test_plpmtu_mid_session_black_hole(void) {
 	}
 
 	assert(dropped);
+	/* Fallback publication can precede the base verification ACK. Wait
+	   for settlement before forcing the raise; settlement arms its timer. */
+	assert_after(nat_plpmtu_is(peers[2].mesh, cam_app, 1211), 15);
 	assert(nat_undrop_udp_egress(1, 1300));
 	assert(devtool_plpmtu_raise_due(peers[2].mesh, cam_app));
 
@@ -1822,7 +1829,8 @@ static void test_plpmtu_mid_session_black_hole(void) {
 	printf("udp-relay PLPMTU mid-session black hole ok\n");
 }
 
-/* Cam mapping dies at 12s. The prober (app, lesser name) gives up once and shrinks. */
+/* Cam mapping dies at 12s. Cam must learn its own outbound refresh interval;
+   app's liveness failure is not evidence that app's NAT expired. */
 static void test_keepalive_idle_expiry(void) {
 	peer_config_t *peers;
 	meshlink_node_t *app_cam;
@@ -1836,11 +1844,8 @@ static void test_keepalive_idle_expiry(void) {
 
 	printf("\n=== udp-relay keepalive idle expiry ===\n");
 	peers = nat_bringup_direct("plpmtuka", NAT_ARM_CAM_TIMEOUT_12, &app_cam, &cam_app, &ch);
-
-	/* Keepalives would either refresh last_tx just as liveness starts, or
-	   punch a new cam mapping and skip the give-up. Liveness owns this window. */
-	assert(devtool_set_keepalive_interval(peers[1].mesh, app_cam, 60000));
-	assert(devtool_set_keepalive_interval(peers[2].mesh, cam_app, 60000));
+	meshlink_set_log_cb(peers[1].mesh, MESHLINK_DEBUG, nat_rebind_log);
+	meshlink_set_log_cb(peers[2].mesh, MESHLINK_DEBUG, nat_rebind_log);
 
 	for(i = 0; i < 30; i++) {
 		devtool_get_node_status(peers[2].mesh, cam_app, &before);
@@ -1856,6 +1861,8 @@ static void test_keepalive_idle_expiry(void) {
 	assert(i < 30);
 	assert(before.plpmtu_state == DEVTOOL_PLPMTU_COMPLETE);
 	assert(before.plpmtu_size >= MINMTU);
+	assert(devtool_set_keepalive_interval(peers[1].mesh, app_cam, 15000));
+	assert(devtool_set_keepalive_interval(peers[2].mesh, cam_app, 15000));
 
 	for(i = 0; i < 8; i++) {
 		assert(meshlink_channel_send(peers[2].mesh, nat_cam_channel, "go", 2) == 2);
@@ -1864,22 +1871,21 @@ static void test_keepalive_idle_expiry(void) {
 
 	nat_probe_giveups = 0;
 
+	/* Jitter can make the first remap's gap shorter than the configured
+	   interval. Allow later qualified gaps instead of weakening evidence. */
 	for(i = 0; i < 80 && !shrunk; i++) {
-		devtool_get_node_status(peers[1].mesh, app_cam, &st);
+		devtool_get_node_status(peers[2].mesh, cam_app, &st);
 		shrunk = st.keepalive_expiries >= 1 && st.keepalive_interval_ms <= 12000 && st.keepalive_interval_ms >= 5000;
 		devtool_free_node_status(&st);
-
-		/* The shrink is applied on the confirm that follows the give-up.
-		   One cam packet opens a fresh mapping so that confirm happens. */
-		if(!shrunk && nat_probe_giveups >= 1) {
-			assert(meshlink_channel_send(peers[2].mesh, nat_cam_channel, "n", 1) == 1);
-		}
 
 		sleep(1);
 	}
 
 	assert(shrunk);
 	assert(nat_probe_giveups <= 1);
+	devtool_get_node_status(peers[1].mesh, app_cam, &st);
+	assert(st.keepalive_expiries == 0 && st.keepalive_interval_ms == 15000);
+	devtool_free_node_status(&st);
 	giveups_at_shrink = nat_probe_giveups;
 	sleep(30);
 	assert(nat_probe_giveups == giveups_at_shrink);
@@ -1937,13 +1943,26 @@ static void test_nat_hole_punch(void) {
 	nat_plpmtu_case("plpmtubh", true);
 	nat_plpmtu_case("plpmtuicmp", false);
 	test_plpmtu_asymmetric();
-	test_plpmtu_hostile_nat();
+	test_plpmtu_hostile_nat(false);
+	test_plpmtu_hostile_nat(true);
 	test_plpmtu_mid_session_black_hole();
 	test_keepalive_idle_expiry();
 	printf("udp-relay NAT hole punch ok\n");
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+	if(argc == 2 && !strcmp(argv[1], "--black-hole")) {
+		meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
+		test_plpmtu_mid_session_black_hole();
+		return 0;
+	}
+	/* Run the complete idle-expiry case without the preceding NAT matrix. */
+	if(argc == 2 && !strcmp(argv[1], "--keepalive")) {
+		meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
+		test_keepalive_idle_expiry();
+		return 0;
+	}
+	assert(argc == 1);
 	init_sync_flag(&received);
 	init_sync_flag(&received2);
 	init_sync_flag(&bar_learned);

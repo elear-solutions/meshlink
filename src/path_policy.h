@@ -158,6 +158,8 @@ typedef struct path_target_t {
 #define PATH_PLPMTU_CACHE_MAX_AGE_SEC 86400
 #define PATH_MTU_CACHE_ENTRIES            4
 #define PATH_MTU_CACHE_HOSTILE         0x01
+/* Intervals written by the sender-owned keepalive algorithm (17.7). */
+enum { PATH_MTU_CACHE_KEEPALIVE_V2 = 0x02 };
 #define PATH_PLPMTU_HOSTILE_WINDOW_MS  2000
 #define PATH_PLPMTU_BH_WINDOW_SEC        30
 #define PATH_PLPMTU_BH_EVIDENCE           2
@@ -367,7 +369,7 @@ void path_backbone_udp_start(struct meshlink_handle *mesh, struct node_t *bb);
 void path_backbone_udp_stop(struct meshlink_handle *mesh);
 void path_backbone_udp_reset(struct meshlink_handle *mesh, struct node_t *n);
 void path_backbone_udp_observe_reply(struct meshlink_handle *mesh, struct node_t *n,
-                                     const sockaddr_t *from, uint64_t nonce);
+	                const sockaddr_t *from, uint64_t nonce, const sockaddr_t *observed);
 /* Reset establishment backoff and wake when a viable new direct UDP dest is learned.
    Call only from learn paths that stored or upgraded the address; duplicate discovery
    of the same endpoint must not collapse establish_step. */

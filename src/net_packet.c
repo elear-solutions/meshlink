@@ -49,26 +49,49 @@ static void send_udppacket(meshlink_handle_t *mesh, node_t *, vpn_packet_t *);
 #define MAX_SEQNO 1073741824
 #define PROBE_OVERHEAD (SPTPS_DATAGRAM_OVERHEAD + 40)
 
-/* data[0] is the request/reply flag and data[14..] is random padding. Bytes
-   1..13 are zeroed on PMTU probes. Promotion, suspect, and backbone probes
-   stamp a nonce at offset 1 so the echo can be identified without a wire
-   format change. */
-#define PROBE_NONCE_OFFSET 1
+void path_probe_write_endpoint(uint8_t *data, const sockaddr_t *endpoint) {
+	uint8_t *out = data + PROBE_ENDPOINT_OFFSET;
 
-/* mtuprobes == 1..30: initial discovery, send bursts with 1 second interval
-   mtuprobes ==    31: sleep pinginterval seconds
-   mtuprobes ==    32: send 1 burst, sleep pingtimeout second
-   mtuprobes ==    33: no response from other side, restart PMTU discovery process
+	memset(out, 0, PROBE_ENDPOINT_LEN);
 
-   Discovery sends at most three probes per tick so one search fits in the
-   4 pkt/s burst cap. The first sized probe is the midpoint of the remaining
-   range; another is random; a local-discovery broadcast is included while
-   mtuprobes <= 10 so LAN peers are not stuck on a canonical localhost dest.
+	if(endpoint->sa.sa_family == AF_INET) {
+		out[1] = 4;
+		memcpy(out + 2, &endpoint->in.sin_port, 2);
+		memcpy(out + 4, &endpoint->in.sin_addr, 4);
+	} else if(endpoint->sa.sa_family == AF_INET6) {
+		out[1] = 6;
+		memcpy(out + 2, &endpoint->in6.sin6_port, 2);
+		memcpy(out + 4, &endpoint->in6.sin6_addr, 16);
+	} else {
+		return;
+	}
 
-   After parking, liveness is always one 64-byte probe. The occasional
-   maxmtu+8 increase rides beside it and losing that reply does not demote.
+	out[0] = 0xa7;
+}
 
-*/
+bool path_probe_read_endpoint(const uint8_t *data, sockaddr_t *endpoint) {
+	const uint8_t *in = data + PROBE_ENDPOINT_OFFSET;
+
+	memset(endpoint, 0, sizeof *endpoint);
+
+	if(in[0] != 0xa7 || (!in[2] && !in[3])) {
+		return false;
+	}
+
+	if(in[1] == 4) {
+		endpoint->in.sin_family = AF_INET;
+		memcpy(&endpoint->in.sin_port, in + 2, 2);
+		memcpy(&endpoint->in.sin_addr, in + 4, 4);
+	} else if(in[1] == 6) {
+		endpoint->in6.sin6_family = AF_INET6;
+		memcpy(&endpoint->in6.sin6_port, in + 2, 2);
+		memcpy(&endpoint->in6.sin6_addr, in + 4, 16);
+	} else {
+		return false;
+	}
+
+	return true;
+}
 
 void net_probe_sched_send(meshlink_handle_t *mesh, const path_probe_request_t *req) {
 	node_t *n;
@@ -217,6 +240,7 @@ bool send_rebind_probe(meshlink_handle_t *mesh, node_t *n) {
 	packet.data[PROBE_PURPOSE_OFFSET] = PROBE_PURPOSE_REBIND;
 	memcpy(packet.data + PROBE_NONCE_OFFSET, &n->udp_rebind.challenge_nonce, sizeof n->udp_rebind.challenge_nonce);
 	randomize(packet.data + 14, PATH_PROMOTION_PROBE_LEN - 14);
+	path_probe_write_endpoint(packet.data, &n->udp_rebind.challenge_endpoint);
 	packet.len = PATH_PROMOTION_PROBE_LEN;
 	n->out_meta += packet.len + PROBE_OVERHEAD;
 
@@ -386,6 +410,7 @@ void probe_record_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet, ui
 	uint8_t purpose;
 	uint64_t nonce = 0;
 	sockaddr_t from_snap;
+	sockaddr_t observed;
 
 	n->in_meta += len + PROBE_OVERHEAD;
 
@@ -408,11 +433,12 @@ void probe_record_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet, ui
 			path_liveness_observe_peer_request(mesh, n, &n->last_udp_from);
 		}
 
-		if(purpose == PROBE_PURPOSE_REBIND) {
-			path_plpmtu_note_local_remap(mesh, n);
+		if(purpose == PROBE_PURPOSE_REBIND && nonce && path_probe_read_endpoint(packet->data, &observed)) {
+			path_keepalive_observe_local_endpoint(mesh, n, &n->last_udp_from, &observed);
 		}
 
 		packet->data[0] = PROBE_KIND_ECHO_REPLY;
+		path_probe_write_endpoint(packet->data, &n->last_udp_from);
 		send_probe_reply(mesh, n, packet);
 		return;
 	}
@@ -431,6 +457,7 @@ void probe_record_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet, ui
 		memcpy(packet->data + PROBE_NONCE_OFFSET, &nonce, sizeof nonce);
 		packet->data[PROBE_ACKLEN_OFFSET] = (uint8_t)(ack_len >> 8);
 		packet->data[PROBE_ACKLEN_OFFSET + 1] = (uint8_t)ack_len;
+		path_probe_write_endpoint(packet->data, &n->last_udp_from);
 		packet->len = PROBE_FIXED_LEN;
 		send_probe_reply(mesh, n, packet);
 		return;
@@ -460,8 +487,9 @@ void probe_record_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet, ui
 	if(kind == PROBE_KIND_ECHO_REPLY && n == mesh->backbone_udp.node) {
 		uint64_t want = mesh->backbone_udp.liveness_nonce;
 
-		if(want && nonce == want) {
-			path_backbone_udp_observe_reply(mesh, n, &from_snap, nonce);
+		if(want && nonce == want && !sockaddrcmp(&from_snap, &mesh->backbone_udp.endpoint)) {
+			bool have_observed = path_probe_read_endpoint(packet->data, &observed);
+			path_backbone_udp_observe_reply(mesh, n, &from_snap, nonce, have_observed ? &observed : NULL);
 			return;
 		}
 
@@ -470,23 +498,49 @@ void probe_record_h(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet, ui
 		}
 	}
 
+	if(kind == PROBE_KIND_ECHO_REPLY && purpose == PROBE_PURPOSE_PLPMTU_RECOVERY) {
+		if(nonce && nonce == n->plpmtu.recovery_nonce && !sockaddrcmp(&from_snap, &n->address)) {
+			path_liveness_observe_reply(mesh, n, &from_snap, nonce, PROBE_PURPOSE_NONE);
+			if(path_probe_read_endpoint(packet->data, &observed)) {
+				path_keepalive_observe_local_endpoint(mesh, n, &from_snap, &observed);
+			}
+		}
+		return;
+	}
+
 	if(kind == PROBE_KIND_ECHO_REPLY && !n->status.udp_confirmed) {
 		if(path_local_discovery_accept(mesh, n, &from_snap, nonce, purpose)) {
+			if(path_probe_read_endpoint(packet->data, &observed)) {
+				path_keepalive_observe_local_endpoint(mesh, n, &from_snap, &observed);
+			}
 			return;
 		}
 
 		if(path_try_confirm_udp_probe_reply(mesh, n, &from_snap, nonce)) {
+			if(path_probe_read_endpoint(packet->data, &observed)) {
+				path_keepalive_observe_local_endpoint(mesh, n, &from_snap, &observed);
+			}
 			return;
 		}
 	} else if(kind == PROBE_KIND_ECHO_REPLY && n->status.udp_confirmed) {
+		bool mine = purpose == PROBE_PURPOSE_LIVENESS && nonce && nonce == n->liveness.nonce
+		            && !sockaddrcmp(&from_snap, &n->address);
 		path_observe_probe_reply(mesh, n, &from_snap, nonce);
 		path_liveness_observe_reply(mesh, n, &from_snap, nonce, purpose);
+		if(mine && path_probe_read_endpoint(packet->data, &observed)) {
+			path_keepalive_observe_local_endpoint(mesh, n, &from_snap, &observed);
+		}
 	}
 
 	if(kind == PROBE_KIND_SIZE_ACK) {
 		uint16_t got = (uint16_t)((packet->data[PROBE_ACKLEN_OFFSET] << 8) | packet->data[PROBE_ACKLEN_OFFSET + 1]);
 
+		bool valid = nonce && nonce == n->plpmtu.probe_nonce && got == n->plpmtu.probe_size
+		             && !sockaddrcmp(&from_snap, &n->address);
 		path_plpmtu_observe_ack(mesh, n, &from_snap, nonce, got);
+		if(valid && path_probe_read_endpoint(packet->data, &observed)) {
+			path_keepalive_observe_local_endpoint(mesh, n, &from_snap, &observed);
+		}
 	}
 }
 
@@ -961,7 +1015,8 @@ static bool send_sptps_via_udp(meshlink_handle_t *mesh, node_t *to, const void *
 		return false;
 	}
 
-	if(sendto(mesh->listen_socket[sock].udp.fd, data, len, 0, &sa->sa, SALEN(sa->sa)) < 0 && !sockwouldblock(sockerrno)) {
+	ssize_t sent = sendto(mesh->listen_socket[sock].udp.fd, data, len, 0, &sa->sa, SALEN(sa->sa));
+	if(sent < 0 && !sockwouldblock(sockerrno)) {
 		if(sockmsgsize(sockerrno)) {
 			uint16_t payload = len > SPTPS_DATAGRAM_OVERHEAD ? (uint16_t)(len - SPTPS_DATAGRAM_OVERHEAD) : 0;
 
@@ -971,8 +1026,8 @@ static bool send_sptps_via_udp(meshlink_handle_t *mesh, node_t *to, const void *
 			relay_on_hard_send_error(mesh, to, sa, sock);
 			return false;
 		}
-	} else if(!to->status.broadcast) {
-		path_keepalive_note_tx(mesh, to);
+	} else if(sent >= 0 && !to->status.broadcast) {
+		path_keepalive_note_tx(mesh, to, sa);
 	}
 
 	return true;
@@ -1093,8 +1148,12 @@ bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 
 			node_udp_cache_alias(mesh, to, &dest);
 
-			if(sendto(mesh->listen_socket[sock].udp.fd, data, len, 0, &dest.sa, SALEN(dest.sa)) < 0 && !sockwouldblock(sockerrno) && !sockmsgsize(sockerrno)) {
+			ssize_t sent = sendto(mesh->listen_socket[sock].udp.fd, data, len, 0, &dest.sa, SALEN(dest.sa));
+			if(sent < 0 && !sockwouldblock(sockerrno) && !sockmsgsize(sockerrno)) {
 				logger(mesh, MESHLINK_WARNING, "Error sending local UDP probe to %s: %s", to->name, sockstrerror(sockerrno));
+			}
+			if(sent >= 0) {
+				path_keepalive_note_tx(mesh, to, &dest);
 			}
 
 			return true;

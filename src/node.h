@@ -79,6 +79,7 @@ typedef struct path_plpmtu_t {
 	uint16_t probe_size;
 	uint16_t pending_size; /* Timer-owned target awaiting admission. */
 	uint64_t probe_nonce;
+	uint64_t recovery_nonce; /* Small, timer-owned echo between size attempts. */
 	uint8_t probe_tries;
 	uint8_t raise_backoff;
 	bool hostile;
@@ -102,7 +103,6 @@ typedef struct path_liveness_t {
 	uint64_t nonce;
 	uint8_t tries;
 	struct timespec first_try_at;
-	uint32_t idle_gap_ms;
 	timeout_t timer;
 	uint32_t probes_sent, retries, giveups;
 	bool gave_up;
@@ -114,6 +114,8 @@ typedef struct path_keepalive_t {
 	uint32_t pending_gap_ms;
 	sockaddr_t pending_ip;
 	struct timespec pending_since;
+	sockaddr_t local_endpoint, local_endpoint_peer;
+	uint64_t local_endpoint_epoch;
 	timeout_t timer;
 	uint32_t sent, expiries;
 } path_keepalive_t;

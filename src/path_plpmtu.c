@@ -207,7 +207,7 @@ static void cache_store(meshlink_handle_t *mesh, node_t *n) {
 	memcpy(neu.addr, addr, 16);
 	neu.size = n->plpmtu.size;
 	neu.largest_failed = n->plpmtu.largest_failed;
-	neu.flags = n->plpmtu.hostile ? PATH_MTU_CACHE_HOSTILE : 0;
+	neu.flags = PATH_MTU_CACHE_KEEPALIVE_V2 | (n->plpmtu.hostile ? PATH_MTU_CACHE_HOSTILE : 0);
 	neu.raise_backoff = n->plpmtu.raise_backoff;
 	neu.keepalive_ms = n->keepalive.interval_ms;
 	neu.updated_at = time(NULL);
@@ -305,6 +305,7 @@ static void clear_probe(node_t *n) {
 	n->plpmtu.pending_size = 0;
 	n->plpmtu.probe_size = 0;
 	n->plpmtu.probe_nonce = 0;
+	n->plpmtu.recovery_nonce = 0;
 	n->plpmtu.probe_tries = 0;
 }
 
@@ -397,6 +398,7 @@ static bool emit_size(meshlink_handle_t *mesh, node_t *n, uint16_t size) {
 	}
 
 	n->plpmtu.pending_size = 0;
+	n->plpmtu.recovery_nonce = 0;
 	n->plpmtu.probes_sent++;
 
 	if(req.length > n->plpmtu.size) {
@@ -529,6 +531,36 @@ void path_plpmtu_tick(meshlink_handle_t *mesh, node_t *n) {
 
 	if(n->plpmtu.probe_size) {
 		if(ms_between(&n->plpmtu.probe_sent_at, &mesh->loop.now) >= PATH_PLPMTU_PROBE_TIMEOUT_MS) {
+			if(liveness_guard(mesh, n)) {
+				arm_ms(mesh, &n->plpmtu.timer, plpmtu_timer, n, PATH_PLPMTU_LIVENESS_GUARD_MS);
+				return;
+			}
+			/* A failed large send may have destroyed our NAT mapping. Expose
+			   the new port with control traffic, even before direct promotion.
+			   Keep the size nonce alive for a late ACK and never queue this
+			   timer-owned echo or count it as another size attempt. */
+			if(!n->plpmtu.recovery_nonce) {
+				path_probe_request_t req;
+				memset(&req, 0, sizeof req);
+				req.node = n;
+				req.length = PROBE_FIXED_LEN;
+				req.priority = PATH_TX_PLPMTU_PROBE;
+				req.send = net_probe_sched_send;
+				req.probe_kind = PROBE_KIND_ECHO_REQUEST;
+				req.probe_purpose = PROBE_PURPOSE_PLPMTU_RECOVERY;
+				req.probe_nonce = fresh_nonce();
+
+				if(path_scheduler_emit_packet(mesh, NULL, &req) == PATH_SCHED_SENT) {
+					n->plpmtu.recovery_nonce = req.probe_nonce;
+					n->keepalive.last_probe_at = mesh->loop.now;
+					arm_ms(mesh, &n->plpmtu.timer, plpmtu_timer, n, PATH_PLPMTU_LIVENESS_GUARD_MS);
+				} else {
+					arm_ms(mesh, &n->plpmtu.timer, plpmtu_timer, n, PATH_PLPMTU_PROBE_TIMEOUT_MS);
+				}
+
+				return;
+			}
+
 			n->plpmtu.probe_tries++;
 
 			if(n->plpmtu.probe_tries >= PATH_PLPMTU_MAX_PROBES) {
@@ -661,7 +693,9 @@ void path_plpmtu_on_confirmed(meshlink_handle_t *mesh, node_t *n) {
 		n->plpmtu.raise_backoff = hit->raise_backoff;
 		n->plpmtu.cache_hits++;
 
-		if(hit->keepalive_ms >= PATH_KEEPALIVE_FLOOR_MS) {
+		/* Older builds attributed remote/oversize recoveries to local idle
+		   expiry. Retain their MTU, but relearn the keepalive interval. */
+		if((hit->flags & PATH_MTU_CACHE_KEEPALIVE_V2) && hit->keepalive_ms >= PATH_KEEPALIVE_FLOOR_MS) {
 			n->keepalive.interval_ms = hit->keepalive_ms;
 		}
 	}
@@ -712,6 +746,11 @@ void path_plpmtu_observe_ack(meshlink_handle_t *mesh, node_t *n, const sockaddr_
 	}
 
 	prev = n->plpmtu.size;
+	/* A delivered size is not evidence of an oversize-induced black hole.
+	   Its endpoint observation may merely reveal an earlier idle remap. */
+	if(len > prev) {
+		memset(&n->plpmtu.last_oversize_sent_at, 0, sizeof n->plpmtu.last_oversize_sent_at);
+	}
 	n->plpmtu.size = len;
 	clear_probe(n);
 	n->plpmtu.probe_tries = 0;

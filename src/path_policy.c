@@ -4489,7 +4489,7 @@ void path_observe_probe_reply(meshlink_handle_t *mesh, node_t *n, const sockaddr
 	}
 
 	if(n == mesh->backbone_udp.node && nonce && nonce == mesh->backbone_udp.liveness_nonce) {
-		path_backbone_udp_observe_reply(mesh, n, from, nonce);
+		path_backbone_udp_observe_reply(mesh, n, from, nonce, NULL);
 		return;
 	}
 

@@ -75,7 +75,7 @@ node_t *new_node(void) {
 
 	n->edge_tree = new_edge_tree();
 	n->devclass = DEV_CLASS_UNKNOWN;
-	n->keepalive.interval_ms = PATH_KEEPALIVE_INITIAL_MS;
+	/* Leave keepalive.interval_ms unset until the UDP role is known. */
 	n->udp_tier = PATH_TIER_NONE;
 	n->last_path_tier = PATH_TIER_NONE;
 	n->active_route.kind = DATA_ROUTE_NONE;

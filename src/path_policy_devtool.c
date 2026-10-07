@@ -3394,14 +3394,14 @@ static bool cover_scheduler(meshlink_handle_t *mesh) {
 		path_scheduler_end_type(mesh, &q[2], PATH_TXN_SUSPECT);
 	}
 
-	/* 2. Health requests can queue; timer-owned size probes cannot. */
+	/* 2. Timer-owned liveness and size probes cannot queue. */
 	path_scheduler_set_budget(mesh, 0, 0, 8);
 	cover_sched_runs = 0;
 	cover_sched_order_n = 0;
 	req = cover_req(&m, PATH_TX_LIVENESS, 100, false);
 
-	if(path_scheduler_emit_packet(mesh, NULL, &req) != PATH_SCHED_QUEUED) {
-		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: pmtu liveness queue");
+	if(path_scheduler_emit_packet(mesh, NULL, &req) != PATH_SCHED_DENIED) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: liveness queued");
 		ok = false;
 		goto done;
 	}
@@ -3418,9 +3418,8 @@ static bool cover_scheduler(meshlink_handle_t *mesh) {
 	mesh->probe_budget.minute_tokens = 60;
 	path_scheduler_drain(mesh);
 
-	if(cover_sched_runs != 1
-	                || cover_sched_len[0] != 100 || cover_sched_bcast[0]) {
-		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: queued pmtu sizes");
+	if(cover_sched_runs || mesh->probe_queue->count) {
+		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: stale timer-owned probes drained");
 		ok = false;
 		goto done;
 	}
@@ -3493,7 +3492,7 @@ static bool cover_scheduler(meshlink_handle_t *mesh) {
 	                || path_scheduler_emit_packet(mesh, t0, &req) != PATH_SCHED_SENT
 	                || mesh->probe_budget.minute_tokens
 	                || mesh->probe_budget.second_tokens != 3
-	                || path_scheduler_emit_packet(mesh, NULL, &req) != PATH_SCHED_QUEUED) {
+	                || path_scheduler_emit_packet(mesh, NULL, &req) != PATH_SCHED_DENIED) {
 		logger(mesh, MESHLINK_ERROR, "path_policy_cover_unit failed: txn skip minute");
 		ok = false;
 		goto done;
@@ -3506,9 +3505,9 @@ static bool cover_scheduler(meshlink_handle_t *mesh) {
 	path_scheduler_set_budget(mesh, 0, 0, 8);
 	cover_sched_runs = 0;
 	cover_sched_order_n = 0;
-	req = cover_req(&z, PATH_TX_LIVENESS, 64, false);
+	req = cover_req(&z, PATH_TX_ACTIVE_ROUTE_RECOVERY, 64, false);
 	(void)path_scheduler_emit_packet(mesh, NULL, &req);
-	req = cover_req(&a, PATH_TX_LIVENESS, 64, false);
+	req = cover_req(&a, PATH_TX_ACTIVE_ROUTE_RECOVERY, 64, false);
 	(void)path_scheduler_emit_packet(mesh, NULL, &req);
 	mesh->probe_budget.second_tokens = 1;
 	mesh->probe_budget.minute_tokens = 20;
@@ -3520,7 +3519,7 @@ static bool cover_scheduler(meshlink_handle_t *mesh) {
 		goto done;
 	}
 
-	req = cover_req(&z, PATH_TX_LIVENESS, 64, false);
+	req = cover_req(&z, PATH_TX_ACTIVE_ROUTE_RECOVERY, 64, false);
 	(void)path_scheduler_emit_packet(mesh, NULL, &req);
 	mesh->probe_budget.second_tokens = 1;
 	mesh->probe_budget.minute_tokens = 20;

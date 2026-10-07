@@ -12,6 +12,7 @@
 #include "logger.h"
 #include "meshlink_internal.h"
 #include "net.h"
+#include "netutl.h"
 #include "node.h"
 #include "packmsg.h"
 #include "path_liveness.h"
@@ -91,6 +92,8 @@ static bool lose_outstanding(meshlink_handle_t *mesh, node_t *n) {
 
 	for(i = 0; i < PATH_PLPMTU_MAX_PROBES; i++) {
 		advance_ms(mesh, PATH_PLPMTU_PROBE_TIMEOUT_MS);
+		path_plpmtu_tick(mesh, n);
+		advance_ms(mesh, PATH_PLPMTU_LIVENESS_GUARD_MS);
 		path_plpmtu_tick(mesh, n);
 	}
 
@@ -202,6 +205,8 @@ static bool plpmtu_cover(meshlink_handle_t *mesh) {
 	n.plpmtu.probe_tries = PATH_PLPMTU_MAX_PROBES - 1;
 	n.plpmtu.probe_sent_at = mesh->loop.now;
 	advance_ms(mesh, PATH_PLPMTU_PROBE_TIMEOUT_MS);
+	path_plpmtu_tick(mesh, &n);
+	advance_ms(mesh, PATH_PLPMTU_LIVENESS_GUARD_MS);
 	path_plpmtu_tick(mesh, &n);
 	CHECK(n.plpmtu.state == PLPMTU_ERROR);
 	CHECK(n.plpmtu.size == MINMTU);
@@ -449,6 +454,9 @@ static bool plpmtu_admission_cover(meshlink_handle_t *mesh) {
 	CHECK(n.plpmtu.probes_sent == sent);
 	advance_ms(mesh, PATH_PLPMTU_LIVENESS_GUARD_MS);
 	path_plpmtu_tick(mesh, &n);
+	CHECK(n.plpmtu.recovery_nonce && n.plpmtu.probes_sent == sent && !n.plpmtu.probe_tries);
+	advance_ms(mesh, PATH_PLPMTU_LIVENESS_GUARD_MS);
+	path_plpmtu_tick(mesh, &n);
 	CHECK(n.plpmtu.probes_sent == sent + 1 && n.plpmtu.probe_tries == 1);
 	/* Reverse timer order: health probes defer after an actual size send. */
 	path_liveness_tick(mesh, &n);
@@ -462,8 +470,12 @@ static bool plpmtu_admission_cover(meshlink_handle_t *mesh) {
 	path_liveness_stop(mesh, &n);
 	advance_ms(mesh, PATH_PLPMTU_PROBE_TIMEOUT_MS);
 	path_plpmtu_tick(mesh, &n);
+	advance_ms(mesh, PATH_PLPMTU_LIVENESS_GUARD_MS);
+	path_plpmtu_tick(mesh, &n);
 	CHECK(n.plpmtu.probes_sent == sent + 2 && n.plpmtu.probe_tries == 2);
 	advance_ms(mesh, PATH_PLPMTU_PROBE_TIMEOUT_MS);
+	path_plpmtu_tick(mesh, &n);
+	advance_ms(mesh, PATH_PLPMTU_LIVENESS_GUARD_MS);
 	path_plpmtu_tick(mesh, &n);
 	CHECK(n.plpmtu.state == PLPMTU_COMPLETE && n.plpmtu.probes_lost == 3);
 	CHECK(n.plpmtu.probes_sent == sent + 2);
@@ -557,7 +569,7 @@ static bool plpmtu_cache_raise_cover(meshlink_handle_t *mesh) {
 	CHECK(n.plpmtu.probe_size == 1399);
 	path_plpmtu_observe_ack(mesh, &n, &n.address, n.plpmtu.probe_nonce, 1399);
 	CHECK(n.plpmtu.hostile && n.plpmtu.largest_failed == 1419 && n.plpmtu.raise_backoff == 5);
-	CHECK(n.mtu_cache[slot].flags == PATH_MTU_CACHE_HOSTILE);
+	CHECK(n.mtu_cache[slot].flags == (PATH_MTU_CACHE_HOSTILE | PATH_MTU_CACHE_KEEPALIVE_V2));
 	CHECK(n.mtu_cache[slot].largest_failed == 1419 && n.mtu_cache[slot].raise_backoff == 5);
 	CHECK(n.mtu_cache[slot].keepalive_ms == 5000);
 
@@ -618,6 +630,145 @@ static bool plpmtu_cache_raise_cover(meshlink_handle_t *mesh) {
 
 done:
 	bury(mesh, &n);
+	return ok;
+}
+
+/* No application UDP is available before promotion. A missed size request
+   must itself make the new NAT mapping visible, including on the backbone. */
+static bool plpmtu_recovery_cover(meshlink_handle_t *mesh) {
+	node_t n;
+	vpn_packet_t packet;
+	sockaddr_t local = v4(0xc0000201, 5000);
+	node_t *saved_bb = mesh->backbone_udp.node;
+	bool saved_confirmed = mesh->backbone_udp.confirmed;
+	uint64_t saved_nonce = mesh->backbone_udp.liveness_nonce;
+	unsigned saved_max = mesh->probe_max_transactions;
+	bool ok = false;
+
+	memset(&n, 0, sizeof n);
+	for(int backbone = 0; backbone < 2; backbone++) {
+		plant(&n, mesh, "ws1-recovery", 0xcb007133);
+		if(backbone) {
+			mesh->backbone_udp.node = &n;
+			mesh->backbone_udp.confirmed = true;
+			mesh->backbone_udp.liveness_nonce = 0;
+		}
+		n.plpmtu.state = PLPMTU_SEARCHING;
+		n.plpmtu.size = 1431;
+		n.plpmtu.path_ip = n.address;
+		n.plpmtu.path_ip.in.sin_port = 0;
+		path_keepalive_observe_local_endpoint(mesh, &n, &n.address, &local);
+		path_scheduler_set_budget(mesh, 100, 100, 8);
+		path_plpmtu_tick(mesh, &n);
+		CHECK(n.plpmtu.probe_size == 1451 && n.plpmtu.probes_sent == 1);
+		uint64_t size_nonce = n.plpmtu.probe_nonce;
+		advance_ms(mesh, PATH_PLPMTU_PROBE_TIMEOUT_MS);
+		path_scheduler_set_budget(mesh, 0, 100, 8);
+		path_plpmtu_tick(mesh, &n);
+		CHECK(!n.plpmtu.recovery_nonce && !n.plpmtu.probe_tries && !mesh->probe_queue->count);
+		path_scheduler_set_budget(mesh, 100, 100, 8);
+		path_plpmtu_tick(mesh, &n);
+		CHECK(n.plpmtu.recovery_nonce && n.plpmtu.probe_nonce == size_nonce);
+		CHECK(n.plpmtu.probes_sent == 1 && !n.plpmtu.probe_tries);
+		path_plpmtu_tick(mesh, &n);
+		CHECK(n.plpmtu.probes_sent == 1);
+
+		memset(&packet, 0, sizeof packet);
+		packet.len = PROBE_FIXED_LEN;
+		packet.data[0] = PROBE_KIND_ECHO_REPLY;
+		packet.data[PROBE_PURPOSE_OFFSET] = PROBE_PURPOSE_PLPMTU_RECOVERY;
+		uint64_t nonce = n.plpmtu.recovery_nonce ^ 1;
+		memcpy(packet.data + PROBE_NONCE_OFFSET, &nonce, sizeof nonce);
+		local.in.sin_port = htons(5100 + backbone);
+		path_probe_write_endpoint(packet.data, &local);
+		n.devtool_force_meta = false;
+		n.last_udp_from = n.address;
+		probe_record_h(mesh, &n, &packet, packet.len);
+		CHECK(!n.plpmtu.hostile);
+		nonce = n.plpmtu.recovery_nonce;
+		memcpy(packet.data + PROBE_NONCE_OFFSET, &nonce, sizeof nonce);
+		n.last_udp_from.in.sin_port = htons(9999);
+		probe_record_h(mesh, &n, &packet, packet.len);
+		CHECK(!n.plpmtu.hostile);
+		n.last_udp_from = n.address;
+		probe_record_h(mesh, &n, &packet, packet.len);
+		CHECK(n.plpmtu.hostile && n.plpmtu.hostile_marks == 1);
+		CHECK(n.plpmtu.size == 1431 && n.plpmtu.state == PLPMTU_COMPLETE);
+		CHECK(!n.plpmtu.probe_nonce && !n.plpmtu.recovery_nonce);
+		CHECK(!n.keepalive.expiries && n.keepalive.interval_ms == PATH_KEEPALIVE_INITIAL_MS);
+		probe_record_h(mesh, &n, &packet, packet.len);
+		CHECK(n.plpmtu.hostile_marks == 1);
+		path_plpmtu_observe_ack(mesh, &n, &n.address, size_nonce, 1451);
+		CHECK(n.plpmtu.size == 1431);
+		bury(mesh, &n);
+	}
+	ok = true;
+
+done:
+	mesh->backbone_udp.node = saved_bb;
+	mesh->backbone_udp.confirmed = saved_confirmed;
+	mesh->backbone_udp.liveness_nonce = saved_nonce;
+	bury(mesh, &n);
+	path_scheduler_set_budget(mesh, 1000, 1000, saved_max);
+	return ok;
+}
+
+static bool liveness_admission_cover(meshlink_handle_t *mesh) {
+	node_t n;
+	unsigned saved_max = mesh->probe_max_transactions;
+	uint64_t sent = mesh->probe_budget.optional_packets_sent;
+	bool ok = false;
+
+	plant(&n, mesh, "ws1-live-budget", 0xcb007134);
+	path_liveness_on_confirmed(mesh, &n);
+	path_scheduler_set_budget(mesh, 0, 100, 8);
+	for(int i = 0; i < 10; i++) {
+		path_liveness_tick(mesh, &n);
+		advance_ms(mesh, 2000);
+	}
+	CHECK(!n.liveness.tries && !n.liveness.probes_sent && !n.liveness.giveups);
+	CHECK(mesh->probe_budget.optional_packets_sent == sent && !mesh->probe_queue->count);
+	path_scheduler_set_budget(mesh, 100, 100, 8);
+	path_scheduler_drain(mesh);
+	CHECK(mesh->probe_budget.optional_packets_sent == sent);
+	path_liveness_tick(mesh, &n);
+	CHECK(n.liveness.tries == 1 && n.liveness.probes_sent == 1);
+	CHECK(mesh->probe_budget.optional_packets_sent == sent + 1);
+	path_liveness_observe_reply(mesh, &n, &n.address, n.liveness.nonce, PROBE_PURPOSE_LIVENESS);
+	path_scheduler_drain(mesh);
+	CHECK(n.liveness.state == LIVENESS_PARKED && !mesh->probe_queue->count);
+	CHECK(mesh->probe_budget.optional_packets_sent == sent + 1);
+	for(int i = 0; i < PATH_LIVENESS_TRIES; i++) {
+		path_liveness_tick(mesh, &n);
+		advance_ms(mesh, 2000);
+	}
+	CHECK(n.liveness.tries == PATH_LIVENESS_TRIES && n.liveness.probes_sent == 4);
+	CHECK(mesh->probe_budget.optional_packets_sent == sent + 4 && !mesh->probe_queue->count);
+	path_liveness_tick(mesh, &n);
+	CHECK(n.liveness.giveups == 1);
+	path_scheduler_drain(mesh);
+	CHECK(mesh->probe_budget.optional_packets_sent == sent + 4);
+	/* Local discovery shares the timer-owned liveness priority. Denial
+	   must not exhaust its finite probe ladder either. */
+	n.status.udp_confirmed = false;
+	path_local_discovery_start(mesh, &n);
+	path_scheduler_set_budget(mesh, 0, 100, 8);
+	for(int i = 0; i < PATH_LOCAL_DISCOVERY_TRIES + 2; i++) {
+		path_local_discovery_tick(mesh, &n);
+		advance_ms(mesh, 1000);
+	}
+	CHECK(n.local_discovery.active && !n.local_discovery.exhausted && !n.local_discovery.tries);
+	CHECK(!mesh->probe_queue->count && mesh->probe_budget.optional_packets_sent == sent + 4);
+	path_scheduler_set_budget(mesh, 100, 100, 8);
+	path_scheduler_drain(mesh);
+	CHECK(mesh->probe_budget.optional_packets_sent == sent + 4);
+	path_local_discovery_tick(mesh, &n);
+	CHECK(n.local_discovery.tries == 1 && mesh->probe_budget.optional_packets_sent == sent + 5);
+	ok = true;
+
+done:
+	bury(mesh, &n);
+	path_scheduler_set_budget(mesh, 1000, 1000, saved_max);
 	return ok;
 }
 
@@ -787,8 +938,138 @@ done:
 	return ok;
 }
 
+static bool keepalive_legacy_cache_cover(meshlink_handle_t *mesh) {
+	node_t n;
+	path_mtu_cache_entry_t entry;
+	int slot;
+	bool ok = false;
+
+	plant(&n, mesh, "ws1-ka-cache-upgrade", 0xcb007136);
+	n.plpmtu.path_ip = n.address;
+	n.plpmtu.path_ip.in.sin_port = 0;
+	n.plpmtu.state = PLPMTU_COMPLETE;
+	n.plpmtu.size = 1431;
+	n.plpmtu.largest_failed = 1451;
+	n.plpmtu.hostile = true;
+	n.keepalive.interval_ms = 5000;
+	path_plpmtu_remember_keepalive(mesh, &n);
+	slot = cache_slot(&n, 0xcb007136);
+	CHECK(slot >= 0);
+	entry = n.mtu_cache[slot];
+	CHECK(entry.flags & PATH_MTU_CACHE_KEEPALIVE_V2);
+
+	for(int current = 0; current < 2; current++) {
+		bury(mesh, &n);
+		memset(&n.plpmtu, 0, sizeof n.plpmtu);
+		n.keepalive.interval_ms = 0;
+		n.mtu_cache[slot] = entry;
+		if(!current) {
+			n.mtu_cache[slot].flags &= ~PATH_MTU_CACHE_KEEPALIVE_V2;
+		}
+		path_plpmtu_on_confirmed(mesh, &n);
+		path_keepalive_on_confirmed(mesh, &n);
+		CHECK(n.plpmtu.state == PLPMTU_COMPLETE && n.plpmtu.size == 1431);
+		CHECK(n.plpmtu.hostile && n.plpmtu.largest_failed == 1451);
+		CHECK(n.plpmtu.cache_hits == 1 && !n.plpmtu.probes_sent);
+		CHECK(n.keepalive.interval_ms == (current ? 5000 : PATH_KEEPALIVE_INITIAL_MS));
+	}
+	ok = true;
+
+done:
+	bury(mesh, &n);
+	return ok;
+}
+
+static bool keepalive_default_cover(meshlink_handle_t *mesh) {
+	node_t *n = NULL;
+	node_t *saved_bb = mesh->backbone_udp.node;
+	bool ok = false;
+
+	for(int backbone = 0; backbone < 2; backbone++) {
+		n = new_node();
+		n->mesh = mesh;
+		n->address = v4(0xcb007135, 9);
+		n->status.udp_confirmed = true;
+		n->status.validkey = true;
+		mesh->backbone_udp.node = backbone ? n : NULL;
+		path_keepalive_on_confirmed(mesh, n);
+		CHECK(n->keepalive.interval_ms == (backbone ? PATH_KEEPALIVE_BACKBONE_INITIAL_MS : PATH_KEEPALIVE_INITIAL_MS));
+		CHECK(n->keepalive.last_tx_at.tv_sec == mesh->loop.now.tv_sec);
+		/* A restored interval takes precedence over either role's default. */
+		n->keepalive.interval_ms = 9000;
+		path_keepalive_on_confirmed(mesh, n);
+		CHECK(n->keepalive.interval_ms == 9000);
+		bury(mesh, n);
+		free_node(n);
+		n = NULL;
+	}
+	ok = true;
+
+done:
+	mesh->backbone_udp.node = saved_bb;
+	if(n) {
+		bury(mesh, n);
+		free_node(n);
+	}
+	return ok;
+}
+
+/* Exercise the actual destination-override send path used by probe replies,
+   rebind challenges and backbone traffic, without needing an SPTPS session. */
+static bool keepalive_probe_tx_cover(meshlink_handle_t *mesh) {
+	node_t n;
+	uint8_t probe[PROBE_FIXED_LEN] = {0};
+	struct timespec last_tx;
+	bool ok = false;
+
+	plant(&n, mesh, "ws1-ka-probe-tx", 0x7f000001);
+	n.probe_dest_override_active = true;
+	n.probe_dest_override = n.address;
+	n.keepalive.last_tx_at = mesh->loop.now;
+	advance_ms(mesh, 15000);
+	CHECK(send_sptps_data(&n, PKT_PROBE, probe, sizeof probe));
+	CHECK(n.keepalive.last_tx_at.tv_sec == mesh->loop.now.tv_sec);
+	CHECK(n.keepalive.last_tx_at.tv_nsec == mesh->loop.now.tv_nsec);
+	CHECK(n.keepalive.pending_gap_ms == 15000);
+	CHECK(n.keepalive.timer.cb);
+	last_tx = n.keepalive.last_tx_at;
+
+	/* Probing another candidate does not refresh the confirmed mapping. */
+	n.probe_dest_override.in.sin_port = htons(10);
+	advance_ms(mesh, 1000);
+	CHECK(send_sptps_data(&n, PKT_PROBE, probe, sizeof probe));
+	CHECK(n.keepalive.last_tx_at.tv_sec == last_tx.tv_sec);
+	CHECK(n.keepalive.last_tx_at.tv_nsec == last_tx.tv_nsec);
+	CHECK(n.keepalive.pending_gap_ms == 15000);
+
+	/* A send failure to the confirmed endpoint is not mapping activity. */
+	n.probe_dest_override = n.address;
+	for(int sock = 0; sock < mesh->listen_sockets; sock++) {
+		if(mesh->listen_socket[sock].sa.sa.sa_family != AF_INET) {
+			continue;
+		}
+		int saved_fd = mesh->listen_socket[sock].udp.fd;
+		mesh->listen_socket[sock].udp.fd = -1;
+		bool accepted = send_sptps_data(&n, PKT_PROBE, probe, sizeof probe);
+		mesh->listen_socket[sock].udp.fd = saved_fd;
+		CHECK(accepted);
+		CHECK(n.keepalive.last_tx_at.tv_sec == last_tx.tv_sec);
+		CHECK(n.keepalive.last_tx_at.tv_nsec == last_tx.tv_nsec);
+		break;
+	}
+
+	ok = true;
+
+done:
+	update_node_udp(mesh, &n, NULL);
+	bury(mesh, &n);
+	return ok;
+}
+
 static bool keepalive_cover(meshlink_handle_t *mesh) {
 	node_t n;
+	sockaddr_t local = v4(0xc0000201, 5000);
+	sockaddr_t other;
 	node_t *saved_bb = mesh->backbone_udp.node;
 	uint32_t sent;
 	bool ok = false;
@@ -801,7 +1082,7 @@ static bool keepalive_cover(meshlink_handle_t *mesh) {
 	advance_ms(mesh, PATH_KEEPALIVE_INITIAL_MS);
 	path_keepalive_tick(mesh, &n);
 	CHECK(n.keepalive.sent == sent + 1);
-	path_keepalive_note_tx(mesh, &n);
+	path_keepalive_note_tx(mesh, &n, &n.address);
 	path_keepalive_tick(mesh, &n);
 	CHECK(n.keepalive.sent == sent + 1);
 
@@ -829,16 +1110,65 @@ static bool keepalive_cover(meshlink_handle_t *mesh) {
 	n.plpmtu.state = PLPMTU_COMPLETE;
 	n.plpmtu.path_ip = n.address;
 	n.plpmtu.path_ip.in.sin_port = 0;
-	path_keepalive_note_giveup(mesh, &n, 1000);
+	n.plpmtu.last_oversize_sent_at.tv_sec = 0;
+	path_keepalive_observe_local_endpoint(mesh, &n, &n.address, &local);
+	n.keepalive.last_tx_at = mesh->loop.now;
+	advance_ms(mesh, 6357);
+	path_keepalive_note_tx(mesh, &n, &n.address);
 	CHECK(!n.keepalive.pending_gap_ms);
-	path_keepalive_note_giveup(mesh, &n, 15000);
+	local.in.sin_port = htons(5001);
+	path_keepalive_observe_local_endpoint(mesh, &n, &n.address, &local);
+	CHECK(n.keepalive.interval_ms == 15000 && !n.keepalive.expiries);
+
+	advance_ms(mesh, 15000);
+	path_keepalive_note_tx(mesh, &n, &n.address);
 	CHECK(n.keepalive.pending_gap_ms == 15000);
+	/* A local give-up and same-IP confirmation do not locate the expired NAT. */
 	n.status.udp_confirmed = true;
 	path_liveness_on_confirmed(mesh, &n);
+	CHECK(n.keepalive.interval_ms == 15000 && !n.keepalive.expiries);
+	/* Replies from a different remote endpoint cannot supply evidence. */
+	other = n.address;
+	other.in.sin_port = htons(100);
+	local.in.sin_port = htons(5002);
+	path_keepalive_observe_local_endpoint(mesh, &n, &other, &local);
+	CHECK(n.keepalive.pending_gap_ms == 15000 && !n.keepalive.expiries);
+	path_keepalive_observe_local_endpoint(mesh, &n, &n.address, &local);
 	CHECK(n.keepalive.interval_ms == 9000);
 	CHECK(n.keepalive.expiries == 1);
 	CHECK(cache_slot(&n, 0xcb00710c) >= 0);
 	CHECK(n.mtu_cache[cache_slot(&n, 0xcb00710c)].keepalive_ms == 9000);
+
+	/* A mapping that survives the gap, stale evidence, a new public IP,
+	   and an oversize-induced remap must not shorten the idle interval. */
+	for(int reason = 0; reason < 6; reason++) {
+		n.keepalive.interval_ms = 15000;
+		n.keepalive.last_tx_at = mesh->loop.now;
+		advance_ms(mesh, 15000);
+		path_keepalive_note_tx(mesh, &n, &n.address);
+		if(reason == 1) {
+			advance_ms(mesh, (PATH_KEEPALIVE_EXPIRY_CONFIRM_SEC + 1) * 1000);
+		}
+		if(reason == 2) {
+			local.in.sin_addr.s_addr = htonl(0xc0000202);
+		}
+		if(reason == 3) {
+			n.plpmtu.last_oversize_sent_at = mesh->loop.now;
+		}
+		if(reason == 4) {
+			n.keepalive.local_endpoint_epoch--;
+		}
+		if(reason == 5) {
+			n.address.in.sin_port = htons(101);
+		}
+		if(reason) {
+			local.in.sin_port = htons(5010 + reason);
+		}
+		path_keepalive_observe_local_endpoint(mesh, &n, &n.address, &local);
+		CHECK(n.keepalive.interval_ms == 15000 && n.keepalive.expiries == 1);
+		CHECK(!n.keepalive.pending_gap_ms);
+	}
+	CHECK(n.plpmtu.hostile);
 
 	n.keepalive.interval_ms = 9000;
 	n.keepalive.last_grow_at = mesh->loop.now;
@@ -853,12 +1183,20 @@ static bool keepalive_cover(meshlink_handle_t *mesh) {
 	mesh->backbone_udp.node = &n;
 	n.keepalive.interval_ms = PATH_KEEPALIVE_BACKBONE_INITIAL_MS;
 	n.keepalive.expiries = 0;
-	path_keepalive_note_giveup(mesh, &n, 15000);
+	n.plpmtu.last_oversize_sent_at.tv_sec = 0;
+	n.keepalive.last_tx_at = mesh->loop.now;
+	advance_ms(mesh, PATH_KEEPALIVE_BACKBONE_INITIAL_MS);
+	path_keepalive_note_tx(mesh, &n, &n.address);
+	local.in.sin_port = htons(6000);
+	path_keepalive_observe_local_endpoint(mesh, &n, &n.address, &local);
 	n.status.udp_confirmed = true;
 	path_liveness_on_confirmed(mesh, &n);
-	CHECK(n.keepalive.interval_ms == 9000);
+	CHECK(n.keepalive.interval_ms == PATH_KEEPALIVE_BACKBONE_INITIAL_MS * 60 / 100);
 	CHECK(n.keepalive.expiries == 1);
 	CHECK(n.liveness.state == LIVENESS_IDLE);
+	n.keepalive.last_grow_at.tv_sec -= PATH_KEEPALIVE_GROW_SEC;
+	CHECK(path_keepalive_backbone_interval_ms(mesh, &n) == PATH_KEEPALIVE_BACKBONE_INITIAL_MS * 72 / 100);
+	CHECK(n.mtu_cache[cache_slot(&n, 0xcb00710c)].keepalive_ms == n.keepalive.interval_ms);
 
 	ok = true;
 
@@ -871,6 +1209,7 @@ done:
 static bool wire_cover(meshlink_handle_t *mesh) {
 	node_t n;
 	vpn_packet_t packet;
+	sockaddr_t endpoint, decoded;
 	uint64_t nonce = 0x1122334455667788ull;
 	uint64_t out_before;
 	bool ok = false;
@@ -912,6 +1251,26 @@ static bool wire_cover(meshlink_handle_t *mesh) {
 	CHECK(n.keepalive.last_rx_at.tv_sec == mesh->loop.now.tv_sec);
 	CHECK(n.out_meta == out_before);
 
+	endpoint = v4(0xc0000201, 5000);
+	path_probe_write_endpoint(packet.data, &endpoint);
+	CHECK(path_probe_read_endpoint(packet.data, &decoded));
+	CHECK(!sockaddrcmp(&decoded, &endpoint));
+	memset(&endpoint, 0, sizeof endpoint);
+	endpoint.in6.sin6_family = AF_INET6;
+	endpoint.in6.sin6_port = htons(65535);
+	CHECK(inet_pton(AF_INET6, "2001:db8::1234", &endpoint.in6.sin6_addr) == 1);
+	path_probe_write_endpoint(packet.data, &endpoint);
+	CHECK(path_probe_read_endpoint(packet.data, &decoded));
+	CHECK(!sockaddrcmp(&decoded, &endpoint));
+	packet.data[PROBE_ENDPOINT_OFFSET] = 0;
+	CHECK(!path_probe_read_endpoint(packet.data, &decoded));
+	endpoint.in6.sin6_port = 0;
+	path_probe_write_endpoint(packet.data, &endpoint);
+	CHECK(!path_probe_read_endpoint(packet.data, &decoded));
+	memset(&endpoint, 0, sizeof endpoint);
+	path_probe_write_endpoint(packet.data, &endpoint);
+	CHECK(!path_probe_read_endpoint(packet.data, &decoded));
+
 	ok = true;
 
 done:
@@ -934,7 +1293,7 @@ static bool persist_cover(meshlink_handle_t *mesh) {
 	src.mtu_cache[0].addr[0] = 203;
 	src.mtu_cache[0].size = 1399;
 	src.mtu_cache[0].largest_failed = 1431;
-	src.mtu_cache[0].flags = PATH_MTU_CACHE_HOSTILE;
+	src.mtu_cache[0].flags = PATH_MTU_CACHE_HOSTILE | PATH_MTU_CACHE_KEEPALIVE_V2;
 	src.mtu_cache[0].raise_backoff = 2;
 	src.mtu_cache[0].keepalive_ms = 9000;
 	src.mtu_cache[0].updated_at = 1000;
@@ -951,7 +1310,7 @@ static bool persist_cover(meshlink_handle_t *mesh) {
 	CHECK(packmsg_done(&in));
 	CHECK(dst.mtu_cache[0].size == 1399);
 	CHECK(dst.mtu_cache[0].largest_failed == 1431);
-	CHECK(dst.mtu_cache[0].flags == PATH_MTU_CACHE_HOSTILE);
+	CHECK(dst.mtu_cache[0].flags == (PATH_MTU_CACHE_HOSTILE | PATH_MTU_CACHE_KEEPALIVE_V2));
 	CHECK(dst.mtu_cache[0].keepalive_ms == 9000);
 	CHECK(dst.mtu_cache[0].net_fp == 42);
 	CHECK(!dst.mtu_cache[1].family);
@@ -993,7 +1352,12 @@ bool path_ws1_cover_unit(meshlink_handle_t *mesh) {
 	ok = plpmtu_cover(mesh)
 	     && plpmtu_admission_cover(mesh)
 	     && plpmtu_cache_raise_cover(mesh)
+	     && plpmtu_recovery_cover(mesh)
+	     && liveness_admission_cover(mesh)
 	     && liveness_cover(mesh)
+	     && keepalive_legacy_cache_cover(mesh)
+	     && keepalive_default_cover(mesh)
+	     && keepalive_probe_tx_cover(mesh)
 	     && keepalive_cover(mesh)
 	     && wire_cover(mesh)
 	     && persist_cover(mesh);

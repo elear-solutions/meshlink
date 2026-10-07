@@ -23,11 +23,11 @@ void path_liveness_tick(struct meshlink_handle *mesh, struct node_t *n);
 
 void path_keepalive_on_confirmed(struct meshlink_handle *mesh, struct node_t *n);
 void path_keepalive_stop(struct meshlink_handle *mesh, struct node_t *n);
-void path_keepalive_note_tx(struct meshlink_handle *mesh, struct node_t *n);
+void path_keepalive_note_tx(struct meshlink_handle *mesh, struct node_t *n, const sockaddr_t *to);
 void path_keepalive_note_rx(struct meshlink_handle *mesh, struct node_t *n);
-void path_keepalive_note_giveup(struct meshlink_handle *mesh, struct node_t *n, uint32_t idle_gap_ms);
+void path_keepalive_observe_local_endpoint(struct meshlink_handle *mesh, struct node_t *n, const sockaddr_t *from, const sockaddr_t *endpoint);
 void path_keepalive_tick(struct meshlink_handle *mesh, struct node_t *n);
-uint32_t path_keepalive_backbone_interval_ms(const struct meshlink_handle *mesh, const struct node_t *n);
+uint32_t path_keepalive_backbone_interval_ms(struct meshlink_handle *mesh, struct node_t *n);
 
 void path_local_discovery_start(struct meshlink_handle *mesh, struct node_t *n);
 void path_local_discovery_stop(struct meshlink_handle *mesh, struct node_t *n);

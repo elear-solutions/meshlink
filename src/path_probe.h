@@ -7,6 +7,8 @@
 */
 
 #include <stdint.h>
+#include <stdbool.h>
+#include "sockaddr.h"
 
 /* data[0] kind. Echo requests longer than 64 bytes are dropped, so a peer
    can never be forced to send an oversized reply. */
@@ -19,6 +21,10 @@
 #define PROBE_NONCE_OFFSET 1
 #define PROBE_PURPOSE_OFFSET 9
 #define PROBE_ACKLEN_OFFSET 10
+/* Authenticated observation: marker, family, network-order port, address.
+   IPv4 uses the first four address bytes; IPv6 uses all sixteen. */
+#define PROBE_ENDPOINT_OFFSET 12
+#define PROBE_ENDPOINT_LEN 20
 
 #define PROBE_PURPOSE_NONE            0
 #define PROBE_PURPOSE_LIVENESS        1
@@ -28,7 +34,11 @@
 #define PROBE_PURPOSE_PROMOTION       5
 #define PROBE_PURPOSE_BACKBONE        6
 #define PROBE_PURPOSE_LOCAL_DISCOVERY 7
+#define PROBE_PURPOSE_PLPMTU_RECOVERY 8
 
 #define PROBE_FIXED_LEN 64
+
+void path_probe_write_endpoint(uint8_t *data, const sockaddr_t *endpoint);
+bool path_probe_read_endpoint(const uint8_t *data, sockaddr_t *endpoint);
 
 #endif

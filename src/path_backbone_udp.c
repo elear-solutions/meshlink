@@ -268,7 +268,6 @@ static void path_backbone_udp_timer(event_loop_t *loop, void *data) {
 				p->unanswered = 0;
 
 				if(n->status.udp_confirmed) {
-					path_keepalive_note_giveup(mesh, n, path_keepalive_backbone_interval_ms(mesh, n));
 					path_note_udp_demoted_reason(mesh, n, "backbone-udp-timeout");
 				} else {
 					p->confirmed = false;
@@ -425,7 +424,7 @@ void path_backbone_udp_note_direct(meshlink_handle_t *mesh, node_t *n, const soc
 	}
 }
 
-void path_backbone_udp_observe_reply(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *from, uint64_t nonce) {
+void path_backbone_udp_observe_reply(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *from, uint64_t nonce, const sockaddr_t *observed) {
 	backbone_udp_path_t *p;
 
 	if(!mesh || !n || n != mesh->backbone_udp.node || !from || !nonce || n->devtool_force_meta) {
@@ -456,5 +455,8 @@ void path_backbone_udp_observe_reply(meshlink_handle_t *mesh, node_t *n, const s
 		logger(mesh, MESHLINK_INFO, "Backbone UDP mapping to %s confirmed", n->name);
 	}
 
+	if(observed) {
+		path_keepalive_observe_local_endpoint(mesh, n, from, observed);
+	}
 	path_backbone_udp_arm_keepalive(mesh);
 }
