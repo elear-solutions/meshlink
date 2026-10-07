@@ -1077,7 +1077,7 @@ static bool send_relay_outer(meshlink_handle_t *mesh, node_t *hop, const void *d
 	uint16_t hop_plp = path_plpmtu_size(hop);
 	uint16_t limit = hop_plp ? hop_plp : MINMTU;
 
-	/* Ready oversize is a handled drop (no META fallback). */
+	/* Returning false leaves the original inner ciphertext available for META. */
 	if(payload > limit) {
 		if(hop->relay_oversize_drops < UINT32_MAX) {
 			hop->relay_oversize_drops++;
@@ -1085,17 +1085,19 @@ static bool send_relay_outer(meshlink_handle_t *mesh, node_t *hop, const void *d
 
 		if(mesh->loop.now.tv_sec >= hop->relay_oversize_logged_at + 10) {
 			hop->relay_oversize_logged_at = mesh->loop.now.tv_sec;
-			logger(mesh, MESHLINK_INFO, "Dropping %zu-byte relay record via %s: hop limit %u",
+			logger(mesh, MESHLINK_INFO, "META fallback for %zu-byte relay record via %s: hop limit %u",
 			       len, hop->name, (unsigned)limit);
 		}
 
-		return true;
+		hop->udp_send_result = RELAY_UDP_OVERSIZE;
+		return false;
 	}
 
 	if(!send_sptps_via_udp(mesh, hop, data, len)) {
 		return false;
 	}
 
+	hop->relay_hop.udp_sent++;
 	/* Hop scratch is set around sptps_send_record by relay_send_outer_record, then cleared. */
 	const char *dest_name = hop->relay_send_dest;
 	const char *origin_name = hop->relay_send_origin;
@@ -1134,7 +1136,7 @@ static bool send_application_record(meshlink_handle_t *mesh, node_t *to, const v
 		to->app_udp_override_active = true;
 		ok = send_sptps_via_udp(mesh, to, data, len);
 		to->app_udp_override_active = false;
-		return ok;
+		return ok || relay_meta_app(mesh, meta_connection_for(to), mesh->self->name, to->name, data, len);
 	}
 
 	if(target.kind == DATA_ROUTE_RELAY && target.relay_carrier == RELAY_CARRIER_UDP && target.first_hop) {
@@ -1146,15 +1148,15 @@ static bool send_application_record(meshlink_handle_t *mesh, node_t *to, const v
 			target.first_hop->app_udp_override_active = true;
 			ok = relay_send_outer_record(mesh, target.first_hop, mesh->self->name, to->name, wrapped, wlen);
 			target.first_hop->app_udp_override_active = false;
-			return ok;
+			return ok || relay_meta_app(mesh, target.first_hop->connection, mesh->self->name, to->name, data, len);
 		}
 	}
 
 	if(target.kind == DATA_ROUTE_RELAY && target.first_hop) {
-		return send_sptps_via_meta_conn(mesh, to, target.first_hop->connection, data, len);
+		return relay_meta_app(mesh, target.first_hop->connection, mesh->self->name, to->name, data, len);
 	}
 
-	return send_sptps_via_meta_conn(mesh, to, to->connection, data, len);
+	return relay_meta_app(mesh, to->connection, mesh->self->name, to->name, data, len);
 }
 
 bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
@@ -1207,6 +1209,9 @@ bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 		return send_relay_outer(mesh, to, data, len);
 	}
 
+	if(type != 0) {
+		return send_sptps_via_meta(mesh, to, data, len);
+	}
 	return send_application_record(mesh, to, data, len);
 }
 

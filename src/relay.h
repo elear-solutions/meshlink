@@ -93,6 +93,10 @@ bool relay_handle_record(struct meshlink_handle *mesh, struct node_t *from, cons
 /* Base64 REQ_SPTPS on an existing META connection. */
 bool relay_meta_req_sptps(struct meshlink_handle *mesh, struct connection_t *c, const char *origin, const char *dest_name, const void *data, size_t len);
 
+bool relay_meta_app(struct meshlink_handle *mesh, struct connection_t *c, const char *origin, const char *dest_name, const void *data, size_t len);
+bool relay_handle_meta_app(struct meshlink_handle *mesh, struct connection_t *c, struct node_t *origin, struct node_t *dest, const char *request);
+void relay_invalidate_connection(struct meshlink_handle *mesh, struct node_t *hop);
+
 /* META REQ_SPTPS fallback when the next hop is not UDP-ready. */
 bool relay_send_meta_req_sptps(struct meshlink_handle *mesh, const char *origin, struct node_t *dest, const void *inner, size_t inner_len);
 

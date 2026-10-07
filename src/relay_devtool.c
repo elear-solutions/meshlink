@@ -185,6 +185,9 @@ bool relay_devtool_send_meta_sptps(meshlink_handle_t *mesh, node_t *dest, uint8_
 
 	(void)sptps_send_record(&dest->sptps, type, data, (uint16_t)len);
 	dest->sptps.send_data = saved;
+	if(type != 0) {
+		return dest->nexthop && relay_meta_req_sptps(mesh, dest->nexthop->connection, mesh->self->name, dest->name, dt->capture_buf, dt->capture_len);
+	}
 	return relay_send_meta_req_sptps(mesh, mesh->self->name, dest, dt->capture_buf, dt->capture_len);
 }
 

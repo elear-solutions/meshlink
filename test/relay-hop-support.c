@@ -2,6 +2,9 @@
 #include "system.h"
 #include "meshlink_internal.h"
 #include "connection_policy.h"
+#include "connection.h"
+#include "protocol.h"
+#include "../src/utils.h"
 #include "net.h"
 #include "netutl.h"
 #include "node.h"
@@ -144,4 +147,101 @@ void relay_hop_tests(meshlink_handle_t *mesh) {
 	path_keepalive_stop(mesh, &n);
 	sptps_stop(&n.sptps);
 	mesh->loop.now = saved_now;
+}
+
+static unsigned envelope_request, received_records;
+static uint8_t encrypted_record[MAXSIZE];
+static size_t encrypted_len;
+
+static void envelope_log(meshlink_handle_t *mesh, meshlink_log_level_t level, const char *text) {
+	(void)mesh;
+	(void)level;
+	const char *wire = strstr(text, "Sending REQ_KEY to next: ");
+	if(wire) {
+		assert(sscanf(wire, "Sending REQ_KEY to next: %*u %*s %*s %u", &envelope_request) == 1);
+	}
+}
+
+static bool capture_record(void *handle, uint8_t type, const void *data, size_t len) {
+	(void)handle;
+	(void)type;
+	assert(len <= sizeof encrypted_record);
+	memcpy(encrypted_record, data, len);
+	encrypted_len = len;
+	return true;
+}
+
+static bool receive_record(void *handle, uint8_t type, const void *data, uint16_t len) {
+	(void)handle;
+	assert(type == 0 && len == 5 && !memcmp(data, "Hello", len));
+	received_records++;
+	return true;
+}
+
+void relay_envelope_tests(meshlink_handle_t *mesh);
+void relay_envelope_tests(meshlink_handle_t *mesh) {
+	connection_t c = {0};
+	static char next_name[] = "next";
+	c.name = next_name;
+	c.mesh = mesh;
+	c.socket = -1;
+	c.protocol_minor = PROT_MINOR_SPTPS_APP;
+	meshlink_log_cb_t saved_cb = mesh->log_cb;
+	meshlink_log_level_t saved_level = mesh->log_level;
+	mesh->log_cb = envelope_log;
+	mesh->log_level = MESHLINK_DEBUG;
+	uint8_t data[21] = {0};
+	assert(relay_meta_app(mesh, &c, "origin", "dest", data, sizeof data));
+	assert(envelope_request == REQ_SPTPS_APP);
+	c.protocol_minor--;
+	assert(relay_meta_app(mesh, &c, "origin", "dest", data, sizeof data));
+	assert(envelope_request == REQ_SPTPS);
+	c.protocol_minor++;
+	assert(relay_meta_req_sptps(mesh, &c, "origin", "dest", data, sizeof data));
+	assert(envelope_request == REQ_SPTPS);
+
+	node_t *origin = new_node();
+	splay_tree_t *edges = origin->edge_tree;
+	setup_peer(mesh, origin);
+	origin->edge_tree = edges;
+	origin->name = strdup("origin");
+	origin->sptps.send_data = capture_record;
+	origin->sptps.receive_record = receive_record;
+	origin->sptps.instate = true;
+	origin->sptps.incipher = chacha_poly1305_init();
+	uint8_t key[CHACHA_POLY1305_KEYLEN] = {0};
+	assert(chacha_poly1305_set_key(origin->sptps.incipher, key));
+	origin->sptps.replaywin = 16;
+	origin->sptps.late = calloc(16, 1);
+	/* Do not add synthetic graph edges: envelope receive needs only identity. */
+	char buf[1024], encoded[512];
+	assert(sptps_send_record(&origin->sptps, 0, "Hello", 5));
+	b64encode(encrypted_record, encoded, encrypted_len);
+	snprintf(buf, sizeof buf, "%d origin nmn %d %s", REQ_KEY, REQ_SPTPS_APP, encoded);
+	assert(relay_handle_meta_app(mesh, &c, origin, mesh->self, buf));
+	assert(received_records == 1);
+	assert(relay_handle_meta_app(mesh, &c, origin, mesh->self, buf));
+	assert(received_records == 1); /* replay rejected */
+
+	const uint8_t control_types[] = {SPTPS_HANDSHAKE, PKT_PROBE, PKT_RELAY_SPTPS};
+	for(size_t i = 0; i < sizeof control_types; i++) {
+		assert(sptps_send_record_raw(&origin->sptps, control_types[i], "Hello", 5));
+		b64encode(encrypted_record, encoded, encrypted_len);
+		snprintf(buf, sizeof buf, "%d origin nmn %d %s", REQ_KEY, REQ_SPTPS_APP, encoded);
+		int state = origin->sptps.state;
+		assert(relay_handle_meta_app(mesh, &c, origin, mesh->self, buf));
+		assert(received_records == 1 && origin->sptps.state == state);
+	}
+	assert(relay_handle_meta_app(mesh, &c, origin, mesh->self, "15 origin nmn 31 !!!"));
+	assert(received_records == 1);
+	/* An older hop cannot introduce the new application envelope. */
+	c.protocol_minor--;
+	assert(sptps_send_record(&origin->sptps, 0, "Hello", 5));
+	b64encode(encrypted_record, encoded, encrypted_len);
+	snprintf(buf, sizeof buf, "%d origin nmn %d %s", REQ_KEY, REQ_SPTPS_APP, encoded);
+	assert(relay_handle_meta_app(mesh, &c, origin, mesh->self, buf));
+	assert(received_records == 1);
+	free_node(origin);
+	mesh->log_cb = saved_cb;
+	mesh->log_level = saved_level;
 }

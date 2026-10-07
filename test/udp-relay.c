@@ -304,6 +304,45 @@ static void pin(meshlink_handle_t *origin, const char *dest, const char *hop) {
 	assert(devtool_force_relay_path(origin, meshlink_get_node(origin, dest), meshlink_get_node(origin, hop)));
 }
 
+static bool output_proved(meshlink_handle_t *mesh, const char *name) {
+	devtool_node_status_t st;
+	devtool_get_node_status(mesh, meshlink_get_node(mesh, name), &st);
+	bool proved = st.relay_output_confirmed && st.relay_challenges_sent && st.plpmtu_size;
+	devtool_free_node_status(&st);
+	return proved;
+}
+
+/* Route selection is pinned; both UDP legs are proved through the real sockets.
+   No NMN output confirmation, PMTU seed, or application channel is installed. */
+static void test_natural_output(meshlink_handle_t **mesh) {
+	assert_after(udp_confirmed_flag(mesh[2], "foo") && udp_confirmed_flag(mesh[1], "foo"), 25);
+	assert(!output_proved(mesh[0], "bar") && !output_proved(mesh[0], "baz"));
+	pin(mesh[2], "bar", "foo");
+	send_hello(mesh[2], "bar");
+	assert_after(output_proved(mesh[0], "bar"), 15);
+	reset_logs();
+	send_hello_once(mesh[2], "bar");
+	assert(check_sync_flag(&baz_relay_log) && check_sync_flag(&foo_relay_log));
+	/* Marked application data entering on META may use proved UDP output. */
+	devtool_force_meta(mesh[2], meshlink_get_node(mesh[2], "bar"), true);
+	reset_logs();
+	send_hello_once(mesh[2], "bar");
+	assert(!check_sync_flag(&baz_relay_log) && check_sync_flag(&foo_relay_log));
+	devtool_force_meta(mesh[2], meshlink_get_node(mesh[2], "bar"), false);
+	meshlink_set_receive_cb(mesh[2], receive_cb);
+	pin(mesh[1], "baz", "foo");
+	send_hello(mesh[1], "baz");
+	assert_after(output_proved(mesh[0], "baz"), 15);
+	reset_logs();
+	send_hello_once(mesh[1], "baz");
+	assert(check_sync_flag(&bar_relay_log));
+	devtool_node_status_t st;
+	devtool_get_node_status(mesh[0], meshlink_get_node(mesh[0], "baz"), &st);
+	assert(st.relay_udp_sent && st.relay_output_confirmed);
+	devtool_free_node_status(&st);
+	meshlink_set_receive_cb(mesh[2], NULL);
+}
+
 static void confirm_final(meshlink_handle_t *relay, const char *dest, uint16_t minmtu) {
 	assert(devtool_set_plpmtu(relay, meshlink_get_node(relay, dest), minmtu));
 	devtool_set_udp_confirmed(relay, meshlink_get_node(relay, dest), true);
@@ -474,7 +513,7 @@ static void test_route_matrix(meshlink_handle_t **mesh) {
 	meshlink_node_t *bar_from_baz = meshlink_get_node(mesh[2], "bar");
 	meshlink_node_t *bar_from_foo = meshlink_get_node(mesh[0], "bar");
 
-	/* first down / final up → META, no binary log */
+	/* Marked META first leg / ready final leg uses UDP output. */
 	reset_logs();
 	pin(mesh[2], "bar", "foo");
 	devtool_force_meta(mesh[2], bar_from_baz, true);
@@ -483,7 +522,7 @@ static void test_route_matrix(meshlink_handle_t **mesh) {
 	assert(devtool_set_plpmtu(mesh[0], bar_from_foo, MTU));
 	send_hello_once(mesh[2], "bar");
 	assert(!check_sync_flag(&baz_relay_log));
-	assert(!check_sync_flag(&foo_relay_log));
+	assert(check_sync_flag(&foo_relay_log));
 
 	/* first up / final down → Hello, binary log on first hop only */
 	devtool_force_meta(mesh[2], bar_from_baz, false);
@@ -713,7 +752,7 @@ static void test_oversize_and_reports(meshlink_handle_t **mesh) {
 	pin(mesh[2], "bar", "foo");
 	confirm_final(mesh[0], "bar", MTU);
 	assert(devtool_set_plpmtu(mesh[2], meshlink_get_node(mesh[2], "foo"), MINMTU));
-	assert(devtool_send_raw_record(mesh[2], meshlink_get_node(mesh[2], "foo"), PKT_RELAY_SPTPS, payload, n));
+	assert(!devtool_send_raw_record(mesh[2], meshlink_get_node(mesh[2], "foo"), PKT_RELAY_SPTPS, payload, n));
 	usleep(200000);
 	assert(!check_sync_flag(&got_relay_mtu));
 	expect_hello_after_drop(mesh);
@@ -2015,6 +2054,7 @@ int main(int argc, char **argv) {
 	assert(wait_sync_flag(&bar_learned, 10));
 	assert(wait_sync_flag(&baz_learned, 10));
 
+	test_natural_output(mesh);
 	wait_keys_and_udp(mesh);
 
 	devtool_edge_t *edges = NULL;

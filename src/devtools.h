@@ -99,7 +99,7 @@ typedef struct devtool_node_status devtool_node_status_t;
 
 /** Append-only snapshot. Bump when fields are added. New fields go at the end.
  *  devtool_get_node_status() writes devtool_status_version. */
-#define DEVTOOL_NODE_STATUS_VERSION 6
+#define DEVTOOL_NODE_STATUS_VERSION 7
 
 typedef enum {
 	DEVTOOL_PLPMTU_DISABLED = 0,
@@ -260,6 +260,15 @@ struct devtool_node_status {
 	uint32_t keepalive_interval_ms;
 	uint32_t keepalives_sent;
 	uint32_t keepalive_expiries;
+
+	/* DEVTOOL_NODE_STATUS_VERSION 7. Append only. */
+	bool relay_output_confirmed, relay_output_demanded;
+	unsigned peer_udp_channel_count;
+	uint32_t relay_challenges_sent, relay_confirmations, relay_challenge_failures, relay_admission_delays;
+	uint32_t relay_udp_sent, relay_meta_fallbacks;
+	uint32_t relay_fallback_unready, relay_fallback_oversize, relay_fallback_no_socket;
+	uint32_t relay_fallback_would_block, relay_fallback_emsgsize, relay_fallback_hard_error;
+
 };
 
 /// Get the status of a node.

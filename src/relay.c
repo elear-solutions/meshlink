@@ -162,7 +162,7 @@ void relay_hop_tick(meshlink_handle_t *mesh, node_t *n) {
 }
 
 void relay_hop_note_demand(meshlink_handle_t *mesh, node_t *n) {
-	if(!mesh || !n || n == mesh->self || connection_policy_backbone(mesh) != mesh->self || n->status.blacklisted) {
+	if(!mesh || !n || n == mesh->self || mesh->self->devclass != DEV_CLASS_BACKBONE || n->status.blacklisted) {
 		return;
 	}
 	n->relay_hop.demand_until = mesh->loop.now;
@@ -669,12 +669,94 @@ bool relay_meta_req_sptps(meshlink_handle_t *mesh, connection_t *c, const char *
 	return send_request(mesh, c, NULL, "%d %s %s %d %s", REQ_KEY, origin, dest_name, REQ_SPTPS, buf);
 }
 
+bool relay_meta_app(meshlink_handle_t *mesh, connection_t *c, const char *origin, const char *dest_name, const void *data, size_t len) {
+	if(!mesh || !c || !origin || !dest_name || !data || !len || len > MAXSIZE) {
+		return false;
+	}
+	if(c->protocol_minor < PROT_MINOR_SPTPS_APP) {
+		return relay_meta_req_sptps(mesh, c, origin, dest_name, data, len);
+	}
+	char buf[len * 4 / 3 + 5];
+	b64encode(data, buf, (int)len);
+	return send_request(mesh, c, NULL, "%d %s %s %d %s", REQ_KEY, origin, dest_name, REQ_SPTPS_APP, buf);
+}
+
+bool relay_handle_meta_app(meshlink_handle_t *mesh, connection_t *c, node_t *origin, node_t *dest, const char *request) {
+	if(!c || c->protocol_minor < PROT_MINOR_SPTPS_APP || !origin || !dest
+	                || origin == mesh->self || origin->status.blacklisted || dest->status.blacklisted) {
+		return true;
+	}
+	char encoded[MAX_STRING_SIZE], extra;
+	if(sscanf(request, "%*d %*s %*s %*d " MAX_STRING " %c", encoded, &extra) != 1) {
+		return true;
+	}
+	size_t encoded_len = strlen(encoded);
+	if(encoded_len % 4 == 1) { return true; }
+	/* b64decode historically accepts junk. Require the wire alphabet here. */
+	for(size_t i = 0; i < encoded_len; i++) {
+		if(!strchr("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/", encoded[i])) {
+			return true;
+		}
+	}
+	int len = b64decode(encoded, encoded, encoded_len);
+	if(len < RELAY_INNER_MIN) {
+		return true;
+	}
+	if(dest == mesh->self) {
+		if(!origin->status.validkey || !origin->sptps.instate) {
+			return true;
+		}
+		origin->status.in_req_sptps = true;
+		bool ok = sptps_receive_relay_inner(&origin->sptps, encoded, len);
+		origin->status.in_req_sptps = false;
+		(void)ok;
+		return true; /* authentication/replay rejection is a quiet drop */
+	}
+	if(!c->node || dest->nexthop == c->node || !dest->status.reachable) {
+		return true;
+	}
+	uint8_t wrapped[MAXSIZE];
+	size_t wrapped_len = sizeof wrapped;
+	if(!relay_encode(origin->name, dest->name, encoded, len, wrapped, &wrapped_len)) {
+		return true;
+	}
+	return relay_handle_record(mesh, c->node, wrapped, (uint16_t)wrapped_len);
+}
+
+static bool relay_fallback(meshlink_handle_t *mesh, node_t *out, const char *origin, node_t *dest, const void *inner, size_t len, relay_udp_result_t reason) {
+	out->relay_hop.meta_fallbacks++;
+	if((unsigned)reason < 7) {
+		out->relay_hop.fallback_reason[reason]++;
+	}
+	logger(mesh, MESHLINK_DEBUG, "Relay META fallback via %s for %s: reason %u", out->name, dest->name, (unsigned)reason);
+	return relay_send_meta_req_sptps(mesh, origin, dest, inner, len);
+}
+
+void relay_invalidate_connection(meshlink_handle_t *mesh, node_t *hop) {
+	if(!mesh || !hop || !mesh->nodes) {
+		return;
+	}
+	for splay_each(node_t, dest, mesh->nodes) {
+		if(dest->nexthop == hop) {
+			dest->relay_budget = 0;
+			dest->relay_budget_connection = NULL;
+			channel_refresh_mtu(mesh, dest);
+		}
+	}
+	if(mesh->relay_reports) {
+		for list_each(relay_report_entry_t, e, mesh->relay_reports) {
+			node_t *origin = lookup_node(mesh, e->origin);
+			if(origin && origin->nexthop == hop) { e->have_reported = false; }
+		}
+	}
+}
+
 bool relay_send_meta_req_sptps(meshlink_handle_t *mesh, const char *origin, node_t *dest, const void *inner, size_t inner_len) {
 	if(!dest || !dest->nexthop || !dest->nexthop->connection || !inner || !inner_len) {
 		return false;
 	}
 
-	return relay_meta_req_sptps(mesh, dest->nexthop->connection, origin, dest->name, inner, inner_len);
+	return relay_meta_app(mesh, dest->nexthop->connection, origin, dest->name, inner, inner_len);
 }
 
 bool relay_handle_record(meshlink_handle_t *mesh, node_t *from, const void *data, uint16_t len) {
@@ -694,7 +776,7 @@ bool relay_handle_record(meshlink_handle_t *mesh, node_t *from, const void *data
 	node_t *origin = lookup_node(mesh, origin_name);
 	node_t *dest = lookup_node(mesh, dest_name);
 
-	if(!origin || !dest) {
+	if(!origin || !dest || origin->status.blacklisted || dest->status.blacklisted || from->status.blacklisted) {
 		return true;
 	}
 
@@ -729,35 +811,28 @@ bool relay_handle_record(meshlink_handle_t *mesh, node_t *from, const void *data
 	relay_touch_traffic(mesh, origin_name, dest_name);
 	relay_hop_note_demand(mesh, out);
 
-	if(!relay_hop_udp_ready(out)) {
-		if(!out->connection) {
-			return true;
-		}
-
-		path_tier_t hop_tier = path_select_hop_tier(out, false);
-		logger(mesh, MESHLINK_DEBUG, "Path policy: mixed hop %s for %s (%s)", out->name, dest->name, path_tier_name(hop_tier));
-		relay_send_meta_req_sptps(mesh, origin_name, dest, inner, inner_len);
+	if(!relay_hop_udp_ready(out) || out->devtool_force_meta) {
+		relay_fallback(mesh, out, origin_name, dest, inner, inner_len, RELAY_UDP_UNREADY);
 		return true;
 	}
 
 	uint16_t plp = path_plpmtu_size(out);
 	uint16_t limit = plp ? plp : MINMTU;
-
-	relay_touch_traffic(mesh, origin_name, dest_name);
-
 	if((uint32_t)len > limit) {
-		if(out == dest) {
-			relay_maybe_report(mesh, origin_name, dest, true);
-		}
-
+		if(out == dest) { relay_maybe_report(mesh, origin_name, dest, true); }
+		relay_fallback(mesh, out, origin_name, dest, inner, inner_len, RELAY_UDP_OVERSIZE);
 		return true;
 	}
-
-	if(out == dest) {
-		relay_maybe_report(mesh, origin_name, dest, false);
+	if(out == dest) { relay_maybe_report(mesh, origin_name, dest, false); }
+	/* Pin the proved endpoint across wrapping and socket selection. */
+	path_copy_sockaddr(&out->app_udp_override, &out->address);
+	out->app_udp_override_active = true;
+	out->udp_send_result = RELAY_UDP_UNREADY;
+	bool sent = relay_send_outer_record(mesh, out, origin_name, dest_name, data, len);
+	out->app_udp_override_active = false;
+	if(!sent) {
+		relay_fallback(mesh, out, origin_name, dest, inner, inner_len, out->udp_send_result);
 	}
-
-	relay_send_outer_record(mesh, out, origin_name, dest_name, data, len);
 	return true;
 }
 

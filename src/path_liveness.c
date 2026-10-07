@@ -343,7 +343,7 @@ static bool keepalive_eligible(const meshlink_handle_t *mesh, const node_t *n) {
 		return true;
 	}
 
-	if(mesh->backbone.node == mesh->self || !n->keepalive.last_rx_at.tv_sec) {
+	if(mesh->self->devclass == DEV_CLASS_BACKBONE || !n->keepalive.last_rx_at.tv_sec) {
 		return false;
 	}
 

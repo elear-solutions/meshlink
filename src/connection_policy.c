@@ -1470,7 +1470,7 @@ void connection_policy_note_lan_drop(meshlink_handle_t *mesh, node_t *n) {
 
 void connection_policy_on_connection_closed(meshlink_handle_t *mesh, node_t *node,
                 meta_connection_purpose_t purpose) {
-	(void)node;
+	relay_invalidate_connection(mesh, node);
 	(void)purpose;
 
 	if(!mesh || mesh->retiring_outgoing || mesh->lan_epoch_retiring) {

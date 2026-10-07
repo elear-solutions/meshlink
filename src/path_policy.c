@@ -2407,7 +2407,8 @@ static bool path_udp_observation_usable(const meshlink_handle_t *mesh, const soc
 	/* NMN output proof also works on local paths. Ordinary punching and
 	   address advertisement still use their original, stricter policy. */
 	return mesh->self && mesh->self->devclass == DEV_CLASS_BACKBONE
-	       && udp_address_usable(sa) && udp_address_bound(sa)
+	       && address_connectable(sa)
+	       && (sa->sa.sa_family == AF_INET ? sa->in.sin_port != 0 : sa->in6.sin6_port != 0)
 	       && !(sa->sa.sa_family == AF_INET && sa->in.sin_addr.s_addr == htonl(INADDR_BROADCAST));
 }
 
