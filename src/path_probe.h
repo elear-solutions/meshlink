@@ -45,6 +45,8 @@
 #define PROBE_PURPOSE_LOCAL_DISCOVERY 7
 #define PROBE_PURPOSE_PLPMTU_RECOVERY 8
 
+#define PROBE_PURPOSE_RELAY_HOP       9
+
 #define PROBE_FIXED_LEN 64
 
 void path_probe_write_endpoint(uint8_t *data, const sockaddr_t *endpoint);

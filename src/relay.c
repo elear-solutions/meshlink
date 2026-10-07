@@ -11,6 +11,10 @@
 #include "system.h"
 
 #include "connection.h"
+#include "connection_policy.h"
+#include "crypto.h"
+#include "path_liveness.h"
+#include "path_probe.h"
 #include "event.h"
 #include "list.h"
 #include "logger.h"
@@ -26,6 +30,175 @@
 #include "sptps.h"
 #include "utils.h"
 #include "xalloc.h"
+
+static int64_t relay_ms(const struct timespec *a, const struct timespec *b) {
+	return (int64_t)(b->tv_sec - a->tv_sec) * 1000 + (b->tv_nsec - a->tv_nsec) / 1000000;
+}
+
+static void relay_hop_timer(event_loop_t *loop, void *data) {
+	relay_hop_tick(loop->data, data);
+}
+
+static void relay_hop_arm(meshlink_handle_t *mesh, node_t *n) {
+	struct timespec delay = {0, 750000000L + (long)prng(mesh, 250000000)};
+	if(n->relay_hop.timer.cb) {
+		timeout_set(&mesh->loop, &n->relay_hop.timer, &delay);
+	} else {
+		timeout_add(&mesh->loop, &n->relay_hop.timer, relay_hop_timer, n, &delay);
+	}
+}
+
+bool relay_hop_demanded(const meshlink_handle_t *mesh, const node_t *n) {
+	return mesh && n && relay_ms(&mesh->loop.now, &n->relay_hop.demand_until) > 0;
+}
+
+void relay_hop_demoted(meshlink_handle_t *mesh, node_t *n) {
+	if(!n || !n->relay_hop.confirmed) {
+		return;
+	}
+	n->relay_hop.confirmed = false;
+	n->relay_hop.nonce = 0;
+	n->relay_hop.retry_at = mesh->loop.now;
+	n->relay_hop.retry_at.tv_sec += 30;
+	path_scheduler_cancel(mesh, n, PATH_TX_RELAY_HOP);
+}
+
+void relay_hop_stop(meshlink_handle_t *mesh, node_t *n) {
+	if(!mesh || !n) {
+		return;
+	}
+	bool owned = n->relay_hop.confirmed;
+	timeout_del(&mesh->loop, &n->relay_hop.timer);
+	path_scheduler_cancel(mesh, n, PATH_TX_RELAY_HOP);
+	n->relay_hop.nonce = 0;
+	n->relay_hop.confirmed = false;
+	n->relay_hop.attempts = 0;
+	n->relay_hop.session_id = 0;
+	n->relay_hop.network_epoch = 0;
+	memset(&n->relay_hop.demand_until, 0, sizeof n->relay_hop.demand_until);
+	memset(&n->relay_hop.candidate, 0, sizeof n->relay_hop.candidate);
+	memset(&n->relay_hop.retry_at, 0, sizeof n->relay_hop.retry_at);
+	if(owned) {
+		path_plpmtu_stop(mesh, n);
+		path_liveness_stop(mesh, n);
+		path_keepalive_stop(mesh, n);
+		n->status.udp_confirmed = false;
+	}
+}
+
+static void relay_hop_preempt(meshlink_handle_t *mesh, node_t *n, path_transaction_type_t type) {
+	(void)type;
+	/* Retain attempts and deadline; reacquire admission before another send. */
+	relay_hop_arm(mesh, n);
+}
+
+static void relay_hop_send(meshlink_handle_t *mesh, const path_probe_request_t *req) {
+	node_t *n = req->node;
+	path_copy_sockaddr(&n->probe_dest_override, &n->relay_hop.candidate);
+	n->probe_dest_override_active = true;
+	n->udp_send_result = RELAY_UDP_UNREADY;
+	net_probe_sched_send(mesh, req);
+	n->probe_dest_override_active = false;
+	if(n->udp_send_result == RELAY_UDP_SENT) {
+		n->relay_hop.attempts++;
+		n->relay_hop.challenges_sent++;
+		n->relay_hop.last_sent_at = mesh->loop.now;
+	}
+}
+
+void relay_hop_tick(meshlink_handle_t *mesh, node_t *n) {
+	relay_hop_t *p = &n->relay_hop;
+	if(!relay_hop_demanded(mesh, n) || !n->status.reachable || n->status.blacklisted
+	                || (p->session_id && (p->session_id != n->session_id || p->network_epoch != mesh->lan_network_epoch))) {
+		relay_hop_stop(mesh, n);
+		return;
+	}
+	relay_hop_arm(mesh, n);
+	if(!n->status.validkey) {
+		path_peer_ensure_udp_key(mesh, n);
+		return;
+	}
+	if(p->nonce && relay_ms(&p->deadline, &mesh->loop.now) >= 0) {
+		p->nonce = 0;
+		p->failures++;
+		p->retry_at = mesh->loop.now;
+		p->retry_at.tv_sec += 30;
+		path_scheduler_cancel(mesh, n, PATH_TX_RELAY_HOP);
+	}
+	if(!p->nonce) {
+		sockaddr_t candidate;
+		if(!path_get_fresh_udp_observation(mesh, n, &candidate)) {
+			return;
+		}
+		bool same = p->candidate.sa.sa_family && !sockaddrcmp(&candidate, &p->candidate);
+		if((p->confirmed && !sockaddrcmp(&candidate, &p->confirmed_endpoint))
+		                || (same && relay_ms(&mesh->loop.now, &p->retry_at) > 0)) {
+			return;
+		}
+		p->candidate = candidate;
+		p->session_id = n->session_id;
+		p->network_epoch = mesh->lan_network_epoch;
+		p->attempts = 0;
+		do { randomize(&p->nonce, sizeof p->nonce); } while(!p->nonce);
+		p->deadline = mesh->loop.now;
+		p->deadline.tv_sec += 10;
+	}
+	if(p->attempts >= 2 || (p->attempts && relay_ms(&p->last_sent_at, &mesh->loop.now) < 1000)) {
+		return;
+	}
+	path_sched_txn_t *txn = path_scheduler_begin_transaction(mesh, n, PATH_TXN_RELAY_HOP, PATH_TX_RELAY_HOP, relay_hop_preempt);
+	if(!txn) {
+		p->admission_delays++;
+		return;
+	}
+	path_probe_request_t req = {
+		.node = n, .length = PROBE_FIXED_LEN, .priority = PATH_TX_RELAY_HOP,
+		.send = relay_hop_send, .probe_kind = PROBE_KIND_ECHO_REQUEST,
+		.probe_purpose = PROBE_PURPOSE_RELAY_HOP, .probe_nonce = p->nonce
+	};
+	if(path_scheduler_emit_packet(mesh, txn, &req) != PATH_SCHED_SENT) {
+		p->admission_delays++;
+	}
+}
+
+void relay_hop_note_demand(meshlink_handle_t *mesh, node_t *n) {
+	if(!mesh || !n || n == mesh->self || connection_policy_backbone(mesh) != mesh->self || n->status.blacklisted) {
+		return;
+	}
+	n->relay_hop.demand_until = mesh->loop.now;
+	n->relay_hop.demand_until.tv_sec += 30;
+	relay_hop_tick(mesh, n);
+}
+
+void relay_hop_observe(meshlink_handle_t *mesh, node_t *n) {
+	if(relay_hop_demanded(mesh, n)) {
+		relay_hop_tick(mesh, n);
+	}
+}
+
+bool relay_hop_reply(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *from, uint64_t nonce) {
+	relay_hop_t *p = &n->relay_hop;
+	if(!relay_hop_demanded(mesh, n) || !n->status.validkey || n->status.blacklisted
+	                || !nonce || nonce != p->nonce || !p->attempts || sockaddrcmp(from, &p->candidate)
+	                || p->session_id != n->session_id || p->network_epoch != mesh->lan_network_epoch
+	                || relay_ms(&mesh->loop.now, &p->deadline) <= 0) {
+		return false;
+	}
+	p->nonce = 0;
+	p->confirmed = true;
+	p->confirmations++;
+	p->confirmed_endpoint = p->candidate;
+	path_scheduler_cancel(mesh, n, PATH_TX_RELAY_HOP);
+	update_node_udp_from(mesh, n, &p->confirmed_endpoint, ADDR_SRC_UDP_REFLEXIVE);
+	n->status.udp_confirmed = true;
+	/* Deliberately bypass ordinary route promotion and address advertisement. */
+	path_plpmtu_on_confirmed(mesh, n);
+	path_liveness_on_confirmed(mesh, n);
+	path_keepalive_on_confirmed(mesh, n);
+	relay_notify_minmtu_change(mesh, n);
+	logger(mesh, MESHLINK_INFO, "Relay UDP output to %s proved", n->name);
+	return true;
+}
 
 void relay_report_free(const void *data) {
 	relay_report_entry_t *e = (relay_report_entry_t *)data;
@@ -66,6 +239,9 @@ void relay_init(meshlink_handle_t *mesh) {
 }
 
 void relay_exit(meshlink_handle_t *mesh) {
+	if(mesh->nodes) {
+		for splay_each(node_t, n, mesh->nodes) { relay_hop_stop(mesh, n); }
+	}
 	timeout_del(&mesh->loop, &mesh->relay_report_timeout);
 
 	if(mesh->relay_reports) {
@@ -550,6 +726,8 @@ bool relay_handle_record(meshlink_handle_t *mesh, node_t *from, const void *data
 	}
 
 	node_t *out = dest->nexthop;
+	relay_touch_traffic(mesh, origin_name, dest_name);
+	relay_hop_note_demand(mesh, out);
 
 	if(!relay_hop_udp_ready(out)) {
 		if(!out->connection) {

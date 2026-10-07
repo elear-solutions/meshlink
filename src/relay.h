@@ -43,6 +43,20 @@ struct connection_t;
 void relay_init(struct meshlink_handle *mesh);
 void relay_exit(struct meshlink_handle *mesh);
 
+typedef enum relay_udp_result {
+	RELAY_UDP_UNREADY = 0, RELAY_UDP_SENT, RELAY_UDP_OVERSIZE,
+	RELAY_UDP_NO_SOCKET, RELAY_UDP_WOULD_BLOCK, RELAY_UDP_EMSGSIZE,
+	RELAY_UDP_HARD_ERROR
+} relay_udp_result_t;
+
+bool relay_hop_demanded(const struct meshlink_handle *mesh, const struct node_t *hop);
+void relay_hop_note_demand(struct meshlink_handle *mesh, struct node_t *hop);
+void relay_hop_observe(struct meshlink_handle *mesh, struct node_t *hop);
+void relay_hop_tick(struct meshlink_handle *mesh, struct node_t *hop);
+bool relay_hop_reply(struct meshlink_handle *mesh, struct node_t *hop, const sockaddr_t *from, uint64_t nonce);
+void relay_hop_stop(struct meshlink_handle *mesh, struct node_t *hop);
+void relay_hop_demoted(struct meshlink_handle *mesh, struct node_t *hop);
+
 /* Durable hop: udp_confirmed && validkey && !temp_udp_confirmed. */
 bool relay_hop_udp_ready(const struct node_t *hop);
 

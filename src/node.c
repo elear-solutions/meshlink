@@ -141,6 +141,8 @@ void node_set_validkey(meshlink_handle_t *mesh, node_t *n, bool valid) {
 	n->status.validkey = valid;
 
 	if(!valid) {
+		relay_hop_stop(mesh, n);
+		memset(&n->udp_observation, 0, sizeof n->udp_observation);
 		path_rebind_cancel(mesh, n);
 		path_punch_cancel(mesh, n);
 		/* Same-session rekey keeps remembered ingress so the next demand can
@@ -259,6 +261,7 @@ void node_udp_cache_alias(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *
 }
 
 void node_del(meshlink_handle_t *mesh, node_t *n) {
+	relay_hop_stop(mesh, n);
 	upgrade_node_cleanup(mesh, n);
 	path_clear_pending_punch_hint(n);
 	path_reset_canonical_resolve(n);

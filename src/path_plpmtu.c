@@ -500,7 +500,7 @@ void path_plpmtu_tick(meshlink_handle_t *mesh, node_t *n) {
 		return;
 	}
 
-	if(n != mesh->backbone_udp.node && !path_peer_udp_demanded(mesh, n)) {
+	if(n != mesh->backbone_udp.node && !path_peer_udp_demanded(mesh, n) && !relay_hop_demanded(mesh, n)) {
 		path_plpmtu_pause(mesh, n);
 		return;
 	}
@@ -635,7 +635,7 @@ void path_plpmtu_on_confirmed(meshlink_handle_t *mesh, node_t *n) {
 		return;
 	}
 
-	if(n != mesh->backbone_udp.node && !path_peer_udp_demanded(mesh, n)) {
+	if(n != mesh->backbone_udp.node && !path_peer_udp_demanded(mesh, n) && !relay_hop_demanded(mesh, n)) {
 		return;
 	}
 

@@ -60,8 +60,22 @@ typedef struct udp_observation_t {
 	sockaddr_t endpoint;
 	struct timespec observed_at;
 	uint32_t session_id;
+	uint64_t network_epoch;
 } udp_observation_t;
 
+
+/* One runtime owner per demanded NMN output peer. No application session. */
+typedef struct relay_hop_t {
+	timeout_t timer;
+	struct timespec demand_until, deadline, retry_at, last_sent_at;
+	sockaddr_t candidate, confirmed_endpoint;
+	uint64_t nonce, network_epoch;
+	uint32_t session_id;
+	unsigned attempts;
+	bool confirmed;
+	uint32_t challenges_sent, confirmations, failures, admission_delays;
+	uint32_t udp_sent, meta_fallbacks, fallback_reason[7];
+} relay_hop_t;
 
 typedef enum {
 	PLPMTU_DISABLED = 0,
@@ -168,6 +182,8 @@ typedef struct node_t {
 
 	uint16_t mtu_probe_request_len;         /* Outbound probe-request payload length; set only around sptps_send_record for dest-IP DEBUG log */
 	path_plpmtu_t plpmtu;
+	relay_hop_t relay_hop;
+	unsigned udp_send_result;
 	path_liveness_t liveness;
 	path_keepalive_t keepalive;
 	path_local_discovery_t local_discovery;

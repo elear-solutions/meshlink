@@ -1568,6 +1568,7 @@ void path_note_udp_demoted_reason(meshlink_handle_t *mesh, node_t *n, const char
 		return;
 	}
 
+	relay_hop_demoted(mesh, n);
 	was = n->udp_tier;
 	n->status.udp_confirmed = false;
 	n->udp_tier = PATH_TIER_NONE;
@@ -2401,18 +2402,29 @@ static void path_punch_note_hint(meshlink_handle_t *mesh, node_t *n, const socka
 	path_punch_endpoint_tick(mesh, n);
 }
 
+static bool path_udp_observation_usable(const meshlink_handle_t *mesh, const sockaddr_t *sa) {
+	if(path_punch_endpoint_usable(sa)) { return true; }
+	/* NMN output proof also works on local paths. Ordinary punching and
+	   address advertisement still use their original, stricter policy. */
+	return mesh->self && mesh->self->devclass == DEV_CLASS_BACKBONE
+	       && udp_address_usable(sa) && udp_address_bound(sa)
+	       && !(sa->sa.sa_family == AF_INET && sa->in.sin_addr.s_addr == htonl(INADDR_BROADCAST));
+}
+
 void path_note_authenticated_udp_observation(meshlink_handle_t *mesh, node_t *node, const sockaddr_t *endpoint) {
 	if(!mesh || !node || !endpoint || node == mesh->self || !node->session_id) {
 		return;
 	}
 
-	if(!path_punch_endpoint_usable(endpoint)) {
+	if(!path_udp_observation_usable(mesh, endpoint)) {
 		return;
 	}
 
 	path_copy_sockaddr(&node->udp_observation.endpoint, endpoint);
 	node->udp_observation.observed_at = mesh->loop.now;
 	node->udp_observation.session_id = node->session_id;
+	node->udp_observation.network_epoch = mesh->lan_network_epoch;
+	relay_hop_observe(mesh, node);
 }
 
 bool path_get_fresh_udp_observation(const meshlink_handle_t *mesh, const node_t *node, sockaddr_t *out) {
@@ -2422,7 +2434,7 @@ bool path_get_fresh_udp_observation(const meshlink_handle_t *mesh, const node_t 
 		return false;
 	}
 
-	if(!node->udp_observation.session_id || node->udp_observation.session_id != node->session_id) {
+	if(node->udp_observation.network_epoch != mesh->lan_network_epoch || !node->udp_observation.session_id || node->udp_observation.session_id != node->session_id) {
 		return false;
 	}
 
@@ -2430,7 +2442,7 @@ bool path_get_fresh_udp_observation(const meshlink_handle_t *mesh, const node_t 
 		return false;
 	}
 
-	if(!path_punch_endpoint_usable(&node->udp_observation.endpoint)) {
+	if(!path_udp_observation_usable(mesh, &node->udp_observation.endpoint)) {
 		return false;
 	}
 
@@ -2461,6 +2473,7 @@ void path_clear_udp_observation(node_t *n) {
 	}
 
 	if(n->mesh) {
+		relay_hop_stop(n->mesh, n);
 		path_rebind_cancel(n->mesh, n);
 		path_punch_cancel(n->mesh, n);
 	}
@@ -2986,6 +2999,10 @@ bool path_try_confirm_udp_probe_reply(meshlink_handle_t *mesh, node_t *n, const 
 		return true;
 	}
 
+	/* NMN output readiness belongs exclusively to relay-hop proof. */
+	if(mesh->self && mesh->self->devclass == DEV_CLASS_BACKBONE) {
+		return true;
+	}
 	path_confirm_remembered_udp(mesh, n);
 	return false;
 }
@@ -4906,7 +4923,7 @@ bool path_has_live_fallback(meshlink_handle_t *mesh, const node_t *n) {
 }
 
 bool path_liveness_probe_warranted(meshlink_handle_t *mesh, const node_t *n) {
-	return path_peer_udp_punching_allowed(mesh, n);
+	return path_peer_udp_punching_allowed(mesh, n) || relay_hop_demanded(mesh, n);
 }
 
 static void path_commit_active_route(node_t *n, const path_target_t *target, const struct timespec *now) {

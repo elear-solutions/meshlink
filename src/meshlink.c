@@ -2284,6 +2284,7 @@ void meshlink_stop(meshlink_handle_t *mesh) {
 
 	if(mesh->nodes) {
 		for splay_each(node_t, n, mesh->nodes) {
+			relay_hop_stop(mesh, n);
 			path_reset_canonical_resolve(n);
 		}
 	}
@@ -4144,6 +4145,7 @@ static bool blacklist(meshlink_handle_t *mesh, node_t *n) {
 		return true;
 	}
 
+	relay_hop_stop(mesh, n);
 	n->status.blacklisted = true;
 
 	if(mesh->outgoings) {

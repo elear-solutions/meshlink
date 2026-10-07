@@ -181,6 +181,7 @@ static void check_reachability(meshlink_handle_t *mesh) {
 			n->status.udp_confirmed = false;
 			n->relay_budget = 0;
 
+			relay_hop_stop(mesh, n);
 			path_plpmtu_stop(mesh, n);
 			path_liveness_stop(mesh, n);
 			path_keepalive_stop(mesh, n);
@@ -226,6 +227,7 @@ static void check_reachability(meshlink_handle_t *mesh) {
 			n->status.udp_confirmed = false;
 			n->relay_budget = 0;
 
+			relay_hop_stop(mesh, n);
 			path_plpmtu_stop(mesh, n);
 			path_liveness_stop(mesh, n);
 			path_keepalive_stop(mesh, n);

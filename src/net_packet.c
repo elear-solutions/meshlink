@@ -116,7 +116,8 @@ void net_probe_sched_send(meshlink_handle_t *mesh, const path_probe_request_t *r
 	                && req->probe_purpose != PROBE_PURPOSE_REBIND
 	                && req->probe_purpose != PROBE_PURPOSE_PROMOTION
 	                && req->probe_purpose != PROBE_PURPOSE_SUSPECT
-	                && req->probe_purpose != PROBE_PURPOSE_BACKBONE) {
+	                && req->probe_purpose != PROBE_PURPOSE_BACKBONE
+	                && req->probe_purpose != PROBE_PURPOSE_RELAY_HOP) {
 		return;
 	}
 
@@ -446,6 +447,13 @@ static void probe_handle_size_request(meshlink_handle_t *mesh, node_t *n, vpn_pa
 
 static void probe_handle_echo_reply(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet, uint8_t purpose, uint64_t nonce, const sockaddr_t *from_snap) {
 	sockaddr_t observed;
+
+	if(purpose == PROBE_PURPOSE_RELAY_HOP) {
+		if(relay_hop_reply(mesh, n, from_snap, nonce) && path_probe_read_endpoint(packet->data, &observed)) {
+			path_keepalive_observe_local_endpoint(mesh, n, from_snap, &observed);
+		}
+		return;
+	}
 
 	if(purpose == PROBE_PURPOSE_LIVENESS && n->devtool_drop_liveness_replies) {
 		n->devtool_drop_liveness_replies--;
@@ -1006,6 +1014,7 @@ static bool send_sptps_via_meta(meshlink_handle_t *mesh, node_t *to, const void 
 }
 
 static bool send_sptps_via_udp(meshlink_handle_t *mesh, node_t *to, const void *data, size_t len) {
+	to->udp_send_result = RELAY_UDP_NO_SOCKET;
 	sockaddr_t sa_buf;
 	const sockaddr_t *sa = NULL;
 	int sock = -1;
@@ -1022,7 +1031,7 @@ static bool send_sptps_via_udp(meshlink_handle_t *mesh, node_t *to, const void *
 	}
 
 	if(!sa || sock < 0 || sock >= mesh->listen_sockets) {
-		return true;
+		return false;
 	}
 
 	if(to->mtu_probe_request_len && mesh->log_level <= MESHLINK_DEBUG) {
@@ -1035,26 +1044,31 @@ static bool send_sptps_via_udp(meshlink_handle_t *mesh, node_t *to, const void *
 
 	if(mesh->relay_devtool && mesh->relay_devtool->inject_hard_send_error) {
 		mesh->relay_devtool->inject_hard_send_error = false;
+		to->udp_send_result = RELAY_UDP_HARD_ERROR;
 		logger(mesh, MESHLINK_WARNING, "Error sending UDP SPTPS packet to %s: %s", to->name, "injected hard send error");
 		relay_on_hard_send_error(mesh, to, sa, sock);
 		return false;
 	}
 
 	ssize_t sent = sendto(mesh->listen_socket[sock].udp.fd, data, len, 0, &sa->sa, SALEN(sa->sa));
-	if(sent < 0 && !sockwouldblock(sockerrno)) {
-		if(sockmsgsize(sockerrno)) {
+	if(sent < 0) {
+		if(sockwouldblock(sockerrno)) {
+			to->udp_send_result = RELAY_UDP_WOULD_BLOCK;
+		} else if(sockmsgsize(sockerrno)) {
+			to->udp_send_result = RELAY_UDP_EMSGSIZE;
 			uint16_t payload = len > SPTPS_DATAGRAM_OVERHEAD ? (uint16_t)(len - SPTPS_DATAGRAM_OVERHEAD) : 0;
-
 			path_plpmtu_note_emsgsize(mesh, to, payload);
 		} else {
+			to->udp_send_result = RELAY_UDP_HARD_ERROR;
 			logger(mesh, MESHLINK_WARNING, "Error sending UDP SPTPS packet to %s: %s", to->name, sockstrerror(sockerrno));
 			relay_on_hard_send_error(mesh, to, sa, sock);
-			return false;
 		}
-	} else if(sent >= 0 && !to->status.broadcast) {
+		return false;
+	}
+	to->udp_send_result = RELAY_UDP_SENT;
+	if(!to->status.broadcast) {
 		path_keepalive_note_tx(mesh, to, sa);
 	}
-
 	return true;
 }
 
@@ -1167,8 +1181,9 @@ bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 			sockaddr_t dest = to->probe_dest_override;
 			int sock = to->sock;
 
+			to->udp_send_result = RELAY_UDP_NO_SOCKET;
 			if(!select_listen_socket(mesh, &dest, &sock)) {
-				return true;
+				return false;
 			}
 
 			node_udp_cache_alias(mesh, to, &dest);
@@ -1177,11 +1192,12 @@ bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 			if(sent < 0 && !sockwouldblock(sockerrno) && !sockmsgsize(sockerrno)) {
 				logger(mesh, MESHLINK_WARNING, "Error sending local UDP probe to %s: %s", to->name, sockstrerror(sockerrno));
 			}
+			to->udp_send_result = sent >= 0 ? RELAY_UDP_SENT : sockwouldblock(sockerrno) ? RELAY_UDP_WOULD_BLOCK : sockmsgsize(sockerrno) ? RELAY_UDP_EMSGSIZE : RELAY_UDP_HARD_ERROR;
 			if(sent >= 0) {
 				path_keepalive_note_tx(mesh, to, &dest);
 			}
 
-			return true;
+			return sent >= 0;
 		}
 
 		return send_sptps_via_udp(mesh, to, data, len);
