@@ -31,6 +31,8 @@
 #include "net_upgrade.h"
 #include "netutl.h"
 #include "node.h"
+#include "path_liveness.h"
+#include "path_plpmtu.h"
 #include "path_policy.h"
 #include "submesh.h"
 #include "packmsg.h"
@@ -2734,12 +2736,14 @@ ssize_t meshlink_get_pmtu(meshlink_handle_t *mesh, meshlink_node_t *destination)
 		pthread_mutex_unlock(&mesh->mutex);
 		return 0;
 
-	} else if(n->mtuprobes > 30 && n->minmtu) {
+	} else if(n->status.udp_confirmed && path_plpmtu_size(n)) {
+		uint16_t size = path_plpmtu_size(n);
+
 		pthread_mutex_unlock(&mesh->mutex);
-		return n->minmtu;
+		return size;
 	} else {
 		pthread_mutex_unlock(&mesh->mutex);
-		return MTU;
+		return MINMTU;
 	}
 }
 
@@ -4166,10 +4170,10 @@ static bool blacklist(meshlink_handle_t *mesh, node_t *n) {
 
 	utcp_reset_all_connections(n->utcp);
 
-	n->mtu = 0;
-	n->minmtu = 0;
-	n->maxmtu = MTU;
-	n->mtuprobes = 0;
+	path_plpmtu_stop(mesh, n);
+	path_liveness_stop(mesh, n);
+	path_keepalive_stop(mesh, n);
+	path_local_discovery_stop(mesh, n);
 	n->status.udp_confirmed = false;
 	n->relay_budget = 0;
 	channel_refresh_carrier(mesh, n);
@@ -4665,12 +4669,8 @@ uint16_t channel_compute_mtu(meshlink_handle_t *mesh, const node_t *n) {
 	}
 
 	if(n->active_route.kind == DATA_ROUTE_DIRECT_UDP
-	                && n->status.udp_confirmed && n->minmtu && n->mtuprobes >= 30) {
-		uint16_t payload = n->minmtu;
-
-		if(n->mtu && n->mtu < payload) {
-			payload = n->mtu;
-		}
+	                && n->status.udp_confirmed && path_plpmtu_size(n)) {
+		uint16_t payload = path_plpmtu_size(n);
 
 		if(payload < MINMTU) {
 			payload = MINMTU;
@@ -4690,10 +4690,10 @@ uint16_t channel_compute_mtu(meshlink_handle_t *mesh, const node_t *n) {
 			const node_t *hop = n->active_route.first_hop;
 			uint32_t prefix21 = 0;
 
-			if(hop->minmtu && hop->mtuprobes >= 30
+			if(path_plpmtu_size(hop)
 			                && relay_prefix21(mesh->self->name, n->name, &prefix21)
-			                && hop->minmtu > prefix21) {
-				budget = (uint16_t)(hop->minmtu - prefix21);
+			                && path_plpmtu_size(hop) > prefix21) {
+				budget = (uint16_t)(path_plpmtu_size(hop) - prefix21);
 			}
 		}
 
@@ -4778,7 +4778,7 @@ static void channel_mtu_applied(struct utcp *utcp) {
 	mesh = n->mesh;
 
 	if(mesh->node_pmtu_cb && !n->status.blacklisted) {
-		mesh->node_pmtu_cb(mesh, (meshlink_node_t *)n, n->minmtu);
+		mesh->node_pmtu_cb(mesh, (meshlink_node_t *)n, path_plpmtu_size(n));
 	}
 }
 
@@ -5510,7 +5510,7 @@ void update_node_status(meshlink_handle_t *mesh, node_t *n) {
 	}
 
 	if(mesh->node_pmtu_cb) {
-		mesh->node_pmtu_cb(mesh, (meshlink_node_t *)n, n->minmtu);
+		mesh->node_pmtu_cb(mesh, (meshlink_node_t *)n, path_plpmtu_size(n));
 	}
 }
 
@@ -5533,7 +5533,7 @@ void update_node_pmtu(meshlink_handle_t *mesh, node_t *n) {
 		return;
 	}
 
-	mesh->node_pmtu_cb(mesh, (meshlink_node_t *)n, n->minmtu);
+	mesh->node_pmtu_cb(mesh, (meshlink_node_t *)n, path_plpmtu_size(n));
 }
 
 void handle_duplicate_node(meshlink_handle_t *mesh, node_t *n) {

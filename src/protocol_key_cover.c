@@ -500,7 +500,7 @@ bool punch_endpoint_cover_unit(meshlink_handle_t *mesh) {
 		PUNCH_CHECK(src->status.udp_confirmed);
 		PUNCH_CHECK(!sockaddrcmp(&src->address, &ingress));
 		PUNCH_CHECK(!src->peer_udp.challenge.active);
-		timeout_del(&mesh->loop, &src->mtutimeout);
+		timeout_del(&mesh->loop, &src->plpmtu.timer);
 		timeout_del(&mesh->loop, &src->promotion_timer);
 		path_scheduler_cancel(mesh, src, PATH_TX_CHANNEL_PROMOTION);
 		memset(&src->promotion_candidate, 0, sizeof src->promotion_candidate);
@@ -589,13 +589,14 @@ bool punch_endpoint_cover_unit(meshlink_handle_t *mesh) {
 		unsigned exports;
 
 		path_punch_cancel(mesh, src);
-		timeout_del(&mesh->loop, &src->mtutimeout);
+		timeout_del(&mesh->loop, &src->plpmtu.timer);
 		src->devtool_force_meta = true;
 		src->status.validkey = true;
 		src->status.reachable = true;
 		src->status.udp_confirmed = false;
 		src->peer_udp.channel_count = 1;
-		src->mtuprobes = 0;
+		src->plpmtu.state = PLPMTU_DISABLED;
+		src->plpmtu.size = 0;
 		memset(&src->address, 0, sizeof src->address);
 		memset(&src->peer_udp.last_hint, 0, sizeof src->peer_udp.last_hint);
 		memset(&src->peer_udp.pending_hint, 0, sizeof src->peer_udp.pending_hint);
@@ -605,13 +606,13 @@ bool punch_endpoint_cover_unit(meshlink_handle_t *mesh) {
 		exports = path_punch_test_ans_exports(mesh);
 		path_observe_punch_ingress(mesh, src, &priv);
 		PUNCH_CHECK(src->peer_udp.challenge.provenance == PUNCH_PROV_AUTH_INGRESS);
-		PUNCH_CHECK(!src->mtutimeout.cb);
-		PUNCH_CHECK(src->mtuprobes == 0);
+		PUNCH_CHECK(!src->plpmtu.timer.cb);
+		PUNCH_CHECK(src->plpmtu.state == PLPMTU_DISABLED);
 		nonce = src->peer_udp.challenge.nonce;
 		PUNCH_CHECK(path_punch_accept_reply(mesh, src, &priv, nonce));
 		PUNCH_CHECK(path_punch_test_ans_exports(mesh) == exports);
 		PUNCH_CHECK(src->status.udp_confirmed);
-		PUNCH_CHECK(!src->mtutimeout.cb);
+		PUNCH_CHECK(!src->plpmtu.timer.cb);
 
 		src->status.udp_confirmed = false;
 		memset(&src->address, 0, sizeof src->address);
@@ -621,7 +622,7 @@ bool punch_endpoint_cover_unit(meshlink_handle_t *mesh) {
 		nonce = src->peer_udp.challenge.nonce;
 		PUNCH_CHECK(path_punch_accept_reply(mesh, src, &linklocal, nonce));
 		PUNCH_CHECK(path_punch_test_ans_exports(mesh) == exports);
-		PUNCH_CHECK(!src->mtutimeout.cb);
+		PUNCH_CHECK(!src->plpmtu.timer.cb);
 
 		src->status.udp_confirmed = false;
 		memset(&src->address, 0, sizeof src->address);
@@ -634,7 +635,7 @@ bool punch_endpoint_cover_unit(meshlink_handle_t *mesh) {
 		PUNCH_CHECK(path_punch_accept_reply(mesh, src, &pub, nonce));
 		PUNCH_CHECK(path_punch_test_ans_exports(mesh) == exports + 1);
 		PUNCH_CHECK(src->status.udp_confirmed);
-		timeout_del(&mesh->loop, &src->mtutimeout);
+		timeout_del(&mesh->loop, &src->plpmtu.timer);
 
 		src->status.udp_confirmed = false;
 		memset(&src->address, 0, sizeof src->address);
@@ -644,14 +645,14 @@ bool punch_endpoint_cover_unit(meshlink_handle_t *mesh) {
 		saved_force = src->devtool_force_meta;
 		src->devtool_force_meta = false;
 		src->status.reachable = false;
-		PUNCH_CHECK(!src->mtutimeout.cb);
+		PUNCH_CHECK(!src->plpmtu.timer.cb);
 		PUNCH_CHECK(path_punch_accept_reply(mesh, src, &priv, nonce));
-		PUNCH_CHECK(src->mtutimeout.cb);
+		PUNCH_CHECK(src->plpmtu.timer.cb);
 		src->devtool_force_meta = saved_force;
 		src->status.reachable = true;
-		timeout_del(&mesh->loop, &src->mtutimeout);
+		timeout_del(&mesh->loop, &src->plpmtu.timer);
 		PUNCH_CHECK(!path_punch_accept_reply(mesh, src, &priv, nonce));
-		PUNCH_CHECK(!src->mtutimeout.cb);
+		PUNCH_CHECK(!src->plpmtu.timer.cb);
 
 		src->status.validkey = false;
 		src->status.udp_confirmed = false;
@@ -699,7 +700,7 @@ bool punch_endpoint_cover_unit(meshlink_handle_t *mesh) {
 		PUNCH_CHECK(!src->punch_timer.cb);
 
 		path_punch_cancel(mesh, src);
-		timeout_del(&mesh->loop, &src->mtutimeout);
+		timeout_del(&mesh->loop, &src->plpmtu.timer);
 		timeout_del(&mesh->loop, &src->punch_timer);
 		path_punch_cancel(mesh, src);
 
@@ -715,14 +716,15 @@ bool punch_endpoint_cover_unit(meshlink_handle_t *mesh) {
 			unsigned echo_exports;
 
 			path_punch_cancel(mesh, src);
-			timeout_del(&mesh->loop, &src->mtutimeout);
+			timeout_del(&mesh->loop, &src->plpmtu.timer);
 			src->devtool_force_meta = true;
 			src->status.validkey = true;
 			src->status.reachable = true;
 			src->status.udp_confirmed = false;
 			src->peer_udp.channel_count = 1;
 			src->session_id = 11;
-			src->mtuprobes = 0;
+			src->plpmtu.state = PLPMTU_DISABLED;
+		src->plpmtu.size = 0;
 			memset(&src->address, 0, sizeof src->address);
 			memset(&src->peer_udp.last_hint, 0, sizeof src->peer_udp.last_hint);
 			memset(&src->peer_udp.failed_ingress, 0, sizeof src->peer_udp.failed_ingress);
@@ -743,7 +745,7 @@ bool punch_endpoint_cover_unit(meshlink_handle_t *mesh) {
 			PUNCH_CHECK(src->status.udp_confirmed);
 			PUNCH_CHECK(!sockaddrcmp(&src->address, &echo_priv));
 			PUNCH_CHECK(path_punch_test_ans_exports(mesh) == echo_exports);
-			timeout_del(&mesh->loop, &src->mtutimeout);
+			timeout_del(&mesh->loop, &src->plpmtu.timer);
 
 			path_punch_cancel(mesh, src);
 			src->status.udp_confirmed = false;
@@ -762,7 +764,7 @@ bool punch_endpoint_cover_unit(meshlink_handle_t *mesh) {
 			PUNCH_CHECK(src->peer_udp.challenge.provenance == PUNCH_PROV_AUTH_INGRESS);
 			PUNCH_CHECK(!sockaddrcmp(&src->peer_udp.challenge.endpoint, &echo_pub));
 			path_punch_cancel(mesh, src);
-			timeout_del(&mesh->loop, &src->mtutimeout);
+			timeout_del(&mesh->loop, &src->plpmtu.timer);
 			timeout_del(&mesh->loop, &src->punch_timer);
 		}
 	}
@@ -780,7 +782,7 @@ done:
 
 	if(src) {
 		src->connection = NULL;
-		timeout_del(&mesh->loop, &src->mtutimeout);
+		timeout_del(&mesh->loop, &src->plpmtu.timer);
 		timeout_del(&mesh->loop, &src->promotion_timer);
 		path_suspect_stop(mesh, src);
 		path_scheduler_cancel_node(mesh, src);
@@ -790,14 +792,14 @@ done:
 
 	if(dst) {
 		dst->connection = NULL;
-		timeout_del(&mesh->loop, &dst->mtutimeout);
+		timeout_del(&mesh->loop, &dst->plpmtu.timer);
 		timeout_del(&mesh->loop, &dst->promotion_timer);
 		path_suspect_stop(mesh, dst);
 		path_scheduler_cancel_node(mesh, dst);
 		node_del(mesh, dst);
 	}
 
-	timeout_del(&mesh->loop, &peer.mtutimeout);
+	timeout_del(&mesh->loop, &peer.plpmtu.timer);
 	timeout_del(&mesh->loop, &peer.promotion_timer);
 	timeout_del(&mesh->loop, &peer.punch_timer);
 	timeout_del(&mesh->loop, &route.promotion_timer);
@@ -819,10 +821,8 @@ static void rebind_plant(meshlink_handle_t *mesh, node_t *n, const char *port) {
 	n->devtool_force_meta = true;
 	n->devclass = DEV_CLASS_STATIONARY;
 	n->session_id = 11;
-	n->minmtu = 1414;
-	n->maxmtu = 1414;
-	n->mtu = 1414;
-	n->mtuprobes = 31;
+	n->plpmtu.size = 1414;
+	n->plpmtu.state = PLPMTU_COMPLETE;
 	n->address = str2sockaddr("203.0.113.50", port);
 	n->udp_tier = PATH_TIER_DIRECT_WAN_UDP;
 	n->active_route.kind = DATA_ROUTE_DIRECT_UDP;
@@ -898,8 +898,8 @@ bool rebind_cover_unit(meshlink_handle_t *mesh) {
 	REBIND_CHECK(n->active_route.kind == DATA_ROUTE_DIRECT_UDP);
 	REBIND_CHECK(n->active_route.selected_at.tv_sec == selected.tv_sec);
 	REBIND_CHECK(n->active_route.selected_at.tv_nsec == selected.tv_nsec);
-	REBIND_CHECK(n->minmtu == 1414);
-	REBIND_CHECK(n->mtuprobes == 31);
+	REBIND_CHECK(n->plpmtu.size == 1414);
+	REBIND_CHECK(n->plpmtu.state == PLPMTU_COMPLETE);
 	REBIND_CHECK(n->udp_rebind.migrated == 1);
 
 	path_rebind_observe_rx(mesh, n, &late);
@@ -910,8 +910,8 @@ bool rebind_cover_unit(meshlink_handle_t *mesh) {
 	path_rebind_observe_rx(mesh, n, &other_ip);
 	REBIND_CHECK(!n->udp_rebind.challenge_active);
 	REBIND_CHECK(!sockaddrcmp(&n->address, &moved));
-	REBIND_CHECK(n->minmtu == 1414);
-	REBIND_CHECK(n->mtuprobes == 31);
+	REBIND_CHECK(n->plpmtu.size == 1414);
+	REBIND_CHECK(n->plpmtu.state == PLPMTU_COMPLETE);
 
 	rebind_plant(mesh, n, "49444");
 	pinned = n->address;
@@ -1011,7 +1011,7 @@ done:
 	mesh->self->devclass = saved_class;
 
 	if(n) {
-		timeout_del(&mesh->loop, &n->mtutimeout);
+		timeout_del(&mesh->loop, &n->plpmtu.timer);
 		timeout_del(&mesh->loop, &n->rebind_timer);
 		timeout_del(&mesh->loop, &n->punch_timer);
 		path_suspect_stop(mesh, n);

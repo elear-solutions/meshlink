@@ -275,6 +275,9 @@ struct meshlink_handle {
 	char ans_witness_port[16];
 	bool ans_witness_rewritten;
 	bool ans_witness_has_addr;
+
+	/* Last local-discovery tick on this mesh. Cover witness only. */
+	bool discovery_did_broadcast;
 };
 
 static inline const char *mesh_conf_write_subdir(const struct meshlink_handle *mesh) {
@@ -336,13 +339,6 @@ uint16_t channel_compute_mtu(struct meshlink_handle *mesh, const struct node_t *
 void channel_refresh_mtu(struct meshlink_handle *mesh, struct node_t *n);
 /* Refresh n, then every UDP-relay dest whose first hop is n. */
 void channel_refresh_carrier(struct meshlink_handle *mesh, struct node_t *n);
-/* Test hook: feed a settled +8 PMTU reply. Not part of the packet API in net.h. */
-bool net_devtool_accept_pmtu_increase(struct meshlink_handle *mesh, struct node_t *n, uint16_t settled);
-/* Test hook: plant minmtu==maxmtu at 8 probes and run the Fixing-MTU branch. */
-bool net_devtool_fix_early_pmtu(struct meshlink_handle *mesh, struct node_t *n, uint16_t len);
-/* Test hook: parked liveness vs a lost maxmtu+8 raise. Caller holds mesh->mutex. */
-bool net_devtool_pmtu_liveness_cover_unit(struct meshlink_handle *mesh, struct node_t *n);
-
 /* Greater name yields keepalive so a same-tick pair collapses to one direction. */
 static inline bool mesh_self_name_is_greater(const char *self_name, const char *peer_name) {
 	return self_name && peer_name && strcmp(self_name, peer_name) > 0;

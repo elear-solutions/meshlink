@@ -96,13 +96,13 @@ static void do_redraw_nodes() {
 
 		char mtustate = ' ';
 
-		if(status.minmtu) {
-			if(status.minmtu != status.maxmtu) {
+		if(status.plpmtu_size) {
+			if(status.plpmtu_largest_failed && status.plpmtu_largest_failed != status.plpmtu_size) {
 				mtustate = '~';
 			}
 		};
 
-		mvwprintw(nodewin, i, 0, "%-16s  %-12s  %-32s %5s  %c%5d", nodes[i]->name, desc, host, serv, mtustate, status.maxmtu);
+		mvwprintw(nodewin, i, 0, "%-16s  %-12s  %-32s %5s  %c%5d", nodes[i]->name, desc, host, serv, mtustate, status.plpmtu_size);
 	}
 
 	wnoutrefresh(nodewin);

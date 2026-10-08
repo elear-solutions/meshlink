@@ -33,6 +33,7 @@ struct node_t;
 #define PATH_SCHED_PARKED_PACKETS_PER_MIN     20
 #define PATH_SCHED_PACKETS_PER_MIN PATH_SCHED_PARKED_PACKETS_PER_MIN
 #define PATH_SCHED_BACKBONE_RESERVE_PPS        1
+#define PATH_SCHED_KEEPALIVE_PPS              10
 #define PATH_PROMOTION_MAX_REQUESTS         8
 
 typedef enum path_transaction_priority_t {
@@ -41,7 +42,8 @@ typedef enum path_transaction_priority_t {
 	PATH_TX_CHANNEL_PROMOTION,
 	PATH_TX_PUNCH,
 	PATH_TX_LIVENESS,
-	PATH_TX_PMTU_INCREASE,
+	PATH_TX_PLPMTU_PROBE,
+	PATH_TX_KEEPALIVE,
 	/* Same rank as active-route recovery, separate queue so a rebind probe
 	   does not cancel a suspect probe (or the other way around). */
 	PATH_TX_REBIND
@@ -50,7 +52,7 @@ typedef enum path_transaction_priority_t {
 typedef enum path_transaction_type_t {
 	PATH_TXN_PROMOTION = 0,
 	PATH_TXN_SUSPECT,
-	PATH_TXN_PMTU_DISCOVERY,
+	PATH_TXN_PLPMTU_SEARCH,
 	PATH_TXN_META_UPGRADE,
 	PATH_TXN_PUNCH,
 	PATH_TXN_REBIND
@@ -74,6 +76,9 @@ struct path_probe_request_t {
 	bool skip_minute;                       /* admitted validation: 4/s only, not parked 20/min */
 	path_transaction_priority_t priority;
 	path_probe_send_fn send;
+	uint8_t probe_kind;
+	uint8_t probe_purpose;
+	uint64_t probe_nonce;
 };
 
 typedef struct path_probe_budget_t {
@@ -81,10 +86,12 @@ typedef struct path_probe_budget_t {
 	unsigned second_tokens;                 /* optional packet bucket */
 	unsigned minute_tokens;                 /* parked liveness / PMTU-increase */
 	unsigned backbone_second_tokens;        /* required-path packet bucket */
+	unsigned keepalive_tokens;              /* idle UDP mapping refresh */
 	uint64_t optional_packets_sent;         /* non-backbone emits; observe only */
 	struct timespec second_refill_at;
 	struct timespec minute_refill_at;
 	struct timespec backbone_refill_at;
+	struct timespec keepalive_refill_at;
 } path_probe_budget_t;
 
 /* Mesh-wide probe admission. Due-time stays on per-node timers; this is the gate.

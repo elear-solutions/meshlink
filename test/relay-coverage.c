@@ -163,7 +163,7 @@ static void test_einval(void) {
 	assert(!devtool_force_relay_path(NULL, NULL, NULL));
 	devtool_set_udp_confirmed(NULL, NULL, false);
 	assert(!devtool_send_raw_record(NULL, NULL, 0, NULL, 0));
-	assert(!devtool_set_minmtu(NULL, NULL, 0));
+	assert(!devtool_set_plpmtu(NULL, NULL, 0));
 	devtool_clear_relay_reports(NULL);
 	assert(!devtool_seed_relay_report(NULL, NULL, NULL, 0, false));
 	assert(!devtool_has_relay_report(NULL, NULL, NULL));
@@ -239,7 +239,7 @@ int main(void) {
 	assert(devtool_handle_req_relay_mtu(mesh[2], meshlink_get_node(mesh[2], "foo"), "bad"));
 	devtool_fail_relay_realloc(mesh[2], false);
 
-	assert(devtool_set_minmtu(mesh[2], meshlink_get_node(mesh[2], "foo"), MTU));
+	assert(devtool_set_plpmtu(mesh[2], meshlink_get_node(mesh[2], "foo"), MTU));
 	devtool_set_udp_confirmed(mesh[2], meshlink_get_node(mesh[2], "foo"), true);
 	devtool_set_udp_confirmed(mesh[2], meshlink_get_node(mesh[2], "foo"), true);
 	devtool_set_udp_confirmed(mesh[2], meshlink_get_node(mesh[2], "bar"), true);
@@ -280,6 +280,9 @@ int main(void) {
 	wait_hop_udp(mesh[2], "foo");
 	assert(devtool_force_relay_path(mesh[2], meshlink_get_node(mesh[2], "bar"), meshlink_get_node(mesh[2], "foo")));
 
+	/* The backbone may be reachable before bar's edge has propagated.
+	   Wait for the destination to be up before expecting its down event. */
+	assert_after(meshlink_get_node_reachability(mesh[2], meshlink_get_node(mesh[2], "bar"), NULL, NULL), 20);
 	set_sync_flag(&dest_down, false);
 	meshlink_stop(mesh[1]);
 	assert(wait_sync_flag(&dest_down, 20));

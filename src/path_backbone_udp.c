@@ -17,6 +17,8 @@
 #include "net.h"
 #include "netutl.h"
 #include "node.h"
+#include "path_liveness.h"
+#include "path_plpmtu.h"
 #include "path_policy.h"
 
 #include <string.h>
@@ -126,8 +128,27 @@ void path_backbone_udp_arm(meshlink_handle_t *mesh, int sec, long nsec) {
 	}
 }
 
+int path_backbone_udp_keepalive_base_sec(meshlink_handle_t *mesh) {
+	node_t *n = mesh ? mesh->backbone_udp.node : NULL;
+
+	/* Devtools shorten tests by setting a non-default keepalive. That override
+	   wins over a learned interval. The stock 25s does not. */
+	if(mesh && mesh->backbone_udp_keepalive_sec > 0
+	                && mesh->backbone_udp_keepalive_sec != PATH_BACKBONE_UDP_KEEPALIVE_SEC) {
+		return mesh->backbone_udp_keepalive_sec;
+	}
+
+	if(n && n->keepalive.interval_ms) {
+		int learned = (int)(path_keepalive_backbone_interval_ms(mesh, n) / 1000);
+
+		return learned > 0 ? learned : 1;
+	}
+
+	return PATH_BACKBONE_UDP_KEEPALIVE_SEC;
+}
+
 static void path_backbone_udp_arm_keepalive(meshlink_handle_t *mesh) {
-	int base = mesh->backbone_udp_keepalive_sec > 0 ? mesh->backbone_udp_keepalive_sec : PATH_BACKBONE_UDP_KEEPALIVE_SEC;
+	int base = path_backbone_udp_keepalive_base_sec(mesh);
 	int span = base / 5;
 	int delay;
 
@@ -174,7 +195,13 @@ static int path_backbone_udp_pingtimeout(meshlink_handle_t *mesh, const node_t *
 }
 
 static void path_backbone_udp_packet(meshlink_handle_t *mesh, const path_probe_request_t *req) {
-	(void)req;
+	/* A queued backbone request may drain immediately after a size send. */
+	if(path_plpmtu_probe_recent(mesh, req->node)) {
+		path_backbone_udp_arm(mesh, 0, PATH_PLPMTU_LIVENESS_GUARD_MS * 1000000L);
+		return;
+	}
+
+	req->node->keepalive.last_probe_at = mesh->loop.now;
 	mesh->backbone_udp.liveness_nonce = path_fresh_nonce();
 	send_backbone_udp_probe(mesh);
 }
@@ -244,6 +271,11 @@ static void path_backbone_udp_timer(event_loop_t *loop, void *data) {
 	}
 
 	if(p->confirmed) {
+		if(path_plpmtu_probe_recent(mesh, n)) {
+			path_backbone_udp_arm(mesh, 0, PATH_PLPMTU_LIVENESS_GUARD_MS * 1000000L);
+			return;
+		}
+
 		if(p->liveness_nonce) {
 			p->unanswered++;
 
@@ -334,10 +366,12 @@ void path_backbone_udp_stop(meshlink_handle_t *mesh) {
 	timeout_del(&mesh->loop, &path->timer);
 
 	if(node) {
-		timeout_del(&mesh->loop, &node->mtutimeout);
+		path_plpmtu_stop(mesh, node);
+		path_liveness_stop(mesh, node);
+		path_keepalive_stop(mesh, node);
 		path_scheduler_cancel(mesh, node, PATH_TX_BACKBONE_REQUIRED);
 		path_scheduler_cancel(mesh, node, PATH_TX_LIVENESS);
-		path_scheduler_cancel(mesh, node, PATH_TX_PMTU_INCREASE);
+		path_scheduler_cancel(mesh, node, PATH_TX_PLPMTU_PROBE);
 	}
 
 	if(owns_active_endpoint) {
@@ -407,7 +441,7 @@ void path_backbone_udp_note_direct(meshlink_handle_t *mesh, node_t *n, const soc
 	}
 }
 
-void path_backbone_udp_observe_reply(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *from, uint64_t nonce) {
+void path_backbone_udp_observe_reply(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *from, uint64_t nonce, const sockaddr_t *observed) {
 	backbone_udp_path_t *p;
 
 	if(!mesh || !n || n != mesh->backbone_udp.node || !from || !nonce || n->devtool_force_meta) {
@@ -436,11 +470,10 @@ void path_backbone_udp_observe_reply(meshlink_handle_t *mesh, node_t *n, const s
 
 		path_note_udp_confirmed(mesh, n);
 		logger(mesh, MESHLINK_INFO, "Backbone UDP mapping to %s confirmed", n->name);
-
-		if(!n->mtutimeout.cb && !n->devtool_force_meta) {
-			send_mtu_probe(mesh, n);
-		}
 	}
 
+	if(observed) {
+		path_keepalive_observe_local_endpoint(mesh, n, from, observed);
+	}
 	path_backbone_udp_arm_keepalive(mesh);
 }

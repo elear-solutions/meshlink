@@ -23,6 +23,7 @@
 /* net.h is not includable from integration tests (transitive meshlink_internal.h). */
 #define MINMTU 527
 #define MTU 1451
+#define PATH_PLPMTU_BASE 1211
 #define UTCP_HDR 20
 #define RELAY_INNER_MIN 21
 
@@ -119,16 +120,18 @@ static bool udp_status_working(meshlink_handle_t *mesh, meshlink_node_t *node) {
 }
 
 /* Per-node send_mtu_probe state for that peer only — not backbone keepalive. */
-static int node_mtuprobes(meshlink_handle_t *mesh, meshlink_node_t *node) {
+static bool plpmtu_idle(meshlink_handle_t *mesh, meshlink_node_t *node) {
 	devtool_node_status_t st = snapshot(mesh, node);
-	int probes = st.mtuprobes;
+	bool idle = st.plpmtu_state == DEVTOOL_PLPMTU_DISABLED
+	            && st.liveness_state == 0
+	            && st.liveness_probes_sent == 0;
 	devtool_free_node_status(&st);
-	return probes;
+	return idle;
 }
 
 static bool pmtu_parked(meshlink_handle_t *mesh, meshlink_node_t *node) {
 	devtool_node_status_t st = snapshot(mesh, node);
-	bool parked = st.udp_status == DEVTOOL_UDP_WORKING && st.mtuprobes >= 31;
+	bool parked = st.udp_status == DEVTOOL_UDP_WORKING && st.plpmtu_state == DEVTOOL_PLPMTU_COMPLETE;
 	devtool_free_node_status(&st);
 	return parked;
 }
@@ -263,7 +266,7 @@ static void test_fixed_channel_size(void) {
 	assert(meshlink_channel_get_mss(a, ch) == floor);
 
 	/* A measurement alone does not settle the route. */
-	assert(devtool_set_minmtu(a, a_b, MTU));
+	assert(devtool_set_plpmtu(a, a_b, MTU));
 	assert(meshlink_channel_get_mss(a, ch) == floor);
 
 	devtool_force_meta(a, a_b, false);
@@ -274,12 +277,12 @@ static void test_fixed_channel_size(void) {
 	assert(st.active_route_kind == ROUTE_DIRECT_UDP);
 	devtool_free_node_status(&st);
 
-	assert(devtool_accept_pmtu_increase(a, a_b, 1000));
+	assert(devtool_set_plpmtu(a, a_b, 1008));
 	size_t raised = direct_mss(1008);
 	assert(meshlink_channel_get_mss(a, ch) == raised);
 
 	/* Eight probes is enough once minmtu has met maxmtu. */
-	assert(devtool_fix_early_pmtu(a, a_b, 1200));
+	assert(devtool_set_plpmtu(a, a_b, 1200));
 	size_t early = direct_mss(1200);
 	assert(meshlink_channel_get_mss(a, ch) == early);
 
@@ -289,15 +292,15 @@ static void test_fixed_channel_size(void) {
 
 	st = snapshot(a, a_b);
 	assert(st.channel_mtu == early + UTCP_HDR);
-	assert(st.mtuprobes >= 30);
+	assert(st.plpmtu_state == DEVTOOL_PLPMTU_COMPLETE);
 	devtool_free_node_status(&st);
 
 	/* Clearing the measurement drops back to the floor on the same direct route. */
-	assert(devtool_set_minmtu(a, a_b, 0));
+	assert(devtool_set_plpmtu(a, a_b, 0));
 	assert(meshlink_channel_get_mss(a, ch) == floor);
 	assert(meshlink_channel_get_mss(a, ch2) == floor);
 
-	assert(devtool_fix_early_pmtu(a, a_b, 1200));
+	assert(devtool_set_plpmtu(a, a_b, 1200));
 	assert(meshlink_channel_get_mss(a, ch) == early);
 
 	devtool_force_meta(a, a_b, true);
@@ -413,11 +416,11 @@ static void *route_churner(void *arg) {
 
 	while(!atomic_load(&h->stop)) {
 		devtool_set_udp_confirmed(h->mesh, h->node, true);
-		(void)devtool_set_minmtu(h->mesh, h->node, MTU);
+		(void)devtool_set_plpmtu(h->mesh, h->node, MTU);
 		devtool_note_route_suspect(h->mesh, h->node);
 		devtool_path_route_tick(h->mesh, h->node);
 		devtool_set_udp_confirmed(h->mesh, h->node, false);
-		(void)devtool_set_minmtu(h->mesh, h->node, MINMTU);
+		(void)devtool_set_plpmtu(h->mesh, h->node, MINMTU);
 	}
 
 	return NULL;
@@ -868,15 +871,15 @@ static void test_idle_peer_is_not_probed(void) {
 	assert(!devtool_liveness_probe_warranted(e2, e2_e1));
 	assert(!udp_status_working(e1, e1_e2));
 	assert(!udp_status_working(e2, e2_e1));
-	assert(node_mtuprobes(e1, e1_e2) == 0);
-	assert(node_mtuprobes(e2, e2_e1) == 0);
+	assert(plpmtu_idle(e1, e1_e2));
+	assert(plpmtu_idle(e2, e2_e1));
 	sleep(5);
 	assert(!devtool_liveness_probe_warranted(e1, e1_e2));
 	assert(!devtool_liveness_probe_warranted(e2, e2_e1));
 	assert(!udp_status_working(e1, e1_e2));
 	assert(!udp_status_working(e2, e2_e1));
-	assert(node_mtuprobes(e1, e1_e2) == 0);
-	assert(node_mtuprobes(e2, e2_e1) == 0);
+	assert(plpmtu_idle(e1, e1_e2));
+	assert(plpmtu_idle(e2, e2_e1));
 
 	/* Backbone → camera rides META; backbone never starts ordinary-peer UDP. */
 	meshlink_channel_t *ch_bb = meshlink_channel_open(bb, bb_e1, 7, receive_cb, NULL, 0);
@@ -1220,9 +1223,10 @@ static void test_parked_pmtu_promotes_local(void) {
 
 	devtool_node_status_t st = snapshot(a, a_b);
 	struct sockaddr_storage local = st.address;
-	int parked = st.mtuprobes;
+	uint16_t parked_size = st.plpmtu_size;
+	devtool_plpmtu_state_t parked_state = st.plpmtu_state;
 	uint32_t restarts = st.sptps_restart_count;
-	assert(parked >= 31);
+	assert(parked_state == DEVTOOL_PLPMTU_COMPLETE);
 	assert(local.ss_family == AF_INET || local.ss_family == AF_INET6);
 	devtool_free_node_status(&st);
 
@@ -1266,7 +1270,8 @@ static void test_parked_pmtu_promotes_local(void) {
 	assert(candidate_has_two_rounds(a, a_b));
 
 	st = snapshot(a, a_b);
-	assert(st.mtuprobes >= 31);
+	assert(st.plpmtu_size == parked_size);
+	assert(st.plpmtu_state == parked_state);
 	assert(st.candidate_rounds == 2);
 	assert(st.candidate_active);
 	assert(!ss_addr_equal(&st.address, &local));
@@ -1280,7 +1285,8 @@ static void test_parked_pmtu_promotes_local(void) {
 	assert(!st.candidate_active);
 	assert(ss_addr_equal(&st.address, &local));
 	assert(st.sptps_restart_count == restarts);
-	assert(st.mtuprobes >= 31);
+	assert(st.plpmtu_size == parked_size);
+	assert(st.plpmtu_state == parked_state);
 	devtool_free_node_status(&st);
 
 	meshlink_channel_abort(a, ch);
@@ -1640,7 +1646,7 @@ static bool route_is_direct_udp(meshlink_handle_t *mesh, meshlink_node_t *node) 
 	devtool_node_status_t st = snapshot(mesh, node);
 	bool ok = st.active_route_kind == ROUTE_DIRECT_UDP
 	          && st.udp_status == DEVTOOL_UDP_WORKING
-	          && st.mtuprobes >= 31;
+	          && st.plpmtu_state == DEVTOOL_PLPMTU_COMPLETE;
 	devtool_free_node_status(&st);
 	return ok;
 }
@@ -1672,7 +1678,7 @@ static void test_oversize_suspect_retransmit(void) {
 
 	devtool_node_status_t hop = snapshot(a, a_bb);
 	size_t mss = meshlink_channel_get_mss(a, ch);
-	size_t relay_mss = relay_inner_mss(hop.minmtu, "bar", "baz");
+	size_t relay_mss = relay_inner_mss(hop.plpmtu_size, "bar", "baz");
 	devtool_free_node_status(&hop);
 	assert(mss > relay_mss);
 	assert(mss <= sizeof t22_buf);
@@ -1691,7 +1697,19 @@ static void test_oversize_suspect_retransmit(void) {
 	t22_expect = mss;
 	set_sync_flag(&t22_suspect, false);
 	assert(devtool_drop_next_direct_udp_records(a, a_b, 1));
-	assert(meshlink_channel_send(a, ch, payload, mss) == (ssize_t)mss);
+	{
+		ssize_t sent = 0;
+
+		for(int i = 0; i < 50 && sent <= 0; i++) {
+			sent = meshlink_channel_send(a, ch, payload, mss);
+
+			if(sent <= 0) {
+				usleep(100000);
+			}
+		}
+
+		assert(sent == (ssize_t)mss);
+	}
 	assert_after(t22_arrived(), 6);
 	assert(check_sync_flag(&t22_suspect));
 	assert(memcmp(t22_buf, payload, mss) == 0);
@@ -1978,7 +1996,7 @@ static void test_wan_peer_udp_route(void) {
 
 /* Keys are already valid. Opening a channel still requests the endpoint once, and does not restart SPTPS. */
 static void test_punch_demand_keeps_key(void) {
-	printf("\n=== path-stability T22: punch request with a valid key ===\n");
+	printf("\n=== path-stability T22b: punch request with a valid key ===\n");
 
 	peer_config_t *peers = setup_relay_peer_nut_wan("pathstab22");
 	meshlink_node_t *peer_nut;
@@ -2265,14 +2283,24 @@ static void test_idle_channel_traffic(void) {
 	assert(lo <= 1);
 	assert(dping1 == 0 && dping2 == 0);
 
-	assert(devtool_accept_pmtu_increase(e1, e1_e2, 1000));
-	devtool_node_status_t st = snapshot(e1, e1_e2);
-	assert(st.mtuprobes >= 30);
-	assert(st.maxmtu == 1008);
-	assert(st.minmtu == 1008);
-	assert(st.mtu == 1008);
-	assert(st.maxmtu != MTU);
-	devtool_free_node_status(&st);
+	assert(devtool_set_plpmtu(e1, e1_e2, 1000));
+	assert(devtool_drop_size_probes_above(e2, e2_e1, 1259));
+	assert(devtool_plpmtu_raise_due(e1, e1_e2));
+	{
+		bool raised = false;
+
+		for(int i = 0; i < 150 && !raised; i++) {
+			devtool_node_status_t st = snapshot(e1, e1_e2);
+			raised = st.plpmtu_size == 1259 && st.plpmtu_state == DEVTOOL_PLPMTU_COMPLETE;
+			devtool_free_node_status(&st);
+
+			if(!raised) {
+				usleep(100000);
+			}
+		}
+
+		assert(raised);
+	}
 
 	devtool_force_meta(e1, e1_e2, true);
 	devtool_force_meta(e2, e2_e1, true);
@@ -2288,42 +2316,21 @@ static void test_idle_channel_traffic(void) {
 	printf("path-stability T21 ok: liveness %u/%u, resumed pings %u/%u\n", dlive1, dlive2, dping1, dping2);
 }
 
-/* --- T23: a lost maxmtu+8 raise is not a dead path ------------------------- */
+/* --- T23: one lost liveness reply is not a give-up ------------------------ */
 
 static struct sync_flag t23_giveup;
-static struct sync_flag t23_raise_sent;
-static struct sync_flag t23_raised;
 
 static void t23_log_cb(meshlink_handle_t *mesh, meshlink_log_level_t level, const char *text) {
 	(void)mesh;
 	(void)level;
 
-	if(!text) {
-		return;
-	}
-
-	if(strstr(text, "baz did not respond to UDP ping")) {
+	if(text && strstr(text, "baz did not respond to UDP ping")) {
 		set_sync_flag(&t23_giveup, true);
 	}
-
-	if(strstr(text, "Sending MTU probe length 1208 to baz")) {
-		set_sync_flag(&t23_raise_sent, true);
-	}
-
-	if(strstr(text, "Increase in PMTU to baz")) {
-		set_sync_flag(&t23_raised, true);
-	}
-}
-
-static bool t23_mtu_is(meshlink_handle_t *mesh, meshlink_node_t *node, uint16_t mtu) {
-	devtool_node_status_t st = snapshot(mesh, node);
-	bool ok = st.maxmtu == mtu;
-	devtool_free_node_status(&st);
-	return ok;
 }
 
 static void test_lost_pmtu_raise_is_not_giveup(void) {
-	printf("\n=== path-stability T23: lost PMTU raise does not give up ===\n");
+	printf("\n=== path-stability T23: one lost liveness reply is not a give-up ===\n");
 
 	meshlink_handle_t *bb, *a, *b;
 	stability_open_trio("path_stability_t23_conf", "path-stability-23", &bb, &a, &b);
@@ -2333,10 +2340,8 @@ static void test_lost_pmtu_raise_is_not_giveup(void) {
 
 	init_sync_flag(&accepted);
 	init_sync_flag(&t23_giveup);
-	init_sync_flag(&t23_raise_sent);
-	init_sync_flag(&t23_raised);
 	meshlink_set_channel_accept_cb(b, accept_cb);
-	meshlink_set_log_cb(a, MESHLINK_DEBUG, t23_log_cb);
+	meshlink_set_log_cb(a, MESHLINK_INFO, t23_log_cb);
 
 	assert_after(meshlink_get_node(a, "baz") && meshlink_get_node(b, "bar"), 15);
 	meshlink_node_t *a_b = meshlink_get_node(a, "baz");
@@ -2350,40 +2355,40 @@ static void test_lost_pmtu_raise_is_not_giveup(void) {
 	assert(wait_sync_flag(&accepted, 15));
 	assert_after(route_is_direct_udp(a, a_b) && pmtu_parked(b, b_a), 70);
 
+	devtool_node_status_t before = snapshot(a, a_b);
+	uint16_t size = before.plpmtu_size;
+	devtool_free_node_status(&before);
+	assert(size >= MINMTU);
+
 	set_sync_flag(&t23_giveup, false);
-	set_sync_flag(&t23_raise_sent, false);
-	assert(devtool_set_probe_reply_limit(b, b_a, 1200));
-	assert(devtool_fix_early_pmtu(a, a_b, 1200));
-	assert(devtool_pmtu_raise_due(a, a_b));
-	unsigned live = devtool_liveness_probes_sent(a, a_b);
+	/* bar probes; baz parks. The reply lands on bar, so the drop is here.
+	   Fast pings exceed the parked 20/min budget, and a denied send is not silence. */
+	devtool_set_probe_budget(a, 30, 30, 2);
+	assert(devtool_drop_liveness_replies(a, a_b, 1));
 	sleep(8);
-
-	assert(check_sync_flag(&t23_raise_sent));
 	assert(!check_sync_flag(&t23_giveup));
-	assert(devtool_liveness_probes_sent(a, a_b) > live);
 
-	devtool_node_status_t st = snapshot(a, a_b);
-	assert(st.udp_status == DEVTOOL_UDP_WORKING);
-	assert(st.active_route_kind == ROUTE_DIRECT_UDP);
-	assert(st.minmtu == 1200 && st.maxmtu == 1200);
-	assert(st.mtuprobes >= 30);
-	assert(st.pmtu_raise_pending == 1208);
-	devtool_free_node_status(&st);
-
-	assert(devtool_set_probe_reply_limit(b, b_a, 0));
-	set_sync_flag(&t23_raised, false);
-	assert(devtool_pmtu_raise_due(a, a_b));
-	assert_after(t23_mtu_is(a, a_b, 1208), 8);
-	assert(check_sync_flag(&t23_raised));
+	before = snapshot(a, a_b);
+	assert(before.udp_status == DEVTOOL_UDP_WORKING);
+	assert(before.active_route_kind == ROUTE_DIRECT_UDP);
+	assert(before.plpmtu_size == size);
+	assert(before.plpmtu_state == DEVTOOL_PLPMTU_COMPLETE);
+	devtool_free_node_status(&before);
 
 	set_sync_flag(&t23_giveup, false);
-	assert(devtool_set_probe_reply_limit(b, b_a, 1));
-	assert(wait_sync_flag(&t23_giveup, 10));
-	assert(devtool_set_probe_reply_limit(b, b_a, 0));
+	devtool_set_probe_budget(a, 30, 30, 2);
+	assert(devtool_drop_liveness_replies(a, a_b, 255));
+	assert(wait_sync_flag(&t23_giveup, 15));
+
+	before = snapshot(a, a_b);
+	assert(before.plpmtu_size == size);
+	assert(before.liveness_giveups >= 1);
+	devtool_free_node_status(&before);
+	assert(devtool_drop_liveness_replies(a, a_b, 0));
 
 	meshlink_channel_abort(a, ch);
 	stability_close_trio("path_stability_t23_conf", bb, a, b);
-	printf("path-stability T23 ok: lost raise kept UDP, real silence still gives up\n");
+	printf("path-stability T23 ok: one lost reply kept UDP, silence gave up, size %u\n", size);
 }
 
 static uint8_t demote_buf[2048];
@@ -2444,7 +2449,7 @@ static void test_demotion_resplits(void) {
 
 	struct sockaddr_in wan = v4("203.0.113.12", 9);
 	assert(devtool_confirm_udp_from(a, a_b, (struct sockaddr *)&wan, 1));
-	assert(devtool_fix_early_pmtu(a, a_b, 1200));
+	assert(devtool_set_plpmtu(a, a_b, 1200));
 
 	size_t floor = relay_floor_mss("aaa", "bbb");
 	size_t raised = direct_mss(1200);
@@ -2472,6 +2477,227 @@ static void test_demotion_resplits(void) {
 	assert(meshlink_destroy("path_stability_demote_conf.1"));
 	assert(meshlink_destroy("path_stability_demote_conf.2"));
 	printf("path-stability demotion ok: %zu bytes arrived after shrink to %zu\n", n, floor);
+}
+
+static bool plpmtu_is(meshlink_handle_t *mesh, meshlink_node_t *node, uint16_t size, devtool_plpmtu_state_t state) {
+	devtool_node_status_t st = snapshot(mesh, node);
+	bool ok = st.udp_status == DEVTOOL_UDP_WORKING && st.plpmtu_size == size && st.plpmtu_state == state;
+	devtool_free_node_status(&st);
+	return ok;
+}
+
+static void wan_start(peer_config_t *peers, meshlink_channel_t **ch, meshlink_node_t **peer_nut) {
+	init_sync_flag(&accepted);
+	init_sync_flag(&received);
+	meshlink_set_channel_accept_cb(peers[2].mesh, accept_cb);
+
+	for(int i = 0; i < 3; i++) {
+		assert(meshlink_start(peers[i].mesh));
+	}
+
+	assert_after(meshlink_get_node(peers[1].mesh, "nut"), 20);
+	*peer_nut = meshlink_get_node(peers[1].mesh, "nut");
+	assert(*peer_nut);
+	assert_after(node_is_reachable(peers[1].mesh, *peer_nut), 15);
+	hint_address(peers[1].mesh, *peer_nut, peers[2].ip, meshlink_get_port(peers[2].mesh));
+	hint_address(peers[2].mesh, meshlink_get_node(peers[2].mesh, "peer"), peers[1].ip, meshlink_get_port(peers[1].mesh));
+	*ch = meshlink_channel_open(peers[1].mesh, *peer_nut, 7, receive_cb, NULL, 0);
+	assert(*ch);
+	assert(wait_sync_flag(&accepted, 20));
+	assert_after(udp_status_working(peers[1].mesh, *peer_nut), 45);
+}
+
+static void test_plpmtu_link_1280(void) {
+	peer_config_t *peers;
+	meshlink_channel_t *ch;
+	meshlink_node_t *peer_nut;
+	devtool_node_status_t st;
+
+	printf("\n=== path-stability T24: link MTU 1280 stays at base ===\n");
+	peers = setup_relay_peer_nut_wan("pathstab24");
+	assert(peers);
+	assert(netns_set_dev_mtu(peers[1].netns_name, "eth0", 1280));
+	assert(netns_set_dev_mtu(peers[2].netns_name, "eth0", 1280));
+	assert(netns_set_dev_mtu(peers[0].netns_name, "eth1", 1280));
+	assert(netns_set_dev_mtu(peers[0].netns_name, "eth2", 1280));
+	wan_start(peers, &ch, &peer_nut);
+	assert_after(plpmtu_is(peers[1].mesh, peer_nut, PATH_PLPMTU_BASE, DEVTOOL_PLPMTU_COMPLETE), 20);
+	st = snapshot(peers[1].mesh, peer_nut);
+	assert(st.plpmtu_emsgsize >= 1);
+	assert(st.plpmtu_probes_lost == 0);
+	devtool_free_node_status(&st);
+	meshlink_channel_abort(peers[1].mesh, ch);
+	close_relay_peer_nut(peers);
+	printf("path-stability T24 ok\n");
+}
+
+static void test_plpmtu_link_1492(void) {
+	peer_config_t *peers;
+	meshlink_channel_t *ch;
+	meshlink_node_t *peer_nut;
+	devtool_node_status_t st;
+
+	printf("\n=== path-stability T25: link MTU 1492 settles at 1431 ===\n");
+	peers = setup_relay_peer_nut_wan("pathstab25");
+	assert(peers);
+	assert(netns_set_dev_mtu(peers[1].netns_name, "eth0", 1492));
+	assert(netns_set_dev_mtu(peers[2].netns_name, "eth0", 1492));
+	assert(netns_set_dev_mtu(peers[0].netns_name, "eth1", 1492));
+	assert(netns_set_dev_mtu(peers[0].netns_name, "eth2", 1492));
+	wan_start(peers, &ch, &peer_nut);
+	assert_after(plpmtu_is(peers[1].mesh, peer_nut, 1431, DEVTOOL_PLPMTU_COMPLETE), 25);
+	st = snapshot(peers[1].mesh, peer_nut);
+	assert(st.plpmtu_emsgsize >= 1);
+	devtool_free_node_status(&st);
+	meshlink_channel_abort(peers[1].mesh, ch);
+	close_relay_peer_nut(peers);
+	printf("path-stability T25 ok\n");
+}
+
+static void test_plpmtu_base_before_search(void) {
+	peer_config_t *peers;
+	meshlink_channel_t *ch;
+	meshlink_node_t *peer_nut;
+	meshlink_node_t *nut_peer;
+	devtool_node_status_t st;
+
+	printf("\n=== path-stability T26: base MSS before the search gives up ===\n");
+	peers = setup_relay_peer_nut_wan("pathstab26");
+	assert(peers);
+	init_sync_flag(&accepted);
+	meshlink_set_channel_accept_cb(peers[2].mesh, accept_cb);
+
+	for(int i = 0; i < 3; i++) {
+		assert(meshlink_start(peers[i].mesh));
+	}
+
+	assert_after(meshlink_get_node(peers[1].mesh, "nut"), 20);
+	peer_nut = meshlink_get_node(peers[1].mesh, "nut");
+	nut_peer = meshlink_get_node(peers[2].mesh, "peer");
+	assert(peer_nut && nut_peer);
+	assert(devtool_drop_size_probes_above(peers[2].mesh, nut_peer, PATH_PLPMTU_BASE));
+	hint_address(peers[1].mesh, peer_nut, peers[2].ip, meshlink_get_port(peers[2].mesh));
+	hint_address(peers[2].mesh, nut_peer, peers[1].ip, meshlink_get_port(peers[1].mesh));
+	ch = meshlink_channel_open(peers[1].mesh, peer_nut, 7, receive_cb, NULL, 0);
+	assert(ch);
+	assert(wait_sync_flag(&accepted, 20));
+	assert_after(udp_status_working(peers[1].mesh, peer_nut), 45);
+
+	for(int pass = 0; pass < 2; pass++) {
+		assert_after(candidate_validated(peers[1].mesh, peer_nut), 30);
+		devtool_age_route(peers[1].mesh, peer_nut, PATH_ROUTE_MIN_RESIDENCY_SEC + 1);
+		devtool_age_candidate(peers[1].mesh, peer_nut, 2);
+		devtool_path_route_tick(peers[1].mesh, peer_nut);
+
+		st = snapshot(peers[1].mesh, peer_nut);
+
+		if(st.active_route_kind == ROUTE_DIRECT_UDP && !st.active_route_local) {
+			devtool_free_node_status(&st);
+			break;
+		}
+
+		devtool_free_node_status(&st);
+	}
+
+	assert(meshlink_channel_get_mss(peers[1].mesh, ch) == direct_mss(PATH_PLPMTU_BASE));
+	assert_after(plpmtu_is(peers[1].mesh, peer_nut, PATH_PLPMTU_BASE, DEVTOOL_PLPMTU_COMPLETE), 15);
+	st = snapshot(peers[1].mesh, peer_nut);
+	assert(st.plpmtu_probes_lost >= 3);
+	assert(st.udp_status == DEVTOOL_UDP_WORKING);
+	devtool_free_node_status(&st);
+	meshlink_channel_abort(peers[1].mesh, ch);
+	close_relay_peer_nut(peers);
+	printf("path-stability T26 ok\n");
+}
+
+static meshlink_handle_t *reopen_named(const char *path, const char *name, const char *app, int devclass, meshlink_storage_policy_t policy) {
+	meshlink_open_params_t *params = meshlink_open_params_init(path, name, app, devclass);
+	meshlink_handle_t *mesh;
+
+	assert(params);
+	assert(meshlink_open_params_set_storage_policy(params, policy));
+	mesh = meshlink_open_ex(params);
+	assert(mesh);
+	meshlink_enable_discovery(mesh, false);
+	return mesh;
+}
+
+static void test_plpmtu_restart_cache(void) {
+	const char *prefix = "path_stability_t27_conf";
+	meshlink_handle_t *bb, *a, *b;
+	meshlink_node_t *a_b;
+	meshlink_node_t *b_a;
+	meshlink_channel_t *ch;
+	char path[128];
+
+	printf("\n=== path-stability T27: restart restores the per-IP PLPMTU ===\n");
+	stability_open_trio(prefix, "path-stability-27", &bb, &a, &b);
+	init_sync_flag(&accepted);
+	meshlink_set_channel_accept_cb(b, accept_cb);
+	assert_after(meshlink_get_node(a, "baz"), 15);
+	a_b = meshlink_get_node(a, "baz");
+	b_a = meshlink_get_node(b, "bar");
+	assert(a_b && b_a);
+	assert_after(node_is_reachable(a, a_b), 15);
+	ch = meshlink_channel_open(a, a_b, 7, receive_cb, NULL, 0);
+	assert(ch);
+	assert(wait_sync_flag(&accepted, 15));
+	assert(devtool_drop_size_probes_above(b, b_a, 1399));
+	assert_after(plpmtu_is(a, a_b, 1399, DEVTOOL_PLPMTU_COMPLETE), 30);
+	meshlink_channel_abort(a, ch);
+	meshlink_close(a);
+
+	snprintf(path, sizeof path, "%s.1", prefix);
+	a = reopen_named(path, "bar", "path-stability-27", DEV_CLASS_STATIONARY, MESHLINK_STORAGE_ENABLED);
+	init_sync_flag(&accepted);
+	assert(meshlink_start(a));
+	assert_after(meshlink_get_node(a, "baz"), 15);
+	a_b = meshlink_get_node(a, "baz");
+	assert(a_b);
+	assert_after(node_is_reachable(a, a_b), 15);
+	ch = meshlink_channel_open(a, a_b, 7, receive_cb, NULL, 0);
+	assert(ch);
+	assert(wait_sync_flag(&accepted, 15));
+	assert_after(udp_status_working(a, a_b), 30);
+	{
+		bool hit = false;
+
+		for(int i = 0; i < 30 && !hit; i++) {
+			devtool_node_status_t st = snapshot(a, a_b);
+
+			hit = st.plpmtu_size == 1399 && st.plpmtu_cache_hits >= 1 && st.plpmtu_probes_lost == 0;
+			devtool_free_node_status(&st);
+			usleep(100000);
+		}
+
+		assert(hit);
+	}
+	meshlink_channel_abort(a, ch);
+	meshlink_close(a);
+
+	a = reopen_named(path, "bar", "path-stability-27", DEV_CLASS_STATIONARY, MESHLINK_STORAGE_DISABLED);
+	assert(meshlink_start(a));
+	assert_after(meshlink_get_node(a, "baz"), 15);
+	a_b = meshlink_get_node(a, "baz");
+	assert(a_b);
+	assert_after(node_is_reachable(a, a_b), 15);
+	init_sync_flag(&accepted);
+	ch = meshlink_channel_open(a, a_b, 8, receive_cb, NULL, 0);
+	assert(ch);
+	assert(wait_sync_flag(&accepted, 15));
+	assert_after(udp_status_working(a, a_b), 30);
+	{
+		devtool_node_status_t st = snapshot(a, a_b);
+
+		assert(st.plpmtu_cache_hits == 0);
+		devtool_free_node_status(&st);
+	}
+	meshlink_channel_abort(a, ch);
+	meshlink_close(a);
+	meshlink_close(b);
+	meshlink_close(bb);
+	stability_destroy_conf(prefix, 3);
+	printf("path-stability T27 ok\n");
 }
 
 int main(void) {
@@ -2515,6 +2741,16 @@ int main(void) {
 	test_idle_channel_traffic();
 	test_lost_pmtu_raise_is_not_giveup();
 	test_many_peers_stay_in_budget();
+
+	if(netns_available()) {
+		test_plpmtu_link_1280();
+		test_plpmtu_link_1492();
+		test_plpmtu_base_before_search();
+	} else {
+		printf("SKIP path-stability T24/T25/T26: netns unavailable\n");
+	}
+
+	test_plpmtu_restart_cache();
 
 	printf("\npath-stability: all checks passed\n");
 	return 0;

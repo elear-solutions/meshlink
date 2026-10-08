@@ -669,8 +669,8 @@ bool meshlink_send(struct meshlink_handle *mesh, struct meshlink_node *destinati
  *  @param mesh         A handle which represents an instance of MeshLink.
  *  @param destination  A pointer to a struct meshlink_node describing the destination for the data.
  *
- *  @return             The recommended maximum size of packets that are to be sent to the destination node, 0 if the node is unreachable,
- *                      or a negative value in case of an error.
+ *  @return             The PLPMTU payload when UDP is confirmed, the minimum MTU when the node is reachable but UDP is not, 0 if the node is unreachable,
+ *                      or a negative value in case of an error. The value is usable as soon as UDP is confirmed; the search may raise it later.
  */
 ssize_t meshlink_get_pmtu(struct meshlink_handle *mesh, struct meshlink_node *destination) __attribute__((__warn_unused_result__));
 

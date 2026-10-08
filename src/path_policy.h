@@ -147,11 +147,15 @@ typedef struct path_target_t {
 #define PATH_CANDIDATE_PROBE_INTERVAL_SEC 1
 #define PATH_PROMOTION_PROBE_LEN        64
 #define PATH_ROUTE_MIN_RESIDENCY_SEC     30
-#define PATH_PMTU_INCREASE_INTERVAL_SEC 600
+
+/* ADR 0011 knobs live with their machines. Included here so existing
+   path_policy.h users keep seeing them. */
+#include "path_plpmtu.h"
+#include "path_liveness.h"
+
 #define PATH_SUSPECT_PROBES               2
 #define PATH_SUSPECT_WINDOW_MS         1000
 #define PATH_HEALTHY_RESET_SEC           60
-#define PATH_BACKBONE_UDP_KEEPALIVE_SEC  25
 #define PATH_BACKBONE_UDP_ESTABLISH_SEC   1
 #define PATH_BACKBONE_UDP_ESTABLISH_MISS  3
 #define PATH_BACKBONE_UDP_KEEPALIVE_MISS  2
@@ -338,11 +342,12 @@ void path_note_udp_demoted(struct meshlink_handle *mesh, struct node_t *n);
 void path_note_udp_demoted_reason(struct meshlink_handle *mesh, struct node_t *n, const char *reason);
 
 /* Required backbone UDP relay mapping. connection_policy starts/stops it. */
+int path_backbone_udp_keepalive_base_sec(struct meshlink_handle *mesh);
 void path_backbone_udp_start(struct meshlink_handle *mesh, struct node_t *bb);
 void path_backbone_udp_stop(struct meshlink_handle *mesh);
 void path_backbone_udp_reset(struct meshlink_handle *mesh, struct node_t *n);
 void path_backbone_udp_observe_reply(struct meshlink_handle *mesh, struct node_t *n,
-                                     const sockaddr_t *from, uint64_t nonce);
+	                const sockaddr_t *from, uint64_t nonce, const sockaddr_t *observed);
 /* Reset establishment backoff and wake when a viable new direct UDP dest is learned.
    Call only from learn paths that stored or upgraded the address; duplicate discovery
    of the same endpoint must not collapse establish_step. */

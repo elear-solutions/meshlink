@@ -25,6 +25,8 @@
 #include "netutl.h"
 #include "node.h"
 #include "connection_policy.h"
+#include "path_liveness.h"
+#include "path_plpmtu.h"
 #include "path_policy.h"
 #include "protocol.h"
 #include "relay.h"
@@ -1439,6 +1441,13 @@ void path_note_udp_confirmed(meshlink_handle_t *mesh, node_t *n) {
 	}
 
 	path_consider_promotion(mesh, n, PATH_PROMOTION_UDP_CONFIRMED);
+
+	if(mesh && !n->devtool_force_meta) {
+		path_plpmtu_on_confirmed(mesh, n);
+		path_liveness_on_confirmed(mesh, n);
+		path_keepalive_on_confirmed(mesh, n);
+		path_local_discovery_stop(mesh, n);
+	}
 }
 
 static void path_defer_demotion(meshlink_handle_t *mesh, node_t *n, const char *reason) {
@@ -1562,13 +1571,14 @@ void path_note_udp_demoted_reason(meshlink_handle_t *mesh, node_t *n, const char
 	was = n->udp_tier;
 	n->status.udp_confirmed = false;
 	n->udp_tier = PATH_TIER_NONE;
-	n->mtuprobes = 0;
-	n->minmtu = 0;
-	n->maxmtu = MTU;
 	path_log_udp_tier(mesh, n, was, PATH_TIER_NONE, reason);
 
 	if(mesh) {
-		path_scheduler_end_type(mesh, n, PATH_TXN_PMTU_DISCOVERY);
+		path_plpmtu_pause(mesh, n);
+		path_liveness_stop(mesh, n);
+		path_keepalive_stop(mesh, n);
+		path_local_discovery_stop(mesh, n);
+		path_scheduler_end_type(mesh, n, PATH_TXN_PLPMTU_SEARCH);
 	}
 
 	if(mesh && n == mesh->backbone_udp.node) {
@@ -1579,8 +1589,6 @@ void path_note_udp_demoted_reason(meshlink_handle_t *mesh, node_t *n, const char
 		if(mesh->backbone_udp.endpoint.sa.sa_family) {
 			path_copy_sockaddr(&mesh->backbone_udp.failed_endpoint, &mesh->backbone_udp.endpoint);
 		}
-
-		timeout_del(&mesh->loop, &n->mtutimeout);
 
 		if(mesh->backbone_udp.timer.cb) {
 			path_backbone_udp_arm(mesh, PATH_BACKBONE_UDP_ESTABLISH_SEC, 0);
@@ -2012,6 +2020,10 @@ void path_transaction_preempt(meshlink_handle_t *mesh, node_t *node, path_transa
 		}
 
 		path_punch_rearm(mesh, node);
+		break;
+
+	case PATH_TXN_PLPMTU_SEARCH:
+		/* Slot is gone. The per-node timer retries the step. */
 		break;
 
 	default:
@@ -2900,7 +2912,6 @@ bool path_punch_accept_reply(meshlink_handle_t *mesh, node_t *n, const sockaddr_
 	}
 
 	path_note_udp_confirmed(mesh, n);
-	send_mtu_probe(mesh, n);
 	return true;
 }
 
@@ -3178,7 +3189,10 @@ static void path_peer_udp_stop(meshlink_handle_t *mesh, node_t *n) {
 	n->peer_udp.ingress_session = 0;
 	n->peer_udp.ingress_demand_epoch = 0;
 	n->peer_udp.ingress_network_epoch = 0;
-	timeout_del(&mesh->loop, &n->mtutimeout);
+	path_plpmtu_pause(mesh, n);
+	path_liveness_stop(mesh, n);
+	path_keepalive_stop(mesh, n);
+	path_local_discovery_stop(mesh, n);
 	timeout_del(&mesh->loop, &n->promotion_timer);
 	memset(&n->promotion_candidate, 0, sizeof n->promotion_candidate);
 	path_suspect_stop(mesh, n);
@@ -3189,7 +3203,8 @@ static void path_peer_udp_stop(meshlink_handle_t *mesh, node_t *n) {
 	path_clear_pending_punch_hint(n);
 	path_scheduler_cancel(mesh, n, PATH_TX_CHANNEL_PROMOTION);
 	path_scheduler_cancel(mesh, n, PATH_TX_LIVENESS);
-	path_scheduler_cancel(mesh, n, PATH_TX_PMTU_INCREASE);
+	path_scheduler_cancel(mesh, n, PATH_TX_PLPMTU_PROBE);
+	path_scheduler_cancel(mesh, n, PATH_TX_KEEPALIVE);
 	path_note_udp_demoted_reason(mesh, n, "peer demand idle");
 }
 
@@ -3220,8 +3235,12 @@ bool path_channel_acquire(meshlink_handle_t *mesh, node_t *peer) {
 
 	/* WAN punch stays on the challenge. A local address has nothing to punch
 	   and still discovers PMTU from the channel. */
-	if(path_address_is_local(&peer->address)) {
-		send_mtu_probe(mesh, peer);
+	if(peer->status.udp_confirmed) {
+		path_plpmtu_on_confirmed(mesh, peer);
+		path_liveness_on_confirmed(mesh, peer);
+		path_keepalive_on_confirmed(mesh, peer);
+	} else if(path_address_is_local(&peer->address)) {
+		path_local_discovery_start(mesh, peer);
 	}
 
 	return true;
@@ -3942,6 +3961,7 @@ void path_clear_route_suspicion(meshlink_handle_t *mesh, node_t *n) {
 		}
 	}
 
+	path_plpmtu_note_suspect_cleared(mesh, n);
 	path_suspect_stop(mesh, n);
 }
 
@@ -4032,9 +4052,8 @@ static bool path_rebind_should_challenge(const meshlink_handle_t *mesh, const no
 		return true;
 	}
 
-	/* 32 is an in-flight liveness probe. 31 is settled PMTU. ADR 0010
-	   challenges while that probe is outstanding. */
-	return n->mtuprobes == 32;
+	/* An in-flight liveness probe means the current endpoint may already be dead. */
+	return path_liveness_outstanding(n);
 }
 
 static bool path_rebind_challenge_current(const meshlink_handle_t *mesh, const node_t *n) {
@@ -4470,7 +4489,7 @@ void path_observe_probe_reply(meshlink_handle_t *mesh, node_t *n, const sockaddr
 	}
 
 	if(n == mesh->backbone_udp.node && nonce && nonce == mesh->backbone_udp.liveness_nonce) {
-		path_backbone_udp_observe_reply(mesh, n, from, nonce);
+		path_backbone_udp_observe_reply(mesh, n, from, nonce, NULL);
 		return;
 	}
 
@@ -5175,13 +5194,9 @@ bool path_target_fits_record(const meshlink_handle_t *mesh, const node_t *n, con
 
 	switch(t->kind) {
 	case DATA_ROUTE_DIRECT_UDP:
-		limit = n->minmtu ? n->minmtu : MINMTU;
+		limit = path_plpmtu_size(n);
 
-		if(n->mtu && n->mtu < limit) {
-			limit = n->mtu;
-		}
-
-		if(limit < MINMTU) {
+		if(!limit) {
 			limit = MINMTU;
 		}
 
@@ -5202,7 +5217,11 @@ bool path_target_fits_record(const meshlink_handle_t *mesh, const node_t *n, con
 				return false;
 			}
 
-			hop_limit = hop->minmtu > MINMTU ? hop->minmtu : MINMTU;
+			hop_limit = path_plpmtu_size(hop);
+
+			if(!hop_limit) {
+				hop_limit = MINMTU;
+			}
 
 			if((uint32_t)plain + prefix21 > hop_limit) {
 				return false;

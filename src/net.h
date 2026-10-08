@@ -145,7 +145,9 @@ bool node_read_from_config(struct meshlink_handle *mesh, struct node_t *, const 
 bool read_ecdsa_public_key(struct meshlink_handle *mesh, struct connection_t *) __attribute__((__warn_unused_result__));
 bool read_ecdsa_private_key(struct meshlink_handle *mesh) __attribute__((__warn_unused_result__));
 bool node_write_config(struct meshlink_handle *mesh, struct node_t *, bool new_key) __attribute__((__warn_unused_result__));
-void send_mtu_probe(struct meshlink_handle *mesh, struct node_t *);
+struct path_probe_request_t;
+void net_probe_sched_send(struct meshlink_handle *mesh, const struct path_probe_request_t *req);
+void probe_record_h(struct meshlink_handle *mesh, struct node_t *n, struct vpn_packet_t *packet, uint16_t len);
 void send_candidate_probe(struct meshlink_handle *mesh, struct node_t *n);
 bool send_punch_probe(struct meshlink_handle *mesh, struct node_t *n);
 bool send_rebind_probe(struct meshlink_handle *mesh, struct node_t *n);

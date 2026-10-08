@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <assert.h>
 #include <sys/time.h>
+#include <time.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -196,8 +197,8 @@ static void wait_keys_and_udp(meshlink_handle_t **mesh) {
 	assert_after(udp_confirmed_flag(mesh[2], "foo") && udp_confirmed_flag(mesh[1], "foo"), 25);
 	devtool_set_udp_confirmed(mesh[0], meshlink_get_node(mesh[0], "bar"), true);
 	devtool_set_udp_confirmed(mesh[0], meshlink_get_node(mesh[0], "baz"), true);
-	assert(devtool_set_minmtu(mesh[0], meshlink_get_node(mesh[0], "bar"), MTU));
-	assert(devtool_set_minmtu(mesh[0], meshlink_get_node(mesh[0], "baz"), MTU));
+	assert(devtool_set_plpmtu(mesh[0], meshlink_get_node(mesh[0], "bar"), MTU));
+	assert(devtool_set_plpmtu(mesh[0], meshlink_get_node(mesh[0], "baz"), MTU));
 }
 
 static void send_hello(meshlink_handle_t *from, const char *dest) {
@@ -254,12 +255,9 @@ static size_t expected_channel_mss(meshlink_handle_t *mesh, const char *dest_nam
 	mss = floor;
 	devtool_get_node_status(mesh, dest, &st);
 
-	if(st.active_route_kind == ROUTE_DIRECT_UDP && st.udp_status == DEVTOOL_UDP_WORKING && st.minmtu && st.mtuprobes >= 30) {
-		unsigned payload = st.minmtu;
-
-		if(st.mtu && st.mtu < payload) {
-			payload = st.mtu;
-		}
+	if(st.active_route_kind == ROUTE_DIRECT_UDP && st.udp_status == DEVTOOL_UDP_WORKING
+	                && st.plpmtu_state == DEVTOOL_PLPMTU_COMPLETE && st.plpmtu_size) {
+		unsigned payload = st.plpmtu_size;
 
 		if(payload < MINMTU) {
 			payload = MINMTU;
@@ -281,8 +279,8 @@ static size_t expected_channel_mss(meshlink_handle_t *mesh, const char *dest_nam
 			if(hop) {
 				devtool_get_node_status(mesh, hop, &hs);
 
-				if(hs.minmtu && hs.mtuprobes >= 30 && hs.minmtu > prefix21) {
-					budget = hs.minmtu - prefix21;
+				if(hs.plpmtu_state == DEVTOOL_PLPMTU_COMPLETE && hs.plpmtu_size > prefix21) {
+					budget = hs.plpmtu_size - prefix21;
 				}
 
 				devtool_free_node_status(&hs);
@@ -307,7 +305,7 @@ static void pin(meshlink_handle_t *origin, const char *dest, const char *hop) {
 }
 
 static void confirm_final(meshlink_handle_t *relay, const char *dest, uint16_t minmtu) {
-	assert(devtool_set_minmtu(relay, meshlink_get_node(relay, dest), minmtu));
+	assert(devtool_set_plpmtu(relay, meshlink_get_node(relay, dest), minmtu));
 	devtool_set_udp_confirmed(relay, meshlink_get_node(relay, dest), true);
 }
 
@@ -317,13 +315,13 @@ static void send_oversize_type8(meshlink_handle_t *from, const char *origin, con
    then maybe_report is a no-op. Re-pin and confirm immediately before each kick. */
 static void arm_bar_via_foo(meshlink_handle_t **mesh, uint16_t dest_minmtu) {
 	pin(mesh[2], "bar", "foo");
-	assert(devtool_set_minmtu(mesh[2], meshlink_get_node(mesh[2], "foo"), MTU));
+	assert(devtool_set_plpmtu(mesh[2], meshlink_get_node(mesh[2], "foo"), MTU));
 	confirm_final(mesh[0], "bar", dest_minmtu);
 }
 
 static void arm_baz_via_foo(meshlink_handle_t **mesh, uint16_t dest_minmtu) {
 	pin(mesh[1], "baz", "foo");
-	assert(devtool_set_minmtu(mesh[1], meshlink_get_node(mesh[1], "foo"), MTU));
+	assert(devtool_set_plpmtu(mesh[1], meshlink_get_node(mesh[1], "foo"), MTU));
 	confirm_final(mesh[0], "baz", dest_minmtu);
 }
 
@@ -437,8 +435,8 @@ static void test_inner_types(meshlink_handle_t **mesh) {
 
 		/* Camera↔camera UDP PMTU can still be in flight (no META between cameras).
 		   Once it has finished, a dest-bound inner type must not move it. */
-		if(before.mtuprobes >= 30) {
-			assert(after.minmtu == before.minmtu);
+		if(before.plpmtu_state == DEVTOOL_PLPMTU_COMPLETE) {
+			assert(after.plpmtu_size == before.plpmtu_size);
 			assert(after.udp_status == before.udp_status);
 		}
 
@@ -460,8 +458,8 @@ static void test_inner_types(meshlink_handle_t **mesh) {
 		devtool_node_status_t after;
 		devtool_get_node_status(mesh[1], meshlink_get_node(mesh[1], "baz"), &after);
 
-		if(before.mtuprobes >= 30) {
-			assert(after.minmtu == before.minmtu);
+		if(before.plpmtu_state == DEVTOOL_PLPMTU_COMPLETE) {
+			assert(after.plpmtu_size == before.plpmtu_size);
 			assert(after.udp_status == before.udp_status);
 		}
 
@@ -482,7 +480,7 @@ static void test_route_matrix(meshlink_handle_t **mesh) {
 	devtool_force_meta(mesh[2], bar_from_baz, true);
 	devtool_force_meta(mesh[0], bar_from_foo, false);
 	devtool_set_udp_confirmed(mesh[0], bar_from_foo, true);
-	assert(devtool_set_minmtu(mesh[0], bar_from_foo, MTU));
+	assert(devtool_set_plpmtu(mesh[0], bar_from_foo, MTU));
 	send_hello_once(mesh[2], "bar");
 	assert(!check_sync_flag(&baz_relay_log));
 	assert(!check_sync_flag(&foo_relay_log));
@@ -501,7 +499,7 @@ static void test_route_matrix(meshlink_handle_t **mesh) {
 	devtool_force_meta(mesh[2], bar_from_baz, false);
 	devtool_force_meta(mesh[0], bar_from_foo, false);
 	devtool_set_udp_confirmed(mesh[0], bar_from_foo, true);
-	assert(devtool_set_minmtu(mesh[0], bar_from_foo, MTU));
+	assert(devtool_set_plpmtu(mesh[0], bar_from_foo, MTU));
 	assert_after(udp_confirmed_flag(mesh[2], "foo") && udp_confirmed_flag(mesh[0], "bar"), 15);
 	reset_logs();
 	pin(mesh[2], "bar", "foo");
@@ -549,8 +547,8 @@ static void test_force_relay_minmtu(meshlink_handle_t **mesh) {
 	devtool_node_status_t hop_after, dest_after;
 	devtool_get_node_status(mesh[2], meshlink_get_node(mesh[2], "foo"), &hop_after);
 	devtool_get_node_status(mesh[2], meshlink_get_node(mesh[2], "bar"), &dest_after);
-	assert(hop_after.minmtu == hop_before.minmtu);
-	assert(dest_after.minmtu == dest_before.minmtu);
+	assert(hop_after.plpmtu_size == hop_before.plpmtu_size);
+	assert(dest_after.plpmtu_size == dest_before.plpmtu_size);
 }
 
 static void test_channels_and_mss(meshlink_handle_t **mesh) {
@@ -561,7 +559,7 @@ static void test_channels_and_mss(meshlink_handle_t **mesh) {
 	assert(ch2);
 
 	pin(mesh[2], "bar", "foo");
-	assert(devtool_set_minmtu(mesh[2], meshlink_get_node(mesh[2], "foo"), MTU));
+	assert(devtool_set_plpmtu(mesh[2], meshlink_get_node(mesh[2], "foo"), MTU));
 
 	assert(meshlink_channel_get_mss(mesh[2], ch1) == expected_channel_mss(mesh[2], "bar"));
 	assert(meshlink_channel_get_mss(mesh[2], ch2) == expected_channel_mss(mesh[2], "bar"));
@@ -570,14 +568,14 @@ static void test_channels_and_mss(meshlink_handle_t **mesh) {
 	   parked may raise the relay channel; the assert is the carrier formula. */
 	reset_logs();
 	confirm_final(mesh[0], "bar", 600);
-	assert(devtool_set_minmtu(mesh[2], meshlink_get_node(mesh[2], "foo"), MTU));
+	assert(devtool_set_plpmtu(mesh[2], meshlink_get_node(mesh[2], "foo"), MTU));
 	set_sync_flag(&received2, false);
 	assert(meshlink_channel_send(mesh[2], ch1, "Hello", 5) == 5);
 	assert(wait_sync_flag(&received2, 10));
 	assert(meshlink_channel_get_mss(mesh[2], ch1) == expected_channel_mss(mesh[2], "bar"));
 
 	reset_logs();
-	assert(devtool_set_minmtu(mesh[0], meshlink_get_node(mesh[0], "bar"), MTU));
+	assert(devtool_set_plpmtu(mesh[0], meshlink_get_node(mesh[0], "bar"), MTU));
 	assert(meshlink_channel_send(mesh[2], ch1, "Hello", 5) == 5);
 	assert(meshlink_channel_get_mss(mesh[2], ch1) == expected_channel_mss(mesh[2], "bar"));
 
@@ -639,8 +637,8 @@ static void test_two_pairs_isolated(meshlink_handle_t **mesh) {
 	reset_logs();
 	oversize_baz_until(mesh, &bar_got_relay_mtu, 20);
 
-	assert(devtool_set_minmtu(mesh[0], meshlink_get_node(mesh[0], "bar"), MTU));
-	assert(devtool_set_minmtu(mesh[0], meshlink_get_node(mesh[0], "baz"), MTU));
+	assert(devtool_set_plpmtu(mesh[0], meshlink_get_node(mesh[0], "bar"), MTU));
+	assert(devtool_set_plpmtu(mesh[0], meshlink_get_node(mesh[0], "baz"), MTU));
 }
 
 static void test_failed_send_request_clock(meshlink_handle_t **mesh) {
@@ -669,7 +667,7 @@ static void test_failed_send_request_clock(meshlink_handle_t **mesh) {
 	oversize_bar_until(mesh, &got_relay_mtu, 20);
 	assert(devtool_relay_report_have_reported(mesh[0], "baz", "bar"));
 
-	assert(devtool_set_minmtu(mesh[0], meshlink_get_node(mesh[0], "bar"), MTU));
+	assert(devtool_set_plpmtu(mesh[0], meshlink_get_node(mesh[0], "bar"), MTU));
 }
 
 static void test_lru_eviction_rearm(meshlink_handle_t **mesh) {
@@ -689,7 +687,7 @@ static void test_lru_eviction_rearm(meshlink_handle_t **mesh) {
 	assert(devtool_has_relay_report(mesh[0], "a1", "a"));
 	assert(devtool_has_relay_report(mesh[0], "baz", "bar"));
 
-	assert(devtool_set_minmtu(mesh[0], meshlink_get_node(mesh[0], "bar"), MTU));
+	assert(devtool_set_plpmtu(mesh[0], meshlink_get_node(mesh[0], "bar"), MTU));
 	usleep(300000);
 	assert(devtool_seed_relay_report(mesh[0], "a1", "a", 0, true));
 	assert(devtool_seed_relay_report(mesh[0], "baz", "bar", 1, true));
@@ -698,11 +696,11 @@ static void test_lru_eviction_rearm(meshlink_handle_t **mesh) {
 	send_oversize_type8(mesh[1], "bar", "baz");
 	assert_after(!devtool_has_relay_report(mesh[0], "baz", "bar"), 5);
 
-	assert(devtool_set_minmtu(mesh[0], meshlink_get_node(mesh[0], "bar"), MTU));
+	assert(devtool_set_plpmtu(mesh[0], meshlink_get_node(mesh[0], "bar"), MTU));
 	hello_bar_until_relay_mtu(mesh, MTU, 20);
 	assert(devtool_has_relay_report(mesh[0], "baz", "bar"));
 
-	assert(devtool_set_minmtu(mesh[0], meshlink_get_node(mesh[0], "baz"), MTU));
+	assert(devtool_set_plpmtu(mesh[0], meshlink_get_node(mesh[0], "baz"), MTU));
 }
 
 static void test_oversize_and_reports(meshlink_handle_t **mesh) {
@@ -714,7 +712,7 @@ static void test_oversize_and_reports(meshlink_handle_t **mesh) {
 	reset_logs();
 	pin(mesh[2], "bar", "foo");
 	confirm_final(mesh[0], "bar", MTU);
-	assert(devtool_set_minmtu(mesh[2], meshlink_get_node(mesh[2], "foo"), MINMTU));
+	assert(devtool_set_plpmtu(mesh[2], meshlink_get_node(mesh[2], "foo"), MINMTU));
 	assert(devtool_send_raw_record(mesh[2], meshlink_get_node(mesh[2], "foo"), PKT_RELAY_SPTPS, payload, n));
 	usleep(200000);
 	assert(!check_sync_flag(&got_relay_mtu));
@@ -722,12 +720,12 @@ static void test_oversize_and_reports(meshlink_handle_t **mesh) {
 
 	reset_logs();
 	pin(mesh[2], "bar", "foo");
-	assert(devtool_set_minmtu(mesh[2], meshlink_get_node(mesh[2], "foo"), MTU));
+	assert(devtool_set_plpmtu(mesh[2], meshlink_get_node(mesh[2], "foo"), MTU));
 	confirm_final(mesh[0], "bar", MINMTU);
 	assert(devtool_send_raw_record(mesh[2], meshlink_get_node(mesh[2], "foo"), PKT_RELAY_SPTPS, payload, n));
 	assert(wait_sync_flag(&got_relay_mtu, 15));
 	reset_logs();
-	assert(devtool_set_minmtu(mesh[0], meshlink_get_node(mesh[0], "bar"), MTU));
+	assert(devtool_set_plpmtu(mesh[0], meshlink_get_node(mesh[0], "bar"), MTU));
 	(void)wait_sync_flag(&got_relay_mtu, 5);
 	reset_logs();
 	assert(devtool_send_raw_record(mesh[2], meshlink_get_node(mesh[2], "foo"), PKT_RELAY_SPTPS, payload, n));
@@ -771,7 +769,7 @@ static void test_dest_meta_type8_quiet(meshlink_handle_t **mesh) {
 /* Hard-send clears hop UDP readiness. Channel MSS stays on the carrier formula. */
 static void test_hard_send_clears_hop(meshlink_handle_t **mesh) {
 	pin(mesh[2], "bar", "foo");
-	assert(devtool_set_minmtu(mesh[2], meshlink_get_node(mesh[2], "foo"), MTU));
+	assert(devtool_set_plpmtu(mesh[2], meshlink_get_node(mesh[2], "foo"), MTU));
 	confirm_final(mesh[0], "bar", MINMTU);
 
 	meshlink_channel_t *ch = meshlink_channel_open(mesh[2], meshlink_get_node(mesh[2], "bar"), 11, receive2_cb, NULL, 0);
@@ -817,7 +815,7 @@ static void test_hard_send_clears_hop(meshlink_handle_t **mesh) {
 	assert(!udp_confirmed_flag(mesh[2], "foo"));
 	assert(meshlink_channel_get_mss(mesh[2], ch) == expected_channel_mss(mesh[2], "bar"));
 	devtool_set_udp_confirmed(mesh[2], hop, true);
-	assert(devtool_set_minmtu(mesh[2], hop, MTU));
+	assert(devtool_set_plpmtu(mesh[2], hop, MTU));
 	pin(mesh[2], "bar", "foo");
 	assert(udp_confirmed_flag(mesh[2], "foo"));
 
@@ -831,7 +829,7 @@ static void test_hard_send_clears_hop(meshlink_handle_t **mesh) {
 	assert(meshlink_channel_get_mss(mesh[2], ch) == expected_channel_mss(mesh[2], "bar"));
 
 	devtool_set_udp_confirmed(mesh[2], hop, true);
-	assert(devtool_set_minmtu(mesh[2], hop, MTU));
+	assert(devtool_set_plpmtu(mesh[2], hop, MTU));
 	pin(mesh[2], "bar", "foo");
 	meshlink_channel_abort(mesh[2], ch);
 }
@@ -883,7 +881,7 @@ static void test_long_names(meshlink_handle_t **mesh) {
 
 	pin(longa, long_b, "foo");
 	pin(mesh[2], "bar", "foo");
-	assert(devtool_set_minmtu(longa, meshlink_get_node(longa, "foo"), MTU));
+	assert(devtool_set_plpmtu(longa, meshlink_get_node(longa, "foo"), MTU));
 	assert(meshlink_channel_get_mss(longa, ch_long) == expected_channel_mss(longa, long_b));
 	assert(meshlink_channel_get_mss(mesh[2], ch_short) == expected_channel_mss(mesh[2], "bar"));
 	ssize_t ch_sent = meshlink_channel_send(longa, ch_long, "Hello", 5);
@@ -903,7 +901,7 @@ static void test_long_names(meshlink_handle_t **mesh) {
 		(void)devtool_confirm_udp_from(longa, meshlink_get_node(longa, long_b), (struct sockaddr *)&local, 0);
 	}
 	assert(meshlink_channel_get_mss(longa, ch_long) == expected_channel_mss(longa, long_b));
-	assert(devtool_set_minmtu(longa, meshlink_get_node(longa, long_b), MTU));
+	assert(devtool_set_plpmtu(longa, meshlink_get_node(longa, long_b), MTU));
 	assert(meshlink_channel_get_mss(longa, ch_long) == expected_channel_mss(longa, long_b));
 	pin(mesh[2], "bar", "foo");
 	assert(meshlink_channel_get_mss(mesh[2], ch_short) == expected_channel_mss(mesh[2], "bar"));
@@ -922,7 +920,7 @@ static void test_long_names(meshlink_handle_t **mesh) {
 		devtool_get_node_status(longa, peer, &settled);
 		assert(settled.active_route_kind == ROUTE_DIRECT_UDP);
 		devtool_free_node_status(&settled);
-		assert(devtool_accept_pmtu_increase(longa, peer, 1000));
+		assert(devtool_set_plpmtu(longa, peer, 1008));
 		assert(meshlink_channel_get_mss(longa, ch_long) == 1008 - PACKETHDR_BYTES - UTCP_HDR);
 
 		char req[600];
@@ -978,7 +976,7 @@ static void test_relay_budget_tracks_mss(meshlink_handle_t **mesh) {
 	assert(st.active_route_kind == ROUTE_DIRECT_UDP);
 	devtool_free_node_status(&st);
 
-	assert(devtool_accept_pmtu_increase(mesh[2], bar, 1000));
+	assert(devtool_set_plpmtu(mesh[2], bar, 1008));
 	snprintf(req, sizeof req, "0 foo baz 24 bar %u", hi);
 	(void)devtool_handle_req_relay_mtu(mesh[2], foo, req);
 	assert(meshlink_channel_get_mss(mesh[2], ch) == 1008 - PACKETHDR_BYTES - UTCP_HDR);
@@ -1336,18 +1334,16 @@ static uint32_t nat_migrated(meshlink_handle_t *mesh, meshlink_node_t *node) {
 }
 
 static void nat_rebind_log(meshlink_handle_t *mesh, meshlink_log_level_t level, const char *text) {
-	(void)mesh;
-	(void)level;
-
 	if(!text) {
 		return;
 	}
+	log_cb(mesh, level, text);
 
-	if(strstr(text, "-> relay-udp")) {
+	if(strstr(text, "direct-wan-udp -> relay-udp") || strstr(text, "direct-local-udp -> relay-udp")) {
 		nat_relay_demotions++;
 	}
 
-	if(strstr(text, "probe give-up")) {
+	if(strstr(text, "probe give-up") || strstr(text, "did not respond to UDP ping")) {
 		nat_probe_giveups++;
 	}
 }
@@ -1480,6 +1476,435 @@ static void test_nat_rebind(void) {
 	printf("udp-relay NAT rebind ok\n");
 }
 
+static bool nat_plpmtu_is(meshlink_handle_t *mesh, meshlink_node_t *node, uint16_t size) {
+	devtool_node_status_t st;
+	bool ok;
+
+	devtool_get_node_status(mesh, node, &st);
+	ok = st.udp_status == DEVTOOL_UDP_WORKING && st.plpmtu_state == DEVTOOL_PLPMTU_COMPLETE && st.plpmtu_size == size;
+	devtool_free_node_status(&st);
+	return ok;
+}
+
+/* Cone app, symmetric camera. Drop or clamp the camera's WAN path, then watch its PLPMTU. */
+static void nat_plpmtu_case(const char *prefix, bool black_hole) {
+	peer_config_t *peers;
+	meshlink_node_t *app_cam;
+	meshlink_node_t *cam_app;
+	meshlink_channel_t *ch;
+	devtool_node_status_t st;
+	int i;
+
+	printf("\n=== udp-relay %s ===\n", black_hole ? "PLPMTU black hole" : "PLPMTU ICMP");
+	peers = setup_nat_hole_punch_asymm(prefix, false, true);
+	assert(peers);
+
+	if(black_hole) {
+		assert(nat_drop_udp_over(1, 1449));
+	} else {
+		assert(nat_set_link_mtu(1, 1400));
+	}
+
+	nat_probe_giveups = 0;
+	nat_cam_channel = NULL;
+	init_sync_flag(&nat_accepted);
+	meshlink_set_channel_accept_cb(peers[2].mesh, nat_accept_cb);
+
+	for(i = 0; i < 3; i++) {
+		assert(meshlink_start(peers[i].mesh));
+	}
+
+	assert_after((app_cam = meshlink_get_node(peers[1].mesh, "cam")) != NULL, 20);
+	assert_after((cam_app = meshlink_get_node(peers[2].mesh, "app")) != NULL, 20);
+	assert_after(meshlink_get_node_reachability(peers[1].mesh, app_cam, NULL, NULL), 20);
+	hint_address(peers[1].mesh, app_cam, "198.51.100.9", 9);
+	hint_address(peers[2].mesh, cam_app, "198.51.100.8", 9);
+	ch = meshlink_channel_open(peers[1].mesh, app_cam, 7, nat_receive_cb, NULL, 0);
+	assert(ch);
+	assert(wait_sync_flag(&nat_accepted, 20));
+	assert(nat_cam_channel);
+
+	for(i = 0; i < 15; i++) {
+		if(nat_route_is(peers[2].mesh, cam_app, 1)) {
+			break;
+		}
+
+		devtool_age_route(peers[2].mesh, cam_app, 31);
+		devtool_age_candidate(peers[2].mesh, cam_app, 2);
+		devtool_path_route_tick(peers[2].mesh, cam_app);
+		assert(meshlink_channel_send(peers[2].mesh, nat_cam_channel, "up", 2) == 2);
+		sleep(1);
+	}
+
+	assert(nat_route_is(peers[2].mesh, cam_app, 1));
+	meshlink_set_log_cb(peers[2].mesh, MESHLINK_INFO, nat_rebind_log);
+
+	if(black_hole) {
+		assert(meshlink_channel_get_mss(peers[2].mesh, nat_cam_channel) >= 1211 - PACKETHDR_BYTES - UTCP_HDR);
+		assert_after(nat_plpmtu_is(peers[2].mesh, cam_app, 1399), 20);
+		devtool_get_node_status(peers[2].mesh, cam_app, &st);
+		assert(st.plpmtu_probes_lost == 3);
+	} else {
+		assert_after(nat_plpmtu_is(peers[2].mesh, cam_app, 1339) || nat_plpmtu_is(peers[2].mesh, cam_app, 1211), 15);
+		devtool_get_node_status(peers[2].mesh, cam_app, &st);
+		assert(st.plpmtu_size <= 1339);
+		assert(st.plpmtu_emsgsize >= 1);
+		assert(st.plpmtu_probes_lost <= 1);
+	}
+
+	assert(nat_probe_giveups == 0);
+	devtool_free_node_status(&st);
+	meshlink_channel_abort(peers[1].mesh, ch);
+	close_nat_hole_punch(peers);
+	printf("udp-relay %s ok\n", black_hole ? "PLPMTU black hole" : "PLPMTU ICMP");
+}
+
+enum {
+	NAT_ARM_NONE = 0,
+	NAT_ARM_DROP_1449,
+	NAT_ARM_PUNISH_1449,
+	NAT_ARM_CAM_TIMEOUT_12
+};
+
+static void nat_arm(int kind) {
+	if(kind == NAT_ARM_DROP_1449) {
+		assert(nat_drop_udp_egress(1, 1449));
+	} else if(kind == NAT_ARM_PUNISH_1449) {
+		assert(nat_oversize_punisher_start(1, 1449));
+	} else if(kind == NAT_ARM_CAM_TIMEOUT_12) {
+		assert(nat_set_conntrack_udp_timeout(1, 12));
+	}
+}
+
+static peer_config_t *nat_bringup(const char *prefix, int arm, bool direct, meshlink_node_t **app_cam_out, meshlink_node_t **cam_app_out, meshlink_channel_t **ch_out) {
+	peer_config_t *peers;
+	meshlink_node_t *app_cam;
+	meshlink_node_t *cam_app;
+	meshlink_channel_t *ch;
+	int i;
+
+	peers = setup_nat_hole_punch_asymm(prefix, false, true);
+	assert(peers);
+	nat_arm(arm);
+
+	if(arm == NAT_ARM_CAM_TIMEOUT_12) {
+		meshlink_set_dev_class_timeouts(peers[1].mesh, DEV_CLASS_STATIONARY, 15, 5);
+	}
+
+	nat_probe_giveups = 0;
+	nat_relay_demotions = 0;
+	nat_cam_channel = NULL;
+	init_sync_flag(&nat_accepted);
+	init_sync_flag(&nat_received);
+	meshlink_set_channel_accept_cb(peers[2].mesh, nat_accept_cb);
+	meshlink_set_log_cb(peers[1].mesh, MESHLINK_INFO, nat_rebind_log);
+	meshlink_set_log_cb(peers[2].mesh, MESHLINK_INFO, nat_rebind_log);
+
+	for(i = 0; i < 3; i++) {
+		assert(meshlink_start(peers[i].mesh));
+	}
+
+	assert_after((app_cam = meshlink_get_node(peers[1].mesh, "cam")) != NULL, 20);
+	assert_after((cam_app = meshlink_get_node(peers[2].mesh, "app")) != NULL, 20);
+	assert_after(meshlink_get_node_reachability(peers[1].mesh, app_cam, NULL, NULL), 20);
+	hint_address(peers[1].mesh, app_cam, "198.51.100.9", 9);
+	hint_address(peers[2].mesh, cam_app, "198.51.100.8", 9);
+	ch = meshlink_channel_open(peers[1].mesh, app_cam, 7, nat_receive_cb, NULL, 0);
+	assert(ch);
+	assert(wait_sync_flag(&nat_accepted, 20));
+	assert(nat_cam_channel);
+
+	for(i = 0; direct && i < 15; i++) {
+		if(nat_route_is(peers[1].mesh, app_cam, 1) && nat_route_is(peers[2].mesh, cam_app, 1)) {
+			break;
+		}
+
+		devtool_age_route(peers[1].mesh, app_cam, 31);
+		devtool_age_candidate(peers[1].mesh, app_cam, 2);
+		devtool_path_route_tick(peers[1].mesh, app_cam);
+		devtool_age_route(peers[2].mesh, cam_app, 31);
+		devtool_age_candidate(peers[2].mesh, cam_app, 2);
+		devtool_path_route_tick(peers[2].mesh, cam_app);
+		assert(meshlink_channel_send(peers[2].mesh, nat_cam_channel, "up", 2) == 2);
+		sleep(1);
+	}
+
+	if(direct) {
+		assert(nat_route_is(peers[1].mesh, app_cam, 1));
+		assert(nat_route_is(peers[2].mesh, cam_app, 1));
+	}
+	*app_cam_out = app_cam;
+	*cam_app_out = cam_app;
+	*ch_out = ch;
+	return peers;
+}
+
+static peer_config_t *nat_bringup_direct(const char *prefix, int arm, meshlink_node_t **app_cam_out, meshlink_node_t **cam_app_out, meshlink_channel_t **ch_out) {
+	return nat_bringup(prefix, arm, true, app_cam_out, cam_app_out, ch_out);
+}
+
+static bool nat_plpmtu_settled(meshlink_handle_t *mesh, meshlink_node_t *node, uint16_t size, devtool_node_status_t *out) {
+	devtool_node_status_t st;
+	bool ok;
+
+	devtool_get_node_status(mesh, node, &st);
+	ok = st.udp_status == DEVTOOL_UDP_WORKING && st.plpmtu_state == DEVTOOL_PLPMTU_COMPLETE && st.plpmtu_size == size;
+
+	if(out) {
+		*out = st;
+	} else {
+		devtool_free_node_status(&st);
+	}
+
+	return ok;
+}
+
+/* Cam to WAN is capped. App to cam is not, so the two directions settle apart. */
+static void test_plpmtu_asymmetric(void) {
+	peer_config_t *peers;
+	meshlink_node_t *app_cam;
+	meshlink_node_t *cam_app;
+	meshlink_channel_t *ch;
+	size_t cam_mss;
+	size_t app_mss;
+
+	printf("\n=== udp-relay PLPMTU asymmetric ===\n");
+	peers = nat_bringup_direct("plpmtuasym", NAT_ARM_DROP_1449, &app_cam, &cam_app, &ch);
+
+	assert_after(nat_plpmtu_is(peers[2].mesh, cam_app, 1399), 20);
+	assert_after(nat_plpmtu_is(peers[1].mesh, app_cam, MTU), 25);
+	cam_mss = 1399 - PACKETHDR_BYTES - UTCP_HDR;
+	app_mss = MTU - PACKETHDR_BYTES - UTCP_HDR;
+	assert(meshlink_channel_get_mss(peers[2].mesh, nat_cam_channel) == cam_mss);
+	assert(meshlink_channel_get_mss(peers[1].mesh, ch) == app_mss);
+	assert(nat_probe_giveups == 0);
+	assert(nat_relay_demotions == 0);
+
+	meshlink_channel_abort(peers[1].mesh, ch);
+	close_nat_hole_punch(peers);
+	printf("udp-relay PLPMTU asymmetric ok\n");
+}
+
+/* Oversize probes are dropped and the flow is deleted, so the next packet rebinds. */
+static void test_plpmtu_hostile_nat(bool startup) {
+	peer_config_t *peers;
+	meshlink_node_t *app_cam;
+	meshlink_node_t *cam_app;
+	meshlink_channel_t *ch;
+	devtool_node_status_t st;
+	struct timespec started;
+	struct timespec now;
+	bool hostile = false;
+
+	printf("\n=== udp-relay PLPMTU hostile NAT %s ===\n", startup ? "before promotion" : "direct");
+	peers = nat_bringup(startup ? "plpmtustart" : "plpmtuhostile", NAT_ARM_PUNISH_1449, !startup, &app_cam, &cam_app, &ch);
+	clock_gettime(CLOCK_MONOTONIC, &started);
+
+	/* No application sends to expose the remap. At startup, hold route
+	   residency so recovery has to work while the channel remains relayed. */
+	while(!hostile) {
+		int64_t elapsed;
+
+		clock_gettime(CLOCK_MONOTONIC, &now);
+		elapsed = (now.tv_sec - started.tv_sec) * 1000 + (now.tv_nsec - started.tv_nsec) / 1000000;
+
+		if(elapsed > 30000) {
+			break;
+		}
+
+		if(startup) {
+			assert(!nat_route_is(peers[2].mesh, cam_app, 1));
+			devtool_age_route(peers[2].mesh, cam_app, -60);
+		}
+
+		if(nat_plpmtu_settled(peers[2].mesh, cam_app, 1399, &st)) {
+			hostile = st.plpmtu_hostile && st.plpmtu_probes_lost <= 1;
+			devtool_free_node_status(&st);
+		}
+
+		usleep(500000);
+	}
+
+	assert(hostile);
+	assert(nat_migrated(peers[1].mesh, app_cam) <= 3);
+	assert(nat_probe_giveups == 0);
+	assert(nat_relay_demotions == 0);
+	devtool_get_node_status(peers[1].mesh, app_cam, &st);
+	assert(st.keepalive_expiries == 0);
+	devtool_free_node_status(&st);
+	devtool_get_node_status(peers[2].mesh, cam_app, &st);
+	assert(st.keepalive_expiries == 0);
+	devtool_free_node_status(&st);
+	nat_oversize_punisher_stop();
+
+	meshlink_channel_abort(peers[1].mesh, ch);
+	close_nat_hole_punch(peers);
+	printf("udp-relay PLPMTU hostile NAT ok\n");
+}
+
+/* Settle wide, then black-hole everything above the base. Data keeps moving. */
+static void test_plpmtu_mid_session_black_hole(void) {
+	peer_config_t *peers;
+	meshlink_node_t *app_cam;
+	meshlink_node_t *cam_app;
+	meshlink_channel_t *ch;
+	devtool_node_status_t st;
+	size_t mss;
+	char *payload;
+	int i;
+	bool dropped = false;
+	struct timespec started;
+	struct timespec now;
+
+	printf("\n=== udp-relay PLPMTU mid-session black hole ===\n");
+	peers = nat_bringup_direct("plpmtumid", NAT_ARM_NONE, &app_cam, &cam_app, &ch);
+	assert_after(nat_plpmtu_is(peers[2].mesh, cam_app, MTU), 40);
+	mss = meshlink_channel_get_mss(peers[2].mesh, nat_cam_channel);
+	assert(mss == MTU - PACKETHDR_BYTES - UTCP_HDR);
+	payload = malloc(mss);
+	assert(payload);
+	memset(payload, 'M', mss);
+
+	for(i = 0; i < 4; i++) {
+		assert(meshlink_channel_send(peers[2].mesh, nat_cam_channel, payload, mss) == (ssize_t)mss);
+	}
+
+	assert(nat_drop_udp_egress(1, 1300));
+	reset_sync_flag(&nat_received);
+	clock_gettime(CLOCK_MONOTONIC, &started);
+
+	/* The large segment sits unacked in UTCP, so the following byte is not
+	   delivered until the black-hole drop resizes the stream. That is the
+	   10s budget, not a per-packet round trip. */
+	while(!dropped) {
+		int64_t elapsed;
+		ssize_t n;
+
+		clock_gettime(CLOCK_MONOTONIC, &now);
+		elapsed = (now.tv_sec - started.tv_sec) * 1000 + (now.tv_nsec - started.tv_nsec) / 1000000;
+
+		if(elapsed > 10000) {
+			break;
+		}
+
+		n = meshlink_channel_send(peers[2].mesh, nat_cam_channel, payload, mss);
+		assert(n >= 0);
+		assert(meshlink_channel_send(peers[2].mesh, nat_cam_channel, "k", 1) == 1);
+
+		if(wait_sync_flag(&nat_received, 1)) {
+			reset_sync_flag(&nat_received);
+		}
+
+		devtool_get_node_status(peers[2].mesh, cam_app, &st);
+		dropped = st.plpmtu_size == 1211 && st.plpmtu_black_holes == 1 && st.udp_status == DEVTOOL_UDP_WORKING;
+		devtool_free_node_status(&st);
+	}
+
+	assert(dropped);
+	/* Fallback publication can precede the base verification ACK. Wait
+	   for settlement before forcing the raise; settlement arms its timer. */
+	assert_after(nat_plpmtu_is(peers[2].mesh, cam_app, 1211), 15);
+	assert(nat_undrop_udp_egress(1, 1300));
+	assert(devtool_plpmtu_raise_due(peers[2].mesh, cam_app));
+
+	for(i = 0; i < 40; i++) {
+		devtool_get_node_status(peers[2].mesh, cam_app, &st);
+
+		if(st.plpmtu_size > 1211 && st.udp_status == DEVTOOL_UDP_WORKING) {
+			devtool_free_node_status(&st);
+			break;
+		}
+
+		devtool_free_node_status(&st);
+		usleep(500000);
+	}
+
+	devtool_get_node_status(peers[2].mesh, cam_app, &st);
+	assert(st.plpmtu_size > 1211);
+	assert(nat_relay_demotions == 0);
+	devtool_free_node_status(&st);
+	free(payload);
+	meshlink_channel_abort(peers[1].mesh, ch);
+	close_nat_hole_punch(peers);
+	printf("udp-relay PLPMTU mid-session black hole ok\n");
+}
+
+/* Cam mapping dies at 12s. Cam must learn its own outbound refresh interval;
+   app's liveness failure is not evidence that app's NAT expired. */
+static void test_keepalive_idle_expiry(void) {
+	peer_config_t *peers;
+	meshlink_node_t *app_cam;
+	meshlink_node_t *cam_app;
+	meshlink_channel_t *ch;
+	devtool_node_status_t before;
+	devtool_node_status_t st;
+	unsigned giveups_at_shrink = 0;
+	int i;
+	bool shrunk = false;
+
+	printf("\n=== udp-relay keepalive idle expiry ===\n");
+	peers = nat_bringup_direct("plpmtuka", NAT_ARM_CAM_TIMEOUT_12, &app_cam, &cam_app, &ch);
+	meshlink_set_log_cb(peers[1].mesh, MESHLINK_DEBUG, nat_rebind_log);
+	meshlink_set_log_cb(peers[2].mesh, MESHLINK_DEBUG, nat_rebind_log);
+
+	for(i = 0; i < 30; i++) {
+		devtool_get_node_status(peers[2].mesh, cam_app, &before);
+
+		if(before.plpmtu_state == DEVTOOL_PLPMTU_COMPLETE && before.plpmtu_size >= MINMTU) {
+			break;
+		}
+
+		devtool_free_node_status(&before);
+		sleep(1);
+	}
+
+	assert(i < 30);
+	assert(before.plpmtu_state == DEVTOOL_PLPMTU_COMPLETE);
+	assert(before.plpmtu_size >= MINMTU);
+	assert(devtool_set_keepalive_interval(peers[1].mesh, app_cam, 15000));
+	assert(devtool_set_keepalive_interval(peers[2].mesh, cam_app, 15000));
+
+	for(i = 0; i < 8; i++) {
+		assert(meshlink_channel_send(peers[2].mesh, nat_cam_channel, "go", 2) == 2);
+		usleep(100000);
+	}
+
+	nat_probe_giveups = 0;
+
+	/* Jitter can make the first remap's gap shorter than the configured
+	   interval. Allow later qualified gaps instead of weakening evidence. */
+	for(i = 0; i < 80 && !shrunk; i++) {
+		devtool_get_node_status(peers[2].mesh, cam_app, &st);
+		shrunk = st.keepalive_expiries >= 1 && st.keepalive_interval_ms <= 12000 && st.keepalive_interval_ms >= 5000;
+		devtool_free_node_status(&st);
+
+		sleep(1);
+	}
+
+	assert(shrunk);
+	assert(nat_probe_giveups <= 1);
+	devtool_get_node_status(peers[1].mesh, app_cam, &st);
+	assert(st.keepalive_expiries == 0 && st.keepalive_interval_ms == 15000);
+	devtool_free_node_status(&st);
+	giveups_at_shrink = nat_probe_giveups;
+	sleep(30);
+	assert(nat_probe_giveups == giveups_at_shrink);
+
+	reset_sync_flag(&nat_received);
+	assert(meshlink_channel_send(peers[2].mesh, nat_cam_channel, "end", 3) == 3);
+	assert(wait_sync_flag(&nat_received, 15));
+
+	devtool_get_node_status(peers[2].mesh, cam_app, &st);
+	assert(st.plpmtu_size == before.plpmtu_size);
+	assert(st.plpmtu_probes_lost == before.plpmtu_probes_lost);
+	devtool_free_node_status(&st);
+	devtool_free_node_status(&before);
+
+	meshlink_channel_abort(peers[1].mesh, ch);
+	close_nat_hole_punch(peers);
+	printf("udp-relay keepalive idle expiry ok\n");
+}
+
 static void test_nat_hole_punch(void) {
 	if(!netns_available()) {
 		fprintf(stderr, "udp-relay NAT hole punch: netns unavailable\n");
@@ -1515,10 +1940,29 @@ static void test_nat_hole_punch(void) {
 	}
 
 	test_nat_rebind();
+	nat_plpmtu_case("plpmtubh", true);
+	nat_plpmtu_case("plpmtuicmp", false);
+	test_plpmtu_asymmetric();
+	test_plpmtu_hostile_nat(false);
+	test_plpmtu_hostile_nat(true);
+	test_plpmtu_mid_session_black_hole();
+	test_keepalive_idle_expiry();
 	printf("udp-relay NAT hole punch ok\n");
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+	if(argc == 2 && !strcmp(argv[1], "--black-hole")) {
+		meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
+		test_plpmtu_mid_session_black_hole();
+		return 0;
+	}
+	/* Run the complete idle-expiry case without the preceding NAT matrix. */
+	if(argc == 2 && !strcmp(argv[1], "--keepalive")) {
+		meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
+		test_keepalive_idle_expiry();
+		return 0;
+	}
+	assert(argc == 1);
 	init_sync_flag(&received);
 	init_sync_flag(&received2);
 	init_sync_flag(&bar_learned);

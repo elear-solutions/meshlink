@@ -199,7 +199,7 @@ void meshlink_logger(meshlink_handle_t *mesh, meshlink_log_level_t level,
 
 		node_pmtu[i].mtu_recv_probes.time = cur_time;
 
-	} else if(sscanf(text, "Fixing MTU of %s to %d after %d probes", node_name, &mtu_len, &probes) == 3) {
+	} else if(sscanf(text, "PLPMTU of %s settled at %d (largest failed %d)", node_name, &mtu_len, &probes) == 3) {
 		static bool mtu_set = true;
 
 		if(!node_shutdown_time && !strcasecmp("relay", node_name) && mtu_set) {
@@ -222,7 +222,7 @@ void meshlink_logger(meshlink_handle_t *mesh, meshlink_log_level_t level,
 		memset(&node_pmtu[i].mtu_ping, 0, sizeof(struct pmtu_attr_para));
 		memset(&node_pmtu[i].mtu_increase, 0, sizeof(struct pmtu_attr_para));
 
-	} else if(sscanf(text, "Increase in PMTU to %s detected, raising MTU to %d", node_name, &raised_mtu) == 2) {
+	} else if(sscanf(text, "PLPMTU of %s raised to %d", node_name, &raised_mtu) == 2) {
 		find_node_index(i, node_name);
 		node_pmtu[i].mtu_increase.time = cur_time - node_pmtu[i].mtu_start.time;
 		node_pmtu[i].mtu_increase.probes_total_len += raised_mtu;
@@ -230,7 +230,7 @@ void meshlink_logger(meshlink_handle_t *mesh, meshlink_log_level_t level,
 
 	} else if(sscanf(text, "Trying to send MTU probe to unreachable or rekeying node %s", node_name) == 1) {
 
-	} else if(sscanf(text, "%s did not respond to UDP ping, restarting PMTU discovery", node_name) == 1) {
+	} else if(sscanf(text, "%s did not respond to UDP ping", node_name) == 1) {
 
 	} else if(sscanf(text, "No response to MTU probes from %s", node_name) == 1) {
 

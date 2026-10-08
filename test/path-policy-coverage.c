@@ -125,7 +125,7 @@ static bool mtu_fixed(meshlink_handle_t *mesh, const char *name) {
 
 	devtool_node_status_t st;
 	devtool_get_node_status(mesh, n, &st);
-	bool ok = st.udp_status == DEVTOOL_UDP_WORKING && st.minmtu && st.mtuprobes >= 30;
+	bool ok = st.udp_status == DEVTOOL_UDP_WORKING && st.plpmtu_state == DEVTOOL_PLPMTU_COMPLETE && st.plpmtu_size;
 	devtool_free_node_status(&st);
 	return ok;
 }

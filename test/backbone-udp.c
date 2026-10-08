@@ -246,7 +246,7 @@ static void test_stop_clears_node_udp(void) {
 	assert_backbone_udp_cleared(cam, "aaa");
 	memset(&st, 0, sizeof st);
 	devtool_get_node_status(cam, node, &st);
-	assert(st.mtuprobes == 0);
+	assert(st.plpmtu_state == DEVTOOL_PLPMTU_DISABLED);
 	assert(st.udp_status != DEVTOOL_UDP_WORKING);
 	assert(st.udp_status != DEVTOOL_UDP_TRYING);
 	devtool_free_node_status(&st);
@@ -264,7 +264,7 @@ static void test_stop_clears_node_udp(void) {
 	assert_backbone_udp_cleared(cam, "aaa");
 	memset(&st, 0, sizeof st);
 	devtool_get_node_status(cam, node, &st);
-	assert(st.mtuprobes == 0);
+	assert(st.plpmtu_state == DEVTOOL_PLPMTU_DISABLED);
 	assert(st.udp_status != DEVTOOL_UDP_WORKING);
 	assert(st.udp_status != DEVTOOL_UDP_TRYING);
 	devtool_free_node_status(&st);
