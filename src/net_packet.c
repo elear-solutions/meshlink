@@ -611,7 +611,7 @@ static void receive_udppacket(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *
 	if(!n->sptps.state) {
 		if(!n->status.waitingforkey) {
 			logger(mesh, MESHLINK_DEBUG, "Got packet from %s but we haven't exchanged keys yet", n->name);
-			send_req_key(mesh, n);
+			node_kex_ensure(mesh, n);
 		} else {
 			logger(mesh, MESHLINK_DEBUG, "Got packet from %s but he hasn't got our key yet", n->name);
 		}
@@ -646,7 +646,7 @@ static void send_sptps_packet(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *
 		logger(mesh, MESHLINK_INFO, "No valid key known yet for %s", n->name);
 
 		if(!n->status.waitingforkey) {
-			send_req_key(mesh, n);
+			node_kex_ensure(mesh, n);
 		} else {
 			node_kex_consider(mesh, n);
 		}

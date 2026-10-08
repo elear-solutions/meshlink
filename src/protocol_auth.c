@@ -340,7 +340,7 @@ bool id_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 
 		if(n->status.reachable && !n->status.waitingforkey) {
 			logger(mesh, MESHLINK_INFO, "Requesting key from peer %s", c->name);
-			send_req_key(mesh, n);
+			node_kex_ensure(mesh, n);
 		}
 
 		return false;
@@ -718,12 +718,15 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 			if(warm && port_known_before_edge) {
 				send_canonical_address(mesh, n);
 				send_external_ip_address(mesh, n);
-			} else {
+			} else if(warm) {
+				/* A changed listen port explicitly invalidates the warm session. */
 				send_req_key(mesh, n);
+			} else {
+				node_kex_ensure(mesh, n);
 			}
 		} else if(path_peer_udp_punching_allowed(mesh, n)
 		                && !n->status.validkey && !n->status.waitingforkey) {
-			send_req_key(mesh, n);
+			node_kex_ensure(mesh, n);
 		}
 	} else if(n->status.validkey || n->status.waitingforkey) {
 		send_canonical_address(mesh, n);

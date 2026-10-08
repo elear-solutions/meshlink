@@ -147,7 +147,9 @@ bool meta_cutover_emergency_h(struct meshlink_handle *mesh, struct connection_t 
 
 /* Node SPTPS recovery. One watchdog, owned by the node, not by a META socket.
    node_kex_clear keeps key_retry_epoch. node_kex_on_session_change zeros it. */
-void node_kex_arm(struct meshlink_handle *mesh, struct node_t *n);
+/* Ensure ordinary demand progresses once per deadline; send_req_key forces a
+   handshake restart when a known peer changed its listen port or for devtools. */
+bool node_kex_ensure(struct meshlink_handle *mesh, struct node_t *n);
 void node_kex_clear(struct meshlink_handle *mesh, struct node_t *n);
 void node_kex_note_demand(struct meshlink_handle *mesh, struct node_t *n);
 void node_kex_mark_uncertain(struct meshlink_handle *mesh, struct node_t *n);

@@ -77,7 +77,8 @@ One node-owned watchdog replaces the META-connection retry in `timeout_handler()
 
 The ladder is 2, 5, 10, 30, 60 seconds with jitter.
 
-- `send_req_key()` starts a new epoch, sets `waitingforkey`, and arms the deadline. If the public key is missing it sends `REQ_PUBKEY` and reschedules the same ladder without clearing the demand bit.
+- Ordinary callers use `node_kex_ensure()` to share the node deadline. Missing-public-key requests and handshake attempts have independent backoff phases. A public-key response starts the handshake immediately at the first two-second interval. Accepted META requests advance the phase ladder; failed writes and unavailable routes reschedule without advancing it.
+- `send_req_key()` explicitly restarts a known-key handshake for devtools or a changed listen port. Initiator and responder handshakes increment the handshake epoch and set `waitingforkey`; a role change starts fresh handshake backoff. Due or uncertain initiator retries retain handshake backoff.
 - SPTPS handshake success clears waiting state, retry step, deadline, and uncertainty.
 - A session-id change clears the epoch. A fresh `send_req_key()` happens only when backbone UDP or channel demand still needs the key.
 - `REQ_SPTPS` while `validkey` is false sets a node-owned retry-demand bit and schedules one retry. The bit is what makes the deadline fire when nothing else wants the key. It does not restart once per record.

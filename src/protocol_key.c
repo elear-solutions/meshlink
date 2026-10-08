@@ -109,23 +109,55 @@ bool send_canonical_address(meshlink_handle_t *mesh, node_t *to) {
 }
 
 static void node_kex_schedule(meshlink_handle_t *mesh, node_t *n, bool advance);
+static bool node_kex_due(const meshlink_handle_t *mesh, const node_t *n);
+static void node_kex_schedule_handshake(meshlink_handle_t *mesh, node_t *n, bool accepted, bool retry);
 
 bool send_req_key(meshlink_handle_t *mesh, node_t *to) {
 	if(!node_read_public_key(mesh, to)) {
-		logger(mesh, MESHLINK_DEBUG, "No ECDSA key known for %s", to->name);
+		/* Public-key acquisition has no SPTPS session to force. Coalesce all
+		   callers, including the channel's initial SYN, until its deadline. */
+		if(to->key_retry_phase == NODE_KEX_PUBLIC_KEY && !node_kex_due(mesh, to)
+		                && !to->key_delivery_uncertain) {
+			return true;
+		}
 
-		if(!to->nexthop || !to->nexthop->connection) {
+		if(to->key_retry_phase != NODE_KEX_PUBLIC_KEY) {
+			to->key_retry_step = 0;
+		}
+
+		to->key_retry_phase = NODE_KEX_PUBLIC_KEY;
+		to->key_retry_wanted = true;
+		bool accepted = false;
+
+		if(!to->nexthop || !to->nexthop->connection || !to->nexthop->connection->status.active) {
 			logger(mesh, MESHLINK_WARNING, "Cannot send REQ_PUBKEY to %s via %s", to->name, to->nexthop ? to->nexthop->name : to->name);
 		} else {
 			char *pubkey = ecdsa_get_base64_public_key(mesh->private_key);
-			send_request(mesh, to->nexthop->connection, NULL, "%d %s %s %d %s", REQ_KEY, mesh->self->name, to->name, REQ_PUBKEY, pubkey);
+			accepted = send_request(mesh, to->nexthop->connection, NULL, "%d %s %s %d %s", REQ_KEY, mesh->self->name, to->name, REQ_PUBKEY, pubkey);
 			free(pubkey);
 		}
 
-		/* Keep key_retry_wanted. Climb the same ladder so a missing key is not retried every watchdog tick. */
-		node_kex_schedule(mesh, to, true);
-		return true;
+		to->key_delivery_uncertain = false;
+		node_kex_schedule(mesh, to, accepted);
+		return accepted;
 	}
+
+	if(!to->nexthop || !to->nexthop->connection || !to->nexthop->connection->status.active) {
+		/* A learned key ends acquisition even when META is unavailable. The
+		   next ordinary caller must share this retry deadline as well. */
+		if(to->key_retry_phase == NODE_KEX_PUBLIC_KEY) {
+			to->key_retry_phase = NODE_KEX_HANDSHAKE;
+			to->key_retry_step = 0;
+		}
+
+		to->key_retry_wanted = true;
+		to->key_delivery_uncertain = false;
+		node_kex_schedule(mesh, to, false);
+		return false;
+	}
+
+	bool retry = to->key_retry_phase == NODE_KEX_HANDSHAKE
+	             && (node_kex_due(mesh, to) || to->key_delivery_uncertain);
 
 	if(to->sptps.label) {
 		logger(mesh, MESHLINK_DEBUG, "send_req_key(%s) called while sptps->label != NULL!", to->name);
@@ -144,13 +176,10 @@ bool send_req_key(meshlink_handle_t *mesh, node_t *to) {
 	node_set_validkey(mesh, to, false);
 	to->status.waitingforkey = true;
 	to->last_req_key = mesh->loop.now.tv_sec;
-	node_kex_arm(mesh, to);
 
-	if(!sptps_start(&to->sptps, to, true, true, mesh->private_key, to->ecdsa, label, sizeof(label) - 1, send_initial_sptps_data, receive_sptps_record)) {
-		return false;
-	}
-
-	return true;
+	bool accepted = sptps_start(&to->sptps, to, true, true, mesh->private_key, to->ecdsa, label, sizeof(label) - 1, send_initial_sptps_data, receive_sptps_record);
+	node_kex_schedule_handshake(mesh, to, accepted, retry);
+	return accepted;
 }
 
 static const int node_kex_ladder[] = {2, 5, 10, 30, 60};
@@ -185,19 +214,47 @@ static void node_kex_schedule(meshlink_handle_t *mesh, node_t *n, bool advance) 
 		n->key_retry_step++;
 	}
 
-	logger(mesh, MESHLINK_INFO, "Node KEX retry scheduled for %s step=%u epoch=%u uncertain=%s",
-	       n->name, n->key_retry_step, n->key_retry_epoch, n->key_delivery_uncertain ? "yes" : "no");
+	logger(mesh, MESHLINK_INFO, "Node KEX retry scheduled for %s phase=%s step=%u epoch=%u delay=%dms accepted=%s",
+	       n->name, n->key_retry_phase == NODE_KEX_PUBLIC_KEY ? "public-key" : n->key_retry_phase == NODE_KEX_HANDSHAKE ? "handshake" : "idle",
+	       n->key_retry_step, n->key_retry_epoch, delay * 1000 + jitter, advance ? "yes" : "no");
 }
 
-void node_kex_arm(meshlink_handle_t *mesh, node_t *n) {
-	if(!mesh || !n) {
-		return;
+static void node_kex_schedule_handshake(meshlink_handle_t *mesh, node_t *n, bool accepted, bool retry) {
+	/* Public-key attempts and accepted role changes are not lost handshakes.
+	   Only an owned handshake retry inherits that phase's backoff. */
+	if(!retry) {
+		n->key_retry_step = 0;
 	}
 
+	n->key_retry_phase = NODE_KEX_HANDSHAKE;
 	n->key_retry_epoch++;
 	n->key_delivery_uncertain = false;
 	n->key_retry_wanted = false;
-	node_kex_schedule(mesh, n, true);
+	node_kex_schedule(mesh, n, accepted);
+}
+
+bool node_kex_ensure(meshlink_handle_t *mesh, node_t *n) {
+	if(!mesh || !n || n == mesh->self || !n->status.reachable || n->status.blacklisted) {
+		return false;
+	}
+
+	if(n->status.validkey) {
+		return true;
+	}
+
+	n->key_retry_wanted = true;
+
+	/* Learning the public key opens the handshake phase immediately. */
+	if(n->key_retry_phase == NODE_KEX_PUBLIC_KEY && node_read_public_key(mesh, n)) {
+		return send_req_key(mesh, n);
+	}
+
+	if((n->key_retry_at.tv_sec || n->key_retry_at.tv_nsec)
+	                && !node_kex_due(mesh, n) && !n->key_delivery_uncertain) {
+		return true;
+	}
+
+	return send_req_key(mesh, n);
 }
 
 void node_kex_clear(meshlink_handle_t *mesh, node_t *n) {
@@ -207,6 +264,7 @@ void node_kex_clear(meshlink_handle_t *mesh, node_t *n) {
 
 	n->status.waitingforkey = false;
 	n->key_retry_step = 0;
+	n->key_retry_phase = NODE_KEX_IDLE;
 	n->key_delivery_uncertain = false;
 	n->key_retry_wanted = false;
 	memset(&n->key_retry_at, 0, sizeof(n->key_retry_at));
@@ -257,6 +315,7 @@ void node_kex_on_session_change(meshlink_handle_t *mesh, node_t *n) {
 	n->status.waitingforkey = false;
 	n->key_retry_step = 0;
 	n->key_retry_epoch = 0;
+	n->key_retry_phase = NODE_KEX_IDLE;
 	n->key_delivery_uncertain = false;
 	n->key_retry_wanted = false;
 	memset(&n->key_retry_at, 0, sizeof(n->key_retry_at));
@@ -275,7 +334,7 @@ static bool node_kex_due(const meshlink_handle_t *mesh, const node_t *n) {
 }
 
 static bool node_kex_wanted(meshlink_handle_t *mesh, node_t *n) {
-	if(!n || n == mesh->self || !n->status.reachable) {
+	if(!n || n == mesh->self || !n->status.reachable || n->status.blacklisted) {
 		return false;
 	}
 
@@ -480,6 +539,11 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 
 		send_request(mesh, from->nexthop->connection, NULL, "%d %s %s %d %s", REQ_KEY, mesh->self->name, from->name, ANS_PUBKEY, pubkey);
 		free(pubkey);
+
+		if(from->key_retry_phase == NODE_KEX_PUBLIC_KEY) {
+			node_kex_ensure(mesh, from);
+		}
+
 		return true;
 	}
 
@@ -526,13 +590,17 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 		/* Also reset any UTCP timers */
 		utcp_reset_timers(from->utcp);
 
+		if(from->key_retry_phase == NODE_KEX_PUBLIC_KEY) {
+			node_kex_ensure(mesh, from);
+		}
+
 		return true;
 	}
 
 	case REQ_KEY: {
 		if(!node_read_public_key(mesh, from)) {
 			logger(mesh, MESHLINK_DEBUG, "No ECDSA key known for %s", from->name);
-			send_request(mesh, from->nexthop->connection, NULL, "%d %s %s %d", REQ_KEY, mesh->self->name, from->name, REQ_PUBKEY);
+			node_kex_ensure(mesh, from);
 			return true;
 		}
 
@@ -559,7 +627,6 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 		node_set_validkey(mesh, from, false);
 		from->status.waitingforkey = true;
 		from->last_req_key = mesh->loop.now.tv_sec;
-		node_kex_arm(mesh, from);
 
 		/* Send our canonical address to help with UDP hole punching */
 		send_canonical_address(mesh, from);
@@ -567,7 +634,10 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 		/* Send our external IP address to help with UDP hole punching */
 		send_external_ip_address(mesh, from);
 
-		if(!sptps_start(&from->sptps, from, false, true, mesh->private_key, from->ecdsa, label, sizeof(label) - 1, send_sptps_data, receive_sptps_record)) {
+		bool accepted = sptps_start(&from->sptps, from, false, true, mesh->private_key, from->ecdsa, label, sizeof(label) - 1, send_sptps_data, receive_sptps_record);
+		node_kex_schedule_handshake(mesh, from, accepted, false);
+
+		if(!accepted) {
 			logger(mesh, MESHLINK_ERROR, "Could not start SPTPS session with %s: %s", from->name, strerror(errno));
 			return true;
 		}
@@ -1079,11 +1149,11 @@ bool node_kex_cover_unit(meshlink_handle_t *mesh) {
 	node_add(mesh, n);
 
 	saved = mesh->loop.now;
-	node_kex_arm(mesh, n);
+	node_kex_note_demand(mesh, n);
 	step = n->key_retry_step;
 	due = n->key_retry_at;
 
-	/* Lost SIG: the key stays invalid. The watchdog must not climb early. */
+	/* No route: the watchdog waits for its deadline without counting a send. */
 	if(due.tv_sec > 0) {
 		mesh->loop.now.tv_sec = due.tv_sec - 1;
 		mesh->loop.now.tv_nsec = 0;
@@ -1101,7 +1171,8 @@ bool node_kex_cover_unit(meshlink_handle_t *mesh) {
 	node_kex_watchdog(mesh);
 	mesh->loop.now = saved;
 
-	if(n->key_retry_step != (uint8_t)(step + 1) || n->status.validkey) {
+	if(n->key_retry_step != step || n->status.validkey
+	                || n->key_retry_phase != NODE_KEX_PUBLIC_KEY) {
 		node_del(mesh, n);
 		return false;
 	}

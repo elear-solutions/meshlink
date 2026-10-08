@@ -218,7 +218,7 @@ struct devtool_node_status {
 	size_t cutover_pending_bytes;         /// bytes in that FIFO
 	bool cutover_has_standby;             /// a direct socket is held beside the canonical one
 	uint8_t key_retry_step;               /// index into the 2/5/10/30/60s ladder
-	uint32_t key_retry_epoch;             /// increments on each node_kex_arm()
+	uint32_t key_retry_epoch;             /// increments when an initiator or responder handshake starts
 	bool key_retry_armed;                 /// watchdog deadline is set
 	bool key_delivery_uncertain;          /// old primary died before the barrier was proven
 	bool pending_punch_hint;              /// a hint is staged ahead of validkey

@@ -120,3 +120,5 @@ test/port-range
 test/reconnect-backoff
 
 test/relay-hop
+
+test/peer-control

@@ -1138,7 +1138,7 @@ static void fill_lan_overlay(meshlink_handle_t *mesh) {
 
 		if(!node_read_public_key(mesh, peer)) {
 			if(peer->status.reachable) {
-				send_req_key(mesh, peer);
+				node_kex_ensure(mesh, peer);
 			}
 
 			ensure_lan_outgoing(mesh, peer, false);
@@ -1336,7 +1336,7 @@ void connection_policy_tick(meshlink_handle_t *mesh) {
 
 		if(!node_read_public_key(mesh, bb)) {
 			if(bb->status.reachable) {
-				send_req_key(mesh, bb);
+				node_kex_ensure(mesh, bb);
 			}
 
 			ensure_backbone_outgoing(mesh, bb, false);

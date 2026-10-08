@@ -2398,15 +2398,15 @@ static void path_punch_on_new_demand(meshlink_handle_t *mesh, node_t *peer) {
 	path_punch_endpoint_tick(mesh, peer);
 }
 
-static void path_punch_note_hint(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa) {
+static void path_punch_note_hint(node_t *n, const sockaddr_t *sa) {
 	if(n->peer_udp.last_hint.sa.sa_family && !sockaddrcmp(&n->peer_udp.last_hint, sa)) {
 		return;
 	}
 
 	path_copy_sockaddr(&n->peer_udp.last_hint, sa);
-	/* Same restart as a demand epoch or a network epoch: send on this tick. */
-	path_punch_reset_schedule(n);
-	path_punch_endpoint_tick(mesh, n);
+	/* New information resets future backoff, not the already-owned request
+	   deadline. Its endpoint challenge proceeds independently below. */
+	n->peer_udp.request_step = 0;
 }
 
 static bool path_udp_observation_usable(const meshlink_handle_t *mesh, const sockaddr_t *sa) {
@@ -3150,7 +3150,7 @@ void path_note_punch_endpoint(meshlink_handle_t *mesh, node_t *node, const socka
 
 	if(confirmed && !same) {
 		logger(mesh, MESHLINK_INFO, "Keeping confirmed UDP endpoint of %s; punch hint stored", node->name);
-		path_punch_note_hint(mesh, node, sa);
+		path_punch_note_hint(node, sa);
 		return;
 	}
 
@@ -3163,7 +3163,7 @@ void path_note_punch_endpoint(meshlink_handle_t *mesh, node_t *node, const socka
 			node->peer_udp.hint_failed = false;
 		}
 
-		path_punch_note_hint(mesh, node, sa);
+		path_punch_note_hint(node, sa);
 
 		if(path_punch_challenge_current(mesh, node)
 		                && node->peer_udp.challenge.provenance == PUNCH_PROV_AUTH_INGRESS) {
@@ -3185,7 +3185,7 @@ void path_note_punch_endpoint(meshlink_handle_t *mesh, node_t *node, const socka
 		return;
 	}
 
-	path_punch_note_hint(mesh, node, sa);
+	path_punch_note_hint(node, sa);
 }
 
 void path_peer_ensure_udp_key(meshlink_handle_t *mesh, node_t *peer) {
@@ -3208,7 +3208,7 @@ void path_peer_ensure_udp_key(meshlink_handle_t *mesh, node_t *peer) {
 		return;
 	}
 
-	send_req_key(mesh, peer);
+	node_kex_ensure(mesh, peer);
 }
 
 static void path_peer_udp_stop(meshlink_handle_t *mesh, node_t *n) {

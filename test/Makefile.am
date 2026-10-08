@@ -48,6 +48,7 @@ TESTS = \
 	udp-relay \
 	relay-coverage \
 	path-policy-coverage \
+	peer-control \
 	backbone-identity \
 	connection-policy \
 	backbone-udp \
@@ -126,6 +127,7 @@ check_PROGRAMS = \
 	udp-relay \
 	relay-coverage \
 	path-policy-coverage \
+	peer-control \
 	backbone-identity \
 	connection-policy \
 	backbone-udp \
@@ -319,3 +321,6 @@ discovery_failure_SOURCES = discovery-failure.c
 discovery_failure_LDADD = $(top_builddir)/src/.libs/libmeshlink.a
 discovery_failure_LDFLAGS = $(AM_LDFLAGS) -Wl,--wrap=bind -Wl,--wrap=setsockopt -Wl,--wrap=getifaddrs -Wl,--wrap=freeifaddrs
 endif
+
+peer_control_SOURCES = peer-control.c utils.c utils.h
+peer_control_LDADD = $(top_builddir)/src/.libs/libmeshlink.a

@@ -27,6 +27,12 @@
 #include "utcp.h"
 #include "submesh.h"
 
+typedef enum node_kex_phase_t {
+	NODE_KEX_IDLE,
+	NODE_KEX_PUBLIC_KEY,
+	NODE_KEX_HANDSHAKE,
+} node_kex_phase_t;
+
 typedef struct node_status_t {
 	uint16_t validkey: 1;               /* 1 if we currently have a valid key for him */
 	uint16_t waitingforkey: 1;          /* 1 if we already sent out a request */
@@ -206,11 +212,12 @@ typedef struct node_t {
 	time_t last_req_key;
 
 	/* Node-owned SPTPS recovery. Not tied to one META socket. */
+	node_kex_phase_t key_retry_phase;       /* acquisition and handshake use independent backoff */
 	struct timespec key_retry_at;           /* {0,0} = watchdog not armed */
 	uint8_t key_retry_step;                 /* index into 2,5,10,30,60s */
-	uint32_t key_retry_epoch;               /* increments in node_kex_arm(), including send_req_key() and the responder handshake */
+	uint32_t key_retry_epoch;               /* increments when an initiator or responder handshake starts */
 	bool key_delivery_uncertain;            /* cutover lost the old primary before the barrier */
-	bool key_retry_wanted;                  /* inbound REQ_SPTPS asked for a retry; not channel demand */
+	bool key_retry_wanted;                  /* ordinary acquisition or inbound REQ_SPTPS needs recovery */
 
 	struct ecdsa *ecdsa;                    /* His public ECDSA key */
 
