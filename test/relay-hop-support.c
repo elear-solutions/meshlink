@@ -14,6 +14,7 @@
 #include "path_probe.h"
 #include "path_scheduler.h"
 #include "relay.h"
+#include "relay_devtool.h"
 #include <assert.h>
 
 void relay_hop_tests(meshlink_handle_t *mesh);
@@ -102,6 +103,22 @@ void relay_hop_tests(meshlink_handle_t *mesh) {
 	assert(n.relay_hop.confirmed && n.status.udp_confirmed);
 	assert(n.active_route.kind == DATA_ROUTE_NONE);
 	assert(n.plpmtu.state != PLPMTU_DISABLED && n.liveness.timer.cb);
+
+	/* Output proof is not endpoint readiness, even when ranking happens later. */
+	connection_t primary = {0};
+	primary.status.active = true;
+	n.connection = &primary;
+	n.nexthop = &n;
+	path_target_t target;
+	assert(path_select_destination_tier(&n, false) == PATH_TIER_RELAY_UDP);
+	assert(path_select_fallback(mesh, &n, &target));
+	assert(target.kind == DATA_ROUTE_DIRECT_LOCAL_META);
+	assert(relay_hop_udp_ready(&n));
+	/* A previously recorded direct carrier must also be rejected. */
+	n.active_route.kind = DATA_ROUTE_DIRECT_UDP;
+	n.active_route.udp_endpoint = n.address;
+	assert(path_resolve_active_route(mesh, &n, &target));
+	assert(target.kind == DATA_ROUTE_DIRECT_LOCAL_META);
 
 	/* Replacement is challenged without overwriting the working endpoint. */
 	uint16_t old_size = n.plpmtu.size;
@@ -410,6 +427,104 @@ static node_t *test_peer(meshlink_handle_t *mesh, const char *name) {
 	n->name = strdup(name);
 	node_add(mesh, n);
 	return n;
+}
+
+void relay_connection_tests(meshlink_handle_t *mesh);
+void relay_connection_tests(meshlink_handle_t *mesh) {
+	node_t *hop = test_peer(mesh, "next"), *dest = test_peer(mesh, "destination");
+	connection_t primary = {0}, replacement = {0};
+	primary.status.active = replacement.status.active = true;
+	hop->connection = &primary;
+	hop->nexthop = hop;
+	dest->nexthop = hop;
+	dest->relay_budget = 900;
+	dest->relay_budget_connection = &primary;
+	relay_report_entry_t *report = relay_report_get(mesh, hop->name, dest->name, true, true);
+	assert(report);
+	report->have_reported = true;
+	bool saved_retiring = mesh->retiring_outgoing;
+	mesh->retiring_outgoing = true; /* Isolate close notification from redial policy. */
+
+	/* Spare/failed dials must preserve the still-active reporting connection. */
+	connection_policy_on_connection_closed(mesh, hop, META_PURPOSE_NONE);
+	assert(dest->relay_budget == 900 && dest->relay_budget_connection == &primary);
+	assert(report->have_reported);
+	/* Installing a different primary still invalidates both kinds of state. */
+	install_node_connection(mesh, hop, &replacement);
+	assert(!dest->relay_budget && !dest->relay_budget_connection && !report->have_reported);
+	dest->relay_budget = 900;
+	dest->relay_budget_connection = &replacement;
+	report->have_reported = true;
+	connection_policy_on_connection_closed(mesh, hop, META_PURPOSE_NONE);
+	assert(dest->relay_budget == 900 && dest->relay_budget_connection == &replacement);
+	assert(report->have_reported);
+	/* A real primary close has no active connection left and must invalidate. */
+	hop->connection = NULL;
+	connection_policy_on_connection_closed(mesh, hop, META_PURPOSE_NONE);
+	assert(!dest->relay_budget && !dest->relay_budget_connection && !report->have_reported);
+	mesh->retiring_outgoing = saved_retiring;
+	node_del(mesh, dest);
+	node_del(mesh, hop);
+}
+
+void relay_verify_pause_tests(meshlink_handle_t *mesh);
+void relay_verify_pause_tests(meshlink_handle_t *mesh) {
+	node_t n;
+	setup_peer(mesh, &n);
+	struct timespec saved_now = mesh->loop.now;
+	mesh->loop.now.tv_sec = time(NULL);
+	n.status.udp_confirmed = n.relay_hop.confirmed = true;
+	n.relay_hop.confirmed_endpoint = n.address;
+	n.relay_hop.demand_until = mesh->loop.now;
+	n.relay_hop.demand_until.tv_sec += 300;
+	path_plpmtu_on_confirmed(mesh, &n);
+	const path_plpmtu_state_t states[] = {PLPMTU_COMPLETE, PLPMTU_ERROR};
+	for(size_t i = 0; i < sizeof states / sizeof states[0]; i++) {
+		path_plpmtu_pause(mesh, &n);
+		n.plpmtu.state = states[i];
+		n.plpmtu.size = states[i] == PLPMTU_ERROR ? MINMTU : 1399;
+		n.plpmtu.hostile = true;
+		n.plpmtu.raise_at = mesh->loop.now;
+		n.plpmtu.raise_at.tv_sec += 3600;
+		n.plpmtu.relay_verify_at = mesh->loop.now;
+		path_scheduler_set_budget(mesh, 0, 0, 2);
+		path_plpmtu_verify_relay_due(mesh, &n);
+		assert(n.plpmtu.relay_verifying && n.plpmtu.state == PLPMTU_VERIFY);
+		assert(n.plpmtu.pending_size == n.plpmtu.size && !n.plpmtu.probe_size);
+		path_plpmtu_pause(mesh, &n);
+		assert(n.plpmtu.state == states[i] && !n.plpmtu.relay_verifying);
+		assert(!n.plpmtu.timer.cb && !n.plpmtu.pending_size && !n.plpmtu.probe_nonce);
+		assert(n.plpmtu.hostile && n.plpmtu.raise_at.tv_sec == mesh->loop.now.tv_sec + 3600);
+		/* Reconfirmation keeps the paused state for the same directional IP. */
+		path_plpmtu_on_confirmed(mesh, &n);
+		assert(n.plpmtu.state == states[i]);
+		/* Losing readiness during an actual transmitted check also pauses it. */
+		path_scheduler_set_budget(mesh, 4, 20, 2);
+		path_plpmtu_verify_relay_due(mesh, &n);
+		assert(n.plpmtu.relay_verifying && n.plpmtu.probe_nonce);
+		n.status.udp_confirmed = false;
+		path_plpmtu_tick(mesh, &n);
+		assert(n.plpmtu.state == states[i] && !n.plpmtu.relay_verifying);
+		assert(!n.plpmtu.probe_nonce && !n.plpmtu.probe_size && !n.plpmtu.timer.cb);
+		n.status.udp_confirmed = true;
+		path_plpmtu_on_confirmed(mesh, &n);
+		assert(n.plpmtu.state == states[i]);
+	}
+	/* ERROR must still retry the base at its raise deadline after resuming. */
+	mesh->loop.now = n.plpmtu.raise_at;
+	n.relay_hop.demand_until = mesh->loop.now;
+	n.relay_hop.demand_until.tv_sec += 300;
+	n.plpmtu.relay_verify_at = mesh->loop.now;
+	n.plpmtu.relay_verify_at.tv_sec += 30;
+	path_scheduler_set_budget(mesh, 4, 20, 2);
+	path_plpmtu_tick(mesh, &n);
+	assert(n.plpmtu.state == PLPMTU_BASE && n.plpmtu.probe_size == PATH_PLPMTU_BASE);
+	relay_hop_stop(mesh, &n);
+	path_plpmtu_stop(mesh, &n);
+	path_scheduler_cancel_node(mesh, &n);
+	update_node_udp_from(mesh, &n, NULL, ADDR_SRC_UNKNOWN);
+	sptps_stop(&n.sptps);
+	mesh->loop.now = saved_now;
 }
 
 void relay_send_tests(meshlink_handle_t *mesh);

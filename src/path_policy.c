@@ -1324,7 +1324,8 @@ path_tier_t path_select_destination_tier(const node_t *dest, bool meta_in) {
 		return PATH_TIER_NONE;
 	}
 
-	if(!meta_in && !dest->status.forced_relay && hop_udp_ready(dest)) {
+	/* Relay output proof is not ordinary endpoint route readiness. */
+	if(!meta_in && !dest->status.forced_relay && !dest->relay_hop.confirmed && hop_udp_ready(dest)) {
 		return dest->udp_tier == PATH_TIER_DIRECT_LOCAL_UDP ? PATH_TIER_DIRECT_LOCAL_UDP : PATH_TIER_DIRECT_WAN_UDP;
 	}
 
@@ -4686,7 +4687,7 @@ static bool path_target_matches_skip(const data_route_t *skip, const path_target
 }
 
 static bool path_fill_direct_udp(meshlink_handle_t *mesh, const node_t *n, path_target_t *out) {
-	if(n->devtool_force_meta || n->status.forced_relay) {
+	if(n->devtool_force_meta || n->status.forced_relay || n->relay_hop.confirmed) {
 		return false;
 	}
 
@@ -4837,7 +4838,7 @@ static bool path_recorded_usable(const meshlink_handle_t *mesh, const node_t *n)
 
 	switch(r->kind) {
 	case DATA_ROUTE_DIRECT_UDP:
-		if(r->udp_endpoint.sa.sa_family == AF_UNSPEC || r->udp_endpoint.sa.sa_family == AF_UNKNOWN) {
+		if(n->relay_hop.confirmed || r->udp_endpoint.sa.sa_family == AF_UNSPEC || r->udp_endpoint.sa.sa_family == AF_UNKNOWN) {
 			return false;
 		}
 

@@ -523,6 +523,7 @@ void path_plpmtu_verify_relay_due(meshlink_handle_t *mesh, node_t *n) {
 	}
 	if(ms_between(&mesh->loop.now, &n->plpmtu.relay_verify_at) > 0) { return; }
 	/* Check the current usable size, preserving hostile holds and raise_at. */
+	n->plpmtu.relay_verify_state = n->plpmtu.state;
 	n->plpmtu.relay_verifying = true;
 	n->plpmtu.relay_verifications++;
 	n->plpmtu.bh_verifying = true;
@@ -642,7 +643,7 @@ void path_plpmtu_pause(meshlink_handle_t *mesh, node_t *n) {
 
 	disarm(mesh, &n->plpmtu.timer);
 	if(n->plpmtu.relay_verifying) {
-		n->plpmtu.state = PLPMTU_COMPLETE;
+		n->plpmtu.state = n->plpmtu.relay_verify_state;
 		n->plpmtu.bh_verifying = false;
 	}
 	clear_probe(n);

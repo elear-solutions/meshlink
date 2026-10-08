@@ -100,6 +100,7 @@ typedef struct path_plpmtu_t {
 	bool bh_verifying;
 	bool raising;
 	bool relay_verifying;
+	path_plpmtu_state_t relay_verify_state; /* Settled state to restore if verification pauses. */
 	struct timespec relay_verify_at, relay_verified_at;
 	uint32_t relay_verifications, relay_verify_failures, relay_verify_admission_delays;
 	struct timespec probe_sent_at, raise_at, last_oversize_sent_at, bh_first_at;
