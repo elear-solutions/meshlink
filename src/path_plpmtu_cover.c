@@ -1203,6 +1203,27 @@ static bool keepalive_cover(meshlink_handle_t *mesh) {
 	path_keepalive_tick(mesh, &n);
 	CHECK(n.keepalive.interval_ms == 10800);
 
+	/* A confirmed expiry that cannot shrink (gap's 60% is already above the
+	   floor) still restarts the grow clock. */
+	n.keepalive.interval_ms = PATH_KEEPALIVE_FLOOR_MS;
+	n.keepalive.expiries = 1;
+	n.keepalive.pending_gap_ms = 0;
+	n.keepalive.last_grow_at = mesh->loop.now;
+	n.keepalive.last_grow_at.tv_sec -= PATH_KEEPALIVE_GROW_SEC + 1;
+	n.plpmtu.last_oversize_sent_at.tv_sec = 0;
+	n.status.udp_confirmed = true;
+	n.status.validkey = true;
+	local = v4(0xc0000201, 5000);
+	path_keepalive_observe_local_endpoint(mesh, &n, &n.address, &local);
+	n.keepalive.pending_gap_ms = PATH_KEEPALIVE_FLOOR_MS * 3;
+	n.keepalive.pending_since = mesh->loop.now;
+	path_copy_sockaddr(&n.keepalive.pending_ip, &n.address);
+	local.in.sin_port = htons(6100);
+	path_keepalive_observe_local_endpoint(mesh, &n, &n.address, &local);
+	CHECK(n.keepalive.interval_ms == PATH_KEEPALIVE_FLOOR_MS);
+	CHECK(n.keepalive.expiries == 1);
+	CHECK(n.keepalive.last_grow_at.tv_sec == mesh->loop.now.tv_sec);
+
 	mesh->backbone_udp.node = &n;
 	n.keepalive.interval_ms = PATH_KEEPALIVE_BACKBONE_INITIAL_MS;
 	n.keepalive.expiries = 0;
@@ -1222,11 +1243,12 @@ static bool keepalive_cover(meshlink_handle_t *mesh) {
 	CHECK(n.mtu_cache[cache_slot(&n, 0xcb00710c)].keepalive_ms == n.keepalive.interval_ms);
 	mesh->backbone_udp_keepalive_sec = PATH_BACKBONE_UDP_KEEPALIVE_SEC;
 	CHECK(path_backbone_udp_keepalive_base_sec(mesh) == (int)(n.keepalive.interval_ms / 1000));
-	n.keepalive.interval_ms = 0;
 	mesh->backbone_udp_keepalive_sec = 2;
 	CHECK(path_backbone_udp_keepalive_base_sec(mesh) == 2);
 	mesh->backbone_udp_keepalive_sec = PATH_BACKBONE_UDP_KEEPALIVE_SEC;
-	n.keepalive.interval_ms = PATH_KEEPALIVE_BACKBONE_INITIAL_MS * 72 / 100;
+	CHECK(path_backbone_udp_keepalive_base_sec(mesh) == (int)(n.keepalive.interval_ms / 1000));
+	n.keepalive.interval_ms = 0;
+	CHECK(path_backbone_udp_keepalive_base_sec(mesh) == PATH_BACKBONE_UDP_KEEPALIVE_SEC);
 
 	ok = true;
 

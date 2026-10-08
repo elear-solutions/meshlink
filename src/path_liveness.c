@@ -160,8 +160,11 @@ static void keepalive_apply_pending(meshlink_handle_t *mesh, node_t *n) {
 				arm_ms(mesh, &n->keepalive.timer, keepalive_timer, n, (int)shrunk);
 			}
 			logger(mesh, MESHLINK_INFO, "UDP keepalive interval for %s set to %ums after idle expiry", n->name, shrunk);
-			n->keepalive.last_grow_at = mesh->loop.now;
 		}
+
+		/* Restart the hourly grow even when the interval is already at the
+		   floor and 60% of this gap would not shrink it further. */
+		n->keepalive.last_grow_at = mesh->loop.now;
 	}
 
 	n->keepalive.pending_gap_ms = 0;

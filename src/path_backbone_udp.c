@@ -131,16 +131,17 @@ void path_backbone_udp_arm(meshlink_handle_t *mesh, int sec, long nsec) {
 int path_backbone_udp_keepalive_base_sec(meshlink_handle_t *mesh) {
 	node_t *n = mesh ? mesh->backbone_udp.node : NULL;
 
-	/* A learned or restored interval takes precedence over the 25s default.
-	   backbone_udp_keepalive_sec still shortens tests before anything is learned. */
+	/* Devtools shorten tests by setting a non-default keepalive. That override
+	   wins over a learned interval. The stock 25s does not. */
+	if(mesh && mesh->backbone_udp_keepalive_sec > 0
+	                && mesh->backbone_udp_keepalive_sec != PATH_BACKBONE_UDP_KEEPALIVE_SEC) {
+		return mesh->backbone_udp_keepalive_sec;
+	}
+
 	if(n && n->keepalive.interval_ms) {
 		int learned = (int)(path_keepalive_backbone_interval_ms(mesh, n) / 1000);
 
 		return learned > 0 ? learned : 1;
-	}
-
-	if(mesh && mesh->backbone_udp_keepalive_sec > 0) {
-		return mesh->backbone_udp_keepalive_sec;
 	}
 
 	return PATH_BACKBONE_UDP_KEEPALIVE_SEC;
