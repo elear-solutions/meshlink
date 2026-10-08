@@ -332,7 +332,7 @@ Rules for every workstream:
 |----|-------|----------|------------|--------|
 | WS1 | Path MTU and liveness rework | F3, F5, F6, F4 (PMTU gate), F2 follow-up | — | Implemented in PR #127; C3 follow-up fixes awaiting field validation |
 | WS2 | Relay data plane | F7, relay MTU | WS1 PR A; NMN deployed first | Implemented; Docker and field validation tracked below |
-| WS3 | Route selection at startup and after reachability changes | F4 (route choice), F8, F9 | WS1 | Implemented; Docker and field validation tracked below |
+| WS3 | Route selection at startup and after reachability changes | F4 (route choice), F8, F9 | WS1 | Implemented in PR #129; all 58 Docker tests pass; field validation pending |
 | WS4 | Hygiene and channel availability | M1, M2 (meshlink side), M3, M4, M5, M8, F10 | — | Not started |
 
 ### WS1: Path MTU and liveness rework
@@ -518,6 +518,8 @@ protocol compatibility, budgets, and the narrow NMN probing exception.
 - **F8:** prevent offline destinations from starting or committing promotions; test disconnect, background route ticks and reconnect with retained channel demand.
 - **F9:** reconcile pending direct promotions immediately after a validated rebind; test a relayed channel inside residency whose pending endpoint still points to the old port. Preserve residency and replace endpoint validation safely.
 - Docker unit coverage exercises the one-second backbone hold, ten-second residency, offline admission and resumed selection, and a pending direct candidate retargeted by rebind. Existing relay and NAT integration tests exercise packet delivery. Record a new Hemanth-path capture before marking field validation complete; compare META/relay durations, direct time, rebind recovery, route changes, retransmits and packet loss with C3. No field timing is inferred from unit tests.
+
+**Delivery:** implemented on `ws3-route-selection` ([PR #129](https://github.com/elear-solutions/meshlink/pull/129)); ADR 0013 records the policy. The full serial Docker `make -j1 check` rerun passed all 58 tests with no skips. The first run passed 57 tests and hit a T18a direct-UDP setup timeout in `path-stability`; that timeout did not reproduce in six isolated runs, a complete `path-stability` rerun, or the successful full-suite rerun. Temporary diagnostic changes were reverted before the successful full run. Hemanth-path field validation is still pending.
 
 ### WS4: Hygiene
 - **M1:** edge-trigger `Unstable NAT binding`, so it fires once per window.
