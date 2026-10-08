@@ -288,6 +288,7 @@ static void path_backbone_udp_timer(event_loop_t *loop, void *data) {
 					path_note_udp_demoted_reason(mesh, n, "backbone-udp-timeout");
 				} else {
 					p->confirmed = false;
+					memset(&p->confirmed_at, 0, sizeof p->confirmed_at);
 
 					if(p->endpoint.sa.sa_family) {
 						path_copy_sockaddr(&p->failed_endpoint, &p->endpoint);
@@ -403,6 +404,7 @@ void path_backbone_udp_reset(meshlink_handle_t *mesh, node_t *n) {
 	}
 
 	mesh->backbone_udp.confirmed = false;
+	memset(&mesh->backbone_udp.confirmed_at, 0, sizeof mesh->backbone_udp.confirmed_at);
 	mesh->backbone_udp.liveness_nonce = 0;
 	mesh->backbone_udp.unanswered = 0;
 	mesh->backbone_udp.establish_step = 0;
@@ -461,6 +463,7 @@ void path_backbone_udp_observe_reply(meshlink_handle_t *mesh, node_t *n, const s
 
 	if(!p->confirmed) {
 		p->confirmed = true;
+		p->confirmed_at = mesh->loop.now;
 		p->establish_step = 0;
 		n->status.udp_confirmed = true;
 

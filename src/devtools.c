@@ -1524,6 +1524,7 @@ void devtool_force_meta(meshlink_handle_t *mesh, meshlink_node_t *node, bool ena
 
 		if(n == mesh->backbone_udp.node) {
 			mesh->backbone_udp.confirmed = false;
+			memset(&mesh->backbone_udp.confirmed_at, 0, sizeof mesh->backbone_udp.confirmed_at);
 			mesh->backbone_udp.liveness_nonce = 0;
 		}
 	} else if(n->status.validkey && n->status.reachable) {

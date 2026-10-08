@@ -93,6 +93,7 @@ typedef struct backbone_udp_path_t {
 	uint8_t establish_step;               /* Telescopic no-dest / exhausted-dest delay */
 	uint64_t liveness_nonce;
 	struct timespec last_authenticated_reply;
+	struct timespec confirmed_at;          /* first proof of the current UDP carrier */
 	timeout_t timer;                      /* due-time owner; packets admit through path_scheduler_emit_packet() */
 } backbone_udp_path_t;
 

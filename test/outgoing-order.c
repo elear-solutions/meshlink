@@ -309,8 +309,7 @@ static void test_known_path(void) {
 	assert(meshlink_destroy("outgoing_order_t3_conf.3"));
 }
 
-/* T5: camera reaches the backbone through a canonical relay, then upgrades.
-   Portable-to-portable META is finding 7. */
+/* T5: camera reaches the backbone through a canonical relay, then upgrades. */
 static void test_known_indirect_counts_as_canonical(void) {
 	printf("\n=== T5: camera→backbone canonical META upgrades to direct ===\n");
 

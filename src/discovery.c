@@ -244,7 +244,7 @@ static void send_mdns_packet_ipv4(meshlink_handle_t *mesh, int fd, int index, co
 	};
 
 	if(setsockopt(fd, IPPROTO_IP, IP_MULTICAST_IF, &mreq, sizeof(mreq)) != 0) {
-		logger(mesh, MESHLINK_ERROR, "Could not set outgoing multicast interface on IPv4 socket");
+		logger(mesh, MESHLINK_ERROR, "Could not set outgoing multicast interface on IPv4 socket (interface index %d): %s", index, strerror(errno));
 		return;
 	}
 
@@ -302,7 +302,7 @@ static void send_mdns_packet_ipv6(meshlink_handle_t *mesh, int fd, int index, co
 #ifdef IPV6_MULTICAST_IF
 
 	if(setsockopt(fd, IPPROTO_IPV6, IPV6_MULTICAST_IF, &index, sizeof(index)) != 0) {
-		logger(mesh, MESHLINK_ERROR, "Could not set outgoing multicast interface on IPv6 socket");
+		logger(mesh, MESHLINK_ERROR, "Could not set outgoing multicast interface on IPv6 socket (interface index %d): %s", index, strerror(errno));
 		return;
 	}
 
@@ -1266,6 +1266,7 @@ bool discovery_start(meshlink_handle_t *mesh) {
 			netlink_getlink(sock);
 		} else {
 			logger(mesh, MESHLINK_WARNING, "Could not bind AF_NETLINK socket: %s", strerror(errno));
+			close(sock);
 			scan_ifaddrs(mesh);
 		}
 	} else {

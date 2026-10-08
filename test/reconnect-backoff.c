@@ -18,8 +18,8 @@
 #include "utils.h"
 #include "connection_policy.h"
 
-/* Camera→backbone reconnect backoff. Backbone never dual-dials (finding 5).
-   Finding 6: telescopic 1,2,5,... not linear +5. */
+/* Camera→backbone reconnect backoff is telescopic: 1,2,5,...
+   The backbone never dual-dials. */
 
 #define MEASURE_SECONDS 8
 #define MAX_TRIES_IN_WINDOW 5
@@ -548,7 +548,7 @@ static void test_meta_flap_preserves_sptps(void) {
 	assert(meshlink_destroy("reconnect_backoff_t24_conf.2"));
 }
 
-/* T25: Round-4 warm-acceptor EXTERNAL — after a same-port META reconnect the
+/* T25: warm-acceptor EXTERNAL — after a same-port META reconnect the
    warm peer must advertise EXTERNAL again so the initiator learns a fresh ad
    even when it skipped send_req_key. Complements T24 (preserve-session skip)
    and mirrors req-external-recent T9a next to the reconnect-backoff suite. */

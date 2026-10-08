@@ -146,7 +146,7 @@ typedef struct path_target_t {
 #define PATH_PROMOTION_DEADLINE_SEC      10
 #define PATH_CANDIDATE_PROBE_INTERVAL_SEC 1
 #define PATH_PROMOTION_PROBE_LEN        64
-#define PATH_ROUTE_MIN_RESIDENCY_SEC     30
+#define PATH_ROUTE_MIN_RESIDENCY_SEC     10
 
 /* ADR 0011 knobs live with their machines. Included here so existing
    path_policy.h users keep seeing them. */
@@ -205,6 +205,7 @@ typedef struct udp_rebind_t {
 	struct timespec migrations[PATH_REBIND_MIGRATION_RING];
 	uint8_t migration_pos;
 	uint8_t migration_fill;
+	struct timespec flap_warned_until;      /* suppress repeated warnings for one flap window */
 	uint32_t seen;
 	uint32_t migrated;
 	uint32_t failed;

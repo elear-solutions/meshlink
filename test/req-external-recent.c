@@ -229,8 +229,8 @@ static bool poke_and_saw_empty_reject(meshlink_handle_t *a, meshlink_node_t *a_b
 /* T9c: a learns b only through c. A forwarded REQ_EXTERNAL must not land at
    recent[0] when a has no proven address for b — that would make the next
    outgoing walk dial the untrusted address first. a and b are UNKNOWN
-   so each stays on c and never dials the other; no a↔b invite. Finding 5
-   gives UNKNOWN the same one-backbone-intent rule. */
+   so each stays on c and never dials the other; no a↔b invite. UNKNOWN
+   follows the same one-backbone-intent rule. */
 static void test_forwarded_empty_recent(void) {
 	printf("\n=== T9c: forwarded REQ_EXTERNAL is not remembered when recent[] is empty ===\n");
 

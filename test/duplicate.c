@@ -11,10 +11,8 @@
 #include "meshlink.h"
 #include "utils.h"
 
-/* After finding 5, META is a star: cameras dial the stored backbone only.
-   The old all-BACKBONE import chain never comes up, and two nodes with the
-   same name cannot build independent META paths until finding 7. Production
-   already refuses a second invitation for a live name. */
+/* Duplicate-name rejection is exercised through the stored backbone.
+   Production refuses a second invitation for a live name. */
 
 static struct sync_flag foo_up;
 

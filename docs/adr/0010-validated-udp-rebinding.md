@@ -51,7 +51,8 @@ without dropping the route.
   or unanswered suspect probes) waits for an in-flight or fresh
   candidate, then proceeds as before if the challenge fails.
 - Six migrations inside 60 seconds log `Unstable NAT binding`. That is
-  an observation, not a policy change.
+  an observation, not a policy change. ADR 0014 limits repeated warnings
+  to once per peer per 60-second warning window.
 
 ## Consequences
 

@@ -839,6 +839,7 @@ static void rebind_plant(meshlink_handle_t *mesh, node_t *n, const char *port) {
 bool rebind_cover_unit(meshlink_handle_t *mesh) {
 	node_t *n = NULL;
 	int saved_class = 0;
+	struct timespec saved_now;
 	struct timespec selected;
 	sockaddr_t live;
 	sockaddr_t moved;
@@ -861,6 +862,7 @@ bool rebind_cover_unit(meshlink_handle_t *mesh) {
 } while(0)
 
 	saved_class = mesh->self->devclass;
+	saved_now = mesh->loop.now;
 	mesh->self->devclass = DEV_CLASS_STATIONARY;
 	n = new_node();
 	n->name = xstrdup("rebindsrc");
@@ -915,6 +917,55 @@ bool rebind_cover_unit(meshlink_handle_t *mesh) {
 	REBIND_CHECK(!sockaddrcmp(&n->address, &moved));
 	REBIND_CHECK(n->plpmtu.size == 1414);
 	REBIND_CHECK(n->plpmtu.state == PLPMTU_COMPLETE);
+
+	/* A rebind during relay residency must retarget the already-proved
+	   direct candidate immediately, then commit without a stale-port cycle. */
+	rebind_plant(mesh, n, "49000");
+	n->peer_udp.channel_count = 1;
+	n->active_route.kind = DATA_ROUTE_RELAY;
+	n->active_route.relay_carrier = RELAY_CARRIER_META_CANONICAL;
+	n->active_route.first_hop = mesh->backbone.node;
+	n->active_route.selected_at = mesh->loop.now;
+	n->active_route.selected_at.tv_sec -= 5;
+	selected = n->active_route.selected_at;
+	live = n->address;
+	moved = str2sockaddr("203.0.113.50", "49001");
+	memset(&n->promotion_candidate, 0, sizeof n->promotion_candidate);
+	n->promotion_candidate.active = true;
+	n->promotion_candidate.kind = DATA_ROUTE_DIRECT_UDP;
+	n->promotion_candidate.endpoint = live;
+	n->promotion_candidate.source = ADDR_SRC_UDP_REFLEXIVE;
+	n->promotion_candidate.capability = PATH_CAP_UDP;
+	n->promotion_candidate.successful_rounds = PATH_PROMOTION_ROUNDS;
+	n->promotion_candidate.first_success = mesh->loop.now;
+	n->promotion_candidate.first_success.tv_sec -= 2;
+	n->udp_rebind.current_rx_at.tv_sec -= 1;
+	path_rebind_observe_rx(mesh, n, &moved);
+	REBIND_CHECK(n->udp_rebind.challenge_active);
+	nonce = n->udp_rebind.challenge_nonce;
+	n->devtool_force_meta = false;
+	REBIND_CHECK(!path_rebind_accept_reply(mesh, n, &moved, nonce ^ 1));
+	REBIND_CHECK(path_rebind_accept_reply(mesh, n, &moved, nonce));
+	REBIND_CHECK(!sockaddrcmp(&n->address, &moved));
+	REBIND_CHECK(n->active_route.kind == DATA_ROUTE_RELAY);
+	REBIND_CHECK(n->active_route.selected_at.tv_sec == selected.tv_sec);
+	REBIND_CHECK(n->active_route.selected_at.tv_nsec == selected.tv_nsec);
+	REBIND_CHECK(n->promotion_candidate.active);
+	REBIND_CHECK(!n->promotion_candidate.nonce);
+	REBIND_CHECK(!sockaddrcmp(&n->promotion_candidate.endpoint, &moved));
+	REBIND_CHECK(n->promotion_candidate.source == ADDR_SRC_UDP_REFLEXIVE);
+	REBIND_CHECK(n->promotion_candidate.capability == PATH_CAP_UDP);
+	REBIND_CHECK(n->promotion_candidate.first_success.tv_sec == mesh->loop.now.tv_sec);
+	REBIND_CHECK(n->plpmtu.size == 1414);
+	path_route_tick(mesh, n);
+	REBIND_CHECK(n->active_route.kind == DATA_ROUTE_RELAY);
+	n->promotion_candidate.first_success.tv_sec -= 1;
+	n->active_route.selected_at.tv_sec -= 5;
+	path_route_tick(mesh, n);
+	REBIND_CHECK(n->active_route.kind == DATA_ROUTE_DIRECT_UDP);
+	REBIND_CHECK(!n->promotion_candidate.active);
+	REBIND_CHECK(!sockaddrcmp(&n->active_route.udp_endpoint, &moved));
+	REBIND_CHECK(n->plpmtu.size == 1414);
 
 	rebind_plant(mesh, n, "49444");
 	pinned = n->address;
@@ -991,27 +1042,42 @@ bool rebind_cover_unit(meshlink_handle_t *mesh) {
 	REBIND_CHECK(!n->udp_rebind.challenge_active);
 
 	rebind_plant(mesh, n, "57000");
-	n->udp_rebind.migrated = 0;
+	/* A burst warns once, including ring wrap. The warning window expires
+	   at exactly 60 seconds; a later fresh burst can warn again. */
+	const unsigned offsets_ms[] = {0, 59999, 60000, 121000};
+	const unsigned migrations[] = {10, 1, 1, 10};
+	const unsigned warned_until_sec[] = {60, 60, 120, 181};
+	unsigned total = 0;
 
-	for(i = 0; i < PATH_REBIND_FLAP_WARN; i++) {
-		char port[8];
+	for(unsigned phase = 0; phase < 4; phase++) {
+		mesh->loop.now.tv_sec = saved_now.tv_sec + offsets_ms[phase] / 1000;
+		mesh->loop.now.tv_nsec = (long)(offsets_ms[phase] % 1000) * 1000000L;
 
-		snprintf(port, sizeof port, "%u", 58000 + i);
-		moved = str2sockaddr("203.0.113.50", port);
-		n->udp_rebind.current_rx_at.tv_sec -= 1;
-		path_rebind_observe_rx(mesh, n, &moved);
-		REBIND_CHECK(n->udp_rebind.challenge_active);
-		nonce = n->udp_rebind.challenge_nonce;
-		REBIND_CHECK(path_rebind_accept_reply(mesh, n, &moved, nonce));
+		for(i = 0; i < migrations[phase]; i++) {
+			char port[8];
+
+			snprintf(port, sizeof port, "%u", 58000 + total++);
+			moved = str2sockaddr("203.0.113.50", port);
+			n->udp_rebind.current_rx_at = mesh->loop.now;
+			n->udp_rebind.current_rx_at.tv_sec -= 1;
+			path_rebind_observe_rx(mesh, n, &moved);
+			REBIND_CHECK(n->udp_rebind.challenge_active);
+			nonce = n->udp_rebind.challenge_nonce;
+			REBIND_CHECK(path_rebind_accept_reply(mesh, n, &moved, nonce));
+		}
+
+		REBIND_CHECK(n->udp_rebind.flap_warned_until.tv_sec == saved_now.tv_sec + warned_until_sec[phase]);
+		REBIND_CHECK(n->udp_rebind.flap_warned_until.tv_nsec == 0);
 	}
 
-	REBIND_CHECK(n->udp_rebind.migrated == PATH_REBIND_FLAP_WARN);
+	REBIND_CHECK(n->udp_rebind.migrated == total);
 	REBIND_CHECK(n->status.udp_confirmed);
 	REBIND_CHECK(n->active_route.kind == DATA_ROUTE_DIRECT_UDP);
 	ok = true;
 
 done:
 	mesh->self->devclass = saved_class;
+	mesh->loop.now = saved_now;
 
 	if(n) {
 		timeout_del(&mesh->loop, &n->plpmtu.timer);
