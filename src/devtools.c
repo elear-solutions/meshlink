@@ -466,6 +466,14 @@ static void devtool_get_reset_node_status(meshlink_handle_t *mesh, meshlink_node
 		status->relay_output_confirmed = internal->relay_hop.confirmed && relay_hop_udp_ready(internal);
 		status->relay_output_demanded = relay_hop_demanded(mesh, internal);
 		status->peer_udp_channel_count = internal->peer_udp.channel_count;
+		status->relay_verifications = internal->plpmtu.relay_verifications;
+		status->relay_verify_failures = internal->plpmtu.relay_verify_failures;
+		status->relay_verify_admission_delays = internal->plpmtu.relay_verify_admission_delays;
+		status->relay_verified_age_sec = internal->plpmtu.relay_verified_at.tv_sec
+		                                 ? mesh->loop.now.tv_sec - internal->plpmtu.relay_verified_at.tv_sec : -1;
+		status->relay_verification_overdue_ms = internal->plpmtu.relay_verify_at.tv_sec
+		                                      ? (int64_t)(mesh->loop.now.tv_sec - internal->plpmtu.relay_verify_at.tv_sec) * 1000 + (mesh->loop.now.tv_nsec - internal->plpmtu.relay_verify_at.tv_nsec) / 1000000 : 0;
+		if(status->relay_verification_overdue_ms < 0) { status->relay_verification_overdue_ms = 0; }
 		status->relay_challenges_sent = internal->relay_hop.challenges_sent;
 		status->relay_confirmations = internal->relay_hop.confirmations;
 		status->relay_challenge_failures = internal->relay_hop.failures;
@@ -1417,6 +1425,12 @@ void devtool_set_udp_confirmed(meshlink_handle_t *mesh, meshlink_node_t *node, b
 	}
 
 	n->status.udp_confirmed = confirmed;
+	if(mesh->self->devclass == DEV_CLASS_BACKBONE) {
+		/* Explicit readiness seeding for isolated relay cases. Natural proof
+		   tests never call this setter on the NMN output. */
+		n->relay_hop.confirmed = confirmed;
+		if(confirmed) { path_copy_sockaddr(&n->relay_hop.confirmed_endpoint, &n->address); }
+	}
 
 	if(confirmed) {
 		n->status.forced_relay = false;

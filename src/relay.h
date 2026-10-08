@@ -66,6 +66,8 @@ bool relay_names_unusable(const char *origin, const char *destination);
 /* Relay-safe UTCP floor for this name pair: type-8 reservation when the names
    fit under MINMTU, otherwise the direct UDP floor. This is the initial size
    and the META size. Live channels move off it via channel_refresh_mtu(). */
+uint16_t relay_effective_budget(struct meshlink_handle *mesh, const struct node_t *dest);
+
 uint16_t relay_fixed_channel_mtu(struct meshlink_handle *mesh, const struct node_t *dest);
 
 /* prefix length + SPTPS datagram overhead. Production and tests. */

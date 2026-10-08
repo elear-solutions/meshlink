@@ -2429,6 +2429,12 @@ void path_note_authenticated_udp_observation(meshlink_handle_t *mesh, node_t *no
 }
 
 bool path_get_fresh_udp_observation(const meshlink_handle_t *mesh, const node_t *node, sockaddr_t *out) {
+	/* Export/punch policy stays public-only even when the NMN observes a LAN hop. */
+	return node && path_punch_endpoint_usable(&node->udp_observation.endpoint)
+	       && path_get_fresh_relay_udp_observation(mesh, node, out);
+}
+
+bool path_get_fresh_relay_udp_observation(const meshlink_handle_t *mesh, const node_t *node, sockaddr_t *out) {
 	int64_t age_ms;
 
 	if(!mesh || !node || !out) {
@@ -3190,7 +3196,8 @@ void path_peer_ensure_udp_key(meshlink_handle_t *mesh, node_t *peer) {
 	}
 
 	if(!connection_policy_backbone_udp_required(mesh, peer)
-	                && !path_peer_udp_punching_allowed(mesh, peer)) {
+	                && !path_peer_udp_punching_allowed(mesh, peer)
+	                && !relay_hop_demanded(mesh, peer)) {
 		return;
 	}
 

@@ -20,11 +20,13 @@ static struct sync_flag received;
 static struct sync_flag bar_learned_baz;
 static struct sync_flag baz_learned_bar;
 static struct sync_flag saw_type8_relay;
+static struct sync_flag saw_first_leg_udp;
 static struct sync_flag leftover_ascii_type8;
 
 static void trio_log_cb(meshlink_handle_t *mesh, meshlink_log_level_t level, const char *text) {
 	if(text && strstr(text, "Relaying type-8 via UDP")) {
 		set_sync_flag(&saw_type8_relay, true);
+		if(mesh && !strcmp(mesh->name, "baz")) { set_sync_flag(&saw_first_leg_udp, true); }
 	}
 
 	if(text && (strstr(text, "Sending REQ_SPTPS via UDP")
@@ -68,6 +70,7 @@ int main(void) {
 	init_sync_flag(&bar_learned_baz);
 	init_sync_flag(&baz_learned_bar);
 	init_sync_flag(&saw_type8_relay);
+	init_sync_flag(&saw_first_leg_udp);
 	init_sync_flag(&leftover_ascii_type8);
 
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, trio_log_cb);
@@ -145,6 +148,7 @@ int main(void) {
 	// Dest has no UDP, nexthop does: binary type-8 relay, Hello arrives, no leftover #108 ASCII logs.
 	set_sync_flag(&received, false);
 	set_sync_flag(&saw_type8_relay, false);
+	set_sync_flag(&saw_first_leg_udp, false);
 	set_sync_flag(&leftover_ascii_type8, false);
 
 	for(int i = 0; i < 15; i++) {
@@ -161,12 +165,13 @@ int main(void) {
 
 	assert(wait_sync_flag(&received, 15));
 	assert(check_sync_flag(&saw_type8_relay));
+	assert(check_sync_flag(&saw_first_leg_udp));
 	assert(!check_sync_flag(&leftover_ascii_type8));
 
 	// dest == nexthop is rejected
 	assert(!devtool_force_relay_path(mesh[2], meshlink_get_node(mesh[2], name[1]), meshlink_get_node(mesh[2], name[1])));
 
-	// Negative: nexthop UDP unconfirmed → META only, no type-8 log, Hello still arrives.
+	// Unconfirmed first hop uses META. A proved NMN output may still use UDP.
 	// Drop any late first-loop Hello so this phase cannot pass on a stale flag.
 	set_sync_flag(&received, false);
 	set_sync_flag(&saw_type8_relay, false);
@@ -174,22 +179,24 @@ int main(void) {
 	usleep(200000);
 	set_sync_flag(&received, false);
 	set_sync_flag(&saw_type8_relay, false);
+	set_sync_flag(&saw_first_leg_udp, false);
 
 	for(int i = 0; i < 15; i++) {
 		assert(devtool_force_relay_path(mesh[2], meshlink_get_node(mesh[2], name[1]), meshlink_get_node(mesh[2], name[0])));
 		devtool_set_udp_confirmed(mesh[2], meshlink_get_node(mesh[2], name[0]), false);
 		assert(meshlink_send(mesh[2], meshlink_get_node(mesh[2], name[1]), "Hello", 5));
 
-		if(wait_sync_flag(&received, 1) && !check_sync_flag(&saw_type8_relay)) {
+		if(wait_sync_flag(&received, 1) && !check_sync_flag(&saw_first_leg_udp)) {
 			break;
 		}
 
 		set_sync_flag(&received, false);
 		set_sync_flag(&saw_type8_relay, false);
+		set_sync_flag(&saw_first_leg_udp, false);
 	}
 
 	assert(wait_sync_flag(&received, 15));
-	assert(!check_sync_flag(&saw_type8_relay));
+	assert(!check_sync_flag(&saw_first_leg_udp));
 	assert(!check_sync_flag(&leftover_ascii_type8));
 
 	assert(meshlink_get_node(mesh[1], name[2]));

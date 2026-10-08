@@ -66,6 +66,8 @@ void path_plpmtu_note_suspect_cleared(struct meshlink_handle *mesh, struct node_
 /* Separate health sends from the last admitted size probe in either timer order. */
 bool path_plpmtu_probe_recent(const struct meshlink_handle *mesh, const struct node_t *n);
 
+void path_plpmtu_verify_relay_due(struct meshlink_handle *mesh, struct node_t *n);
+
 void path_plpmtu_tick(struct meshlink_handle *mesh, struct node_t *n);
 
 uint32_t path_local_network_fp(const struct meshlink_handle *mesh);

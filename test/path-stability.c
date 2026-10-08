@@ -2704,10 +2704,19 @@ static void test_plpmtu_restart_cache(void) {
 	printf("path-stability T27 ok\n");
 }
 
-int main(void) {
+int main(int argc, char **argv) {
 	setvbuf(stdout, NULL, _IOLBF, 0);
 	setvbuf(stderr, NULL, _IONBF, 0);
 	meshlink_set_log_cb(NULL, MESHLINK_WARNING, NULL);
+
+	/* Keep the demand-expiry/reopen case independently reproducible with
+	   carrier and probe logs when diagnosing timing-dependent failures. */
+	if(argc == 2 && !strcmp(argv[1], "--peer-demand")) {
+		meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
+		test_idle_peer_is_not_probed();
+		return 0;
+	}
+	assert(argc == 1);
 
 	test_fixed_channel_size();
 	test_demotion_resplits();

@@ -287,7 +287,7 @@ static bool node_kex_wanted(meshlink_handle_t *mesh, node_t *n) {
 		return true;
 	}
 
-	return n->key_retry_wanted || connection_policy_backbone_udp_required(mesh, n) || path_peer_udp_punching_allowed(mesh, n) || n->status.waitingforkey;
+	return n->key_retry_wanted || connection_policy_backbone_udp_required(mesh, n) || path_peer_udp_punching_allowed(mesh, n) || relay_hop_demanded(mesh, n) || n->status.waitingforkey;
 }
 
 void node_kex_consider(meshlink_handle_t *mesh, node_t *n) {

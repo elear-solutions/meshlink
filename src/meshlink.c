@@ -4686,18 +4686,7 @@ uint16_t channel_compute_mtu(meshlink_handle_t *mesh, const node_t *n) {
 	} else if(n->active_route.kind == DATA_ROUTE_RELAY
 	                && n->active_route.relay_carrier == RELAY_CARRIER_UDP
 	                && !relay_names_unusable(mesh->self->name, n->name)) {
-		uint16_t budget = n->relay_budget;
-
-		if(!budget && n->active_route.first_hop) {
-			const node_t *hop = n->active_route.first_hop;
-			uint32_t prefix21 = 0;
-
-			if(path_plpmtu_size(hop)
-			                && relay_prefix21(mesh->self->name, n->name, &prefix21)
-			                && path_plpmtu_size(hop) > prefix21) {
-				budget = (uint16_t)(path_plpmtu_size(hop) - prefix21);
-			}
-		}
+		uint16_t budget = relay_effective_budget(mesh, n);
 
 		if(budget > sizeof(meshlink_packethdr_t)) {
 			uint16_t raised = budget - sizeof(meshlink_packethdr_t);

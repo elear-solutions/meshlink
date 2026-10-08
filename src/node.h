@@ -99,9 +99,13 @@ typedef struct path_plpmtu_t {
 	bool hostile;
 	bool bh_verifying;
 	bool raising;
+	bool relay_verifying;
+	struct timespec relay_verify_at, relay_verified_at;
+	uint32_t relay_verifications, relay_verify_failures, relay_verify_admission_delays;
 	struct timespec probe_sent_at, raise_at, last_oversize_sent_at, bh_first_at;
 	uint8_t bh_evidence;
 	sockaddr_t path_ip;
+	uint32_t path_net_fp; /* Network identity when this directional path was proved. */
 	timeout_t timer;
 	uint32_t probes_sent, probes_lost, probes_oversize, black_holes, emsgsize, cache_hits, hostile_marks;
 } path_plpmtu_t;
@@ -265,9 +269,9 @@ typedef struct node_t {
 	bool app_udp_override_active;           /* Armed around one application/type-8 UDP send */
 	bool devtool_force_meta;                /* Test-only persistent application-route override */
 	uint32_t fallback_oversize_redirects;   /* Suspect fallback could not carry the record */
-	uint32_t relay_oversize_drops;          /* Type-8 records dropped for hop MTU */
+	uint32_t relay_oversize_drops;          /* Legacy name: UDP sends skipped for hop MTU. */
 	time_t fallback_oversize_logged_at;     /* Last redirect INFO; at most once per 10s */
-	time_t relay_oversize_logged_at;        /* Last oversize-drop INFO; at most once per 10s */
+	time_t relay_oversize_logged_at;        /* Last oversize INFO; at most once per 10s. */
 	uint16_t devtool_drop_size_probes_above; /* Test: receiver drops SIZE_REQUEST longer than this; 0 = off */
 	uint8_t devtool_drop_liveness_replies;  /* Test: drop this many LIVENESS echoes */
 	unsigned devtool_drop_direct_udp_records; /* Test: next N direct-UDP application sends are discarded */

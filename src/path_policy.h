@@ -452,6 +452,8 @@ void path_peer_ensure_udp_key(struct meshlink_handle *mesh, struct node_t *peer)
 void path_note_authenticated_udp_observation(struct meshlink_handle *mesh, struct node_t *node, const sockaddr_t *endpoint);
 /* Fresh, session-matched observation. False leaves *out untouched. */
 bool path_get_fresh_udp_observation(const struct meshlink_handle *mesh, const struct node_t *node, sockaddr_t *out);
+/* NMN output proof may use authenticated local observations; never export them. */
+bool path_get_fresh_relay_udp_observation(const struct meshlink_handle *mesh, const struct node_t *node, sockaddr_t *out);
 /* Drop the observation and the request ladder. Channel demand is kept. */
 void path_clear_udp_observation(struct node_t *node);
 /* Observation, else a confirmed active UDP endpoint. Never recent[0]. */

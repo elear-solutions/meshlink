@@ -1471,6 +1471,10 @@ void connection_policy_note_lan_drop(meshlink_handle_t *mesh, node_t *n) {
 void connection_policy_on_connection_closed(meshlink_handle_t *mesh, node_t *node,
                 meta_connection_purpose_t purpose) {
 	relay_invalidate_connection(mesh, node);
+	if(mesh && node && (!node->connection || !node->connection->status.active)) {
+		relay_hop_stop(mesh, node);
+		if(mesh->self->devclass == DEV_CLASS_BACKBONE) { memset(&node->udp_observation, 0, sizeof node->udp_observation); }
+	}
 	(void)purpose;
 
 	if(!mesh || mesh->retiring_outgoing || mesh->lan_epoch_retiring) {

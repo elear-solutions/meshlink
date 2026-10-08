@@ -404,6 +404,14 @@ static void send_probe_reply(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *p
 	}
 
 	n->status.temp_udp_confirmed = false;
+	if(udp_confirmed && n->udp_send_result == RELAY_UDP_SENT) {
+		/* A reply is outbound NAT activity on an already proved path. It
+		   must still feed sender-owned idle learning without proving a new one. */
+		path_keepalive_note_tx(mesh, n, &n->last_udp_from);
+	} else if(udp_confirmed && n->relay_hop.confirmed && n->udp_send_result == RELAY_UDP_HARD_ERROR) {
+		/* Restore temporary reply status before revoking a proved output. */
+		relay_on_hard_send_error(mesh, n, &n->last_udp_from, n->sock);
+	}
 }
 
 static void probe_handle_echo_request(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet, uint16_t len, uint8_t purpose, uint64_t nonce) {
@@ -1191,10 +1199,13 @@ bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 			node_udp_cache_alias(mesh, to, &dest);
 
 			ssize_t sent = sendto(mesh->listen_socket[sock].udp.fd, data, len, 0, &dest.sa, SALEN(dest.sa));
-			if(sent < 0 && !sockwouldblock(sockerrno) && !sockmsgsize(sockerrno)) {
-				logger(mesh, MESHLINK_WARNING, "Error sending local UDP probe to %s: %s", to->name, sockstrerror(sockerrno));
-			}
 			to->udp_send_result = sent >= 0 ? RELAY_UDP_SENT : sockwouldblock(sockerrno) ? RELAY_UDP_WOULD_BLOCK : sockmsgsize(sockerrno) ? RELAY_UDP_EMSGSIZE : RELAY_UDP_HARD_ERROR;
+			if(to->udp_send_result == RELAY_UDP_HARD_ERROR) {
+				logger(mesh, MESHLINK_WARNING, "Error sending local UDP probe to %s: %s", to->name, sockstrerror(sockerrno));
+				if(to->relay_hop.confirmed && !to->status.temp_udp_confirmed) {
+					relay_on_hard_send_error(mesh, to, &dest, sock);
+				}
+			}
 			if(sent >= 0) {
 				path_keepalive_note_tx(mesh, to, &dest);
 			}

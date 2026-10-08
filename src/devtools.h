@@ -238,7 +238,7 @@ struct devtool_node_status {
 
 	/* DEVTOOL_NODE_STATUS_VERSION 5. Append only. */
 	uint32_t fallback_oversize_redirects; /// suspect fallback could not carry a record
-	uint32_t relay_oversize_drops;        /// type-8 records dropped for hop MTU
+	uint32_t relay_oversize_drops;        /// legacy name: type-8 UDP sends skipped for hop MTU
 
 	/* DEVTOOL_NODE_STATUS_VERSION 6. Append only. */
 	devtool_plpmtu_state_t plpmtu_state;
@@ -264,6 +264,8 @@ struct devtool_node_status {
 	/* DEVTOOL_NODE_STATUS_VERSION 7. Append only. */
 	bool relay_output_confirmed, relay_output_demanded;
 	unsigned peer_udp_channel_count;
+	uint32_t relay_verifications, relay_verify_failures, relay_verify_admission_delays;
+	int64_t relay_verified_age_sec, relay_verification_overdue_ms;
 	uint32_t relay_challenges_sent, relay_confirmations, relay_challenge_failures, relay_admission_delays;
 	uint32_t relay_udp_sent, relay_meta_fallbacks;
 	uint32_t relay_fallback_unready, relay_fallback_oversize, relay_fallback_no_socket;

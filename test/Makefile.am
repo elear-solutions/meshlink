@@ -47,7 +47,6 @@ TESTS = \
 	trio2 \
 	udp-relay \
 	relay-coverage \
-	relay-hop \
 	path-policy-coverage \
 	backbone-identity \
 	connection-policy \
@@ -126,7 +125,6 @@ check_PROGRAMS = \
 	trio2 \
 	udp-relay \
 	relay-coverage \
-	relay-hop \
 	path-policy-coverage \
 	backbone-identity \
 	connection-policy \
@@ -308,3 +306,10 @@ transport_recent_LDADD = $(top_builddir)/src/libmeshlink.la
 
 relay_hop_SOURCES = relay-hop.c relay-hop-support.c utils.c utils.h
 relay_hop_LDADD = $(top_builddir)/src/.libs/libmeshlink.a
+
+relay_hop_LDFLAGS = $(AM_LDFLAGS) -Wl,--wrap=sendto
+
+if LINUX
+TESTS += relay-hop
+check_PROGRAMS += relay-hop
+endif
