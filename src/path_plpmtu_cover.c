@@ -230,6 +230,7 @@ static bool plpmtu_cover(meshlink_handle_t *mesh) {
 	n.plpmtu.largest_failed = 1431;
 	n.plpmtu.path_ip = n.address;
 	n.plpmtu.path_ip.in.sin_port = 0;
+	n.plpmtu.path_net_fp = path_local_network_fp(mesh);
 	path_plpmtu_stop(mesh, &n);
 	n.status.udp_confirmed = true;
 	n.status.dirty = false;
@@ -299,6 +300,7 @@ static bool plpmtu_cover(meshlink_handle_t *mesh) {
 	n.plpmtu.size = 1399;
 	n.plpmtu.path_ip = n.address;
 	n.plpmtu.path_ip.in.sin_port = 0;
+	n.plpmtu.path_net_fp = path_local_network_fp(mesh);
 	path_plpmtu_stop(mesh, &n);
 	mesh->self->external_ip_address = "198.51.100.9 1";
 	n.status.udp_confirmed = true;
@@ -340,7 +342,7 @@ static bool plpmtu_cover(meshlink_handle_t *mesh) {
 	CHECK(n.plpmtu.size == PATH_PLPMTU_BASE);
 	mesh->backbone_udp.node = saved_bb;
 
-	/* Relay MSS is the hop's PLPMTU minus the type-8 prefix and the header. */
+	/* Before a final-hop report arrives, relay MSS keeps the legacy floor. */
 	plant(&hop, mesh, "ws1-hop", 0xcb007120);
 	plant(&dest, mesh, "d", 0xcb007121);
 	hop.status.udp_confirmed = true;
@@ -354,7 +356,7 @@ static bool plpmtu_cover(meshlink_handle_t *mesh) {
 
 		CHECK(relay_prefix21(mesh->self->name, dest.name, &prefix21));
 		CHECK(!relay_names_unusable(mesh->self->name, dest.name));
-		held = (uint16_t)(PATH_PLPMTU_BASE - prefix21 - sizeof(meshlink_packethdr_t));
+		held = (uint16_t)(MINMTU - prefix21 - sizeof(meshlink_packethdr_t));
 		CHECK(channel_compute_mtu(mesh, &dest) == held);
 	}
 
@@ -1057,7 +1059,7 @@ static bool keepalive_probe_tx_cover(meshlink_handle_t *mesh) {
 		mesh->listen_socket[sock].udp.fd = -1;
 		bool accepted = send_sptps_data(&n, PKT_PROBE, probe, sizeof probe);
 		mesh->listen_socket[sock].udp.fd = saved_fd;
-		CHECK(accepted);
+		CHECK(!accepted);
 		CHECK(n.keepalive.last_tx_at.tv_sec == last_tx.tv_sec);
 		CHECK(n.keepalive.last_tx_at.tv_nsec == last_tx.tv_nsec);
 		break;

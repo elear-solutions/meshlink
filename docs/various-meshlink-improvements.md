@@ -20,7 +20,7 @@ Status values:
 | F4 | Slow climb to direct at startup and after restarts | Partly fixed (MSS); route choice still open | WS1 (MSS), WS3 (route choice) |
 | F5 | Liveness is one probe per window; one lost reply demotes the path | Fix ready | WS1 |
 | F6 | The camera's NAT expires idle mappings faster than our ping cadence | Fix ready | WS1 |
-| F7 | The NMN delivers relayed records over META, never UDP | Open | WS2 |
+| F7 | The NMN delivers relayed records over META, never UDP | Implemented; field validation pending | WS2 |
 | F8 | Route promotion continues while the destination is unreachable | Open | WS3 |
 | F9 | A pending direct promotion keeps the old port after a validated rebind | Open | WS3 |
 | F10 | Channels expose no immediate availability change when the peer becomes unreachable | Open (API/policy review) | WS4 |
@@ -331,7 +331,7 @@ Rules for every workstream:
 | ID | Scope | Findings | Depends on | Status |
 |----|-------|----------|------------|--------|
 | WS1 | Path MTU and liveness rework | F3, F5, F6, F4 (PMTU gate), F2 follow-up | — | Implemented in PR #127; C3 follow-up fixes awaiting field validation |
-| WS2 | Relay data plane | F7, relay MTU | WS1 PR A; NMN deployed first | Not started |
+| WS2 | Relay data plane | F7, relay MTU | WS1 PR A; NMN deployed first | Implemented; Docker and field validation tracked below |
 | WS3 | Route selection at startup and after reachability changes | F4 (route choice), F8, F9 | WS1 | Not started |
 | WS4 | Hygiene and channel availability | M1, M2 (meshlink side), M3, M4, M5, M8, F10 | — | Not started |
 
@@ -451,12 +451,66 @@ Rules for every workstream:
   - the base MSS is usable immediately after UDP confirmation. Direct-selection delays remain tracked in WS3 (F4, F9).
 
 ### WS2: Relay data plane (F7)
-- **Goal:** "relay-udp" is UDP on both legs.
-- **NMN-side relay readiness:** the NMN marks a peer's endpoint relay-ready after an authenticated exchange from that exact endpoint. That can be the peer's backbone keepalive, or a nonce exchange the NMN initiates. The mark expires on silence, using WS1's keepalive and liveness rules.
-- **Relay MTU from both legs:** `relay_budget` becomes the minimum of the origin→NMN and NMN→destination PLPMTUs (WS1 machinery running on the NMN), replacing the current `minmtu`-based budget.
-- **Keep the META fallback** for destinations without a ready UDP endpoint, and count it, so fleet data shows how often it happens.
-- **Rollout:** deploy the NMN first.
-- **Tests:** a relay test asserts that the last leg is UDP; a test asserts the relay budget follows the smaller leg.
+
+Implemented on top of WS1; Docker validation and field acceptance are tracked
+separately. [ADR 0012](adr/0012-demanded-udp-relay-output.md) records ownership,
+protocol compatibility, budgets, and the narrow NMN probing exception.
+
+- One runtime owner per NMN output peer shares demand across relayed flows.
+  Authenticated ingress supplies a candidate; a matching nonce reply from the
+  exact endpoint proves readiness. Two actual transmissions, one second apart,
+  have a ten-second deadline. Same-candidate failure retries wait 30 seconds.
+  Working output remains usable during replacement validation.
+- Relayed application traffic, including META fallback, retains demand for
+  30 seconds. Backbone keepalives cannot retain it. Expiry and lifecycle
+  invalidation stop owned probes and readiness while preserving eligible cache
+  knowledge. Relay proof neither promotes ordinary routes nor exports addresses.
+- Protocol 17.8 adds application-only `REQ_SPTPS_APP`. Marked META and UDP
+  ingress share the output decision; legacy envelopes and handshake/control
+  traffic retain META. An older next hop receives legacy fallback.
+- Records that fit a proved output hop use UDP. Oversize, absent socket,
+  would-block, `EMSGSIZE`, and hard failure attempt META once; successful UDP
+  transmission never also falls back. Counters expose readiness, actual UDP
+  sends, and each fallback reason.
+- The origin's packet budget is `min(origin→NMN PLPMTU − overhead, final report)`.
+  Overhead is `2 + origin-name length + destination-name length + 21`.
+  Until a valid report arrives, the final budget is `MINMTU − overhead`.
+  Reports are tied to the current nexthop and META connection. Both leg changes
+  refresh channel MTUs; UTCP keeps its existing header deduction.
+  Reports to legacy origins retain the conservative floor because those builds
+  cannot clamp the reported budget against the first leg themselves.
+- Demanded, settled NMN output hops verify the current size about every
+  30 seconds using WS1 acknowledgements, recovery echoes, and bounded retries.
+  Verification preserves hostile holds and coalesces with search. Mesh-wide
+  scheduler caps still apply. Devtools status version 7 exposes verification
+  age, overdue time, and admission delays alongside readiness and send outcomes.
+- Regression coverage uses separately linked internal support without new
+  production compile switches, natural proof and delivery in both directions,
+  marked META ingress, application-only authentication/replay checks, explicit
+  send failures, smaller-leg arithmetic, and silent output-size reduction.
+  A symmetric-NAT stream test drops actual final-leg UDP packets after natural
+  settlement and confirms periodic checking reduces the budget and resumes
+  the unacknowledged stream. Scheduler coverage verifies shared demand,
+  preemption accounting, the two-slot cap, and eventual admission.
+- Docker validation completed on 2026-10-08 in `meshlink-arm64`, based on
+  WS1 `57ee0cd7`. Targeted `relay-hop`, `relay-coverage`,
+  `path-policy-coverage`, and `backbone-udp` checks passed, followed by the
+  full serial `make -j1 check`. That full run passed 57 of 58 tests and had
+  one `channels-aio-cornercases` timeout. Three consecutive serial rechecks
+  with `make -j1 check RECHECK_LOGS="channels-aio-cornercases.log"` passed
+  without implementation changes; the final suite summary is 58 passed,
+  zero failed, skipped, or errored. The observed intermittent timeout
+  remains undiagnosed.
+  The demand-expiry/reopen case also passed five focused
+  `./path-stability --peer-demand` repetitions and the final full run; its
+  earlier timeout on the preceding WS1 base did not recur. All compilation
+  and tests ran in Docker; field acceptance remains separate.
+- Rollout and field acceptance are deferred at the user's request: deploy
+  NMN first, then camera and Android builds when deployment resumes. Capture
+  matching build identities, proved output followed
+  by actual UDP sends, explained META fallback, smaller directional budgets,
+  rebinding and silent-MTU recovery, and probes confined to demanded outputs.
+  Track WS3 startup route delay separately.
 
 ### WS3: Route selection at startup and after reachability changes (F4 leftovers, F8, F9)
 - Once backbone UDP confirms, re-rank `meta-direct` → `relay-udp`, so data never stays on TCP through the NMN just because of start order.

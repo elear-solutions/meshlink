@@ -117,3 +117,5 @@ test/transport-recent
 test/mtu-probe-log
 test/port-range
 test/reconnect-backoff
+
+test/relay-hop

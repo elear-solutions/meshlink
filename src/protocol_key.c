@@ -287,7 +287,7 @@ static bool node_kex_wanted(meshlink_handle_t *mesh, node_t *n) {
 		return true;
 	}
 
-	return n->key_retry_wanted || connection_policy_backbone_udp_required(mesh, n) || path_peer_udp_punching_allowed(mesh, n) || n->status.waitingforkey;
+	return n->key_retry_wanted || connection_policy_backbone_udp_required(mesh, n) || path_peer_udp_punching_allowed(mesh, n) || relay_hop_demanded(mesh, n) || n->status.waitingforkey;
 }
 
 void node_kex_consider(meshlink_handle_t *mesh, node_t *n) {
@@ -580,6 +580,9 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 		return true;
 	}
 
+	case REQ_SPTPS_APP:
+		return relay_handle_meta_app(mesh, c, from, mesh->self, request);
+
 	case REQ_SPTPS: {
 		if(!from->status.validkey) {
 			logger(mesh, MESHLINK_ERROR, "Got REQ_SPTPS from %s but we don't have a valid key yet", from->name);
@@ -779,6 +782,10 @@ bool req_key_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		size_t len = strlen(request);
 		from->in_forward += len + SPTPS_OVERHEAD;
 		to->out_forward += len + SPTPS_OVERHEAD;
+
+		if(reqno == REQ_SPTPS_APP) {
+			return relay_handle_meta_app(mesh, c, from, to, request);
+		}
 
 		if(reqno == REQ_SPTPS) {
 			logger(mesh, MESHLINK_DEBUG, "Path policy: META-in pins META-out for %s via %s", to->name, to->nexthop->name);

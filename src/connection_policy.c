@@ -18,6 +18,7 @@
 #include "meshlink_internal.h"
 #include "net.h"
 #include "node.h"
+#include "relay.h"
 #include "packmsg.h"
 #include "path_policy.h"
 #include "protocol.h"
@@ -1447,6 +1448,8 @@ void connection_policy_advance_network_epoch(meshlink_handle_t *mesh) {
 
 	if(mesh->nodes) {
 		for splay_each(node_t, n, mesh->nodes) {
+			relay_hop_stop(mesh, n);
+			memset(&n->udp_observation, 0, sizeof n->udp_observation);
 			n->lan_auth_direct_until = 0;
 			n->lan_admitted_epoch = 0;
 		}
@@ -1467,7 +1470,12 @@ void connection_policy_note_lan_drop(meshlink_handle_t *mesh, node_t *n) {
 
 void connection_policy_on_connection_closed(meshlink_handle_t *mesh, node_t *node,
                 meta_connection_purpose_t purpose) {
-	(void)node;
+	if(mesh && node && (!node->connection || !node->connection->status.active)) {
+		/* Spare and failed dials do not own the active primary's reports. */
+		relay_invalidate_connection(mesh, node);
+		relay_hop_stop(mesh, node);
+		if(mesh->self->devclass == DEV_CLASS_BACKBONE) { memset(&node->udp_observation, 0, sizeof node->udp_observation); }
+	}
 	(void)purpose;
 
 	if(!mesh || mesh->retiring_outgoing || mesh->lan_epoch_retiring) {

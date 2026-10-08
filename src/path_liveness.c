@@ -25,6 +25,7 @@
 #include "path_probe.h"
 #include "path_scheduler.h"
 #include "protocol.h"
+#include "relay.h"
 
 static bool same_ip_portless(const sockaddr_t *a, const sockaddr_t *b);
 
@@ -338,11 +339,11 @@ static bool keepalive_eligible(const meshlink_handle_t *mesh, const node_t *n) {
 		return false;
 	}
 
-	if(path_peer_udp_demanded(mesh, n)) {
+	if(relay_hop_demanded(mesh, n) || path_peer_udp_demanded(mesh, n)) {
 		return true;
 	}
 
-	if(!n->keepalive.last_rx_at.tv_sec) {
+	if(mesh->self->devclass == DEV_CLASS_BACKBONE || !n->keepalive.last_rx_at.tv_sec) {
 		return false;
 	}
 
@@ -385,7 +386,7 @@ void path_keepalive_note_tx(meshlink_handle_t *mesh, node_t *n, const sockaddr_t
 	uint32_t interval;
 	int64_t gap;
 
-	if(!mesh || !n || !from_confirmed(n, to)) {
+	if(!mesh || !n || !n->status.udp_confirmed || n->status.temp_udp_confirmed || !from_confirmed(n, to)) {
 		return;
 	}
 

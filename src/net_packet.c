@@ -116,7 +116,8 @@ void net_probe_sched_send(meshlink_handle_t *mesh, const path_probe_request_t *r
 	                && req->probe_purpose != PROBE_PURPOSE_REBIND
 	                && req->probe_purpose != PROBE_PURPOSE_PROMOTION
 	                && req->probe_purpose != PROBE_PURPOSE_SUSPECT
-	                && req->probe_purpose != PROBE_PURPOSE_BACKBONE) {
+	                && req->probe_purpose != PROBE_PURPOSE_BACKBONE
+	                && req->probe_purpose != PROBE_PURPOSE_RELAY_HOP) {
 		return;
 	}
 
@@ -403,6 +404,14 @@ static void send_probe_reply(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *p
 	}
 
 	n->status.temp_udp_confirmed = false;
+	if(udp_confirmed && n->udp_send_result == RELAY_UDP_SENT) {
+		/* A reply is outbound NAT activity on an already proved path. It
+		   must still feed sender-owned idle learning without proving a new one. */
+		path_keepalive_note_tx(mesh, n, &n->last_udp_from);
+	} else if(udp_confirmed && n->relay_hop.confirmed && n->udp_send_result == RELAY_UDP_HARD_ERROR) {
+		/* Restore temporary reply status before revoking a proved output. */
+		relay_on_hard_send_error(mesh, n, &n->last_udp_from, n->sock);
+	}
 }
 
 static void probe_handle_echo_request(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet, uint16_t len, uint8_t purpose, uint64_t nonce) {
@@ -446,6 +455,13 @@ static void probe_handle_size_request(meshlink_handle_t *mesh, node_t *n, vpn_pa
 
 static void probe_handle_echo_reply(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *packet, uint8_t purpose, uint64_t nonce, const sockaddr_t *from_snap) {
 	sockaddr_t observed;
+
+	if(purpose == PROBE_PURPOSE_RELAY_HOP) {
+		if(relay_hop_reply(mesh, n, from_snap, nonce) && path_probe_read_endpoint(packet->data, &observed)) {
+			path_keepalive_observe_local_endpoint(mesh, n, from_snap, &observed);
+		}
+		return;
+	}
 
 	if(purpose == PROBE_PURPOSE_LIVENESS && n->devtool_drop_liveness_replies) {
 		n->devtool_drop_liveness_replies--;
@@ -1006,6 +1022,7 @@ static bool send_sptps_via_meta(meshlink_handle_t *mesh, node_t *to, const void 
 }
 
 static bool send_sptps_via_udp(meshlink_handle_t *mesh, node_t *to, const void *data, size_t len) {
+	to->udp_send_result = RELAY_UDP_NO_SOCKET;
 	sockaddr_t sa_buf;
 	const sockaddr_t *sa = NULL;
 	int sock = -1;
@@ -1022,7 +1039,7 @@ static bool send_sptps_via_udp(meshlink_handle_t *mesh, node_t *to, const void *
 	}
 
 	if(!sa || sock < 0 || sock >= mesh->listen_sockets) {
-		return true;
+		return false;
 	}
 
 	if(to->mtu_probe_request_len && mesh->log_level <= MESHLINK_DEBUG) {
@@ -1035,26 +1052,31 @@ static bool send_sptps_via_udp(meshlink_handle_t *mesh, node_t *to, const void *
 
 	if(mesh->relay_devtool && mesh->relay_devtool->inject_hard_send_error) {
 		mesh->relay_devtool->inject_hard_send_error = false;
+		to->udp_send_result = RELAY_UDP_HARD_ERROR;
 		logger(mesh, MESHLINK_WARNING, "Error sending UDP SPTPS packet to %s: %s", to->name, "injected hard send error");
 		relay_on_hard_send_error(mesh, to, sa, sock);
 		return false;
 	}
 
 	ssize_t sent = sendto(mesh->listen_socket[sock].udp.fd, data, len, 0, &sa->sa, SALEN(sa->sa));
-	if(sent < 0 && !sockwouldblock(sockerrno)) {
-		if(sockmsgsize(sockerrno)) {
+	if(sent < 0) {
+		if(sockwouldblock(sockerrno)) {
+			to->udp_send_result = RELAY_UDP_WOULD_BLOCK;
+		} else if(sockmsgsize(sockerrno)) {
+			to->udp_send_result = RELAY_UDP_EMSGSIZE;
 			uint16_t payload = len > SPTPS_DATAGRAM_OVERHEAD ? (uint16_t)(len - SPTPS_DATAGRAM_OVERHEAD) : 0;
-
 			path_plpmtu_note_emsgsize(mesh, to, payload);
 		} else {
+			to->udp_send_result = RELAY_UDP_HARD_ERROR;
 			logger(mesh, MESHLINK_WARNING, "Error sending UDP SPTPS packet to %s: %s", to->name, sockstrerror(sockerrno));
 			relay_on_hard_send_error(mesh, to, sa, sock);
-			return false;
 		}
-	} else if(sent >= 0 && !to->status.broadcast) {
+		return false;
+	}
+	to->udp_send_result = RELAY_UDP_SENT;
+	if(!to->status.broadcast) {
 		path_keepalive_note_tx(mesh, to, sa);
 	}
-
 	return true;
 }
 
@@ -1063,7 +1085,7 @@ static bool send_relay_outer(meshlink_handle_t *mesh, node_t *hop, const void *d
 	uint16_t hop_plp = path_plpmtu_size(hop);
 	uint16_t limit = hop_plp ? hop_plp : MINMTU;
 
-	/* Ready oversize is a handled drop (no META fallback). */
+	/* Returning false leaves the original inner ciphertext available for META. */
 	if(payload > limit) {
 		if(hop->relay_oversize_drops < UINT32_MAX) {
 			hop->relay_oversize_drops++;
@@ -1071,17 +1093,19 @@ static bool send_relay_outer(meshlink_handle_t *mesh, node_t *hop, const void *d
 
 		if(mesh->loop.now.tv_sec >= hop->relay_oversize_logged_at + 10) {
 			hop->relay_oversize_logged_at = mesh->loop.now.tv_sec;
-			logger(mesh, MESHLINK_INFO, "Dropping %zu-byte relay record via %s: hop limit %u",
+			logger(mesh, MESHLINK_INFO, "META fallback for %zu-byte relay record via %s: hop limit %u",
 			       len, hop->name, (unsigned)limit);
 		}
 
-		return true;
+		hop->udp_send_result = RELAY_UDP_OVERSIZE;
+		return false;
 	}
 
 	if(!send_sptps_via_udp(mesh, hop, data, len)) {
 		return false;
 	}
 
+	hop->relay_hop.udp_sent++;
 	/* Hop scratch is set around sptps_send_record by relay_send_outer_record, then cleared. */
 	const char *dest_name = hop->relay_send_dest;
 	const char *origin_name = hop->relay_send_origin;
@@ -1120,7 +1144,7 @@ static bool send_application_record(meshlink_handle_t *mesh, node_t *to, const v
 		to->app_udp_override_active = true;
 		ok = send_sptps_via_udp(mesh, to, data, len);
 		to->app_udp_override_active = false;
-		return ok;
+		return ok || relay_meta_app(mesh, meta_connection_for(to), mesh->self->name, to->name, data, len);
 	}
 
 	if(target.kind == DATA_ROUTE_RELAY && target.relay_carrier == RELAY_CARRIER_UDP && target.first_hop) {
@@ -1132,15 +1156,15 @@ static bool send_application_record(meshlink_handle_t *mesh, node_t *to, const v
 			target.first_hop->app_udp_override_active = true;
 			ok = relay_send_outer_record(mesh, target.first_hop, mesh->self->name, to->name, wrapped, wlen);
 			target.first_hop->app_udp_override_active = false;
-			return ok;
+			return ok || relay_meta_app(mesh, target.first_hop->connection, mesh->self->name, to->name, data, len);
 		}
 	}
 
 	if(target.kind == DATA_ROUTE_RELAY && target.first_hop) {
-		return send_sptps_via_meta_conn(mesh, to, target.first_hop->connection, data, len);
+		return relay_meta_app(mesh, target.first_hop->connection, mesh->self->name, to->name, data, len);
 	}
 
-	return send_sptps_via_meta_conn(mesh, to, to->connection, data, len);
+	return relay_meta_app(mesh, to->connection, mesh->self->name, to->name, data, len);
 }
 
 bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
@@ -1167,21 +1191,26 @@ bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 			sockaddr_t dest = to->probe_dest_override;
 			int sock = to->sock;
 
+			to->udp_send_result = RELAY_UDP_NO_SOCKET;
 			if(!select_listen_socket(mesh, &dest, &sock)) {
-				return true;
+				return false;
 			}
 
 			node_udp_cache_alias(mesh, to, &dest);
 
 			ssize_t sent = sendto(mesh->listen_socket[sock].udp.fd, data, len, 0, &dest.sa, SALEN(dest.sa));
-			if(sent < 0 && !sockwouldblock(sockerrno) && !sockmsgsize(sockerrno)) {
+			to->udp_send_result = sent >= 0 ? RELAY_UDP_SENT : sockwouldblock(sockerrno) ? RELAY_UDP_WOULD_BLOCK : sockmsgsize(sockerrno) ? RELAY_UDP_EMSGSIZE : RELAY_UDP_HARD_ERROR;
+			if(to->udp_send_result == RELAY_UDP_HARD_ERROR) {
 				logger(mesh, MESHLINK_WARNING, "Error sending local UDP probe to %s: %s", to->name, sockstrerror(sockerrno));
+				if(to->relay_hop.confirmed && !to->status.temp_udp_confirmed) {
+					relay_on_hard_send_error(mesh, to, &dest, sock);
+				}
 			}
 			if(sent >= 0) {
 				path_keepalive_note_tx(mesh, to, &dest);
 			}
 
-			return true;
+			return sent >= 0;
 		}
 
 		return send_sptps_via_udp(mesh, to, data, len);
@@ -1191,6 +1220,9 @@ bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 		return send_relay_outer(mesh, to, data, len);
 	}
 
+	if(type != 0) {
+		return send_sptps_via_meta(mesh, to, data, len);
+	}
 	return send_application_record(mesh, to, data, len);
 }
 

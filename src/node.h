@@ -60,8 +60,22 @@ typedef struct udp_observation_t {
 	sockaddr_t endpoint;
 	struct timespec observed_at;
 	uint32_t session_id;
+	uint64_t network_epoch;
 } udp_observation_t;
 
+
+/* One runtime owner per demanded NMN output peer. No application session. */
+typedef struct relay_hop_t {
+	timeout_t timer;
+	struct timespec demand_until, deadline, retry_at, last_sent_at;
+	sockaddr_t candidate, confirmed_endpoint;
+	uint64_t nonce, network_epoch;
+	uint32_t session_id;
+	unsigned attempts;
+	bool confirmed;
+	uint32_t challenges_sent, confirmations, failures, admission_delays;
+	uint32_t udp_sent, meta_fallbacks, fallback_reason[7];
+} relay_hop_t;
 
 typedef enum {
 	PLPMTU_DISABLED = 0,
@@ -85,9 +99,14 @@ typedef struct path_plpmtu_t {
 	bool hostile;
 	bool bh_verifying;
 	bool raising;
+	bool relay_verifying;
+	path_plpmtu_state_t relay_verify_state; /* Settled state to restore if verification pauses. */
+	struct timespec relay_verify_at, relay_verified_at;
+	uint32_t relay_verifications, relay_verify_failures, relay_verify_admission_delays;
 	struct timespec probe_sent_at, raise_at, last_oversize_sent_at, bh_first_at;
 	uint8_t bh_evidence;
 	sockaddr_t path_ip;
+	uint32_t path_net_fp; /* Network identity when this directional path was proved. */
 	timeout_t timer;
 	uint32_t probes_sent, probes_lost, probes_oversize, black_holes, emsgsize, cache_hits, hostile_marks;
 } path_plpmtu_t;
@@ -144,6 +163,7 @@ typedef struct node_t {
 
 	// Private member variables
 	node_status_t status;
+	struct connection_t *relay_budget_connection; /* Runtime reporting connection identity. */
 	uint16_t relay_budget;                  /* Accepted type-8 vpn budget; raises channel MSS on UDP relay */
 	dev_class_t devclass;
 
@@ -168,6 +188,8 @@ typedef struct node_t {
 
 	uint16_t mtu_probe_request_len;         /* Outbound probe-request payload length; set only around sptps_send_record for dest-IP DEBUG log */
 	path_plpmtu_t plpmtu;
+	relay_hop_t relay_hop;
+	unsigned udp_send_result;
 	path_liveness_t liveness;
 	path_keepalive_t keepalive;
 	path_local_discovery_t local_discovery;
@@ -248,9 +270,9 @@ typedef struct node_t {
 	bool app_udp_override_active;           /* Armed around one application/type-8 UDP send */
 	bool devtool_force_meta;                /* Test-only persistent application-route override */
 	uint32_t fallback_oversize_redirects;   /* Suspect fallback could not carry the record */
-	uint32_t relay_oversize_drops;          /* Type-8 records dropped for hop MTU */
+	uint32_t relay_oversize_drops;          /* Legacy name: UDP sends skipped for hop MTU. */
 	time_t fallback_oversize_logged_at;     /* Last redirect INFO; at most once per 10s */
-	time_t relay_oversize_logged_at;        /* Last oversize-drop INFO; at most once per 10s */
+	time_t relay_oversize_logged_at;        /* Last oversize INFO; at most once per 10s. */
 	uint16_t devtool_drop_size_probes_above; /* Test: receiver drops SIZE_REQUEST longer than this; 0 = off */
 	uint8_t devtool_drop_liveness_replies;  /* Test: drop this many LIVENESS echoes */
 	unsigned devtool_drop_direct_udp_records; /* Test: next N direct-UDP application sends are discarded */

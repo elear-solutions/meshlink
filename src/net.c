@@ -87,6 +87,11 @@ edge_t *new_connection_edge(meshlink_handle_t *mesh, connection_t *c, node_t *n,
 
 /* Make c the connection we reach n through. */
 void install_node_connection(meshlink_handle_t *mesh, node_t *n, connection_t *c) {
+	if(n->connection != c) {
+		relay_invalidate_connection(mesh, n);
+		relay_hop_stop(mesh, n);
+		if(mesh->self->devclass == DEV_CLASS_BACKBONE) { memset(&n->udp_observation, 0, sizeof n->udp_observation); }
+	}
 	n->connection = c;
 	n->nexthop = n;
 	n->last_successfull_connection = mesh->loop.now.tv_sec;

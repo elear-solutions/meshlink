@@ -164,6 +164,7 @@ static path_mtu_cache_entry_t *cache_get(node_t *n, const sockaddr_t *ip, uint32
 }
 
 static void cache_store(meshlink_handle_t *mesh, node_t *n) {
+	(void)mesh;
 	uint8_t family, addr[16];
 	int idx;
 	path_mtu_cache_entry_t neu;
@@ -187,7 +188,7 @@ static void cache_store(meshlink_handle_t *mesh, node_t *n) {
 	neu.raise_backoff = n->plpmtu.raise_backoff;
 	neu.keepalive_ms = n->keepalive.interval_ms;
 	neu.updated_at = time(NULL);
-	neu.net_fp = path_local_network_fp(mesh);
+	neu.net_fp = n->plpmtu.path_net_fp;
 
 	material = !cache_key_eq(e, family, addr)
 	           || e->size != neu.size
@@ -287,13 +288,16 @@ static void clear_probe(node_t *n) {
 
 static void plpmtu_timer(event_loop_t *loop, void *data);
 
-static void arm_raise(meshlink_handle_t *mesh, node_t *n) {
-	int sec = raise_sec(n);
-	int64_t left;
-
-	n->plpmtu.raise_at = mesh->loop.now;
-	n->plpmtu.raise_at.tv_sec += sec;
-	left = n->plpmtu.raise_at.tv_sec - mesh->loop.now.tv_sec;
+static void arm_maintenance(meshlink_handle_t *mesh, node_t *n) {
+	int64_t left = n->plpmtu.raise_at.tv_sec - mesh->loop.now.tv_sec;
+	if(relay_hop_demanded(mesh, n)) {
+		if(!n->plpmtu.relay_verify_at.tv_sec) {
+			n->plpmtu.relay_verify_at = mesh->loop.now;
+			n->plpmtu.relay_verify_at.tv_sec += PATH_PLPMTU_RELAY_VERIFY_SEC + prng(mesh, PATH_PLPMTU_RELAY_VERIFY_JITTER_SEC);
+		}
+		int64_t verify_left = n->plpmtu.relay_verify_at.tv_sec - mesh->loop.now.tv_sec;
+		if(verify_left < left) { left = verify_left; }
+	}
 
 	if(left < 1) {
 		left = 1;
@@ -302,7 +306,18 @@ static void arm_raise(meshlink_handle_t *mesh, node_t *n) {
 	arm_ms(mesh, &n->plpmtu.timer, plpmtu_timer, n, (int)left * 1000);
 }
 
+static void arm_raise(meshlink_handle_t *mesh, node_t *n) {
+	n->plpmtu.raise_at = mesh->loop.now;
+	n->plpmtu.raise_at.tv_sec += raise_sec(n);
+	arm_maintenance(mesh, n);
+}
+
 static void settle(meshlink_handle_t *mesh, node_t *n, const char *how) {
+	bool verified = n->plpmtu.relay_verifying;
+	n->plpmtu.relay_verifying = false;
+	n->plpmtu.relay_verified_at = mesh->loop.now;
+	n->plpmtu.relay_verify_at = mesh->loop.now;
+	n->plpmtu.relay_verify_at.tv_sec += PATH_PLPMTU_RELAY_VERIFY_SEC + prng(mesh, PATH_PLPMTU_RELAY_VERIFY_JITTER_SEC);
 	path_scheduler_end_type(mesh, n, PATH_TXN_PLPMTU_SEARCH);
 	n->plpmtu.state = PLPMTU_COMPLETE;
 	clear_probe(n);
@@ -312,7 +327,7 @@ static void settle(meshlink_handle_t *mesh, node_t *n, const char *how) {
 	publish(mesh, n);
 	logger(mesh, MESHLINK_INFO, "PLPMTU of %s settled at %u (largest failed %u)%s%s",
 	       n->name, n->plpmtu.size, n->plpmtu.largest_failed, how ? " " : "", how ? how : "");
-	arm_raise(mesh, n);
+	if(verified) { arm_maintenance(mesh, n); } else { arm_raise(mesh, n); }
 }
 
 static bool liveness_guard(const meshlink_handle_t *mesh, const node_t *n);
@@ -339,6 +354,7 @@ static bool emit_size(meshlink_handle_t *mesh, node_t *n, uint16_t size) {
 	}
 
 	if(!txn) {
+		if(n->plpmtu.relay_verifying) { n->plpmtu.relay_verify_admission_delays++; }
 		arm_ms(mesh, &n->plpmtu.timer, plpmtu_timer, n, PATH_PLPMTU_PROBE_TIMEOUT_MS);
 		return false;
 	}
@@ -364,6 +380,7 @@ static bool emit_size(meshlink_handle_t *mesh, node_t *n, uint16_t size) {
 	admit = path_scheduler_emit_packet(mesh, txn, &req);
 
 	if(admit != PATH_SCHED_SENT) {
+		if(n->plpmtu.relay_verifying) { n->plpmtu.relay_verify_admission_delays++; }
 		/* Retain the previous attempt so a late reply can still prove it. */
 		n->plpmtu.probe_nonce = old_nonce;
 		n->plpmtu.probe_size = old_size;
@@ -445,6 +462,10 @@ static void fail_outstanding(meshlink_handle_t *mesh, node_t *n) {
 
 	failed_raise(n);
 	n->plpmtu.probes_lost += PATH_PLPMTU_MAX_PROBES;
+	if(n->plpmtu.relay_verifying) {
+		n->plpmtu.relay_verify_failures++;
+		n->plpmtu.relay_verifying = false;
+	}
 
 	if(!n->plpmtu.largest_failed || failed < n->plpmtu.largest_failed) {
 		n->plpmtu.largest_failed = failed;
@@ -488,6 +509,28 @@ static void fail_outstanding(meshlink_handle_t *mesh, node_t *n) {
 	settle(mesh, n, NULL);
 }
 
+void path_plpmtu_verify_relay_due(meshlink_handle_t *mesh, node_t *n) {
+	if(!mesh || !n || !relay_hop_demanded(mesh, n) || !n->relay_hop.confirmed
+	                || !relay_hop_udp_ready(n)
+	                || (n->plpmtu.state != PLPMTU_COMPLETE && n->plpmtu.state != PLPMTU_ERROR)
+	                || n->plpmtu.probe_size || n->plpmtu.pending_size) {
+		return;
+	}
+	if(!n->plpmtu.relay_verify_at.tv_sec) {
+		n->plpmtu.relay_verify_at = mesh->loop.now;
+		n->plpmtu.relay_verify_at.tv_sec += PATH_PLPMTU_RELAY_VERIFY_SEC + prng(mesh, PATH_PLPMTU_RELAY_VERIFY_JITTER_SEC);
+		return;
+	}
+	if(ms_between(&mesh->loop.now, &n->plpmtu.relay_verify_at) > 0) { return; }
+	/* Check the current usable size, preserving hostile holds and raise_at. */
+	n->plpmtu.relay_verify_state = n->plpmtu.state;
+	n->plpmtu.relay_verifying = true;
+	n->plpmtu.relay_verifications++;
+	n->plpmtu.bh_verifying = true;
+	n->plpmtu.state = PLPMTU_VERIFY;
+	emit_size(mesh, n, n->plpmtu.size);
+}
+
 void path_plpmtu_tick(meshlink_handle_t *mesh, node_t *n) {
 	uint16_t step;
 
@@ -500,7 +543,7 @@ void path_plpmtu_tick(meshlink_handle_t *mesh, node_t *n) {
 		return;
 	}
 
-	if(n != mesh->backbone_udp.node && !path_peer_udp_demanded(mesh, n)) {
+	if(n != mesh->backbone_udp.node && !path_peer_udp_demanded(mesh, n) && !relay_hop_demanded(mesh, n)) {
 		path_plpmtu_pause(mesh, n);
 		return;
 	}
@@ -555,8 +598,10 @@ void path_plpmtu_tick(meshlink_handle_t *mesh, node_t *n) {
 	}
 
 	if(n->plpmtu.state == PLPMTU_COMPLETE || n->plpmtu.state == PLPMTU_ERROR) {
+		path_plpmtu_verify_relay_due(mesh, n);
+		if(n->plpmtu.relay_verifying) { return; }
 		if(mesh->loop.now.tv_sec < n->plpmtu.raise_at.tv_sec) {
-			arm_raise(mesh, n);
+			arm_maintenance(mesh, n);
 			return;
 		}
 
@@ -597,7 +642,12 @@ void path_plpmtu_pause(meshlink_handle_t *mesh, node_t *n) {
 	}
 
 	disarm(mesh, &n->plpmtu.timer);
+	if(n->plpmtu.relay_verifying) {
+		n->plpmtu.state = n->plpmtu.relay_verify_state;
+		n->plpmtu.bh_verifying = false;
+	}
 	clear_probe(n);
+	n->plpmtu.relay_verifying = false;
 	path_scheduler_end_type(mesh, n, PATH_TXN_PLPMTU_SEARCH);
 }
 
@@ -635,7 +685,7 @@ void path_plpmtu_on_confirmed(meshlink_handle_t *mesh, node_t *n) {
 		return;
 	}
 
-	if(n != mesh->backbone_udp.node && !path_peer_udp_demanded(mesh, n)) {
+	if(n != mesh->backbone_udp.node && !path_peer_udp_demanded(mesh, n) && !relay_hop_demanded(mesh, n)) {
 		return;
 	}
 
@@ -645,8 +695,10 @@ void path_plpmtu_on_confirmed(meshlink_handle_t *mesh, node_t *n) {
 
 	path_copy_sockaddr(&ip, &n->address);
 	ip_only(&ip);
+	fp = path_local_network_fp(mesh);
 
-	if(n->plpmtu.state != PLPMTU_DISABLED && same_ip(&n->plpmtu.path_ip, &ip)) {
+	if(n->plpmtu.state != PLPMTU_DISABLED && same_ip(&n->plpmtu.path_ip, &ip)
+	                && cache_fp_ok(n->plpmtu.path_net_fp, fp)) {
 		publish(mesh, n);
 
 		if(!n->plpmtu.timer.cb) {
@@ -656,10 +708,11 @@ void path_plpmtu_on_confirmed(meshlink_handle_t *mesh, node_t *n) {
 		return;
 	}
 
+	if(n->plpmtu.state != PLPMTU_DISABLED) { cache_store(mesh, n); }
 	path_plpmtu_pause(mesh, n);
 	memset(&n->plpmtu, 0, sizeof n->plpmtu);
 	n->plpmtu.path_ip = ip;
-	fp = path_local_network_fp(mesh);
+	n->plpmtu.path_net_fp = fp;
 	hit = cache_get(n, &ip, fp);
 	now = time(NULL);
 

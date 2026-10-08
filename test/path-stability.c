@@ -900,8 +900,11 @@ static void test_idle_peer_is_not_probed(void) {
 	assert(wait_sync_flag(&received, 15));
 	assert(devtool_liveness_probe_warranted(e1, e1_e2));
 	assert_after(udp_status_working(e1, e1_e2), 30);
-	assert(!devtool_liveness_probe_warranted(bb, bb_e1));
-	assert(!udp_status_working(bb, bb_e1));
+	/* WS2 may prove and maintain a demanded final hop while punching is
+	   still pending. This is relay ownership, never ordinary-peer demand. */
+	devtool_node_status_t relay_st = snapshot(bb, bb_e1);
+	assert(relay_st.peer_udp_channel_count == 0 && !relay_st.punch_challenge_active);
+	devtool_free_node_status(&relay_st);
 
 	/* A second channel to the same peer shares one punch state. */
 	reset_sync_flag(&accepted);
@@ -930,8 +933,9 @@ static void test_idle_peer_is_not_probed(void) {
 	assert(wait_sync_flag(&accepted, 15));
 	assert_after(udp_status_working(e1, e1_e2), 30);
 	assert(devtool_liveness_probe_warranted(e1, e1_e2));
-	assert(!devtool_liveness_probe_warranted(bb, bb_e1));
-	assert(!udp_status_working(bb, bb_e1));
+	relay_st = snapshot(bb, bb_e1);
+	assert(relay_st.peer_udp_channel_count == 0 && !relay_st.punch_challenge_active);
+	devtool_free_node_status(&relay_st);
 
 	meshlink_channel_abort(e2, ch_in);
 	meshlink_channel_abort(bb, ch_bb);
@@ -2700,10 +2704,19 @@ static void test_plpmtu_restart_cache(void) {
 	printf("path-stability T27 ok\n");
 }
 
-int main(void) {
+int main(int argc, char **argv) {
 	setvbuf(stdout, NULL, _IOLBF, 0);
 	setvbuf(stderr, NULL, _IONBF, 0);
 	meshlink_set_log_cb(NULL, MESHLINK_WARNING, NULL);
+
+	/* Keep the demand-expiry/reopen case independently reproducible with
+	   carrier and probe logs when diagnosing timing-dependent failures. */
+	if(argc == 2 && !strcmp(argv[1], "--peer-demand")) {
+		meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
+		test_idle_peer_is_not_probed();
+		return 0;
+	}
+	assert(argc == 1);
 
 	test_fixed_channel_size();
 	test_demotion_resplits();

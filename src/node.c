@@ -47,6 +47,7 @@ void exit_nodes(meshlink_handle_t *mesh) {
 		/* free_node() aborts if a timer is still armed. Reachability drops
 		   punch and promotion; shutdown still has to drop whatever is left. */
 		for splay_each(node_t, n, mesh->nodes) {
+			relay_hop_stop(mesh, n);
 			timeout_del(&mesh->loop, &n->plpmtu.timer);
 			timeout_del(&mesh->loop, &n->liveness.timer);
 			timeout_del(&mesh->loop, &n->keepalive.timer);
@@ -141,6 +142,8 @@ void node_set_validkey(meshlink_handle_t *mesh, node_t *n, bool valid) {
 	n->status.validkey = valid;
 
 	if(!valid) {
+		relay_hop_stop(mesh, n);
+		if(mesh->self->devclass == DEV_CLASS_BACKBONE) { memset(&n->udp_observation, 0, sizeof n->udp_observation); }
 		path_rebind_cancel(mesh, n);
 		path_punch_cancel(mesh, n);
 		/* Same-session rekey keeps remembered ingress so the next demand can
@@ -202,7 +205,7 @@ void free_node(node_t *n) {
 	ecdsa_free(n->ecdsa);
 	sptps_stop(&n->sptps);
 
-	if(n->plpmtu.timer.cb || n->liveness.timer.cb || n->keepalive.timer.cb || n->local_discovery.timer.cb || n->promotion_timer.cb || n->punch_timer.cb || n->suspect_validation.timer.cb || n->rebind_timer.cb) {
+	if(n->relay_hop.timer.cb || n->plpmtu.timer.cb || n->liveness.timer.cb || n->keepalive.timer.cb || n->local_discovery.timer.cb || n->promotion_timer.cb || n->punch_timer.cb || n->suspect_validation.timer.cb || n->rebind_timer.cb) {
 		abort();
 	}
 
@@ -259,6 +262,7 @@ void node_udp_cache_alias(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *
 }
 
 void node_del(meshlink_handle_t *mesh, node_t *n) {
+	relay_hop_stop(mesh, n);
 	upgrade_node_cleanup(mesh, n);
 	path_clear_pending_punch_hint(n);
 	path_reset_canonical_resolve(n);

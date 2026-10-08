@@ -43,6 +43,8 @@ enum { PATH_MTU_CACHE_KEEPALIVE_V2 = 0x02 };
 #define PATH_PLPMTU_STEP_1399          1399
 #define PATH_PLPMTU_STEP_1419          1419
 #define PATH_PLPMTU_STEP_1431          1431
+#define PATH_PLPMTU_RELAY_VERIFY_SEC     30
+#define PATH_PLPMTU_RELAY_VERIFY_JITTER_SEC 3 /* Exclusive upper bound: 0..2s. */
 
 struct meshlink_handle;
 struct node_t;
@@ -65,6 +67,11 @@ void path_plpmtu_note_suspect_cleared(struct meshlink_handle *mesh, struct node_
 
 /* Separate health sends from the last admitted size probe in either timer order. */
 bool path_plpmtu_probe_recent(const struct meshlink_handle *mesh, const struct node_t *n);
+
+/* Verify a demanded, proved NMN output's current size when due. Coalesces with
+   active search and preserves hostile holds and the existing raise deadline.
+   Caller holds mesh->mutex or runs on the mesh thread. */
+void path_plpmtu_verify_relay_due(struct meshlink_handle *mesh, struct node_t *n);
 
 void path_plpmtu_tick(struct meshlink_handle *mesh, struct node_t *n);
 

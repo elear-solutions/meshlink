@@ -111,6 +111,7 @@ static int path_scheduler_rank(path_transaction_priority_t priority) {
 
 	case PATH_TX_CHANNEL_PROMOTION:
 	case PATH_TX_PUNCH:
+	case PATH_TX_RELAY_HOP:
 		return 2;
 
 	case PATH_TX_LIVENESS:
@@ -193,7 +194,8 @@ static bool path_scheduler_skip_minute(const path_sched_txn_t *txn) {
 	               || txn->type == PATH_TXN_PROMOTION
 	               || txn->type == PATH_TXN_SUSPECT
 	               || txn->type == PATH_TXN_PUNCH
-	               || txn->type == PATH_TXN_REBIND);
+	               || txn->type == PATH_TXN_REBIND
+	               || txn->type == PATH_TXN_RELAY_HOP);
 }
 
 static path_sched_txn_t *path_scheduler_preempt_victim(meshlink_handle_t *mesh, path_transaction_priority_t incoming) {
@@ -561,7 +563,7 @@ path_sched_txn_t *path_scheduler_begin_transaction(meshlink_handle_t *mesh, node
 		   priority stays FIFO: the first occupant is not displaced.
 		   Eviction drops queued packets and notifies the owner so the
 		   victim state machine cannot run outside the cap. */
-		if(type == PATH_TXN_PROMOTION || type == PATH_TXN_SUSPECT || type == PATH_TXN_PUNCH || type == PATH_TXN_REBIND) {
+		if(type == PATH_TXN_PROMOTION || type == PATH_TXN_SUSPECT || type == PATH_TXN_PUNCH || type == PATH_TXN_REBIND || type == PATH_TXN_RELAY_HOP) {
 			victim = path_scheduler_preempt_victim(mesh, priority);
 		}
 
@@ -619,6 +621,9 @@ static path_transaction_type_t path_scheduler_type_for_priority(path_transaction
 
 	case PATH_TX_REBIND:
 		return PATH_TXN_REBIND;
+
+	case PATH_TX_RELAY_HOP:
+		return PATH_TXN_RELAY_HOP;
 
 	case PATH_TX_LIVENESS:
 		*have_type = false;
@@ -708,7 +713,7 @@ path_sched_admit_t path_scheduler_emit_packet(meshlink_handle_t *mesh, path_sche
 	}
 
 	/* These state machines own retries and cannot track queued sends. */
-	if(req.priority == PATH_TX_KEEPALIVE || req.priority == PATH_TX_PLPMTU_PROBE || req.priority == PATH_TX_LIVENESS) {
+	if(req.priority == PATH_TX_RELAY_HOP || req.priority == PATH_TX_KEEPALIVE || req.priority == PATH_TX_PLPMTU_PROBE || req.priority == PATH_TX_LIVENESS) {
 		return PATH_SCHED_DENIED;
 	}
 
