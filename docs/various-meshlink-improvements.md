@@ -17,12 +17,12 @@ Status values:
 | F1 | Suspect fallback silently drops retransmits, so channels stall | Fixed | — |
 | F2 | The `maxmtu + 8` raise replaces liveness, causing false give-ups | Fixed | — (follow-up in WS1) |
 | F3 | Oversized datagrams make the camera's NAT re-map; PMTU discovery causes most of it | Fix ready | WS1 |
-| F4 | Slow climb to direct at startup and after restarts | Partly fixed (MSS); route choice still open | WS1 (MSS), WS3 (route choice) |
+| F4 | Slow climb to direct at startup and after restarts | WS3 implemented; field validation pending | WS1 (MSS), WS3 (route choice) |
 | F5 | Liveness is one probe per window; one lost reply demotes the path | Fix ready | WS1 |
 | F6 | The camera's NAT expires idle mappings faster than our ping cadence | Fix ready | WS1 |
 | F7 | The NMN delivers relayed records over META, never UDP | Implemented; field validation pending | WS2 |
-| F8 | Route promotion continues while the destination is unreachable | Open | WS3 |
-| F9 | A pending direct promotion keeps the old port after a validated rebind | Open | WS3 |
+| F8 | Route promotion continues while the destination is unreachable | Implemented; field validation pending | WS3 |
+| F9 | A pending direct promotion keeps the old port after a validated rebind | Implemented; field validation pending | WS3 |
 | F10 | Channels expose no immediate availability change when the peer becomes unreachable | Open (API/policy review) | WS4 |
 | M1–M8 | Minor items | Open / By design / Not meshlink | WS4 |
 
@@ -158,7 +158,7 @@ Options considered and folded into WS1: converge on loss, keep PMTU on give-up, 
 **WS1 follow-up fix:** after a missed size request, send a timer-owned 64-byte recovery echo before another size attempt, with the normal health/size pacing guard and scheduler limits. Authenticated probe replies report the sender's observed endpoint, allowing its own remap to be detected on ordinary and backbone paths without application UDP. Preserve the size nonce for a late ACK. Regression coverage includes denied recovery admission, wrong nonce/source, backbone recovery, and an oversize-punishing NAT while direct promotion is held and the application sends no data.
 
 ## F4: Slow climb to direct at startup and after restarts
-**Status:** Partly fixed. **Priority:** 4. **Seen in:** C1, C2, C3.
+**Status:** WS3 implemented; field validation pending. **Priority:** 4. **Seen in:** C1, C2, C3.
 
 MSS is what waited on PMTU. Promotion to direct is not gated on it. WS1 publishes the 1211-byte base as soon as UDP is confirmed, so `channel_compute_mtu` can use it before the search finishes. The route-choice leftovers stay in WS3.
 
@@ -174,8 +174,8 @@ MSS is what waited on PMTU. Promotion to direct is not gated on it. WS1 publishe
 **Fix:**
 - **WS1** publishes the 1232-byte base immediately after UDP confirmation; the search raises MSS later. Direct is eligible at base, but existing route residency and promotion holds still apply.
 - **WS3** covers the rest:
-  - re-rank `meta-direct` → `relay-udp` once backbone UDP confirms;
-  - don't let a direct-UDP candidate pre-empt the backbone-UDP step down.
+  - re-rank a META relay to the same first hop's proved UDP carrier after a one-second hold, preserving destination residency even with a pending direct candidate;
+  - reduce elective active-route residency from 30 to 10 seconds, with the existing route tick making the eventual commit. See ADR 0013.
 
 **C3:** the MSS wait is removed, but direct selection still commonly takes 30–40s. The final session takes about 39s despite cached phone→camera PLPMTU 1451; F9 records the additional stale-port promotion cycle. WS3 owns these remaining delays. Earlier promotion should also be checked against any remaining rebind quiet-window cost.
 
@@ -241,7 +241,7 @@ This revises the ADR 0010 position that keepalives don't help. That position sti
 **Verification:** a relay test asserts that the last leg is UDP (no `REQ_KEY … 21` at the destination) once both peers have confirmed backbone UDP.
 
 ## F8: Route promotion continues while the destination is unreachable
-**Status:** Open. **Workstream:** WS3. **Seen in:** L1.
+**Status:** Implemented; field validation pending. **Workstream:** WS3. **Seen in:** L1.
 
 **Evidence (Android, all timestamps on the same clock):**
 - At 22:36:08.972, node 2 becomes unreachable after `DEL_EDGE` from the NMN (`android-meshlink-ws1-001.txt`, line 102845).
@@ -260,7 +260,7 @@ This revises the ADR 0010 position that keepalives don't help. That position sti
 ---
 
 ## F9: Pending direct promotion retains the old port after rebind
-**Status:** Open. **Workstream:** WS3. **Seen in:** C3.
+**Status:** Implemented; field validation pending. **Workstream:** WS3. **Seen in:** C3.
 
 **Evidence (Android 003, one clock):**
 - At 09:34:19.853 a direct candidate targets camera port 60808 (`android-meshlink-ws1-003.txt:239009`).
@@ -332,7 +332,7 @@ Rules for every workstream:
 |----|-------|----------|------------|--------|
 | WS1 | Path MTU and liveness rework | F3, F5, F6, F4 (PMTU gate), F2 follow-up | — | Implemented in PR #127; C3 follow-up fixes awaiting field validation |
 | WS2 | Relay data plane | F7, relay MTU | WS1 PR A; NMN deployed first | Implemented; Docker and field validation tracked below |
-| WS3 | Route selection at startup and after reachability changes | F4 (route choice), F8, F9 | WS1 | Not started |
+| WS3 | Route selection at startup and after reachability changes | F4 (route choice), F8, F9 | WS1 | Implemented; Docker and field validation tracked below |
 | WS4 | Hygiene and channel availability | M1, M2 (meshlink side), M3, M4, M5, M8, F10 | — | Not started |
 
 ### WS1: Path MTU and liveness rework
@@ -513,11 +513,11 @@ protocol compatibility, budgets, and the narrow NMN probing exception.
   Track WS3 startup route delay separately.
 
 ### WS3: Route selection at startup and after reachability changes (F4 leftovers, F8, F9)
-- Once backbone UDP confirms, re-rank `meta-direct` → `relay-udp`, so data never stays on TCP through the NMN just because of start order.
-- Don't let a direct-UDP candidate pre-empt the backbone-UDP step down.
+- Once backbone UDP confirms and its proof has held one second, move the same relay first hop from META to UDP on the next route tick without restarting destination residency.
+- Keep a pending higher-ranked direct candidate while the relay carrier upgrades; commit it after its own hold and ten seconds of active-route residency.
 - **F8:** prevent offline destinations from starting or committing promotions; test disconnect, background route ticks and reconnect with retained channel demand.
 - **F9:** reconcile pending direct promotions immediately after a validated rebind; test a relayed channel inside residency whose pending endpoint still points to the old port. Preserve residency and replace endpoint validation safely.
-- Re-measure after WS1, because promoting direct at base may already remove most of F4.
+- Docker unit coverage exercises the one-second backbone hold, ten-second residency, offline admission and resumed selection, and a pending direct candidate retargeted by rebind. Existing relay and NAT integration tests exercise packet delivery. Record a new Hemanth-path capture before marking field validation complete; compare META/relay durations, direct time, rebind recovery, route changes, retransmits and packet loss with C3. No field timing is inferred from unit tests.
 
 ### WS4: Hygiene
 - **M1:** edge-trigger `Unstable NAT binding`, so it fires once per window.

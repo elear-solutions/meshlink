@@ -84,6 +84,11 @@ or an authenticated local observation. A validated candidate then waits
 for a short hold, and the active route must have served a minimum
 residency, before traffic moves.
 
+ADR 0013 sets that minimum residency to ten seconds for elective
+promotions and permits a proved backbone UDP carrier to replace META on
+the same relay first hop after a one-second hold without restarting the
+destination's residency.
+
 Demotion is honest. A hard socket error on the active endpoint moves
 future records to an already live fallback immediately. A reliable-channel
 retransmission marks the route suspect, moves subsequent records to a

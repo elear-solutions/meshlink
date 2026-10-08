@@ -50,7 +50,7 @@ typedef struct canonical_adns_req {
 static void path_note_canonical_resolve_failed(meshlink_handle_t *mesh, node_t *n);
 static void path_on_canonical_resolved(meshlink_handle_t *mesh, node_t *n);
 static uint64_t path_fresh_nonce(void);
-static void path_commit_active_route(node_t *n, const path_target_t *target, const struct timespec *now);
+static void path_commit_active_route(node_t *n, const path_target_t *target, const struct timespec *now, bool preserve_residency);
 static bool path_punch_endpoint_usable(const sockaddr_t *sa);
 static void path_punch_note_demotion(meshlink_handle_t *mesh, node_t *n);
 static void path_punch_rearm(meshlink_handle_t *mesh, node_t *n);
@@ -1527,7 +1527,7 @@ static void path_rerank_recorded(meshlink_handle_t *mesh, node_t *dest) {
 	}
 
 	if(path_select_fallback(mesh, dest, &target)) {
-		path_commit_active_route(dest, &target, &mesh->loop.now);
+		path_commit_active_route(dest, &target, &mesh->loop.now, false);
 	}
 }
 
@@ -1585,6 +1585,7 @@ void path_note_udp_demoted_reason(meshlink_handle_t *mesh, node_t *n, const char
 
 	if(mesh && n == mesh->backbone_udp.node) {
 		mesh->backbone_udp.confirmed = false;
+		memset(&mesh->backbone_udp.confirmed_at, 0, sizeof mesh->backbone_udp.confirmed_at);
 		mesh->backbone_udp.liveness_nonce = 0;
 		mesh->backbone_udp.unanswered = 0;
 
@@ -1871,7 +1872,7 @@ static bool path_residency_served(meshlink_handle_t *mesh, const node_t *n) {
 		return true;
 	}
 
-	return mesh->loop.now.tv_sec - n->active_route.selected_at.tv_sec >= PATH_ROUTE_MIN_RESIDENCY_SEC;
+	return timespec_ms_between(&n->active_route.selected_at, &mesh->loop.now) >= PATH_ROUTE_MIN_RESIDENCY_SEC * 1000;
 }
 
 static void promotion_timer_handler(event_loop_t *loop, void *data);
@@ -2056,6 +2057,11 @@ void path_promotion_timer_tick(meshlink_handle_t *mesh, node_t *n) {
 	path_sched_txn_t *txn;
 
 	if(!mesh || !n) {
+		return;
+	}
+
+	if(!n->status.reachable) {
+		path_candidate_discard(mesh, n);
 		return;
 	}
 
@@ -3305,7 +3311,7 @@ static void path_log_validation_source(meshlink_handle_t *mesh, const node_t *n,
 }
 
 void path_consider_promotion(meshlink_handle_t *mesh, node_t *n, path_promotion_reason_t reason) {
-	if(!mesh || !n || n->mesh != mesh) {
+	if(!mesh || !n || n->mesh != mesh || !n->status.reachable) {
 		return;
 	}
 
@@ -3477,7 +3483,7 @@ void path_consider_route_promotion(meshlink_handle_t *mesh, node_t *n, path_rout
 		return;
 	}
 
-	if(n->active_route.kind == DATA_ROUTE_NONE) {
+	if(!n->status.reachable || n->active_route.kind == DATA_ROUTE_NONE) {
 		return;
 	}
 
@@ -3567,6 +3573,7 @@ static void path_consider_demanded_route_promotions(meshlink_handle_t *mesh, pat
 
 	for splay_each(node_t, dest, mesh->nodes) {
 		if(dest == mesh->self
+		                || !dest->status.reachable
 		                || dest->active_route.kind == DATA_ROUTE_NONE
 		                || !path_peer_udp_demanded(mesh, dest)) {
 			continue;
@@ -3622,6 +3629,15 @@ void path_commit_candidate(meshlink_handle_t *mesh, node_t *n) {
 	}
 
 	c = &n->promotion_candidate;
+
+	if(!n->status.reachable) {
+		path_candidate_discard(mesh, n);
+		return;
+	}
+
+	if(!c->active) {
+		return;
+	}
 
 	if(path_carrier_outranked(mesh, n, c)) {
 		path_log_validation(mesh, n, c->endpoint.sa.sa_family ? &c->endpoint : NULL,
@@ -3693,7 +3709,7 @@ void path_commit_candidate(meshlink_handle_t *mesh, node_t *n) {
 		path_retry_clear_if_endpoint(n, &target.udp_endpoint);
 		path_candidate_discard(mesh, n);
 		path_log_validation_source(mesh, n, &endpoint, "candidate-promoted", "validated", src);
-		path_commit_active_route(n, &target, &mesh->loop.now);
+		path_commit_active_route(n, &target, &mesh->loop.now, false);
 		return;
 	}
 
@@ -3702,7 +3718,7 @@ void path_commit_candidate(meshlink_handle_t *mesh, node_t *n) {
 
 		path_candidate_discard(mesh, n);
 		path_log_validation_source(mesh, n, endpoint.sa.sa_family ? &endpoint : NULL, "candidate-promoted", "validated", src);
-		path_commit_active_route(n, &target, &mesh->loop.now);
+		path_commit_active_route(n, &target, &mesh->loop.now, false);
 	}
 }
 
@@ -3842,7 +3858,7 @@ static void path_suspect_commit_fallback(meshlink_handle_t *mesh, node_t *n) {
 	}
 
 	if(path_select_fallback(mesh, n, &target)) {
-		path_commit_active_route(n, &target, &mesh->loop.now);
+		path_commit_active_route(n, &target, &mesh->loop.now, false);
 	}
 }
 
@@ -4271,12 +4287,44 @@ static void path_rebind_begin(meshlink_handle_t *mesh, node_t *n, const sockaddr
 	path_rebind_rearm(mesh, n);
 }
 
+/* A nonce-free direct candidate represents the already-confirmed endpoint.
+   A successful rebind proves its replacement, but never proves a different
+   local candidate or transfers an in-flight promotion nonce. */
+static bool path_reconcile_rebind_candidate(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *old) {
+	route_candidate_t *c = &n->promotion_candidate;
+	path_target_t live;
+
+	if(!c->active || c->kind != DATA_ROUTE_DIRECT_UDP || sockaddrcmp(&c->endpoint, old)) {
+		return false;
+	}
+
+	memset(&live, 0, sizeof live);
+
+	if(c->nonce || !path_fill_direct_udp(mesh, n, &live)) {
+		path_candidate_discard(mesh, n);
+		return true;
+	}
+
+	path_scheduler_cancel_packets(mesh, n, PATH_TX_CHANNEL_PROMOTION);
+	path_copy_sockaddr(&c->endpoint, &live.udp_endpoint);
+	c->source = live.endpoint_source;
+	c->capability = n->address_cap;
+	c->local = live.local;
+	c->successful_rounds = PATH_PROMOTION_ROUNDS;
+	c->first_success = mesh->loop.now;
+	c->requests_sent = 0;
+	memset(&c->deadline, 0, sizeof c->deadline);
+	path_log_validation_source(mesh, n, &c->endpoint, "candidate-retarget", "validated rebind", c->source);
+	return false;
+}
+
 static void path_rebind_commit(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *ep) {
 	sockaddr_t old;
 	sockaddr_t neu;
 	path_tier_t next;
 	path_tier_t was;
 	int64_t elapsed;
+	bool restart_promotion;
 	char *old_host = NULL;
 	char *old_port = NULL;
 	char *new_host = NULL;
@@ -4309,6 +4357,8 @@ static void path_rebind_commit(meshlink_handle_t *mesh, node_t *n, const sockadd
 		path_log_udp_tier(mesh, n, was, next, "rebind");
 	}
 
+	restart_promotion = path_reconcile_rebind_candidate(mesh, n, &old);
+
 	path_clear_route_suspicion(mesh, n);
 	path_suspect_stop(mesh, n);
 	path_note_authenticated_route_success(mesh, n);
@@ -4339,6 +4389,10 @@ static void path_rebind_commit(meshlink_handle_t *mesh, node_t *n, const sockadd
 	}
 
 	path_rebind_disarm(mesh, n);
+
+	if(restart_promotion) {
+		path_consider_route_promotion(mesh, n, PATH_PROMOTION_DIRECT_UDP);
+	}
 }
 
 void path_rebind_challenge_timeout(meshlink_handle_t *mesh, node_t *n) {
@@ -4510,7 +4564,7 @@ void path_rebind_observe_rx(meshlink_handle_t *mesh, node_t *node, const sockadd
 }
 
 void path_observe_probe_reply(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *from, uint64_t nonce) {
-	if(!mesh || !n || !from) {
+	if(!mesh || !n || !from || !n->status.reachable) {
 		return;
 	}
 
@@ -4935,7 +4989,7 @@ bool path_liveness_probe_warranted(meshlink_handle_t *mesh, const node_t *n) {
 	return path_peer_udp_punching_allowed(mesh, n) || relay_hop_demanded(mesh, n);
 }
 
-static void path_commit_active_route(node_t *n, const path_target_t *target, const struct timespec *now) {
+static void path_commit_active_route(node_t *n, const path_target_t *target, const struct timespec *now, bool preserve_residency) {
 	data_route_t *route = &n->active_route;
 	bool changed = route->kind != target->kind
 	               || route->relay_carrier != target->relay_carrier
@@ -4957,7 +5011,9 @@ static void path_commit_active_route(node_t *n, const path_target_t *target, con
 	route->endpoint_source = target->endpoint_source;
 	path_copy_sockaddr(&route->udp_endpoint, &target->udp_endpoint);
 	route->suspect = false;
-	route->selected_at = *now;
+	if(!preserve_residency) {
+		route->selected_at = *now;
+	}
 	memset(&route->healthy_since, 0, sizeof route->healthy_since);
 
 	if(n->promotion_candidate.active
@@ -4986,6 +5042,40 @@ static void path_commit_active_route(node_t *n, const path_target_t *target, con
 	channel_refresh_mtu(n->mesh, n);
 }
 
+/* The first hop is unchanged: its confirmed UDP carrier may replace META
+   without consuming the destination's one promotion slot or restarting the
+   direct candidate's residency. The periodic route tick owns the hold. */
+static void path_upgrade_backbone_relay_carrier(meshlink_handle_t *mesh, node_t *n) {
+	path_target_t target;
+	route_candidate_t *c = &n->promotion_candidate;
+	const data_route_t *r = &n->active_route;
+
+	if(!n->status.reachable || !path_peer_udp_demanded(mesh, n)
+	                || r->kind != DATA_ROUTE_RELAY || r->suspect
+	                || (r->relay_carrier != RELAY_CARRIER_META_DIRECT && r->relay_carrier != RELAY_CARRIER_META_CANONICAL)
+	                || r->first_hop != mesh->backbone_udp.node
+	                || !mesh->backbone_udp.confirmed
+	                || (!mesh->backbone_udp.confirmed_at.tv_sec && !mesh->backbone_udp.confirmed_at.tv_nsec)
+	                || timespec_ms_between(&mesh->backbone_udp.confirmed_at, &mesh->loop.now) < PATH_PROMOTION_HOLD_MS) {
+		return;
+	}
+
+	memset(&target, 0, sizeof target);
+
+	if(!path_fill_relay_udp(mesh, n, &target) || target.first_hop != r->first_hop) {
+		return;
+	}
+
+	/* A pending direct or local carrier remains eligible. A lower-ranked
+	   candidate is obsolete once the active relay uses backbone UDP. */
+	if(c->active && path_carrier_rank(c->kind, c->relay_carrier, c->local)
+	                >= path_carrier_rank(target.kind, target.relay_carrier, target.local)) {
+		path_candidate_discard(mesh, n);
+	}
+
+	path_commit_active_route(n, &target, &mesh->loop.now, true);
+}
+
 void path_route_tick(meshlink_handle_t *mesh, node_t *n) {
 	if(!mesh || !n) {
 		return;
@@ -4998,6 +5088,18 @@ void path_route_tick(meshlink_handle_t *mesh, node_t *n) {
 	                && timespec_ms_between(&n->peer_udp.idle_until, &mesh->loop.now) >= 0) {
 		path_peer_udp_stop(mesh, n);
 	}
+
+	if(!n->status.reachable) {
+		if(n->promotion_candidate.active) {
+			path_candidate_discard(mesh, n);
+		}
+
+		return;
+	}
+
+	/* A confirmed first-hop UDP carrier is the same relay route. Give it its
+	   short proof hold before evaluating elective candidate residency. */
+	path_upgrade_backbone_relay_carrier(mesh, n);
 
 	route_candidate_t *c = &n->promotion_candidate;
 	bool validated = c->active && c->successful_rounds >= PATH_PROMOTION_ROUNDS;
@@ -5150,7 +5252,7 @@ bool path_resolve_active_route(meshlink_handle_t *mesh, node_t *n, path_target_t
 	}
 
 	if(path_select_fallback(mesh, n, out)) {
-		path_commit_active_route(n, out, &mesh->loop.now);
+		path_commit_active_route(n, out, &mesh->loop.now, false);
 		return true;
 	}
 
@@ -5326,7 +5428,7 @@ void path_record_active_route(meshlink_handle_t *mesh, node_t *n, const path_tar
 		return;
 	}
 
-	path_commit_active_route(n, target, &mesh->loop.now);
+	path_commit_active_route(n, target, &mesh->loop.now, false);
 }
 
 void path_log_candidate(meshlink_handle_t *mesh, const node_t *n, const sockaddr_t *sa, address_source_t src, path_cap_t cap, const char *action) {

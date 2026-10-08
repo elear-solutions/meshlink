@@ -123,7 +123,9 @@ probe to the source that packet arrived from.
 - The backbone distributes hints and originates no ordinary-peer probes.
 - Idle peers emit neither endpoint requests nor peer probes.
 - Port-restricted cone NAT can move from relay to `direct-wan-udp` without
-  a second 30-second residency behind a relay candidate.
+  a second relay-candidate residency. ADR 0013 sets elective residency to
+  ten seconds and lets the same backbone relay first hop use proved UDP
+  without restarting that clock.
 - NMN hints only bootstrap. The preferred unconfirmed candidate is the authenticated peer-reflexive source, and only a matching reply from that endpoint confirms it.
 - Two endpoint-dependent NATs stay on relay when no bootstrap packet lands. A cone opposite an endpoint-dependent NAT confirms both ways.
 - A confirmed endpoint that later rebinds is migrated in place. See ADR 0010. Confirmation is not a permanent pin.

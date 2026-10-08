@@ -1489,6 +1489,132 @@ static bool cover_route_usability_and_promotion(meshlink_handle_t *mesh) {
 	return true;
 }
 
+static bool cover_ws3_route_transitions(meshlink_handle_t *mesh) {
+	node_t dest;
+	node_t hop;
+	connection_t hopconn;
+	path_target_t target;
+	backbone_udp_path_t saved_udp = mesh->backbone_udp;
+	node_t *saved_bb = mesh->backbone.node;
+	struct timespec selected;
+	bool ok = false;
+
+#define WS3_CHECK(cond) do { \
+	if(!(cond)) { \
+		logger(mesh, MESHLINK_ERROR, "cover_ws3_route_transitions failed: %s", #cond); \
+		goto done; \
+	} \
+} while(0)
+
+	memset(&dest, 0, sizeof dest);
+	memset(&hop, 0, sizeof hop);
+	memset(&hopconn, 0, sizeof hopconn);
+	memset(&target, 0, sizeof target);
+	dest.name = scratch("ws3-dest");
+	dest.mesh = mesh;
+	dest.devclass = DEV_CLASS_STATIONARY;
+	dest.status.reachable = true;
+	dest.status.validkey = true;
+	dest.status.udp_confirmed = true;
+	dest.udp_tier = PATH_TIER_DIRECT_WAN_UDP;
+	dest.address_source = ADDR_SRC_UDP_REFLEXIVE;
+	dest.address_cap = PATH_CAP_UDP;
+	dest.peer_udp.channel_count = 1;
+	set_v4(&dest.address, "203.0.113.12", 9);
+	hop.name = scratch("ws3-hop");
+	hop.status.reachable = true;
+	hop.status.validkey = true;
+	hop.status.udp_confirmed = true;
+	set_v4(&hop.address, "203.0.113.80", 9);
+	hopconn.status.active = true;
+	hopconn.node = &hop;
+	set_v4(&hopconn.address, "203.0.113.80", 9);
+	hop.connection = &hopconn;
+	path_mark_meta_dial(&hopconn, true);
+	mesh->backbone.node = &hop;
+	memset(&mesh->backbone_udp, 0, sizeof mesh->backbone_udp);
+	mesh->backbone_udp.node = &hop;
+	mesh->backbone_udp.confirmed = true;
+	mesh->backbone_udp.source = ADDR_SRC_AUTH_DIRECT;
+	path_copy_sockaddr(&mesh->backbone_udp.endpoint, &hop.address);
+	mesh->backbone_udp.confirmed_at = mesh->loop.now;
+	target.kind = DATA_ROUTE_RELAY;
+	target.relay_carrier = RELAY_CARRIER_META_CANONICAL;
+	target.first_hop = &hop;
+	path_record_active_route(mesh, &dest, &target);
+	selected = dest.active_route.selected_at;
+	path_consider_route_promotion(mesh, &dest, PATH_PROMOTION_DIRECT_UDP);
+	WS3_CHECK(dest.promotion_candidate.active);
+	WS3_CHECK(dest.promotion_candidate.kind == DATA_ROUTE_DIRECT_UDP);
+
+	/* The backbone proof is held for a second; the destination's direct
+	   candidate remains pending when that same first hop moves to UDP. */
+	path_route_tick(mesh, &dest);
+	WS3_CHECK(dest.active_route.relay_carrier == RELAY_CARRIER_META_CANONICAL);
+	mesh->backbone_udp.confirmed_at.tv_sec -= 1;
+	path_route_tick(mesh, &dest);
+	WS3_CHECK(dest.active_route.kind == DATA_ROUTE_RELAY);
+	WS3_CHECK(dest.active_route.relay_carrier == RELAY_CARRIER_UDP);
+	WS3_CHECK(dest.promotion_candidate.active);
+	WS3_CHECK(dest.promotion_candidate.kind == DATA_ROUTE_DIRECT_UDP);
+	WS3_CHECK(!timespec_neq(&dest.active_route.selected_at, &selected));
+	WS3_CHECK(path_active_send_target(mesh, &dest, &target));
+	WS3_CHECK(target.relay_carrier == RELAY_CARRIER_UDP);
+
+	/* A validated direct candidate still owes the full ten-second route
+	   residency; the relay carrier upgrade did not restart that clock. */
+	dest.promotion_candidate.first_success.tv_sec -= 1;
+	dest.active_route.selected_at.tv_sec -= PATH_ROUTE_MIN_RESIDENCY_SEC - 1;
+	path_route_tick(mesh, &dest);
+	WS3_CHECK(dest.active_route.kind == DATA_ROUTE_RELAY);
+	dest.active_route.selected_at.tv_sec -= 1;
+	path_route_tick(mesh, &dest);
+	WS3_CHECK(dest.active_route.kind == DATA_ROUTE_DIRECT_UDP);
+	WS3_CHECK(!dest.promotion_candidate.active);
+	WS3_CHECK(!sockaddrcmp(&dest.active_route.udp_endpoint, &dest.address));
+
+	/* Offline admission and a queued commit cannot mutate the retained route.
+	   Once reachable again, an active channel can resume normal selection. */
+	path_record_active_route(mesh, &dest, &(path_target_t) {
+		.kind = DATA_ROUTE_RELAY,
+		.relay_carrier = RELAY_CARRIER_META_CANONICAL,
+		.first_hop = &hop,
+	});
+	selected = dest.active_route.selected_at;
+	dest.status.reachable = false;
+	path_consider_route_promotion(mesh, &dest, PATH_PROMOTION_DIRECT_UDP);
+	path_consider_route_promotion(mesh, &dest, PATH_PROMOTION_BACKBONE_UDP);
+	WS3_CHECK(!dest.promotion_candidate.active);
+	dest.promotion_candidate.active = true;
+	dest.promotion_candidate.kind = DATA_ROUTE_DIRECT_UDP;
+	dest.promotion_candidate.endpoint = dest.address;
+	dest.promotion_candidate.successful_rounds = PATH_PROMOTION_ROUNDS;
+	dest.promotion_candidate.first_success = mesh->loop.now;
+	path_route_tick(mesh, &dest);
+	WS3_CHECK(!dest.promotion_candidate.active);
+	WS3_CHECK(!timespec_neq(&dest.active_route.selected_at, &selected));
+	WS3_CHECK(dest.active_route.relay_carrier == RELAY_CARRIER_META_CANONICAL);
+	path_commit_candidate(mesh, &dest);
+	WS3_CHECK(!timespec_neq(&dest.active_route.selected_at, &selected));
+	WS3_CHECK(!path_active_send_target(mesh, &dest, &target));
+	dest.status.reachable = true;
+	path_route_tick(mesh, &dest);
+	WS3_CHECK(dest.active_route.relay_carrier == RELAY_CARRIER_UDP);
+	WS3_CHECK(dest.promotion_candidate.active);
+	WS3_CHECK(dest.promotion_candidate.kind == DATA_ROUTE_DIRECT_UDP);
+	WS3_CHECK(path_active_send_target(mesh, &dest, &target));
+	ok = true;
+
+done:
+	timeout_del(&mesh->loop, &dest.promotion_timer);
+	path_scheduler_cancel_node(mesh, &dest);
+	path_suspect_stop(mesh, &dest);
+	mesh->backbone.node = saved_bb;
+	mesh->backbone_udp = saved_udp;
+#undef WS3_CHECK
+	return ok;
+}
+
 static bool cover_preserve(meshlink_handle_t *mesh) {
 	node_t n;
 	sockaddr_t sa;
@@ -3685,6 +3811,7 @@ bool path_policy_cover_unit(meshlink_handle_t *mesh, node_t *live) {
 	                && cover_suspect_epoch(mesh)
 	                && cover_fallback_record_fit(mesh)
 	                && cover_route_usability_and_promotion(mesh)
+	                && cover_ws3_route_transitions(mesh)
 	                && cover_preserve(mesh)
 	                && upgrade_cutover_cover_unit(mesh)
 	                && cover_scheduler(mesh)

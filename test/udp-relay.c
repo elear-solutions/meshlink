@@ -1338,10 +1338,10 @@ static bool nat_hole_punch_once(const char *prefix, bool app_symmetric, bool cam
 				break;
 			}
 
-			devtool_age_route(peers[1].mesh, app_cam, 31);
+			devtool_age_route(peers[1].mesh, app_cam, 11);
 			devtool_age_candidate(peers[1].mesh, app_cam, 2);
 			devtool_path_route_tick(peers[1].mesh, app_cam);
-			devtool_age_route(peers[2].mesh, cam_app, 31);
+			devtool_age_route(peers[2].mesh, cam_app, 11);
 			devtool_age_candidate(peers[2].mesh, cam_app, 2);
 			devtool_path_route_tick(peers[2].mesh, cam_app);
 			sleep(2);
@@ -1359,10 +1359,10 @@ static bool nat_hole_punch_once(const char *prefix, bool app_symmetric, bool cam
 		}
 	} else {
 		sleep(8);
-		devtool_age_route(peers[1].mesh, app_cam, 31);
+		devtool_age_route(peers[1].mesh, app_cam, 11);
 		devtool_age_candidate(peers[1].mesh, app_cam, 2);
 		devtool_path_route_tick(peers[1].mesh, app_cam);
-		devtool_age_route(peers[2].mesh, cam_app, 31);
+		devtool_age_route(peers[2].mesh, cam_app, 11);
 		devtool_age_candidate(peers[2].mesh, cam_app, 2);
 		devtool_path_route_tick(peers[2].mesh, cam_app);
 		devtool_get_node_status(peers[1].mesh, app_cam, &st);
@@ -1491,10 +1491,10 @@ static void test_nat_rebind(void) {
 			break;
 		}
 
-		devtool_age_route(peers[1].mesh, app_cam, 31);
+		devtool_age_route(peers[1].mesh, app_cam, 11);
 		devtool_age_candidate(peers[1].mesh, app_cam, 2);
 		devtool_path_route_tick(peers[1].mesh, app_cam);
-		devtool_age_route(peers[2].mesh, cam_app, 31);
+		devtool_age_route(peers[2].mesh, cam_app, 11);
 		devtool_age_candidate(peers[2].mesh, cam_app, 2);
 		devtool_path_route_tick(peers[2].mesh, cam_app);
 		assert(meshlink_channel_send(peers[2].mesh, nat_cam_channel, "up", 2) == 2);
@@ -1592,7 +1592,7 @@ static void nat_plpmtu_case(const char *prefix, bool black_hole) {
 			break;
 		}
 
-		devtool_age_route(peers[2].mesh, cam_app, 31);
+		devtool_age_route(peers[2].mesh, cam_app, 11);
 		devtool_age_candidate(peers[2].mesh, cam_app, 2);
 		devtool_path_route_tick(peers[2].mesh, cam_app);
 		assert(meshlink_channel_send(peers[2].mesh, nat_cam_channel, "up", 2) == 2);
@@ -1683,10 +1683,10 @@ static peer_config_t *nat_bringup(const char *prefix, int arm, bool direct, mesh
 			break;
 		}
 
-		devtool_age_route(peers[1].mesh, app_cam, 31);
+		devtool_age_route(peers[1].mesh, app_cam, 11);
 		devtool_age_candidate(peers[1].mesh, app_cam, 2);
 		devtool_path_route_tick(peers[1].mesh, app_cam);
-		devtool_age_route(peers[2].mesh, cam_app, 31);
+		devtool_age_route(peers[2].mesh, cam_app, 11);
 		devtool_age_candidate(peers[2].mesh, cam_app, 2);
 		devtool_path_route_tick(peers[2].mesh, cam_app);
 		assert(meshlink_channel_send(peers[2].mesh, nat_cam_channel, "up", 2) == 2);
