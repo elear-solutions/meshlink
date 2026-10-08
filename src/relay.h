@@ -39,6 +39,15 @@ struct connection_t;
 #define RELAY_OVERSIZE_COOLDOWN_SEC 1
 #define RELAY_CAPTURE_MAX 2048
 
+/* ADR 0012: output proof is bounded separately from shared traffic demand. */
+#define RELAY_HOP_DEMAND_SEC 30
+#define RELAY_HOP_RETRY_SEC 30
+#define RELAY_HOP_DEADLINE_SEC 10
+#define RELAY_HOP_MAX_ATTEMPTS 2
+#define RELAY_HOP_PROBE_GAP_MS 1000
+#define RELAY_HOP_TICK_MS 750
+#define RELAY_HOP_TICK_JITTER_MS 250
+
 /* Book-end the mesh thread: report table + idle-prune timer. */
 void relay_init(struct meshlink_handle *mesh);
 void relay_exit(struct meshlink_handle *mesh);
@@ -49,25 +58,37 @@ typedef enum relay_udp_result {
 	RELAY_UDP_HARD_ERROR
 } relay_udp_result_t;
 
+/* All owner operations run on the mesh thread or with mesh->mutex held.
+   Demand belongs only to application forwarding on an NMN output peer. */
 bool relay_hop_demanded(const struct meshlink_handle *mesh, const struct node_t *hop);
+/* Extend shared demand; expired readiness must be proved again. */
 void relay_hop_note_demand(struct meshlink_handle *mesh, struct node_t *hop);
+/* Consider a fresh authenticated UDP source only while demand is live. */
 void relay_hop_observe(struct meshlink_handle *mesh, struct node_t *hop);
+/* Run proof/retry/expiry and settled-size maintenance for a demanded output. */
 void relay_hop_tick(struct meshlink_handle *mesh, struct node_t *hop);
+/* Caller has authenticated an ECHO_REPLY with purpose RELAY_HOP. Returns true
+   only for the current nonce, exact candidate, session, epoch and deadline. */
 bool relay_hop_reply(struct meshlink_handle *mesh, struct node_t *hop, const sockaddr_t *from, uint64_t nonce);
+/* Cancel owned work and readiness, saving eligible per-IP PLPMTU knowledge. */
 void relay_hop_stop(struct meshlink_handle *mesh, struct node_t *hop);
+/* Revoke proof and its challenge; generic demotion stops health/size timers. */
 void relay_hop_demoted(struct meshlink_handle *mesh, struct node_t *hop);
 
-/* Durable hop: udp_confirmed && validkey && !temp_udp_confirmed. */
+/* Durable UDP confirmation; NMN output also requires proof for hop->address.
+   Forwarding refreshes/checks demand before calling this predicate. */
 bool relay_hop_udp_ready(const struct node_t *hop);
 
 /* True when origin+dest names cannot fit a type-8 record under MINMTU. */
 bool relay_names_unusable(const char *origin, const char *destination);
 
+/* Live vpn-packet budget: minimum of the forward first-hop PLPMTU (less type-8
+   overhead) and this connection's final-hop report, or the legacy floor. */
+uint16_t relay_effective_budget(struct meshlink_handle *mesh, const struct node_t *dest);
+
 /* Relay-safe UTCP floor for this name pair: type-8 reservation when the names
    fit under MINMTU, otherwise the direct UDP floor. This is the initial size
    and the META size. Live channels move off it via channel_refresh_mtu(). */
-uint16_t relay_effective_budget(struct meshlink_handle *mesh, const struct node_t *dest);
-
 uint16_t relay_fixed_channel_mtu(struct meshlink_handle *mesh, const struct node_t *dest);
 
 /* prefix length + SPTPS datagram overhead. Production and tests. */
@@ -95,8 +116,15 @@ bool relay_handle_record(struct meshlink_handle *mesh, struct node_t *from, cons
 /* Base64 REQ_SPTPS on an existing META connection. */
 bool relay_meta_req_sptps(struct meshlink_handle *mesh, struct connection_t *c, const char *origin, const char *dest_name, const void *data, size_t len);
 
+/* Send unchanged application ciphertext on META; use the marked envelope only
+   when the directly connected hop advertises 17.8, otherwise REQ_SPTPS. */
 bool relay_meta_app(struct meshlink_handle *mesh, struct connection_t *c, const char *origin, const char *dest_name, const void *data, size_t len);
+/* Receive a marked META envelope: authenticate/replay-check application-only
+   data locally, or use the shared relay-output decision when forwarding.
+   Malformed or unauthorized records are quietly consumed. */
 bool relay_handle_meta_app(struct meshlink_handle *mesh, struct connection_t *c, struct node_t *origin, struct node_t *dest, const char *request);
+/* Clear accepted budgets and report suppression tied to this replaced/closed
+   META hop. Call before installing its replacement connection. */
 void relay_invalidate_connection(struct meshlink_handle *mesh, struct node_t *hop);
 
 /* META REQ_SPTPS fallback when the next hop is not UDP-ready. */

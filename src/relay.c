@@ -36,7 +36,7 @@ static void relay_hop_timer(event_loop_t *loop, void *data) {
 }
 
 static void relay_hop_arm(meshlink_handle_t *mesh, node_t *n) {
-	path_timer_arm_ms(mesh, &n->relay_hop.timer, relay_hop_timer, n, 750 + (int)prng(mesh, 250));
+	path_timer_arm_ms(mesh, &n->relay_hop.timer, relay_hop_timer, n, RELAY_HOP_TICK_MS + (int)prng(mesh, RELAY_HOP_TICK_JITTER_MS));
 }
 
 bool relay_hop_demanded(const meshlink_handle_t *mesh, const node_t *n) {
@@ -50,7 +50,7 @@ void relay_hop_demoted(meshlink_handle_t *mesh, node_t *n) {
 	n->relay_hop.confirmed = false;
 	n->relay_hop.nonce = 0;
 	n->relay_hop.retry_at = mesh->loop.now;
-	n->relay_hop.retry_at.tv_sec += 30;
+	n->relay_hop.retry_at.tv_sec += RELAY_HOP_RETRY_SEC;
 	path_scheduler_cancel(mesh, n, PATH_TX_RELAY_HOP);
 }
 
@@ -113,7 +113,7 @@ void relay_hop_tick(meshlink_handle_t *mesh, node_t *n) {
 		p->nonce = 0;
 		p->failures++;
 		p->retry_at = mesh->loop.now;
-		p->retry_at.tv_sec += 30;
+		p->retry_at.tv_sec += RELAY_HOP_RETRY_SEC;
 		path_scheduler_cancel(mesh, n, PATH_TX_RELAY_HOP);
 	}
 	if(p->confirmed) { path_plpmtu_verify_relay_due(mesh, n); }
@@ -133,9 +133,9 @@ void relay_hop_tick(meshlink_handle_t *mesh, node_t *n) {
 		p->attempts = 0;
 		p->nonce = path_probe_fresh_nonce();
 		p->deadline = mesh->loop.now;
-		p->deadline.tv_sec += 10;
+		p->deadline.tv_sec += RELAY_HOP_DEADLINE_SEC;
 	}
-	if(p->attempts >= 2 || (p->attempts && path_ms_between(&p->last_sent_at, &mesh->loop.now) < 1000)) {
+	if(p->attempts >= RELAY_HOP_MAX_ATTEMPTS || (p->attempts && path_ms_between(&p->last_sent_at, &mesh->loop.now) < RELAY_HOP_PROBE_GAP_MS)) {
 		return;
 	}
 	path_sched_txn_t *txn = path_scheduler_begin_transaction(mesh, n, PATH_TXN_RELAY_HOP, PATH_TX_RELAY_HOP, relay_hop_preempt);
@@ -163,7 +163,7 @@ void relay_hop_note_demand(meshlink_handle_t *mesh, node_t *n) {
 		relay_hop_stop(mesh, n);
 	}
 	n->relay_hop.demand_until = mesh->loop.now;
-	n->relay_hop.demand_until.tv_sec += 30;
+	n->relay_hop.demand_until.tv_sec += RELAY_HOP_DEMAND_SEC;
 	relay_hop_tick(mesh, n);
 }
 

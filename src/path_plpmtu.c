@@ -293,7 +293,7 @@ static void arm_maintenance(meshlink_handle_t *mesh, node_t *n) {
 	if(relay_hop_demanded(mesh, n)) {
 		if(!n->plpmtu.relay_verify_at.tv_sec) {
 			n->plpmtu.relay_verify_at = mesh->loop.now;
-			n->plpmtu.relay_verify_at.tv_sec += 30 + prng(mesh, 3);
+			n->plpmtu.relay_verify_at.tv_sec += PATH_PLPMTU_RELAY_VERIFY_SEC + prng(mesh, PATH_PLPMTU_RELAY_VERIFY_JITTER_SEC);
 		}
 		int64_t verify_left = n->plpmtu.relay_verify_at.tv_sec - mesh->loop.now.tv_sec;
 		if(verify_left < left) { left = verify_left; }
@@ -317,7 +317,7 @@ static void settle(meshlink_handle_t *mesh, node_t *n, const char *how) {
 	n->plpmtu.relay_verifying = false;
 	n->plpmtu.relay_verified_at = mesh->loop.now;
 	n->plpmtu.relay_verify_at = mesh->loop.now;
-	n->plpmtu.relay_verify_at.tv_sec += 30 + prng(mesh, 3);
+	n->plpmtu.relay_verify_at.tv_sec += PATH_PLPMTU_RELAY_VERIFY_SEC + prng(mesh, PATH_PLPMTU_RELAY_VERIFY_JITTER_SEC);
 	path_scheduler_end_type(mesh, n, PATH_TXN_PLPMTU_SEARCH);
 	n->plpmtu.state = PLPMTU_COMPLETE;
 	clear_probe(n);
@@ -518,7 +518,7 @@ void path_plpmtu_verify_relay_due(meshlink_handle_t *mesh, node_t *n) {
 	}
 	if(!n->plpmtu.relay_verify_at.tv_sec) {
 		n->plpmtu.relay_verify_at = mesh->loop.now;
-		n->plpmtu.relay_verify_at.tv_sec += 30 + prng(mesh, 3);
+		n->plpmtu.relay_verify_at.tv_sec += PATH_PLPMTU_RELAY_VERIFY_SEC + prng(mesh, PATH_PLPMTU_RELAY_VERIFY_JITTER_SEC);
 		return;
 	}
 	if(ms_between(&mesh->loop.now, &n->plpmtu.relay_verify_at) > 0) { return; }
