@@ -62,7 +62,7 @@ static void advance_ms(meshlink_handle_t *mesh, int ms) {
 	}
 }
 
-static void plant(node_t *n, meshlink_handle_t *mesh, char *name, uint32_t ip) {
+static void plant_confirmed_udp_peer(node_t *n, meshlink_handle_t *mesh, char *name, uint32_t ip) {
 	memset(n, 0, sizeof *n);
 	n->name = name;
 	n->mesh = mesh;
@@ -76,7 +76,7 @@ static void plant(node_t *n, meshlink_handle_t *mesh, char *name, uint32_t ip) {
 	n->address = v4(ip, 9);
 }
 
-static void bury(meshlink_handle_t *mesh, node_t *n) {
+static void stop_peer_path_activity(meshlink_handle_t *mesh, node_t *n) {
 	path_plpmtu_stop(mesh, n);
 	path_liveness_stop(mesh, n);
 	path_keepalive_stop(mesh, n);
@@ -134,7 +134,7 @@ static bool plpmtu_cover(meshlink_handle_t *mesh) {
 
 	memset(&hop, 0, sizeof hop);
 	memset(&dest, 0, sizeof dest);
-	plant(&n, mesh, "ws1-plpmtu", 0xcb00710a);
+	plant_confirmed_udp_peer(&n, mesh, "plpmtu-peer", 0xcb00710a);
 	CHECK(mesh->self);
 	path_plpmtu_on_confirmed(mesh, &n);
 	CHECK(n.plpmtu.state == PLPMTU_BASE);
@@ -200,7 +200,7 @@ static bool plpmtu_cover(meshlink_handle_t *mesh) {
 	CHECK(cover_pmtu_seen == 1399);
 
 	/* A base probe that dies three times is an error, and the raise retries it. */
-	bury(mesh, &n);
+	stop_peer_path_activity(mesh, &n);
 	memset(&n.plpmtu, 0, sizeof n.plpmtu);
 	memset(n.mtu_cache, 0, sizeof n.mtu_cache);
 	n.status.udp_confirmed = true;
@@ -221,7 +221,7 @@ static bool plpmtu_cover(meshlink_handle_t *mesh) {
 	CHECK(n.plpmtu.probe_size == PATH_PLPMTU_BASE);
 
 	/* Same IP inside the trust window restores COMPLETE and sends nothing. */
-	bury(mesh, &n);
+	stop_peer_path_activity(mesh, &n);
 	memset(&n.plpmtu, 0, sizeof n.plpmtu);
 	memset(n.mtu_cache, 0, sizeof n.mtu_cache);
 	n.status.udp_confirmed = true;
@@ -267,7 +267,7 @@ static bool plpmtu_cover(meshlink_handle_t *mesh) {
 	CHECK(n.plpmtu.probe_size == 1259);
 
 	/* Four addresses, then a fifth drops the oldest. */
-	bury(mesh, &n);
+	stop_peer_path_activity(mesh, &n);
 	memset(n.mtu_cache, 0, sizeof n.mtu_cache);
 	memset(&n.plpmtu, 0, sizeof n.plpmtu);
 
@@ -329,7 +329,7 @@ static bool plpmtu_cover(meshlink_handle_t *mesh) {
 	CHECK(n.plpmtu.probe_size == 1259);
 
 	/* Idle peers are not searched. The backbone node is. */
-	bury(mesh, &n);
+	stop_peer_path_activity(mesh, &n);
 	memset(&n.plpmtu, 0, sizeof n.plpmtu);
 	memset(n.mtu_cache, 0, sizeof n.mtu_cache);
 	n.peer_udp.channel_count = 0;
@@ -343,8 +343,8 @@ static bool plpmtu_cover(meshlink_handle_t *mesh) {
 	mesh->backbone_udp.node = saved_bb;
 
 	/* Before a final-hop report arrives, relay MSS keeps the legacy floor. */
-	plant(&hop, mesh, "ws1-hop", 0xcb007120);
-	plant(&dest, mesh, "d", 0xcb007121);
+	plant_confirmed_udp_peer(&hop, mesh, "mtu-hop", 0xcb007120);
+	plant_confirmed_udp_peer(&dest, mesh, "d", 0xcb007121);
 	hop.status.udp_confirmed = true;
 	hop.plpmtu.state = PLPMTU_COMPLETE;
 	hop.plpmtu.size = PATH_PLPMTU_BASE;
@@ -361,7 +361,7 @@ static bool plpmtu_cover(meshlink_handle_t *mesh) {
 	}
 
 	/* Hostile: a local remap inside the window holds the size and backs off. */
-	bury(mesh, &n);
+	stop_peer_path_activity(mesh, &n);
 	memset(&n.plpmtu, 0, sizeof n.plpmtu);
 	n.status.udp_confirmed = true;
 	n.peer_udp.channel_count = 1;
@@ -405,9 +405,9 @@ done:
 	mesh->node_pmtu_cb = saved_cb;
 	mesh->self->external_ip_address = saved_ext;
 	mesh->backbone_udp.node = saved_bb;
-	bury(mesh, &n);
-	bury(mesh, &hop);
-	bury(mesh, &dest);
+	stop_peer_path_activity(mesh, &n);
+	stop_peer_path_activity(mesh, &hop);
+	stop_peer_path_activity(mesh, &dest);
 	return ok;
 }
 
@@ -423,7 +423,7 @@ static bool plpmtu_admission_cover(meshlink_handle_t *mesh) {
 	bool ok = false;
 
 	memset(&blocker, 0, sizeof blocker);
-	plant(&n, mesh, "ws1-admission", 0xcb007130);
+	plant_confirmed_udp_peer(&n, mesh, "plpmtu-admission", 0xcb007130);
 	path_plpmtu_on_confirmed(mesh, &n);
 	path_scheduler_set_budget(mesh, 0, 100, 8);
 	path_plpmtu_tick(mesh, &n);
@@ -488,9 +488,9 @@ static bool plpmtu_admission_cover(meshlink_handle_t *mesh) {
 	CHECK(n.plpmtu.probes_sent == sent + 2);
 
 	/* A full transaction pool must defer the first size probe too. */
-	bury(mesh, &n);
-	plant(&n, mesh, "ws1-admission", 0xcb007130);
-	plant(&blocker, mesh, "ws1-blocker", 0xcb007131);
+	stop_peer_path_activity(mesh, &n);
+	plant_confirmed_udp_peer(&n, mesh, "plpmtu-admission", 0xcb007130);
+	plant_confirmed_udp_peer(&blocker, mesh, "probe-slot-blocker", 0xcb007131);
 	path_scheduler_set_budget(mesh, 100, 100, 1);
 	CHECK(path_scheduler_begin_transaction(mesh, &blocker, PATH_TXN_SUSPECT,
 	                PATH_TX_ACTIVE_ROUTE_RECOVERY, path_transaction_preempt));
@@ -543,8 +543,8 @@ static bool plpmtu_admission_cover(meshlink_handle_t *mesh) {
 	ok = true;
 
 done:
-	bury(mesh, &n);
-	bury(mesh, &blocker);
+	stop_peer_path_activity(mesh, &n);
+	stop_peer_path_activity(mesh, &blocker);
 	path_scheduler_set_budget(mesh, 1000, 1000, saved_max);
 	return ok;
 }
@@ -554,7 +554,7 @@ static bool plpmtu_cache_raise_cover(meshlink_handle_t *mesh) {
 	int slot;
 	bool ok = false;
 
-	plant(&n, mesh, "ws1-cache-raise", 0xcb007132);
+	plant_confirmed_udp_peer(&n, mesh, "cached-mtu-raise", 0xcb007132);
 	path_plpmtu_on_confirmed(mesh, &n);
 	n.plpmtu.size = 1399;
 	n.plpmtu.largest_failed = 1419;
@@ -602,8 +602,8 @@ static bool plpmtu_cache_raise_cover(meshlink_handle_t *mesh) {
 	CHECK(n.plpmtu.hostile && n.plpmtu.raise_backoff == 5 && n.keepalive.interval_ms == 5000);
 
 	/* First failure waits 10 minutes; failed raises double up to the cap. */
-	bury(mesh, &n);
-	plant(&n, mesh, "ws1-cache-raise", 0xcb007132);
+	stop_peer_path_activity(mesh, &n);
+	plant_confirmed_udp_peer(&n, mesh, "cached-mtu-raise", 0xcb007132);
 	path_plpmtu_on_confirmed(mesh, &n);
 	path_plpmtu_tick(mesh, &n);
 	CHECK(lose_outstanding(mesh, &n));
@@ -636,7 +636,7 @@ static bool plpmtu_cache_raise_cover(meshlink_handle_t *mesh) {
 	ok = true;
 
 done:
-	bury(mesh, &n);
+	stop_peer_path_activity(mesh, &n);
 	return ok;
 }
 
@@ -654,7 +654,7 @@ static bool plpmtu_recovery_cover(meshlink_handle_t *mesh) {
 
 	memset(&n, 0, sizeof n);
 	for(int backbone = 0; backbone < 2; backbone++) {
-		plant(&n, mesh, "ws1-recovery", 0xcb007133);
+		plant_confirmed_udp_peer(&n, mesh, "plpmtu-recovery", 0xcb007133);
 		if(backbone) {
 			mesh->backbone_udp.node = &n;
 			mesh->backbone_udp.confirmed = true;
@@ -707,7 +707,7 @@ static bool plpmtu_recovery_cover(meshlink_handle_t *mesh) {
 		CHECK(n.plpmtu.hostile_marks == 1);
 		path_plpmtu_observe_ack(mesh, &n, &n.address, size_nonce, 1451);
 		CHECK(n.plpmtu.size == 1431);
-		bury(mesh, &n);
+		stop_peer_path_activity(mesh, &n);
 	}
 	ok = true;
 
@@ -715,7 +715,7 @@ done:
 	mesh->backbone_udp.node = saved_bb;
 	mesh->backbone_udp.confirmed = saved_confirmed;
 	mesh->backbone_udp.liveness_nonce = saved_nonce;
-	bury(mesh, &n);
+	stop_peer_path_activity(mesh, &n);
 	path_scheduler_set_budget(mesh, 1000, 1000, saved_max);
 	return ok;
 }
@@ -726,7 +726,7 @@ static bool liveness_admission_cover(meshlink_handle_t *mesh) {
 	uint64_t sent = mesh->probe_budget.optional_packets_sent;
 	bool ok = false;
 
-	plant(&n, mesh, "ws1-live-budget", 0xcb007134);
+	plant_confirmed_udp_peer(&n, mesh, "liveness-budget", 0xcb007134);
 	path_liveness_on_confirmed(mesh, &n);
 	path_scheduler_set_budget(mesh, 0, 100, 8);
 	for(int i = 0; i < 10; i++) {
@@ -774,7 +774,7 @@ static bool liveness_admission_cover(meshlink_handle_t *mesh) {
 	ok = true;
 
 done:
-	bury(mesh, &n);
+	stop_peer_path_activity(mesh, &n);
 	path_scheduler_set_budget(mesh, 1000, 1000, saved_max);
 	return ok;
 }
@@ -793,7 +793,7 @@ static bool liveness_cover(meshlink_handle_t *mesh) {
 	bool ok = false;
 
 	memset(&low, 0, sizeof low);
-	plant(&n, mesh, "ws1-live", 0xcb00710b);
+	plant_confirmed_udp_peer(&n, mesh, "liveness-peer", 0xcb00710b);
 	n.plpmtu.state = PLPMTU_COMPLETE;
 	n.plpmtu.size = 1419;
 	path_liveness_on_confirmed(mesh, &n);
@@ -870,7 +870,7 @@ static bool liveness_cover(meshlink_handle_t *mesh) {
 			higher[hlen + 1] = '\0';
 		}
 	}
-	plant(&low, mesh, lower, 0xcb00710b);
+	plant_confirmed_udp_peer(&low, mesh, lower, 0xcb00710b);
 	low.status.udp_confirmed = true;
 	path_liveness_on_confirmed(mesh, &low);
 	wait = mesh->dev_class_traits[DEV_CLASS_STATIONARY].pinginterval;
@@ -887,8 +887,8 @@ static bool liveness_cover(meshlink_handle_t *mesh) {
 	CHECK(low.liveness.timer.tv.tv_sec == parked_until);
 
 	/* No demand, and never the backbone node. */
-	bury(mesh, &n);
-	plant(&n, mesh, "ws1-live", 0xcb00710b);
+	stop_peer_path_activity(mesh, &n);
+	plant_confirmed_udp_peer(&n, mesh, "liveness-peer", 0xcb00710b);
 	n.peer_udp.channel_count = 0;
 	path_liveness_on_confirmed(mesh, &n);
 	path_liveness_tick(mesh, &n);
@@ -902,8 +902,8 @@ static bool liveness_cover(meshlink_handle_t *mesh) {
 	mesh->backbone_udp.node = saved_bb;
 
 	/* Local discovery: purpose, nonce, local source, then ten tries. */
-	bury(mesh, &n);
-	plant(&n, mesh, "ws1-disc", 0x7f000001);
+	stop_peer_path_activity(mesh, &n);
+	plant_confirmed_udp_peer(&n, mesh, "discovery-peer", 0x7f000001);
 	n.status.udp_confirmed = false;
 	n.peer_udp.channel_count = 0;
 	memset(&edge, 0, sizeof edge);
@@ -919,8 +919,8 @@ static bool liveness_cover(meshlink_handle_t *mesh) {
 	CHECK(n.status.udp_confirmed);
 	CHECK(!n.local_discovery.active);
 
-	bury(mesh, &n);
-	plant(&n, mesh, "ws1-disc", 0x7f000001);
+	stop_peer_path_activity(mesh, &n);
+	plant_confirmed_udp_peer(&n, mesh, "discovery-peer", 0x7f000001);
 	n.status.udp_confirmed = false;
 	n.peer_udp.channel_count = 0;
 	n.prevedge = &edge;
@@ -940,8 +940,8 @@ static bool liveness_cover(meshlink_handle_t *mesh) {
 
 done:
 	mesh->backbone_udp.node = saved_bb;
-	bury(mesh, &n);
-	bury(mesh, &low);
+	stop_peer_path_activity(mesh, &n);
+	stop_peer_path_activity(mesh, &low);
 	return ok;
 }
 
@@ -951,7 +951,7 @@ static bool keepalive_legacy_cache_cover(meshlink_handle_t *mesh) {
 	int slot;
 	bool ok = false;
 
-	plant(&n, mesh, "ws1-ka-cache-upgrade", 0xcb007136);
+	plant_confirmed_udp_peer(&n, mesh, "keepalive-cache-upgrade", 0xcb007136);
 	n.plpmtu.path_ip = n.address;
 	n.plpmtu.path_ip.in.sin_port = 0;
 	n.plpmtu.state = PLPMTU_COMPLETE;
@@ -966,7 +966,7 @@ static bool keepalive_legacy_cache_cover(meshlink_handle_t *mesh) {
 	CHECK(entry.flags & PATH_MTU_CACHE_KEEPALIVE_V2);
 
 	for(int current = 0; current < 2; current++) {
-		bury(mesh, &n);
+		stop_peer_path_activity(mesh, &n);
 		memset(&n.plpmtu, 0, sizeof n.plpmtu);
 		n.keepalive.interval_ms = 0;
 		n.mtu_cache[slot] = entry;
@@ -983,7 +983,7 @@ static bool keepalive_legacy_cache_cover(meshlink_handle_t *mesh) {
 	ok = true;
 
 done:
-	bury(mesh, &n);
+	stop_peer_path_activity(mesh, &n);
 	return ok;
 }
 
@@ -1006,7 +1006,7 @@ static bool keepalive_default_cover(meshlink_handle_t *mesh) {
 		n->keepalive.interval_ms = 9000;
 		path_keepalive_on_confirmed(mesh, n);
 		CHECK(n->keepalive.interval_ms == 9000);
-		bury(mesh, n);
+		stop_peer_path_activity(mesh, n);
 		free_node(n);
 		n = NULL;
 	}
@@ -1015,7 +1015,7 @@ static bool keepalive_default_cover(meshlink_handle_t *mesh) {
 done:
 	mesh->backbone_udp.node = saved_bb;
 	if(n) {
-		bury(mesh, n);
+		stop_peer_path_activity(mesh, n);
 		free_node(n);
 	}
 	return ok;
@@ -1029,7 +1029,7 @@ static bool keepalive_probe_tx_cover(meshlink_handle_t *mesh) {
 	struct timespec last_tx;
 	bool ok = false;
 
-	plant(&n, mesh, "ws1-ka-probe-tx", 0x7f000001);
+	plant_confirmed_udp_peer(&n, mesh, "keepalive-probe-send", 0x7f000001);
 	n.probe_dest_override_active = true;
 	n.probe_dest_override = n.address;
 	n.keepalive.last_tx_at = mesh->loop.now;
@@ -1069,7 +1069,7 @@ static bool keepalive_probe_tx_cover(meshlink_handle_t *mesh) {
 
 done:
 	update_node_udp(mesh, &n, NULL);
-	bury(mesh, &n);
+	stop_peer_path_activity(mesh, &n);
 	return ok;
 }
 
@@ -1081,7 +1081,7 @@ static bool keepalive_cover(meshlink_handle_t *mesh) {
 	uint32_t sent;
 	bool ok = false;
 
-	plant(&n, mesh, "ws1-ka", 0xcb00710c);
+	plant_confirmed_udp_peer(&n, mesh, "keepalive-peer", 0xcb00710c);
 	n.keepalive.last_tx_at = mesh->loop.now;
 	path_keepalive_tick(mesh, &n);
 	sent = n.keepalive.sent;
@@ -1256,11 +1256,11 @@ static bool keepalive_cover(meshlink_handle_t *mesh) {
 
 done:
 	mesh->backbone_udp.node = saved_bb;
-	bury(mesh, &n);
+	stop_peer_path_activity(mesh, &n);
 	return ok;
 }
 
-static bool wire_cover(meshlink_handle_t *mesh) {
+static bool probe_record_and_endpoint_encoding_cover(meshlink_handle_t *mesh) {
 	node_t n;
 	vpn_packet_t packet;
 	sockaddr_t endpoint, decoded;
@@ -1268,7 +1268,7 @@ static bool wire_cover(meshlink_handle_t *mesh) {
 	uint64_t out_before;
 	bool ok = false;
 
-	plant(&n, mesh, "ws1-wire", 0xcb00710d);
+	plant_confirmed_udp_peer(&n, mesh, "probe-record-peer", 0xcb00710d);
 	memset(&packet, 0, sizeof packet);
 	packet.data[0] = PROBE_KIND_SIZE_ACK;
 	packet.data[PROBE_PURPOSE_OFFSET] = PROBE_PURPOSE_NONE;
@@ -1328,11 +1328,11 @@ static bool wire_cover(meshlink_handle_t *mesh) {
 	ok = true;
 
 done:
-	bury(mesh, &n);
+	stop_peer_path_activity(mesh, &n);
 	return ok;
 }
 
-static bool persist_cover(meshlink_handle_t *mesh) {
+static bool mtu_cache_serialization_cover(meshlink_handle_t *mesh) {
 	node_t src;
 	node_t dst;
 	uint8_t buf[512];
@@ -1413,8 +1413,8 @@ bool path_plpmtu_cover_unit(meshlink_handle_t *mesh) {
 	     && keepalive_default_cover(mesh)
 	     && keepalive_probe_tx_cover(mesh)
 	     && keepalive_cover(mesh)
-	     && wire_cover(mesh)
-	     && persist_cover(mesh);
+	     && probe_record_and_endpoint_encoding_cover(mesh)
+	     && mtu_cache_serialization_cover(mesh);
 
 	mesh->self->devclass = saved_class;
 	memcpy(&mesh->probe_budget, saved_budget, sizeof saved_budget);

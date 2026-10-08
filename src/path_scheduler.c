@@ -1,5 +1,5 @@
 /*
-    path_scheduler.c -- mesh-wide probe admission (finding 13)
+    path_scheduler.c -- mesh-wide probe admission
     Copyright (C) 2026 Elear Solutions
 
     This program is free software; you can redistribute it and/or modify

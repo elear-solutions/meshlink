@@ -18,7 +18,7 @@
 struct meshlink_handle;
 struct node_t;
 
-/* Fleet probe budget (finding 13). active_transactions counts live validation
+/* Fleet probe budget. active_transactions counts live validation
    state machines (promotion, suspect, PMTU discovery), not packets.
    PATH_SCHED_PARKED_PACKETS_PER_MIN is the parked-probe cap: liveness and
    PMTU-increase only.    Admitted validation (promotion, suspect, punch, PMTU discovery)

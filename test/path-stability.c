@@ -857,7 +857,7 @@ static void test_idle_peer_is_not_probed(void) {
 	assert_after(node_is_reachable(e1, e1_e2), 15);
 	assert_after(node_is_keyed(e1, e1_bb), 20);
 
-	/* Finding 8: cameras keep backbone UDP warm with no channel. */
+	/* Cameras keep backbone UDP warm with no channel. */
 	assert_after(udp_status_working(e1, e1_bb), 30);
 	assert_after(udp_status_working(e2, e2_bb), 30);
 	assert(!udp_status_working(bb, bb_e1));
@@ -865,7 +865,7 @@ static void test_idle_peer_is_not_probed(void) {
 	assert(!devtool_liveness_probe_warranted(bb, bb_e1));
 	assert(!devtool_liveness_probe_warranted(bb, bb_e2));
 
-	/* Finding 17 item 12: idle ordinary peers emit zero UDP probes. mtuprobes on
+	/* Idle ordinary peers emit zero UDP probes. mtuprobes on
 	   e1↔e2 is peer-specific (send_mtu_probe for that node); backbone warm uses e*_bb. */
 	assert(!devtool_liveness_probe_warranted(e1, e1_e2));
 	assert(!devtool_liveness_probe_warranted(e2, e2_e1));
@@ -900,7 +900,7 @@ static void test_idle_peer_is_not_probed(void) {
 	assert(wait_sync_flag(&received, 15));
 	assert(devtool_liveness_probe_warranted(e1, e1_e2));
 	assert_after(udp_status_working(e1, e1_e2), 30);
-	/* WS2 may prove and maintain a demanded final hop while punching is
+	/* Relay output may prove and maintain a demanded final hop while punching is
 	   still pending. This is relay ownership, never ordinary-peer demand. */
 	devtool_node_status_t relay_st = snapshot(bb, bb_e1);
 	assert(relay_st.peer_udp_channel_count == 0 && !relay_st.punch_challenge_active);
@@ -1003,7 +1003,7 @@ static void packet_receive_cb(meshlink_handle_t *mesh, meshlink_node_t *source, 
 	}
 }
 
-/* Finding 17 item 16: production meshlink_send between stationary peers with no
+/* Production meshlink_send between stationary peers with no
    peer channel records a RELAY route whose first hop is connection_policy_backbone
    (path_app_relay_hop), not a planted forced hop. */
 static void test_relay_carrier_is_backbone(void) {
@@ -1049,7 +1049,7 @@ static void test_relay_carrier_is_backbone(void) {
 	printf("path-stability T7b ok: relay first hop is foo (configured backbone)\n");
 }
 
-/* Finding 10 / ADR 0005: live meshlink_send must not relay via a conflict_backbone hop. */
+/* ADR 0005: live meshlink_send must not relay via a conflict_backbone hop. */
 static void test_conflict_backbone_skips_relay_hop(void) {
 	printf("\n=== path-stability T7c: conflict_backbone skips relay hop ===\n");
 
@@ -1856,7 +1856,7 @@ static void test_many_peers_stay_in_budget(void) {
 	       PATH_SCHED_MAX_TRANSACTIONS, PATH_SCHED_PACKETS_PER_SEC, PATH_BUDGET_PEERS);
 }
 
-/* --- Finding 17 item 17: six route classes -------------------------------- */
+/* --- Delivery over the six route classes --------------------------------- */
 
 static bool node_meta_up(meshlink_handle_t *mesh, meshlink_node_t *node) {
 	devtool_node_status_t st = snapshot(mesh, node);

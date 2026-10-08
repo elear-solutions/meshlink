@@ -74,8 +74,8 @@ int main(void) {
 	meshlink_set_log_cb(NULL, MESHLINK_DEBUG, collision_log_cb);
 
 	/* Camera→backbone: backbone never dual-dials. Pair must still come up.
-	   Camera↔camera simultaneous connect is finding 7. If a leftover collision
-	   log appears, the kept initiator is still the lexicographically smaller name. */
+	   If a leftover collision log appears, the kept initiator is still the
+	   lexicographically smaller name. */
 	for(int i = 0; i < 5; i++) {
 		run_pair();
 	}
