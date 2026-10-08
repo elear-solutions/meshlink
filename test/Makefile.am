@@ -312,4 +312,10 @@ relay_hop_LDFLAGS = $(AM_LDFLAGS) -Wl,--wrap=sendto
 if LINUX
 TESTS += relay-hop
 check_PROGRAMS += relay-hop
+TESTS += discovery-failure
+check_PROGRAMS += discovery-failure
+
+discovery_failure_SOURCES = discovery-failure.c
+discovery_failure_LDADD = $(top_builddir)/src/.libs/libmeshlink.a
+discovery_failure_LDFLAGS = $(AM_LDFLAGS) -Wl,--wrap=bind -Wl,--wrap=setsockopt -Wl,--wrap=getifaddrs -Wl,--wrap=freeifaddrs
 endif

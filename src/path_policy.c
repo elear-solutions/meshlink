@@ -4243,7 +4243,9 @@ static void path_rebind_note_flap(meshlink_handle_t *mesh, node_t *n) {
 		}
 	}
 
-	if(count >= PATH_REBIND_FLAP_WARN) {
+	if(count >= PATH_REBIND_FLAP_WARN && timespec_after_or_equal(&mesh->loop.now, &n->udp_rebind.flap_warned_until)) {
+		n->udp_rebind.flap_warned_until = mesh->loop.now;
+		n->udp_rebind.flap_warned_until.tv_sec += PATH_REBIND_FLAP_WINDOW_SEC;
 		logger(mesh, MESHLINK_WARNING, "Unstable NAT binding for %s", n->name);
 	}
 }

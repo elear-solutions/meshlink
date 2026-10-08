@@ -84,8 +84,12 @@ enum {
 static struct sync_flag received;
 static struct sync_flag bar_learned;
 static struct sync_flag baz_learned;
+static unsigned rebind_warnings;
 
 static void any_log(meshlink_handle_t *mesh, meshlink_log_level_t level, const char *text) {
+	if(level == MESHLINK_WARNING && !strcmp(text, "Unstable NAT binding for rebindsrc")) {
+		rebind_warnings++;
+	}
 	log_cb(mesh, level, text);
 }
 
@@ -427,6 +431,7 @@ int main(void) {
 	test_canonical_learn_rejected(mesh);
 
 	assert(devtool_path_policy_cover_unit(mesh[2], meshlink_get_node(mesh[2], "bar")));
+	assert(rebind_warnings == 3);
 	printf("cover-unit ok\n");
 
 	for(int i = 0; i < 3; i++) {

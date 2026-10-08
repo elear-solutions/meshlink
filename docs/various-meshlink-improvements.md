@@ -24,7 +24,7 @@ Status values:
 | F8 | Route promotion continues while the destination is unreachable | Implemented; field validation pending | WS3 |
 | F9 | A pending direct promotion keeps the old port after a validated rebind | Implemented; field validation pending | WS3 |
 | F10 | Channels expose no immediate availability change when the peer becomes unreachable | Open (API/policy review) | WS4 |
-| M1–M8 | Minor items | Open / By design / Not meshlink | WS4 |
+| M1–M8 | Minor items | M1/M8 implemented; local coverage passed; field validation pending. Others Open / By design / Not meshlink | WS4 |
 
 Order: WS1 → WS2 → WS3, with WS4 whenever convenient.
 
@@ -292,17 +292,17 @@ This revises the ADR 0010 position that keepalives don't help. That position sti
 
 | ID | Finding | Status | Seen in |
 |----|---------|--------|---------|
-| M1 | `Unstable NAT binding` is level-triggered: 130 lines in C1, 84 in C2. It should fire once per window. | Open | C1, C2 |
+| M1 | `Unstable NAT binding` is level-triggered: 130 lines in C1, 84 in C2. Suppress repeats for 60 seconds after each warning (ADR 0014). | Implemented in PR #129; local coverage passed; field validation pending | C1, C2 |
 | M2 | The NMN originates `ADD_EDGE` with `10.20.1.181` (very likely its load balancer's VPC IP) for every camera. Peers keep validating that bogus `edge-direct` candidate with cooldowns of 30–139s. Fix on the infra side (client-IP preservation or proxy protocol), and/or have meshlink skip private candidates that aren't on our own subnet. | Open | C1, C2 |
 | M3 | PMTU probes go to `ff02::1` and `255.255.255.255` for WAN peers. That causes `Network is unreachable` errors inside Docker. It's harmless, since `relay_on_hard_send_error` ignores non-confirmed destinations. | Open | C1, C2 |
 | M4 | `Requesting punch endpoint` is sent twice about 14ms apart, probably once per opened channel. | Open | C1, C2 |
 | M5 | At startup the node KEX retry steps from 1 to 3 within 85ms. Harmless: KEX completes 40ms later. | Open | C2 |
 | M6 | Ashish's camera ↔ Hemanth's camera stay on relay: both NATs are endpoint-dependent (Docker Desktop and Jio). | By design | C1 |
 | M7 | Stream-open failures ("Tunnel Open resource command status failed", "Media streaming is not ready") happen only within a few seconds of a camera restart. | Not meshlink | C1, C2 |
-| M8 | Android's AF_NETLINK bind-failure fallback leaves the socket open. Discovery also degrades in the local Docker/QEMU setup; details below. | Open | L1 |
+| M8 | Android's AF_NETLINK bind-failure fallback leaves the socket open. Discovery also degrades in the local Docker/QEMU setup; details below. | Implemented in PR #129; local coverage passed; field validation pending | L1 |
 
 ### M8: Netlink bind-failure socket leak and discovery limitations
-**Status:** Open. **Workstream:** WS4. **Seen in:** L1.
+**Status:** Implemented in PR #129; local coverage passed; field validation pending. **Workstream:** WS4. **Seen in:** L1.
 
 **Evidence:** all three Android app starts log `Could not bind AF_NETLINK socket: Permission denied` (`android-meshlink-ws1-001.txt`, lines 34, 59794 and 76439).
 
@@ -333,7 +333,7 @@ Rules for every workstream:
 | WS1 | Path MTU and liveness rework | F3, F5, F6, F4 (PMTU gate), F2 follow-up | — | Implemented in PR #127; C3 follow-up fixes awaiting field validation |
 | WS2 | Relay data plane | F7, relay MTU | WS1 PR A; NMN deployed first | Implemented; Docker and field validation tracked below |
 | WS3 | Route selection at startup and after reachability changes | F4 (route choice), F8, F9 | WS1 | Implemented in PR #129; all 58 Docker tests pass; field validation pending |
-| WS4 | Hygiene and channel availability | M1, M2 (meshlink side), M3, M4, M5, M8, F10 | — | Not started |
+| WS4 | Hygiene and channel availability | M1, M2 (meshlink side), M3, M4, M5, M8, F10 | — | M1/M8 included in PR #129; remaining items not started |
 
 ### WS1: Path MTU and liveness rework
 
@@ -522,13 +522,15 @@ protocol compatibility, budgets, and the narrow NMN probing exception.
 **Delivery:** implemented on `ws3-route-selection` ([PR #129](https://github.com/elear-solutions/meshlink/pull/129)); ADR 0013 records the policy. The full serial Docker `make -j1 check` rerun passed all 58 tests with no skips. The first run passed 57 tests and hit a T18a direct-UDP setup timeout in `path-stability`; that timeout did not reproduce in six isolated runs, a complete `path-stability` rerun, or the successful full-suite rerun. Temporary diagnostic changes were reverted before the successful full run. Hemanth-path field validation is still pending.
 
 ### WS4: Hygiene
-- **M1:** edge-trigger `Unstable NAT binding`, so it fires once per window.
+- **M1 (included in PR #129):** retain the rolling six-migration threshold and suppress repeated `Unstable NAT binding` warnings for 60 seconds after each warning; ADR 0014 records the policy.
 - **M2 (meshlink side):** skip private-address candidates that aren't on any of our own subnets. The infra fix (client-IP preservation or proxy protocol at the NMN load balancer) is tracked with infra.
 - **M3:** don't send broadcast or multicast PMTU probes to peers we only know by WAN address.
 - **M4:** coalesce `Requesting punch endpoint` per peer.
 - **M5:** review the KEX retry ladder stepping at startup.
-- **M8:** close the netlink socket on bind failure, improve multicast-interface diagnostics, and verify network-change hints when native discovery notifications are unavailable.
+- **M8 (included in PR #129):** close the netlink socket on bind failure, include interface index and errno in multicast-interface diagnostics, and verify network-change hints when native discovery notifications are unavailable; ADR 0014 records the fallback.
 - **F10:** define per-channel availability feedback on node unreachability, buffering/backpressure guarantees, and optional prompt-close policy; verify transient recovery and exactly-once terminal-close notifications.
+
+**M1/M8 local verification:** ARM64 Docker build and targeted `path-policy-coverage` and `discovery-failure` passed. Coverage checks warning suppression across ring wrap and the exact 60-second boundary, 16 netlink bind-failure start/stop cycles with stable descriptor counts, changed addresses refreshed by network-change hints, IPv4/IPv6 multicast diagnostics, and unicast UDP operation. The new follow-up's serial full-suite run was stopped at the owner's request after 25 passing tests, with no failures reported before interruption. The owner will complete full-suite verification with code review; field validation remains pending.
 
 ## Appendix: how the captures were analysed
 The logs are large (C2's phone log is 175 MB), so each analysis first builds compact extracts:

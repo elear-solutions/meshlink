@@ -205,6 +205,7 @@ typedef struct udp_rebind_t {
 	struct timespec migrations[PATH_REBIND_MIGRATION_RING];
 	uint8_t migration_pos;
 	uint8_t migration_fill;
+	struct timespec flap_warned_until;      /* suppress repeated warnings for one flap window */
 	uint32_t seen;
 	uint32_t migrated;
 	uint32_t failed;
