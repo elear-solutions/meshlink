@@ -242,6 +242,42 @@ static void test_simultaneous_start(void) {
 	close_fixture(&b);
 }
 
+static void test_lost_signature(void) {
+	fixture_t a = fixture("a", "b"), b = fixture("b", "a");
+	char *key = ecdsa_get_base64_public_key(b.mesh->private_key);
+	a.peer->ecdsa = ecdsa_set_base64_public_key(key);
+	free(key);
+	key = ecdsa_get_base64_public_key(a.mesh->private_key);
+	b.peer->ecdsa = ecdsa_set_base64_public_key(key);
+	free(key);
+	assert(a.peer->ecdsa && b.peer->ecdsa);
+	assert(node_kex_ensure(a.mesh, a.peer));
+	assert(deliver(&a, &b) == 1);
+
+	/* The responder queues KEX first, then SIG. Deliver KEX and drop SIG. */
+	char *kex = buffer_readline(&b.meta->outbuf);
+	assert(kex && atoi(kex) == ANS_KEY);
+	assert(ans_key_h(a.mesh, a.meta, kex));
+	assert(a.peer->sptps.state == SPTPS_SIG);
+	assert(b.meta->outbuf.len > b.meta->outbuf.offset);
+	assert(take_requests(&b, REQ_KEY) == 0);
+	assert(deliver(&a, &b) == 1); /* Our SIG completes the other side. */
+	assert(b.peer->status.validkey);
+	assert(take_requests(&b, REQ_KEY) == 0);
+	assert(!a.peer->status.validkey && a.peer->status.waitingforkey);
+
+	struct timespec deadline = a.peer->key_retry_at;
+	before_deadline(&a, deadline);
+	assert(node_kex_ensure(a.mesh, a.peer));
+	assert(take_requests(&a, REQ_KEY) == 0 && a.peer->sptps_restart_count == 1);
+	a.mesh->loop.now = deadline;
+	node_kex_watchdog(a.mesh);
+	assert(a.peer->key_retry_epoch == 2 && a.peer->key_retry_step == 2);
+	finish_handshake(&a, &b);
+	close_fixture(&a);
+	close_fixture(&b);
+}
+
 static void test_send_failures(void) {
 	fixture_t f = fixture("a", "b"), other = fixture("b", "a");
 	f.meta->meta_teardown = true;
@@ -409,6 +445,8 @@ int main(void) {
 	test_key_phases();
 	fprintf(stderr, "simultaneous start\n");
 	test_simultaneous_start();
+	fprintf(stderr, "lost signature\n");
+	test_lost_signature();
 	fprintf(stderr, "send failures\n");
 	test_send_failures();
 	fprintf(stderr, "key learned without route\n");

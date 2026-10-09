@@ -24,7 +24,7 @@ Status values:
 | F8 | Route promotion continues while the destination is unreachable | Implemented; field validation pending | WS3 |
 | F9 | A pending direct promotion keeps the old port after a validated rebind | Implemented; field validation pending | WS3 |
 | F10 | Channels expose no immediate availability change when the peer becomes unreachable | Open (API/policy review) | WS4 |
-| M1–M8 | Minor items | M1/M8 implemented; M4/M5 implemented with local verification in progress; field validation pending. Others Open / By design / Not meshlink | WS4 |
+| M1–M8 | Minor items | M1/M8 implemented; M4/M5 implemented in PR #130; local suite passed; field validation pending. Others Open / By design / Not meshlink | WS4 |
 
 Order: WS1 → WS2 → WS3, with WS4 whenever convenient.
 
@@ -295,8 +295,8 @@ This revises the ADR 0010 position that keepalives don't help. That position sti
 | M1 | `Unstable NAT binding` is level-triggered: 130 lines in C1, 84 in C2. Suppress repeats for 60 seconds after each warning (ADR 0014). | Implemented in PR #129; local coverage passed; field validation pending | C1, C2 |
 | M2 | The NMN originates `ADD_EDGE` with `10.20.1.181` (very likely its load balancer's VPC IP) for every camera. Peers keep validating that bogus `edge-direct` candidate with cooldowns of 30–139s. Fix on the infra side (client-IP preservation or proxy protocol), and/or have meshlink skip private candidates that aren't on our own subnet. | Open | C1, C2 |
 | M3 | PMTU probes go to `ff02::1` and `255.255.255.255` for WAN peers. That causes `Network is unreachable` errors inside Docker. It's harmless, since `relay_on_hard_send_error` ignores non-confirmed destinations. | Open | C1, C2 |
-| M4 | `Requesting punch endpoint` is sent twice about 14ms apart. A first or moved endpoint hint restarted the peer request ladder immediately; channels already shared demand. | Implemented; local verification in progress; field validation pending | C1, C2 |
-| M5 | At startup the node KEX retry steps from 1 to 3 within 85ms. Ordinary callers duplicated public-key acquisition, which also advanced the later handshake backoff. | Implemented; local verification in progress; field validation pending | C2 |
+| M4 | `Requesting punch endpoint` is sent twice about 14ms apart. A first or moved endpoint hint restarted the peer request ladder immediately; channels already shared demand. | Implemented in PR #130; local suite passed; field validation pending | C1, C2 |
+| M5 | At startup the node KEX retry steps from 1 to 3 within 85ms. Ordinary callers duplicated public-key acquisition, which also advanced the later handshake backoff. | Implemented in PR #130; local suite passed; field validation pending | C2 |
 | M6 | Ashish's camera ↔ Hemanth's camera stay on relay: both NATs are endpoint-dependent (Docker Desktop and Jio). | By design | C1 |
 | M7 | Stream-open failures ("Tunnel Open resource command status failed", "Media streaming is not ready") happen only within a few seconds of a camera restart. | Not meshlink | C1, C2 |
 | M8 | Android's AF_NETLINK bind-failure fallback leaves the socket open. Discovery also degrades in the local Docker/QEMU setup; details below. | Implemented in PR #129; local coverage passed; field validation pending | L1 |
@@ -333,7 +333,7 @@ Rules for every workstream:
 | WS1 | Path MTU and liveness rework | F3, F5, F6, F4 (PMTU gate), F2 follow-up | — | Implemented in PR #127; C3 follow-up fixes awaiting field validation |
 | WS2 | Relay data plane | F7, relay MTU | WS1 PR A; NMN deployed first | Implemented; Docker and field validation tracked below |
 | WS3 | Route selection at startup and after reachability changes | F4 (route choice), F8, F9 | WS1 | Implemented in PR #129; all 58 Docker tests pass; field validation pending |
-| WS4 | Hygiene and channel availability | M1, M2 (meshlink side), M3, M4, M5, M8, F10 | — | M1/M8 included in PR #129; M4/M5 implemented with local verification in progress; remaining items not started |
+| WS4 | Hygiene and channel availability | M1, M2 (meshlink side), M3, M4, M5, M8, F10 | — | M1/M8 included in PR #129; M4/M5 implemented in PR #130; local suite passed; remaining items not started |
 
 ### WS1: Path MTU and liveness rework
 
@@ -530,7 +530,11 @@ protocol compatibility, budgets, and the narrow NMN probing exception.
 - **M8 (included in PR #129):** close the netlink socket on bind failure, include interface index and errno in multicast-interface diagnostics, and verify network-change hints when native discovery notifications are unavailable; ADR 0014 records the fallback.
 - **F10:** define per-channel availability feedback on node unreachability, buffering/backpressure guarantees, and optional prompt-close policy; verify transient recovery and exactly-once terminal-close notifications.
 
-**M1/M8 local verification:** ARM64 Docker build and targeted `path-policy-coverage` and `discovery-failure` passed. Coverage checks warning suppression across ring wrap and the exact 60-second boundary, 16 netlink bind-failure start/stop cycles with stable descriptor counts, changed addresses refreshed by network-change hints, IPv4/IPv6 multicast diagnostics, and unicast UDP operation. The new follow-up's serial full-suite run was stopped at the owner's request after 25 passing tests, with no failures reported before interruption. The owner will complete full-suite verification with code review; field validation remains pending.
+**M1/M8 local verification:** ARM64 Docker build and targeted `path-policy-coverage` and `discovery-failure` passed. Coverage checks warning suppression across ring wrap and the exact 60-second boundary, 16 netlink bind-failure start/stop cycles with stable descriptor counts, changed addresses refreshed by network-change hints, IPv4/IPv6 multicast diagnostics, and unicast UDP operation. The new follow-up's serial full-suite run was stopped at the owner's request after 25 passing tests, with no failures reported before interruption. The follow-up below completes full-suite verification; field validation remains pending.
+
+**M4/M5 delivery and local verification:** [PR #130](https://github.com/elear-solutions/meshlink/pull/130) coalesces public-key requests and preserves punch-request deadlines. The ARM64 build passed in `meshlink-arm64`. Serial `make -j1 check` ran all 60 tests; 59 passed and `path-stability` exposed a fixture that advertised the same canonical and discovery endpoint. The fixture now keeps ordinary-peer canonical addresses distinct from discovery and UDP reply sources. Intermediate reruns also hit UDP setup timeouts and asymmetric liveness caused by competing source interfaces; isolated diagnostics and the final complete `path-stability` rerun passed. `MESHLINK_TEST_DEBUG=1 make -C test -j1 recheck` passed the failed test. Together with the 59 unchanged passing results from the full run, all 60 tests passed with no skips or errors. This also completes the earlier M1/M8 full-suite verification.
+
+The new `peer-control` tests use the real META writer and a controlled clock to count accepted requests. They exercise the actual initial channel SYN, multiple channels, both complete retry ladders and caps, public-key replies, reciprocal and simultaneous SPTPS handshakes, lost-signature recovery, forced rekeying, failed sends, unavailable routes, cutover uncertainty, session reset, changed and identical hints, demand expiry, and network changes. The original request owners fail both burst-regression count assertions. ADRs 0008 and 0009 record the policy. Jenkins build #181 failed before compilation because its repository credential could not clone Meshlink (`Repository not found`); this requires a Jenkins access fix. Field validation remains pending.
 
 ## Appendix: how the captures were analysed
 The logs are large (C2's phone log is 175 MB), so each analysis first builds compact extracts:
