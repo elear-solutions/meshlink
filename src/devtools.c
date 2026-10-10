@@ -19,6 +19,7 @@
 
 #include "system.h"
 #include <assert.h>
+#include <net/if.h>
 
 #include "connection.h"
 #include "list.h"
@@ -502,6 +503,17 @@ static void devtool_get_reset_node_status(meshlink_handle_t *mesh, meshlink_node
 		}
 
 		status->devtool_status_version = DEVTOOL_NODE_STATUS_VERSION;
+
+		if((mesh->backbone_udp.confirmed && mesh->backbone_udp.source == ADDR_SRC_BACKBONE_PRIVATE)
+		                || (internal->connection && internal->connection->status.private_carrier)) {
+			status->private_path_state = 2;
+		} else if(mesh->bb_private.ever_proven && !path_backbone_private_public_data_allowed(mesh, internal)) {
+			status->private_path_state = 3;
+		} else if(mesh->bb_private.query_id || mesh->bb_private.count) {
+			status->private_path_state = 1;
+		} else {
+			status->private_path_state = 0;
+		}
 
 		for list_each(connection_t, other, mesh->connections) {
 			if(other->status.drain_only && other->name && !strcmp(other->name, internal->name)) {
@@ -1255,6 +1267,62 @@ void devtool_set_external_ip_address(meshlink_handle_t *mesh, meshlink_node_t *n
 	node_t *n = (node_t *)node;
 	free(n->external_ip_address);
 	n->external_ip_address = external_ip_address ? xstrdup(external_ip_address) : NULL;
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
+/* RFC1918/ULA/loopback prefixes so a devtool-pinned speculative address stays
+   on-link. Refresh does not replace an override. */
+void devtool_set_broad_local_network(meshlink_handle_t *mesh) {
+	local_iface_addr_t addrs[6];
+
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	memset(addrs, 0, sizeof addrs);
+	addrs[0].ifindex = 1;
+	addrs[0].flags = IFF_UP | IFF_LOOPBACK;
+	addrs[0].prefix_len = 8;
+	addrs[0].address.sa.sa_family = AF_INET;
+	inet_pton(AF_INET, "127.0.0.1", &addrs[0].address.in.sin_addr);
+
+	addrs[1].ifindex = 2;
+	addrs[1].flags = IFF_UP;
+	addrs[1].prefix_len = 8;
+	addrs[1].address.sa.sa_family = AF_INET;
+	inet_pton(AF_INET, "10.0.0.1", &addrs[1].address.in.sin_addr);
+
+	addrs[2].ifindex = 3;
+	addrs[2].flags = IFF_UP;
+	addrs[2].prefix_len = 16;
+	addrs[2].address.sa.sa_family = AF_INET;
+	inet_pton(AF_INET, "192.168.0.1", &addrs[2].address.in.sin_addr);
+
+	addrs[3].ifindex = 4;
+	addrs[3].flags = IFF_UP;
+	addrs[3].prefix_len = 12;
+	addrs[3].address.sa.sa_family = AF_INET;
+	inet_pton(AF_INET, "172.16.0.1", &addrs[3].address.in.sin_addr);
+
+	addrs[4].ifindex = 5;
+	addrs[4].flags = IFF_UP;
+	addrs[4].prefix_len = 7;
+	addrs[4].address.sa.sa_family = AF_INET6;
+	inet_pton(AF_INET6, "fd00::1", &addrs[4].address.in6.sin6_addr);
+
+	addrs[5].ifindex = 6;
+	addrs[5].flags = IFF_UP;
+	addrs[5].prefix_len = 10;
+	addrs[5].address.sa.sa_family = AF_INET6;
+	inet_pton(AF_INET6, "fe80::1", &addrs[5].address.in6.sin6_addr);
+	addrs[5].address.in6.sin6_scope_id = 6;
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	local_network_set_snapshot(mesh, addrs, 6);
 	pthread_mutex_unlock(&mesh->mutex);
 }
 
@@ -2583,6 +2651,33 @@ unsigned devtool_backbone_udp_establish_step(meshlink_handle_t *mesh) {
 	step = mesh->backbone_udp.establish_step;
 	pthread_mutex_unlock(&mesh->mutex);
 	return step;
+}
+
+size_t devtool_backbone_private_set(meshlink_handle_t *mesh, struct sockaddr_storage *addrs, size_t max, uint32_t *revision) {
+	size_t count;
+
+	if(!mesh || (max && !addrs)) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return 0;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	count = mesh->bb_private.count;
+
+	for(size_t i = 0; i < count && i < max; i++) {
+		memset(&addrs[i], 0, sizeof addrs[i]);
+		path_copy_sockaddr((sockaddr_t *)&addrs[i], &mesh->bb_private.endpoints[i].sa);
+	}
+
+	if(revision) {
+		*revision = mesh->bb_private.revision;
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return count;
 }
 
 bool devtool_relay_cover_unit(meshlink_handle_t *mesh, meshlink_node_t *from, meshlink_node_t *dest, meshlink_node_t *hop) {

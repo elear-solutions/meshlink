@@ -25,12 +25,14 @@
 /* Protocol version. Different major versions are incompatible. */
 
 #define PROT_MAJOR 17
-#define PROT_MINOR 8 /* Should not exceed 255! */
+#define PROT_MINOR 9 /* Should not exceed 255! */
 /* Direct META upgrades require this minor. Older peers stay on canonical META. */
 #define PROT_MINOR_ORDERED_CUTOVER 5
 /* One-direction PLPMTU size acks. No mixed-version negotiation. */
 #define PROT_MINOR_PLPMTU 6
 #define PROT_MINOR_SPTPS_APP 8
+/* Backbone private listening endpoints. Older peers never see the request. */
+#define PROT_MINOR_BACKBONE_PRIVATE 9
 
 /* Silly Windows */
 
@@ -63,6 +65,9 @@ typedef enum request_t {
 	REQ_META_CUTOVER_ACK,
 	REQ_META_CUTOVER_EMERGENCY, /* primary died before the barrier; sync before ordinary META */
 	REQ_SPTPS_APP, /* application-only encrypted datagram envelope */
+	REQ_BACKBONE_PRIVATE, /* member asks the backbone for its private listeners */
+	ANS_BACKBONE_PRIVATE,
+	REQ_BACKBONE_PRIVATE_CHANGED,
 	NUM_REQUESTS
 } request_t;
 

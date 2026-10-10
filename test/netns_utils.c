@@ -758,3 +758,95 @@ void close_nat_hole_punch(peer_config_t *peers) {
 
 	forget_nat_netns();
 }
+
+static char *backbone_private_router;
+
+peer_config_t *setup_backbone_private_routed(const char *prefix) {
+	peer_config_t *peers;
+	peer_config_t opened[2] = {
+		{.name = "nmn", .devclass = DEV_CLASS_BACKBONE},
+		{.name = "vsn", .devclass = DEV_CLASS_STATIONARY},
+	};
+	char *command = NULL;
+
+	require_netns();
+	peers = calloc(2, sizeof *peers);
+	assert(peers);
+	assert(asprintf(&backbone_private_router, "%sr", prefix) > 0);
+	assert(asprintf(&command,
+	                "set -e;"
+	                "/bin/ip netns delete %s >/dev/null 2>&1 || true;"
+	                "/bin/ip netns add %s;"
+	                "/bin/ip netns exec %s ip link set lo up;"
+	                "/bin/ip netns exec %s sysctl -w net.ipv4.ip_forward=1 >/dev/null",
+	                backbone_private_router, backbone_private_router,
+	                backbone_private_router, backbone_private_router) > 0);
+	assert(system(command) == 0);
+	free(command);
+	command = NULL;
+
+	create_peers(opened, 2, prefix);
+	memcpy(peers, opened, sizeof opened);
+
+	assert(asprintf(&command,
+	                "set -e;"
+	                "/bin/ip netns exec %s0 ip link add eth-priv type veth peer name r-nmn;"
+	                "/bin/ip netns exec %s0 ip link set r-nmn netns %sr;"
+	                "/bin/ip netns exec %s1 ip link add eth-priv type veth peer name r-vsn;"
+	                "/bin/ip netns exec %s1 ip link set r-vsn netns %sr;"
+	                "/bin/ip netns exec %s0 ip link add eth-pub type veth peer name p-nmn;"
+	                "/bin/ip netns exec %s0 ip link set p-nmn netns %sr;"
+	                "/bin/ip netns exec %s1 ip link add eth-pub type veth peer name p-vsn;"
+	                "/bin/ip netns exec %s1 ip link set p-vsn netns %sr;"
+	                "/bin/ip netns exec %sr ip link add pub type bridge;"
+	                "/bin/ip netns exec %sr ip link set p-nmn master pub;"
+	                "/bin/ip netns exec %sr ip link set p-vsn master pub;"
+	                "/bin/ip netns exec %sr ip link set pub up;"
+	                "/bin/ip netns exec %sr ip link set p-nmn up;"
+	                "/bin/ip netns exec %sr ip link set p-vsn up;"
+	                "/bin/ip netns exec %sr ip link set r-nmn up;"
+	                "/bin/ip netns exec %sr ip link set r-vsn up;"
+	                "/bin/ip netns exec %sr ip addr add 10.30.1.1/24 dev r-nmn;"
+	                "/bin/ip netns exec %sr ip addr add 10.30.2.1/24 dev r-vsn;"
+	                "/bin/ip netns exec %s0 ip addr add 10.30.1.2/24 dev eth-priv;"
+	                "/bin/ip netns exec %s0 ip link set eth-priv up;"
+	                "/bin/ip netns exec %s0 ip addr add 203.0.113.2/24 dev eth-pub;"
+	                "/bin/ip netns exec %s0 ip link set eth-pub up;"
+	                "/bin/ip netns exec %s0 ip route add 10.30.2.0/24 via 10.30.1.1;"
+	                "/bin/ip netns exec %s1 ip addr add 10.30.2.2/24 dev eth-priv;"
+	                "/bin/ip netns exec %s1 ip link set eth-priv up;"
+	                "/bin/ip netns exec %s1 ip addr add 203.0.113.3/24 dev eth-pub;"
+	                "/bin/ip netns exec %s1 ip link set eth-pub up;"
+	                "/bin/ip netns exec %s1 ip route add 10.30.1.0/24 via 10.30.2.1;",
+	                prefix, prefix, prefix,
+	                prefix, prefix, prefix,
+	                prefix, prefix, prefix,
+	                prefix, prefix, prefix,
+	                prefix, prefix, prefix, prefix, prefix, prefix, prefix, prefix,
+	                prefix, prefix,
+	                prefix, prefix, prefix, prefix, prefix,
+	                prefix, prefix, prefix, prefix, prefix) > 0);
+	assert(system(command) == 0);
+	free(command);
+	snprintf(peers[0].ip, sizeof peers[0].ip, "203.0.113.2");
+	snprintf(peers[1].ip, sizeof peers[1].ip, "203.0.113.3");
+	return peers;
+}
+
+void close_backbone_private_routed(peer_config_t *peers) {
+	char *command = NULL;
+
+	if(!peers) {
+		return;
+	}
+
+	close_peers(peers, 2);
+
+	if(backbone_private_router) {
+		assert(asprintf(&command, "/bin/ip netns delete %s >/dev/null 2>&1 || true", backbone_private_router) > 0);
+		assert(system(command) == 0);
+		free(command);
+		free(backbone_private_router);
+		backbone_private_router = NULL;
+	}
+}

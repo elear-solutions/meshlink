@@ -117,6 +117,9 @@ const char *address_source_name(address_source_t src) {
 	case ADDR_SRC_UDP_REFLEXIVE:
 		return "udp-reflexive";
 
+	case ADDR_SRC_BACKBONE_PRIVATE:
+		return "backbone-private";
+
 	case ADDR_SRC_UNKNOWN:
 	default:
 		return "unknown";
@@ -230,6 +233,7 @@ bool path_source_is_direct(address_source_t src) {
 	case ADDR_SRC_HINT:
 	case ADDR_SRC_EXTERNAL:
 	case ADDR_SRC_EDGE_DIRECT:
+	case ADDR_SRC_BACKBONE_PRIVATE:
 	case ADDR_SRC_UNKNOWN: /* legacy host config without provenance: still dialable once canonical is known */
 		return true;
 
@@ -287,6 +291,48 @@ static const sockaddr_t *canonical_at(const node_t *n, int i) {
 	return &n->canonical_extra[i - 1];
 }
 
+bool path_address_is_loopback(const sockaddr_t *sa) {
+	if(!sa) {
+		return false;
+	}
+
+	if(sa->sa.sa_family == AF_INET) {
+		return (ntohl(sa->in.sin_addr.s_addr) & 0xff000000) == 0x7f000000;
+	}
+
+	return sa->sa.sa_family == AF_INET6 && IN6_IS_ADDR_LOOPBACK(&sa->in6.sin6_addr);
+}
+
+/* RFC1918/ULA/link-local speculative destinations must be on-link unless the
+   backbone exchange vouches for them or the application hinted the address. */
+static bool path_private_destination_eligible(const node_t *n, const sockaddr_t *sa, address_source_t src) {
+	if(!n || !n->mesh || !path_address_is_local(sa) || path_address_is_loopback(sa)) {
+		return true;
+	}
+
+	switch(src) {
+	case ADDR_SRC_AUTH_DIRECT:
+		/* A backbone's off-subnet listener was reached on exchange evidence.
+		   Having authenticated there once, possibly before a restart, must not
+		   outlive the backbone withdrawing the address. */
+		if(connection_policy_is_backbone(n->mesh, n) && !local_network_on_link(n->mesh, sa)) {
+			return path_backbone_private_vouches(n->mesh, n, sa);
+		}
+
+		return true;
+
+	case ADDR_SRC_CANONICAL:
+	case ADDR_SRC_HINT:
+		return true;
+
+	case ADDR_SRC_BACKBONE_PRIVATE:
+		return path_backbone_private_vouches(n->mesh, n, sa);
+
+	default:
+		return local_network_on_link(n->mesh, sa);
+	}
+}
+
 bool path_is_direct_candidate(const node_t *n, const sockaddr_t *sa, address_source_t src) {
 	if(!n || !sa || !path_source_is_direct(src)) {
 		return false;
@@ -316,7 +362,7 @@ bool path_is_direct_candidate(const node_t *n, const sockaddr_t *sa, address_sou
 		return false;
 	}
 
-	return true;
+	return path_private_destination_eligible(n, sa, src);
 }
 
 bool path_is_untrusted_hybrid(const node_t *n, const sockaddr_t *sa, address_source_t src) {
@@ -366,7 +412,7 @@ bool path_is_udp_candidate(const node_t *n, const sockaddr_t *sa, address_source
 		return false;
 	}
 
-	return true;
+	return path_private_destination_eligible(n, sa, src);
 }
 
 bool path_tier_better(path_tier_t a, path_tier_t b) {
@@ -1081,6 +1127,11 @@ bool path_sanitize_recent(meshlink_handle_t *mesh, node_t *n) {
 	memset(kept_cap, 0, sizeof kept_cap);
 
 	for(int i = 0; i < MAX_RECENT && n->recent[i].sa.sa_family; i++) {
+		if(n->recent_source[i] == ADDR_SRC_BACKBONE_PRIVATE) {
+			n->recent_source[i] = ADDR_SRC_UNKNOWN;
+			changed = true;
+		}
+
 		if(path_address_matches_canonical(n, &n->recent[i]) || n->recent_source[i] == ADDR_SRC_CANONICAL
 		                || path_is_untrusted_hybrid(n, &n->recent[i], n->recent_source[i])) {
 			path_log_candidate(mesh, n, &n->recent[i], n->recent_source[i], n->recent_cap[i], "sanitized");
@@ -1267,8 +1318,18 @@ const char *path_upgrade_ineligible_reason(meshlink_handle_t *mesh, const node_t
 		return "not-initiator";
 	}
 
+	/* Direct META moves again only for the backbone: public-direct to a
+	   vouched private listener, or off a private carrier whose address left
+	   the vouched set. A still-vouched private carrier stays put, so a
+	   multi-homed backbone does not cut over between its own listeners. */
 	if(!path_meta_is_canonical(n, c)) {
-		return "already-direct";
+		bool private_move = mesh && connection_policy_is_backbone(mesh, n)
+		                    && (!c->status.private_carrier || path_backbone_private_meta_superseded(mesh, n))
+		                    && path_backbone_private_has_unproven_meta(mesh, n);
+
+		if(!private_move) {
+			return "already-direct";
+		}
 	}
 
 	if(n->upgrade_probe) {
@@ -1284,7 +1345,8 @@ const char *path_upgrade_ineligible_reason(meshlink_handle_t *mesh, const node_t
 		return "peer-protocol";
 	}
 
-	if(!path_has_direct_meta_candidate(n, &c->address)) {
+	if(!path_has_direct_meta_candidate(n, &c->address)
+	                && !(mesh && path_backbone_private_has_unproven_meta(mesh, n))) {
 		return "no-direct-candidate";
 	}
 
@@ -1403,6 +1465,7 @@ bool path_pick_local_udp_candidate(meshlink_handle_t *mesh, const node_t *n, pat
 	}
 
 	if(n->catta_address.sa.sa_family != AF_UNSPEC && path_address_is_local(&n->catta_address)
+	                && path_is_udp_candidate(n, &n->catta_address, ADDR_SRC_DISCOVERY, PATH_CAP_BOTH)
 	                && (n->address.sa.sa_family == AF_UNSPEC || sockaddrcmp(&n->catta_address, &n->address))) {
 		path_copy_sockaddr(&out->address, &n->catta_address);
 		out->source = ADDR_SRC_DISCOVERY;
@@ -3421,6 +3484,18 @@ static bool path_carrier_outranked(meshlink_handle_t *mesh, node_t *n, const rou
 		return false;
 	}
 
+	if(connection_policy_is_backbone(mesh, n)) {
+		sockaddr_t udp;
+
+		if(path_backbone_private_fill_udp(mesh, n, &udp)) {
+			return !(c->kind == DATA_ROUTE_DIRECT_UDP && !sockaddrcmp(&c->endpoint, &udp));
+		}
+
+		if(path_backbone_private_fill_meta(mesh, n)) {
+			return c->kind != DATA_ROUTE_DIRECT_LOCAL_META;
+		}
+	}
+
 	cand = path_carrier_rank(c->kind, c->relay_carrier, c->local);
 	memset(&live, 0, sizeof live);
 
@@ -4851,6 +4926,38 @@ static bool path_fill_dest_meta(meshlink_handle_t *mesh, const node_t *n, path_t
 static bool path_rank_carriers(meshlink_handle_t *mesh, node_t *n, const data_route_t *skip, path_target_t *out) {
 	memset(out, 0, sizeof *out);
 
+	if(mesh && n && connection_policy_is_backbone(mesh, n)) {
+		sockaddr_t udp;
+
+		if(path_backbone_private_fill_udp(mesh, n, &udp)) {
+			out->kind = DATA_ROUTE_DIRECT_UDP;
+			out->local = true;
+			out->endpoint_source = ADDR_SRC_BACKBONE_PRIVATE;
+			path_copy_sockaddr(&out->udp_endpoint, &udp);
+
+			if(!path_target_matches_skip(skip, out)) {
+				return true;
+			}
+		}
+
+		memset(out, 0, sizeof *out);
+
+		if(path_backbone_private_fill_meta(mesh, n)) {
+			out->kind = DATA_ROUTE_DIRECT_LOCAL_META;
+			out->local = false;
+
+			if(!path_target_matches_skip(skip, out)) {
+				return true;
+			}
+		}
+
+		memset(out, 0, sizeof *out);
+
+		if(!path_backbone_private_public_data_allowed(mesh, n)) {
+			return false;
+		}
+	}
+
 	if(path_fill_direct_udp(mesh, n, out) && !path_target_matches_skip(skip, out)) {
 		return true;
 	}
@@ -4964,6 +5071,57 @@ static bool path_recorded_usable(const meshlink_handle_t *mesh, const node_t *n)
 	default:
 		return false;
 	}
+}
+
+static bool path_route_is_backbone_private(const meshlink_handle_t *mesh, const node_t *n, const data_route_t *r) {
+	sockaddr_t udp;
+
+	if(r->kind == DATA_ROUTE_DIRECT_UDP) {
+		return path_backbone_private_fill_udp(mesh, n, &udp) && !sockaddrcmp(&r->udp_endpoint, &udp);
+	}
+
+	return r->kind == DATA_ROUTE_DIRECT_LOCAL_META && path_backbone_private_fill_meta(mesh, n);
+}
+
+/* PRIVATE_ONLY gates every recorded backbone route, not only fresh ranking. */
+static bool path_backbone_route_permitted(const meshlink_handle_t *mesh, const node_t *n, const data_route_t *r) {
+	if(!connection_policy_is_backbone(mesh, n) || path_backbone_private_public_data_allowed(mesh, n)) {
+		return true;
+	}
+
+	return path_route_is_backbone_private(mesh, n, r);
+}
+
+/* Move backbone data onto a proven private carrier, or off a route the policy
+   forbids. Without private evidence the ADR 0004 promotion path owns the
+   route, with its hold and residency. A suspect route is left to suspect
+   recovery unless the policy forbids it. */
+static void path_backbone_reconcile_route(meshlink_handle_t *mesh, node_t *n) {
+	sockaddr_t udp;
+	path_target_t want;
+	bool private_up;
+	bool forbidden;
+
+	if(!n->status.reachable || !connection_policy_is_backbone(mesh, n) || n->active_route.kind == DATA_ROUTE_NONE) {
+		return;
+	}
+
+	private_up = path_backbone_private_fill_udp(mesh, n, &udp) || path_backbone_private_fill_meta(mesh, n);
+	forbidden = !path_backbone_route_permitted(mesh, n, &n->active_route);
+
+	if(!private_up && !forbidden) {
+		return;
+	}
+
+	if(n->active_route.suspect && !forbidden) {
+		return;
+	}
+
+	if(!path_rank_carriers(mesh, n, NULL, &want) || path_target_matches_skip(&n->active_route, &want)) {
+		return;
+	}
+
+	path_commit_active_route(n, &want, &mesh->loop.now, true);
 }
 
 static void path_route_to_target(const data_route_t *r, path_target_t *out, bool temporary) {
@@ -5083,6 +5241,8 @@ void path_route_tick(meshlink_handle_t *mesh, node_t *n) {
 		return;
 	}
 
+	path_backbone_private_tick(mesh, n);
+	path_backbone_reconcile_route(mesh, n);
 	path_rebind_drop_stale(mesh, n);
 
 	if(!n->peer_udp.channel_count
@@ -5222,6 +5382,10 @@ bool path_select_fallback(meshlink_handle_t *mesh, node_t *n, path_target_t *out
 		return true;
 	}
 
+	if(connection_policy_is_backbone(mesh, n) && !path_backbone_private_public_data_allowed(mesh, n)) {
+		return false;
+	}
+
 	out->kind = DATA_ROUTE_DIRECT_LOCAL_META;
 	return true;
 }
@@ -5248,7 +5412,7 @@ bool path_resolve_active_route(meshlink_handle_t *mesh, node_t *n, path_target_t
 		}
 	}
 
-	if(path_recorded_usable(mesh, n)) {
+	if(path_recorded_usable(mesh, n) && path_backbone_route_permitted(mesh, n, &n->active_route)) {
 		path_route_to_target(&n->active_route, out, false);
 		return true;
 	}

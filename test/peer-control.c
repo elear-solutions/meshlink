@@ -10,6 +10,9 @@
 #include "connection_policy.h"
 #include "node.h"
 #include "net.h"
+#include "net_upgrade.h"
+#include "net_upgrade_internal.h"
+#include "netutl.h"
 #include "path_policy.h"
 #include "protocol.h"
 #include <assert.h>
@@ -438,6 +441,517 @@ static void test_punch_cadence(void) {
 	close_fixture(&f);
 }
 
+static void test_backbone_private_exchange(void) {
+	fixture_t f = fixture("cam", "other");
+	sockaddr_t sa;
+	uint64_t qid;
+
+	f.meta->protocol_minor = PROT_MINOR_BACKBONE_PRIVATE;
+	f.backbone->session_id = 42;
+	f.mesh->lan_network_epoch = 3;
+	memset(&sa, 0, sizeof sa);
+	sa.sa.sa_family = AF_INET;
+	assert(inet_pton(AF_INET, "10.30.1.9", &sa.in.sin_addr) == 1);
+	sa.in.sin_port = htons(4000);
+
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(take_requests(&f, REQ_BACKBONE_PRIVATE) == 1);
+	qid = f.mesh->bb_private.query_id;
+	assert(qid);
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(take_requests(&f, REQ_BACKBONE_PRIVATE) == 0);
+
+	assert(path_backbone_private_test_offer(f.mesh, f.meta, f.backbone, qid + 1, 42, 1, 300, &sa, PATH_CAP_BOTH));
+	assert(f.mesh->bb_private.count == 0);
+	assert(path_backbone_private_test_offer(f.mesh, f.meta, f.backbone, qid, 7, 1, 300, &sa, PATH_CAP_BOTH));
+	assert(f.mesh->bb_private.count == 0);
+	f.backbone->connection = NULL;
+	assert(path_backbone_private_test_offer(f.mesh, f.meta, f.backbone, qid, 42, 1, 300, &sa, PATH_CAP_BOTH));
+	assert(f.mesh->bb_private.count == 0);
+	f.backbone->connection = f.meta;
+
+	assert(path_backbone_private_test_offer(f.mesh, f.meta, f.backbone, qid, 42, 4, 300, &sa, PATH_CAP_BOTH));
+	assert(f.mesh->bb_private.count == 1);
+	assert(f.mesh->bb_private.revision == 4);
+	assert(f.mesh->bb_private.network_epoch == 3);
+	assert(path_backbone_private_vouches(f.mesh, f.backbone, &sa));
+
+	f.mesh->bb_private.query_id = qid + 9;
+	assert(path_backbone_private_test_offer(f.mesh, f.meta, f.backbone, qid + 9, 42, 3, 300, &sa, PATH_CAP_UDP));
+	assert(f.mesh->bb_private.revision == 4);
+	assert(f.mesh->bb_private.query_id == qid + 9);
+
+	assert(path_backbone_private_test_offer(f.mesh, f.meta, f.backbone, qid + 9, 42, 5, 300, NULL, 0));
+	assert(f.mesh->bb_private.empty);
+	assert(f.mesh->bb_private.ladder_step == 5);
+	assert(!path_backbone_private_vouches(f.mesh, f.backbone, &sa));
+
+	close_fixture(&f);
+
+	f = fixture("cam", "other");
+	f.meta->protocol_minor = 8;
+	f.backbone->session_id = 42;
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(take_requests(&f, REQ_BACKBONE_PRIVATE) == 0);
+	close_fixture(&f);
+}
+
+static sockaddr_t v4_endpoint(const char *ip, uint16_t port) {
+	sockaddr_t sa;
+
+	memset(&sa, 0, sizeof sa);
+	sa.sa.sa_family = AF_INET;
+	assert(inet_pton(AF_INET, ip, &sa.in.sin_addr) == 1);
+	sa.in.sin_port = htons(port);
+	return sa;
+}
+
+/* A member with one vouched private endpoint from session 42. */
+static fixture_t private_fixture(const sockaddr_t *sa) {
+	fixture_t f = fixture("cam", "other");
+	uint64_t qid;
+
+	f.meta->protocol_minor = PROT_MINOR_BACKBONE_PRIVATE;
+	f.backbone->session_id = 42;
+	f.mesh->lan_network_epoch = 3;
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(take_requests(&f, REQ_BACKBONE_PRIVATE) == 1);
+	qid = f.mesh->bb_private.query_id;
+	assert(path_backbone_private_test_offer(f.mesh, f.meta, f.backbone, qid, 42, 1, 300, sa, PATH_CAP_BOTH));
+	assert(path_backbone_private_vouches(f.mesh, f.backbone, sa));
+	return f;
+}
+
+static void set_backbone_udp(fixture_t *f, const sockaddr_t *sa, address_source_t src) {
+	f->mesh->backbone_udp.node = f->backbone;
+	f->mesh->backbone_udp.confirmed = true;
+	f->mesh->backbone_udp.source = src;
+	f->mesh->backbone_udp.endpoint = *sa;
+}
+
+static void set_route_udp(fixture_t *f, const sockaddr_t *sa, address_source_t src, bool suspect) {
+	memset(&f->backbone->active_route, 0, sizeof f->backbone->active_route);
+	f->backbone->active_route.kind = DATA_ROUTE_DIRECT_UDP;
+	f->backbone->active_route.udp_endpoint = *sa;
+	f->backbone->active_route.endpoint_source = src;
+	f->backbone->active_route.local = path_address_is_local(sa);
+	f->backbone->active_route.suspect = suspect;
+}
+
+static void test_backbone_private_policy(void) {
+	sockaddr_t priv = v4_endpoint("10.30.1.9", 4000);
+	sockaddr_t pub = v4_endpoint("203.0.113.2", 4000);
+	fixture_t f = private_fixture(&priv);
+	path_target_t target;
+
+	/* PREFER_PRIVATE never withholds public, even after private was proven. */
+	f.mesh->bb_private.ever_proven = true;
+	assert(path_backbone_private_public_data_allowed(f.mesh, f.backbone));
+
+	/* PRIVATE_ONLY allows public only until this session proves private. */
+	f.mesh->backbone_path_policy = MESHLINK_BACKBONE_PATH_PRIVATE_ONLY;
+	f.mesh->bb_private.ever_proven = false;
+	assert(path_backbone_private_public_data_allowed(f.mesh, f.backbone));
+	f.mesh->bb_private.ever_proven = true;
+	assert(!path_backbone_private_public_data_allowed(f.mesh, f.backbone));
+
+	/* A recorded public route is not a way around PRIVATE_ONLY. */
+	set_backbone_udp(&f, &pub, ADDR_SRC_UDP_REFLEXIVE);
+	set_route_udp(&f, &pub, ADDR_SRC_UDP_REFLEXIVE, false);
+	assert(!path_active_send_target(f.mesh, f.backbone, &target));
+
+	f.mesh->backbone_path_policy = MESHLINK_BACKBONE_PATH_PREFER_PRIVATE;
+	assert(path_active_send_target(f.mesh, f.backbone, &target));
+	assert(target.kind == DATA_ROUTE_DIRECT_UDP);
+	assert(!sockaddrcmp(&target.udp_endpoint, &pub));
+
+	/* A suspect private UDP route has no public temporary fallback under
+	   PRIVATE_ONLY; it keeps carrying on the private endpoint. */
+	f.mesh->backbone_path_policy = MESHLINK_BACKBONE_PATH_PRIVATE_ONLY;
+	set_backbone_udp(&f, &priv, ADDR_SRC_BACKBONE_PRIVATE);
+	set_route_udp(&f, &priv, ADDR_SRC_BACKBONE_PRIVATE, true);
+	assert(!path_has_live_fallback(f.mesh, f.backbone));
+	assert(path_active_send_target(f.mesh, f.backbone, &target));
+	assert(target.kind == DATA_ROUTE_DIRECT_UDP);
+	assert(!target.temporary_fallback);
+	assert(!sockaddrcmp(&target.udp_endpoint, &priv));
+
+	/* PREFER_PRIVATE may use the public META connection as the fallback. */
+	f.mesh->backbone_path_policy = MESHLINK_BACKBONE_PATH_PREFER_PRIVATE;
+	assert(path_has_live_fallback(f.mesh, f.backbone));
+
+	memset(&f.mesh->backbone_udp, 0, sizeof f.mesh->backbone_udp);
+	memset(&f.backbone->active_route, 0, sizeof f.backbone->active_route);
+	close_fixture(&f);
+}
+
+static void test_backbone_private_independent_transports(void) {
+	sockaddr_t priv = v4_endpoint("10.30.1.9", 4000);
+	sockaddr_t other = v4_endpoint("10.30.1.10", 4000);
+	fixture_t f = private_fixture(&priv);
+	const char *reason;
+	outgoing_t dialed;
+
+	/* Private META is the live carrier on the vouched listener we dialed. */
+	memset(&dialed, 0, sizeof dialed);
+	f.meta->outgoing = &dialed;
+	f.meta->address = priv;
+	f.meta->status.private_carrier = true;
+	f.mesh->backbone_udp.node = f.backbone;
+
+	/* Healthy private META stops queries but not private UDP validation. */
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(take_requests(&f, REQ_BACKBONE_PRIVATE) == 0);
+	assert(f.mesh->backbone_udp.cand.active);
+	assert(!sockaddrcmp(&f.mesh->backbone_udp.cand.endpoint, &priv));
+	path_backbone_udp_clear_candidate(f.mesh);
+
+	/* A second vouched listener does not pull a still-vouched carrier over. */
+	f.mesh->bb_private.query_id = 77;
+	f.mesh->bb_private.endpoints[0].meta_state = BB_EP_PROVEN;
+	{
+		char line[MAXBUFSIZE];
+		snprintf(line, sizeof line, "%d backbone cam %d 77 42 2 300 2 10.30.1.9 4000 %u 10.30.1.10 4000 %u",
+		         REQ_KEY, ANS_BACKBONE_PRIVATE, (unsigned)PATH_CAP_BOTH, (unsigned)PATH_CAP_BOTH);
+		assert(path_backbone_private_handle_answer(f.mesh, f.meta, f.backbone, line));
+	}
+	assert(f.mesh->bb_private.count == 2);
+	assert(!path_backbone_private_meta_superseded(f.mesh, f.backbone));
+	reason = path_upgrade_ineligible_reason(f.mesh, f.backbone);
+	assert(reason && !strcmp(reason, "already-direct"));
+
+	/* Once the carrier's own address leaves the set, the replacement may cut over. */
+	assert(path_backbone_private_test_offer(f.mesh, f.meta, f.backbone, 0, 42, 3, 300, &other, PATH_CAP_BOTH));
+	assert(f.mesh->bb_private.count == 2); /* query 0 is never in flight */
+	f.mesh->bb_private.query_id = 78;
+	assert(path_backbone_private_test_offer(f.mesh, f.meta, f.backbone, 78, 42, 3, 300, &other, PATH_CAP_BOTH));
+	assert(f.mesh->bb_private.count == 1);
+	assert(path_backbone_private_meta_superseded(f.mesh, f.backbone));
+	reason = path_upgrade_ineligible_reason(f.mesh, f.backbone);
+	assert(!reason || strcmp(reason, "already-direct"));
+
+	f.meta->outgoing = NULL;
+	path_backbone_udp_clear_candidate(f.mesh);
+	memset(&f.mesh->backbone_udp, 0, sizeof f.mesh->backbone_udp);
+	close_fixture(&f);
+}
+
+/* Proof is bound to the member's network, the set revision and the backbone
+   session. A backbone that restarts on the same IP and port starts from nothing. */
+static void test_backbone_private_stale_proofs(void) {
+	sockaddr_t priv = v4_endpoint("10.30.1.9", 4000);
+	fixture_t f = private_fixture(&priv);
+	sockaddr_t out;
+	char line[MAXBUFSIZE];
+	uint64_t qid;
+	uint64_t nonce;
+
+	f.mesh->backbone_udp.node = f.backbone;
+	assert(f.meta->status.bb_private_asked);
+
+	/* A reconnect asks at once although the set is current: the backbone
+	   pushes CHANGED only on connections that asked. */
+	f.meta->status.bb_private_asked = false;
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(take_requests(&f, REQ_BACKBONE_PRIVATE) == 1);
+	assert(f.meta->status.bb_private_asked);
+	qid = f.mesh->bb_private.query_id;
+	assert(path_backbone_private_test_offer(f.mesh, f.meta, f.backbone, qid, 42, 1, 300, &priv, PATH_CAP_BOTH));
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(take_requests(&f, REQ_BACKBONE_PRIVATE) == 0);
+	path_backbone_udp_clear_candidate(f.mesh);
+
+	/* Member network change: the set stops vouching and the member asks at
+	   once, not at the set's expiry. One query is in flight at a time. */
+	f.mesh->lan_network_epoch++;
+	assert(!path_backbone_private_vouches(f.mesh, f.backbone, &priv));
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(take_requests(&f, REQ_BACKBONE_PRIVATE) == 1);
+	assert(!f.mesh->backbone_udp.cand.active);
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(take_requests(&f, REQ_BACKBONE_PRIVATE) == 0);
+	qid = f.mesh->bb_private.query_id;
+	assert(qid);
+	assert(path_backbone_private_test_offer(f.mesh, f.meta, f.backbone, qid, 42, 2, 300, &priv, PATH_CAP_BOTH));
+	assert(path_backbone_private_vouches(f.mesh, f.backbone, &priv));
+
+	/* Having authenticated at the backbone's off-subnet listener does not
+	   keep it dialable without the exchange. Other peers keep AUTH_DIRECT. */
+	assert(path_is_meta_candidate(f.backbone, &priv, ADDR_SRC_AUTH_DIRECT, PATH_CAP_BOTH));
+	assert(path_is_meta_candidate(f.peer, &priv, ADDR_SRC_AUTH_DIRECT, PATH_CAP_BOTH));
+	f.mesh->lan_network_epoch++;
+	assert(!path_is_meta_candidate(f.backbone, &priv, ADDR_SRC_AUTH_DIRECT, PATH_CAP_BOTH));
+	assert(!path_is_udp_candidate(f.backbone, &priv, ADDR_SRC_AUTH_DIRECT, PATH_CAP_BOTH));
+	assert(path_is_meta_candidate(f.peer, &priv, ADDR_SRC_AUTH_DIRECT, PATH_CAP_BOTH));
+	f.mesh->lan_network_epoch--;
+
+	/* A UDP proof started under revision 2 is void once revision 3 lands. */
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(take_requests(&f, REQ_BACKBONE_PRIVATE) == 0);
+	assert(f.mesh->backbone_udp.cand.active);
+	nonce = f.mesh->backbone_udp.cand.nonce;
+	f.mesh->bb_private.query_id = 90;
+	assert(path_backbone_private_test_offer(f.mesh, f.meta, f.backbone, 90, 42, 3, 300, &priv, PATH_CAP_BOTH));
+	path_backbone_udp_observe_reply(f.mesh, f.backbone, &priv, nonce, NULL);
+	assert(!f.mesh->backbone_udp.confirmed);
+	assert(!f.mesh->bb_private.ever_proven);
+
+	/* The same reply for the current revision is a proof. */
+	path_backbone_udp_clear_candidate(f.mesh);
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(f.mesh->backbone_udp.cand.active);
+	nonce = f.mesh->backbone_udp.cand.nonce;
+	path_backbone_udp_observe_reply(f.mesh, f.backbone, &priv, nonce, NULL);
+	assert(f.mesh->backbone_udp.confirmed);
+	assert(f.mesh->backbone_udp.source == ADDR_SRC_BACKBONE_PRIVATE);
+	assert(f.mesh->bb_private.endpoints[0].udp_state == BB_EP_PROVEN);
+	assert(f.mesh->bb_private.ever_proven);
+	assert(path_backbone_private_fill_udp(f.mesh, f.backbone, &out));
+
+	/* Losing that carrier makes the endpoint provable again. */
+	path_backbone_udp_reset(f.mesh, f.backbone);
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(f.mesh->bb_private.endpoints[0].udp_state != BB_EP_PROVEN);
+	assert(f.mesh->backbone_udp.cand.active);
+	path_backbone_udp_clear_candidate(f.mesh);
+
+	/* Restart on the same IP and port: new session, same address. What
+	   check_reachability does on a session change wipes every proof. */
+	f.backbone->session_id = 43;
+	path_backbone_private_on_session_change(f.mesh, f.backbone);
+	path_backbone_udp_reset(f.mesh, f.backbone);
+	assert(!f.mesh->backbone_udp.confirmed);
+	assert(!f.mesh->bb_private.ever_proven);
+	assert(!f.mesh->bb_private.count);
+	assert(!path_backbone_private_vouches(f.mesh, f.backbone, &priv));
+	assert(!path_backbone_private_fill_udp(f.mesh, f.backbone, &out));
+	f.mesh->backbone_path_policy = MESHLINK_BACKBONE_PATH_PRIVATE_ONLY;
+	assert(path_backbone_private_public_data_allowed(f.mesh, f.backbone));
+	f.mesh->backbone_path_policy = MESHLINK_BACKBONE_PATH_PREFER_PRIVATE;
+
+	/* A late answer or CHANGED from the old session is refused, although it
+	   names the same endpoint. */
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(take_requests(&f, REQ_BACKBONE_PRIVATE) == 1);
+	qid = f.mesh->bb_private.query_id;
+	assert(path_backbone_private_test_offer(f.mesh, f.meta, f.backbone, qid, 42, 9, 300, &priv, PATH_CAP_BOTH));
+	assert(!f.mesh->bb_private.count);
+	assert(f.mesh->bb_private.query_id == qid);
+	snprintf(line, sizeof line, "%d backbone cam %d 42 10", REQ_KEY, REQ_BACKBONE_PRIVATE_CHANGED);
+	assert(path_backbone_private_handle_changed(f.mesh, f.meta, f.backbone, line));
+	assert(!f.mesh->bb_private.changed_pending);
+	assert(f.mesh->bb_private.query_id == qid);
+
+	/* The new session's answer is accepted at a lower revision and starts unproven. */
+	assert(path_backbone_private_test_offer(f.mesh, f.meta, f.backbone, qid, 43, 1, 300, &priv, PATH_CAP_BOTH));
+	assert(f.mesh->bb_private.count == 1);
+	assert(f.mesh->bb_private.session_id == 43);
+	assert(f.mesh->bb_private.endpoints[0].meta_state == BB_EP_IDLE);
+	assert(f.mesh->bb_private.endpoints[0].udp_state == BB_EP_IDLE);
+
+	/* Within a session, CHANGED must move the revision forward to matter. */
+	snprintf(line, sizeof line, "%d backbone cam %d 43 1", REQ_KEY, REQ_BACKBONE_PRIVATE_CHANGED);
+	assert(path_backbone_private_handle_changed(f.mesh, f.meta, f.backbone, line));
+	assert(!f.mesh->bb_private.changed_pending);
+	snprintf(line, sizeof line, "%d backbone cam %d 43 2", REQ_KEY, REQ_BACKBONE_PRIVATE_CHANGED);
+	assert(path_backbone_private_handle_changed(f.mesh, f.meta, f.backbone, line));
+	assert(f.mesh->bb_private.changed_pending);
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(take_requests(&f, REQ_BACKBONE_PRIVATE) == 1);
+
+	path_backbone_udp_stop(f.mesh);
+	close_fixture(&f);
+}
+
+static void fire_candidate_timer(fixture_t *f) {
+	timeout_t *t = &f->mesh->backbone_udp.cand.timer;
+
+	assert(t->cb);
+	t->cb(&f->mesh->loop, t->data);
+}
+
+/* Replace the set with one that no longer names the old endpoint. */
+static void withdraw_endpoint(fixture_t *f, const sockaddr_t *gone, const sockaddr_t *other, uint32_t revision) {
+	f->mesh->bb_private.query_id = 500 + revision;
+	assert(path_backbone_private_test_offer(f->mesh, f->meta, f->backbone, 500 + revision, 42, revision, 300, other, PATH_CAP_BOTH));
+	assert(!path_backbone_private_knows(f->mesh, gone));
+}
+
+/* A direct META standby that was dialed from the private set. */
+static connection_t *private_standby(fixture_t *f, const sockaddr_t *sa) {
+	connection_t *c = new_connection();
+
+	c->name = strdup("backbone");
+	c->socket = -1;
+	c->node = f->backbone;
+	c->mesh = f->mesh;
+	c->address = *sa;
+	c->allow_request = ALL;
+	c->status.active = true;
+	c->status.spare = true;
+	c->status.initiator = true;
+	c->status.bb_private_probe = true;
+	return c;
+}
+
+static void send_cutover_reply(fixture_t *f, connection_t *c, int request) {
+	upgrade_cutover_snapshot_t snap;
+	char line[64];
+
+	upgrade_cutover_snapshot(f->backbone, &snap);
+	assert(snap.id);
+	snprintf(line, sizeof line, "%d %" PRIu64 "\n", request, snap.id);
+
+	if(request == REQ_META_CUTOVER_READY) {
+		assert(meta_cutover_ready_h(f->mesh, c, line));
+	} else {
+		assert(meta_cutover_ack_h(f->mesh, c, line));
+	}
+}
+
+/* Authority is checked when a proof or a commit lands, not only when it starts. */
+static void test_backbone_private_races(void) {
+	sockaddr_t priv = v4_endpoint("10.30.1.9", 4000);
+	sockaddr_t other = v4_endpoint("10.30.1.10", 4000);
+	fixture_t f = private_fixture(&priv);
+	upgrade_cutover_snapshot_t snap;
+	connection_t *standby;
+	uint64_t nonce;
+	int meta_fd;
+
+	/* A UDP reply that arrives after the set expired is not a proof. */
+	f.mesh->backbone_udp.node = f.backbone;
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(f.mesh->backbone_udp.cand.active);
+	nonce = f.mesh->backbone_udp.cand.nonce;
+	f.mesh->loop.now = f.mesh->bb_private.expires_at;
+	assert(!path_backbone_private_vouches(f.mesh, f.backbone, &priv));
+	path_backbone_udp_observe_reply(f.mesh, f.backbone, &priv, nonce, NULL);
+	assert(!f.mesh->backbone_udp.confirmed);
+	assert(f.mesh->backbone_udp.source != ADDR_SRC_BACKBONE_PRIVATE);
+	assert(!f.mesh->bb_private.ever_proven);
+	assert(!f.mesh->backbone_udp.cand.active);
+	path_backbone_udp_stop(f.mesh);
+	close_fixture(&f);
+
+	/* Probes the scheduler did not send are not unanswered, and are not queued. */
+	f = private_fixture(&priv);
+	f.mesh->backbone_udp.node = f.backbone;
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(f.mesh->backbone_udp.cand.active);
+	path_scheduler_set_budget(f.mesh, 0, 0, PATH_SCHED_MAX_TRANSACTIONS);
+
+	for(int i = 0; i < 2 * PATH_BACKBONE_UDP_ESTABLISH_MISS; i++) {
+		fire_candidate_timer(&f);
+	}
+
+	assert(f.mesh->backbone_udp.cand.active);
+	assert(f.mesh->backbone_udp.cand.unanswered == 0);
+	assert(f.mesh->bb_private.endpoints[0].udp_state != BB_EP_FAILED);
+	assert(!f.mesh->bb_private.endpoints[0].udp_failures);
+	assert(!f.mesh->probe_queue || !f.mesh->probe_queue->count);
+	path_backbone_udp_stop(f.mesh);
+	close_fixture(&f);
+
+	/* Withdrawn after the barrier started: READY does not lead to COMMIT. */
+	f = private_fixture(&priv);
+	standby = private_standby(&f, &priv);
+	assert(upgrade_cutover_begin(f.mesh, f.backbone, f.meta, standby));
+	withdraw_endpoint(&f, &priv, &other, 2);
+	send_cutover_reply(&f, f.meta, REQ_META_CUTOVER_READY);
+	upgrade_cutover_snapshot(f.backbone, &snap);
+	assert(!snap.state);
+	assert(f.backbone->connection == f.meta);
+	assert(standby->meta_teardown);
+	free_connection(standby);
+	close_fixture(&f);
+
+	/* Withdrawn before the barrier: the probe's provenance still requires
+	   authority although the address is no longer in the set at all. */
+	f = private_fixture(&priv);
+	withdraw_endpoint(&f, &priv, &other, 2);
+	standby = private_standby(&f, &priv);
+	assert(!upgrade_cutover_begin(f.mesh, f.backbone, f.meta, standby));
+	assert(f.backbone->connection == f.meta);
+
+	/* An ordinary LAN standby at the same address is not held to the set. */
+	standby->status.bb_private_probe = false;
+	assert(upgrade_cutover_begin(f.mesh, f.backbone, f.meta, standby));
+	upgrade_cutover_test_abort(f.mesh, f.backbone);
+	free_connection(standby);
+	close_fixture(&f);
+
+	/* Withdrawn after COMMIT went out: the peer has committed, so ACK still
+	   completes, but the withdrawn connection does not stay primary. */
+	f = private_fixture(&priv);
+	standby = private_standby(&f, &priv);
+	assert(upgrade_cutover_begin(f.mesh, f.backbone, f.meta, standby));
+	send_cutover_reply(&f, f.meta, REQ_META_CUTOVER_READY);
+	upgrade_cutover_snapshot(f.backbone, &snap);
+	assert(snap.state == META_CUTOVER_INIT_WAIT_ACK);
+	withdraw_endpoint(&f, &priv, &other, 2);
+	meta_fd = f.meta->socket;
+	f.meta->socket = -1; /* keep the fixture's primary out of terminate_connection */
+	send_cutover_reply(&f, standby, REQ_META_CUTOVER_ACK);
+	upgrade_cutover_snapshot(f.backbone, &snap);
+	assert(!snap.state);
+	assert(f.backbone->connection == standby);
+	assert(!standby->status.private_carrier);
+	assert(standby->meta_teardown);
+	f.meta->socket = meta_fd;
+	f.backbone->connection = f.meta;
+	free_connection(standby);
+	close_fixture(&f);
+}
+
+/* The backbone side: minor-8 members never get the exchange, minor-9
+   members are answered within the reply window and pushed CHANGED. */
+static void test_backbone_private_publisher(void) {
+	fixture_t f = fixture("nmn", "other");
+	char request[MAX_STRING_SIZE];
+	uint32_t revision;
+
+	/* This mesh is the backbone. The fixture's "backbone" node is a member here. */
+	free(f.mesh->backbone.name);
+	f.mesh->backbone.name = strdup("nmn");
+	f.mesh->backbone.node = f.mesh->self;
+	assert(connection_policy_is_backbone(f.mesh, f.mesh->self));
+	assert(!connection_policy_is_backbone(f.mesh, f.backbone));
+	snprintf(request, sizeof request, "%d backbone nmn %d 5", REQ_KEY, REQ_BACKBONE_PRIVATE);
+
+	f.meta->protocol_minor = PROT_MINOR_BACKBONE_PRIVATE - 1;
+	assert(path_backbone_private_handle_request(f.mesh, f.meta, f.backbone, request));
+	assert(take_requests(&f, ANS_BACKBONE_PRIVATE) == 0);
+	assert(!f.meta->status.bb_private_queried);
+	/* Even a subscribed minor-8 connection is never sent CHANGED. */
+	f.meta->status.bb_private_queried = true;
+	f.mesh->bb_private.publish_hash ^= 1;
+	path_backbone_private_publish_refresh(f.mesh);
+	assert(take_requests(&f, REQ_BACKBONE_PRIVATE_CHANGED) == 0);
+	f.meta->status.bb_private_queried = false;
+
+	f.meta->protocol_minor = PROT_MINOR_BACKBONE_PRIVATE;
+	assert(path_backbone_private_handle_request(f.mesh, f.meta, f.backbone, request));
+	assert(take_requests(&f, ANS_BACKBONE_PRIVATE) == 1);
+	assert(f.meta->status.bb_private_queried);
+	assert(path_backbone_private_handle_request(f.mesh, f.meta, f.backbone, request));
+	assert(take_requests(&f, ANS_BACKBONE_PRIVATE) == 0);
+	f.mesh->loop.now.tv_sec += BB_PRIVATE_REPLY_MIN_SEC;
+	assert(path_backbone_private_handle_request(f.mesh, f.meta, f.backbone, request));
+	assert(take_requests(&f, ANS_BACKBONE_PRIVATE) == 1);
+
+	revision = f.mesh->bb_private.publish_revision;
+	path_backbone_private_publish_refresh(f.mesh);
+	assert(take_requests(&f, REQ_BACKBONE_PRIVATE_CHANGED) == 0);
+	assert(f.mesh->bb_private.publish_revision == revision);
+	f.mesh->bb_private.publish_hash ^= 1;
+	path_backbone_private_publish_refresh(f.mesh);
+	assert(f.mesh->bb_private.publish_revision == revision + 1);
+	assert(take_requests(&f, REQ_BACKBONE_PRIVATE_CHANGED) == 1);
+
+	close_fixture(&f);
+}
+
 int main(void) {
 	fprintf(stderr, "channel start\n");
 	test_channel_start();
@@ -453,5 +967,17 @@ int main(void) {
 	test_key_learned_without_route();
 	fprintf(stderr, "punch cadence\n");
 	test_punch_cadence();
+	fprintf(stderr, "backbone private exchange\n");
+	test_backbone_private_exchange();
+	fprintf(stderr, "backbone private policy\n");
+	test_backbone_private_policy();
+	fprintf(stderr, "backbone private independent transports\n");
+	test_backbone_private_independent_transports();
+	fprintf(stderr, "backbone private stale proofs\n");
+	test_backbone_private_stale_proofs();
+	fprintf(stderr, "backbone private races\n");
+	test_backbone_private_races();
+	fprintf(stderr, "backbone private publisher\n");
+	test_backbone_private_publisher();
 	return 0;
 }

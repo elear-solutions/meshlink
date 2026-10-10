@@ -91,6 +91,8 @@ typedef struct discovery_address {
 	bool up;
 	sockaddr_t address;
 	time_t last_response_sent;
+	uint8_t prefix_len;
+	uint32_t flags;
 } discovery_address_t;
 
 static int iface_compare(const void *va, const void *vb) {
@@ -135,6 +137,8 @@ static uint64_t discovery_address_set_fingerprint(const meshlink_handle_t *mesh)
 		const discovery_address_t *a = &mesh->discovery.addresses[i];
 		discovery_fnv1a(&h, &a->index, sizeof a->index);
 		discovery_fnv1a(&h, &a->up, sizeof a->up);
+		discovery_fnv1a(&h, &a->prefix_len, sizeof a->prefix_len);
+		discovery_fnv1a(&h, &a->flags, sizeof a->flags);
 		discovery_fnv1a(&h, &a->address, sizeof a->address);
 	}
 
@@ -218,7 +222,9 @@ void discovery_consider_lan_query(meshlink_handle_t *mesh) {
 }
 
 static void discovery_commit_address_set(meshlink_handle_t *mesh) {
-	uint64_t fp = discovery_address_set_fingerprint(mesh);
+	uint64_t fp;
+
+	fp = discovery_address_set_fingerprint(mesh);
 	bool first;
 
 	if(fp == mesh->discovery.addr_set_fingerprint) {
@@ -620,6 +626,8 @@ static void addr_add(meshlink_handle_t *mesh, const discovery_address_t *addr) {
 	discovery_address_t *p = bsearch(addr, mesh->discovery.addresses, mesh->discovery.address_count, sizeof(*p), address_compare);
 
 	if(p) {
+		p->prefix_len = addr->prefix_len;
+		p->flags = addr->flags;
 		return;
 	}
 
@@ -650,10 +658,12 @@ void scan_ifaddrs(meshlink_handle_t *mesh) {
 #ifdef HAVE_GETIFADDRS
 	struct ifaddrs *ifa = NULL;
 
-	if(getifaddrs(&ifa) == -1) {
+	if(local_network_getifaddrs(mesh, &ifa) != 0) {
 		logger(mesh, MESHLINK_ERROR, "Could not get list of interface addresses: %s", strerror(errno));
 		return;
 	}
+
+	local_network_ingest(mesh, ifa);
 
 	// Check for interfaces being removed
 	for(int i = 0; i < mesh->discovery.iface_count;) {
@@ -726,7 +736,12 @@ void scan_ifaddrs(meshlink_handle_t *mesh) {
 
 		discovery_address_t addr  = {
 			.index = index,
+			.flags = ifap->ifa_flags,
 		};
+
+		if(ifap->ifa_addr) {
+			addr.prefix_len = local_network_prefix_from_mask(ifap->ifa_netmask, ifap->ifa_addr->sa_family);
+		}
 
 		sockaddr_t *sa = (sockaddr_t *)ifap->ifa_addr;
 
@@ -917,6 +932,7 @@ static void netlink_io_handler(event_loop_t *loop, void *data, int flags) {
 	}
 
 	if(mesh->discovery.addr_dump_complete) {
+		local_network_refresh(mesh);
 		discovery_commit_address_set(mesh);
 	}
 }
@@ -1180,6 +1196,7 @@ static void pfroute_io_handler(event_loop_t *loop, void *data, int flags) {
 		}
 	}
 
+	local_network_refresh(mesh);
 	discovery_commit_address_set(mesh);
 }
 #endif

@@ -47,7 +47,8 @@ typedef enum path_transaction_priority_t {
 	/* Same rank as active-route recovery, separate queue so a rebind probe
 	   does not cancel a suspect probe (or the other way around). */
 	PATH_TX_REBIND,
-	PATH_TX_RELAY_HOP
+	PATH_TX_RELAY_HOP,
+	PATH_TX_BACKBONE_PRIVATE
 } path_transaction_priority_t;
 
 typedef enum path_transaction_type_t {
@@ -57,7 +58,8 @@ typedef enum path_transaction_type_t {
 	PATH_TXN_META_UPGRADE,
 	PATH_TXN_PUNCH,
 	PATH_TXN_REBIND,
-	PATH_TXN_RELAY_HOP
+	PATH_TXN_RELAY_HOP,
+	PATH_TXN_BACKBONE_PRIVATE
 } path_transaction_type_t;
 
 typedef enum path_sched_admit_t {

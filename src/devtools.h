@@ -99,7 +99,7 @@ typedef struct devtool_node_status devtool_node_status_t;
 
 /** Append-only snapshot. Bump when fields are added. New fields go at the end.
  *  devtool_get_node_status() writes devtool_status_version. */
-#define DEVTOOL_NODE_STATUS_VERSION 7
+#define DEVTOOL_NODE_STATUS_VERSION 8
 
 typedef enum {
 	DEVTOOL_PLPMTU_DISABLED = 0,
@@ -270,6 +270,9 @@ struct devtool_node_status {
 	uint32_t relay_udp_sent, relay_meta_fallbacks;
 	uint32_t relay_fallback_unready, relay_fallback_oversize, relay_fallback_no_socket;
 	uint32_t relay_fallback_would_block, relay_fallback_emsgsize, relay_fallback_hard_error;
+
+	/* DEVTOOL_NODE_STATUS_VERSION 8. Append only. */
+	uint8_t private_path_state;           /// 0 none, 1 querying, 2 proven, 3 unavailable
 
 };
 
@@ -533,6 +536,7 @@ void devtool_set_meta_status_cb(struct meshlink_handle *mesh, meshlink_node_stat
  *  @param external_ip_address    "host port", or NULL to clear.
  */
 void devtool_set_external_ip_address(struct meshlink_handle *mesh, struct meshlink_node *node, const char *external_ip_address);
+void devtool_set_broad_local_network(struct meshlink_handle *mesh);
 
 /// Apply update_node_udp() as if this address was learned from the graph or a peer.
 /** @param mesh  Mesh handle.
@@ -810,6 +814,10 @@ bool devtool_backbone_udp_failed_endpoint(struct meshlink_handle *mesh, struct s
 
 /// Current telescopic establishment backoff step (0 at start / after a new dest).
 unsigned devtool_backbone_udp_establish_step(struct meshlink_handle *mesh);
+
+/// Copy up to `max` endpoints of the member's backbone private set and its revision.
+/// Returns the full set size, which may exceed `max`. 0 when no set is held.
+size_t devtool_backbone_private_set(struct meshlink_handle *mesh, struct sockaddr_storage *addrs, size_t max, uint32_t *revision);
 
 /// Force-clear a candidate cooldown. Production eligibility is the observation epoch gate.
 void devtool_candidate_clear_cooldown(struct meshlink_handle *mesh, struct meshlink_node *node);

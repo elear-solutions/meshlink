@@ -20,11 +20,17 @@
 #ifndef UTCP_H
 #define UTCP_H
 
+#include <errno.h>
 #include <unistd.h>
 #include <stdint.h>
 #include <stdbool.h>
 // TODO: Windows
 #include <sys/time.h>
+
+/* utcp_recv() fails with EBADMSG for data that is not a UTCP segment. */
+#ifndef EBADMSG
+#define EBADMSG         104
+#endif
 
 #ifndef UTCP_INTERNAL
 struct utcp {

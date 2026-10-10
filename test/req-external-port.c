@@ -421,7 +421,9 @@ int main(void) {
 	assert(dest_is(&dest, "10.0.0.254", 32072));
 	devtool_set_udp_confirmed(mesh_foo, peer, false);
 
-	/* RFC1918 / ULA REQ_EXTERNAL is never used as the WAN dest. */
+	/* RFC1918 / ULA REQ_EXTERNAL is never used as the WAN dest.
+	   The planted 10.0.0.254 is speculative, so it is only eligible on-link. */
+	devtool_set_broad_local_network(mesh_foo);
 	devtool_set_external_ip_address(mesh_foo, peer, "10.1.2.3 9");
 	assert(devtool_choose_udp_address(mesh_foo, peer, &dest, &sock));
 	assert(!dest_is(&dest, "10.1.2.3", 9));

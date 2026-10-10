@@ -776,6 +776,8 @@ static bool setup_myself(meshlink_handle_t *mesh) {
 		}
 	}
 
+	local_network_refresh(mesh);
+
 	if(!mesh->listen_sockets) {
 		logger(mesh, MESHLINK_ERROR, "Unable to create any listening socket!");
 		return false;

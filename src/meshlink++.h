@@ -737,6 +737,11 @@ public:
 		meshlink_set_storage_policy(handle, policy);
 	}
 
+	/// Prefer a proven private backbone path, or refuse public data after one was proven.
+	void set_backbone_path_policy(meshlink_backbone_path_policy_t policy) {
+		meshlink_set_backbone_path_policy(handle, policy);
+	}
+
 	/// Invite another node into the mesh.
 	/** This function generates an invitation that can be used by another node to join the same mesh as the local node.
 	 *  The generated invitation is a string containing a URL.

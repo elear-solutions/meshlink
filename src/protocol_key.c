@@ -791,6 +791,15 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 	case REQ_PUNCH_ENDPOINT:
 		return req_punch_endpoint_h(mesh, c, request, from);
 
+	case REQ_BACKBONE_PRIVATE:
+		return path_backbone_private_handle_request(mesh, c, from, request);
+
+	case ANS_BACKBONE_PRIVATE:
+		return path_backbone_private_handle_answer(mesh, c, from, request);
+
+	case REQ_BACKBONE_PRIVATE_CHANGED:
+		return path_backbone_private_handle_changed(mesh, c, from, request);
+
 	default:
 		logger(mesh, MESHLINK_ERROR, "Unknown extended REQ_KEY request from %s: %s", from->name, request);
 		return true;

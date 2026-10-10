@@ -49,6 +49,12 @@ static bool path_backbone_udp_accept_dest(const node_t *n, const sockaddr_t *sa,
 		return false;
 	}
 
+	/* Proven private META outranks public UDP; do not open a superseded
+	   public mapping. Private-range destinations stay eligible. */
+	if(!path_address_is_local(sa) && path_backbone_private_fill_meta(n->mesh, n)) {
+		return false;
+	}
+
 	return !path_backbone_udp_same_failed(p, sa);
 }
 
@@ -242,6 +248,31 @@ static bool path_backbone_udp_pick_and_send(meshlink_handle_t *mesh, node_t *n) 
 	return true;
 }
 
+static void path_backbone_udp_retire_public(meshlink_handle_t *mesh, node_t *n) {
+	backbone_udp_path_t *p = &mesh->backbone_udp;
+	sockaddr_t retired;
+
+	path_copy_sockaddr(&retired, &p->endpoint);
+	logger(mesh, MESHLINK_INFO, "Backbone UDP to %s superseded by private META", n->name);
+
+	if(n->status.udp_confirmed && !sockaddrcmp(&n->address, &p->endpoint)) {
+		path_note_udp_demoted_reason(mesh, n, "backbone-udp-superseded");
+	}
+
+	/* Demotion can be deferred mid-datagram; the next timer retries. */
+	if(n->status.udp_confirmed && !sockaddrcmp(&n->address, &retired)) {
+		return;
+	}
+
+	p->confirmed = false;
+	memset(&p->confirmed_at, 0, sizeof p->confirmed_at);
+
+	/* Superseded is not failed. Fallback may retry this endpoint first. */
+	if(!sockaddrcmp(&p->failed_endpoint, &retired)) {
+		memset(&p->failed_endpoint, 0, sizeof p->failed_endpoint);
+	}
+}
+
 static void path_backbone_udp_timer(event_loop_t *loop, void *data) {
 	meshlink_handle_t *mesh = data;
 	backbone_udp_path_t *p;
@@ -266,6 +297,18 @@ static void path_backbone_udp_timer(event_loop_t *loop, void *data) {
 	if(!n->status.validkey) {
 		path_peer_ensure_udp_key(mesh, n);
 		p->liveness_nonce = 0;
+		path_backbone_udp_arm(mesh, path_backbone_udp_next_establish(mesh), 0);
+		return;
+	}
+
+	/* Proven private META supersedes a public backbone UDP mapping. Retire it
+	   instead of leaving it "confirmed" without liveness, where it would be
+	   picked as the fallback and blackhole data. accept_dest keeps it from
+	   being re-established while private META holds. */
+	if(p->confirmed && !path_address_is_local(&p->endpoint) && path_backbone_private_fill_meta(mesh, n)) {
+		path_backbone_udp_retire_public(mesh, n);
+		p->liveness_nonce = 0;
+		p->unanswered = 0;
 		path_backbone_udp_arm(mesh, path_backbone_udp_next_establish(mesh), 0);
 		return;
 	}
@@ -365,6 +408,7 @@ void path_backbone_udp_stop(meshlink_handle_t *mesh) {
 	}
 
 	timeout_del(&mesh->loop, &path->timer);
+	timeout_del(&mesh->loop, &path->cand.timer);
 
 	if(node) {
 		path_plpmtu_stop(mesh, node);
@@ -373,6 +417,7 @@ void path_backbone_udp_stop(meshlink_handle_t *mesh) {
 		path_scheduler_cancel(mesh, node, PATH_TX_BACKBONE_REQUIRED);
 		path_scheduler_cancel(mesh, node, PATH_TX_LIVENESS);
 		path_scheduler_cancel(mesh, node, PATH_TX_PLPMTU_PROBE);
+		path_scheduler_cancel_packets(mesh, node, PATH_TX_BACKBONE_PRIVATE);
 	}
 
 	if(owns_active_endpoint) {
@@ -414,6 +459,146 @@ void path_backbone_udp_reset(meshlink_handle_t *mesh, node_t *n) {
 	}
 }
 
+static void path_backbone_udp_candidate_timer(event_loop_t *loop, void *data);
+
+static void path_backbone_udp_candidate_arm(meshlink_handle_t *mesh, int sec) {
+	struct timespec when = {sec < 0 ? 0 : sec, 0};
+
+	if(!mesh->backbone_udp.cand.timer.cb) {
+		timeout_add(&mesh->loop, &mesh->backbone_udp.cand.timer, path_backbone_udp_candidate_timer, mesh, &when);
+	} else {
+		timeout_set(&mesh->loop, &mesh->backbone_udp.cand.timer, &when);
+	}
+}
+
+static void path_backbone_udp_candidate_fail(meshlink_handle_t *mesh) {
+	backbone_udp_path_t *p = &mesh->backbone_udp;
+	bb_private_endpoint_t *e = NULL;
+	size_t i;
+
+	for(i = 0; i < mesh->bb_private.count; i++) {
+		if(!sockaddrcmp(&mesh->bb_private.endpoints[i].sa, &p->cand.endpoint)) {
+			e = &mesh->bb_private.endpoints[i];
+			break;
+		}
+	}
+
+	if(e) {
+		if(e->udp_failures < 255) {
+			e->udp_failures++;
+		}
+
+		e->udp_state = BB_EP_FAILED;
+		e->udp_retry_at = mesh->loop.now;
+		e->udp_retry_at.tv_sec += e->udp_failures < 5 ? BB_PRIVATE_COOLDOWN_MIN << (e->udp_failures - 1) : BB_PRIVATE_COOLDOWN_MAX;
+
+		if(e->udp_retry_at.tv_sec - mesh->loop.now.tv_sec > BB_PRIVATE_COOLDOWN_MAX) {
+			e->udp_retry_at.tv_sec = mesh->loop.now.tv_sec + BB_PRIVATE_COOLDOWN_MAX;
+		}
+	}
+
+	path_backbone_udp_clear_candidate(mesh);
+}
+
+static void path_backbone_udp_candidate_packet(meshlink_handle_t *mesh, const path_probe_request_t *req) {
+	(void)req;
+	send_backbone_udp_probe_at(mesh, &mesh->backbone_udp.cand.endpoint, mesh->backbone_udp.cand.nonce);
+}
+
+static void path_backbone_udp_candidate_timer(event_loop_t *loop, void *data) {
+	meshlink_handle_t *mesh = data;
+	backbone_udp_path_t *p;
+	path_probe_request_t req;
+	path_sched_admit_t admit;
+
+	(void)loop;
+
+	if(!mesh) {
+		return;
+	}
+
+	p = &mesh->backbone_udp;
+
+	if(!p->cand.active || !p->cand.nonce || !p->node) {
+		return;
+	}
+
+	if(p->cand.session_id != p->node->session_id
+	                || p->cand.revision != mesh->bb_private.revision
+	                || p->cand.network_epoch != (uint32_t)mesh->lan_network_epoch
+	                || !path_backbone_private_vouches(mesh, p->node, &p->cand.endpoint)) {
+		path_backbone_udp_clear_candidate(mesh);
+		return;
+	}
+
+	if(p->cand.unanswered >= PATH_BACKBONE_UDP_ESTABLISH_MISS) {
+		path_backbone_udp_candidate_fail(mesh);
+		return;
+	}
+
+	memset(&req, 0, sizeof req);
+	req.node = p->node;
+	req.length = PATH_PROMOTION_PROBE_LEN;
+	req.priority = PATH_TX_BACKBONE_PRIVATE;
+	req.send = path_backbone_udp_candidate_packet;
+	admit = path_scheduler_emit_packet(mesh, NULL, &req);
+
+	/* Only a probe that left counts as unanswered. The scheduler declines to
+	   queue this priority, so a denied tick just retries. */
+	if(admit != PATH_SCHED_SENT) {
+		path_backbone_udp_candidate_arm(mesh, 1);
+		return;
+	}
+
+	p->cand.unanswered++;
+	path_backbone_udp_candidate_arm(mesh, 1);
+}
+
+void path_backbone_udp_clear_candidate(meshlink_handle_t *mesh) {
+	if(!mesh) {
+		return;
+	}
+
+	timeout_del(&mesh->loop, &mesh->backbone_udp.cand.timer);
+
+	if(mesh->backbone_udp.node) {
+		path_scheduler_cancel_packets(mesh, mesh->backbone_udp.node, PATH_TX_BACKBONE_PRIVATE);
+	}
+
+	memset(&mesh->backbone_udp.cand, 0, sizeof mesh->backbone_udp.cand);
+}
+
+void path_backbone_udp_note_private(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa) {
+	backbone_udp_path_t *p;
+
+	if(!mesh || !n || !sa || n != mesh->backbone_udp.node) {
+		return;
+	}
+
+	if(!path_backbone_private_vouches(mesh, n, sa) || local_network_is_own_address(mesh, sa)) {
+		return;
+	}
+
+	p = &mesh->backbone_udp;
+
+	if(p->confirmed && p->source == ADDR_SRC_BACKBONE_PRIVATE && !sockaddrcmp(&p->endpoint, sa)) {
+		return;
+	}
+
+	if(p->cand.nonce) {
+		return;
+	}
+
+	p->cand.endpoint = *sa;
+	p->cand.session_id = n->session_id;
+	p->cand.revision = mesh->bb_private.revision;
+	p->cand.network_epoch = (uint32_t)mesh->lan_network_epoch;
+	p->cand.nonce = path_fresh_nonce();
+	p->cand.unanswered = 0;
+	p->cand.active = true;
+	path_backbone_udp_candidate_arm(mesh, 0);
+}
+
 void path_backbone_udp_note_direct(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa, address_source_t src, path_cap_t cap) {
 	backbone_udp_path_t *p;
 
@@ -443,6 +628,23 @@ void path_backbone_udp_note_direct(meshlink_handle_t *mesh, node_t *n, const soc
 	}
 }
 
+static void path_backbone_udp_mark_private_proven(meshlink_handle_t *mesh) {
+	backbone_udp_path_t *p = &mesh->backbone_udp;
+
+	for(size_t i = 0; i < mesh->bb_private.count; i++) {
+		bb_private_endpoint_t *ep = &mesh->bb_private.endpoints[i];
+
+		if(!sockaddrcmp(&ep->sa, &p->endpoint)) {
+			ep->udp_state = BB_EP_PROVEN;
+			ep->udp_failures = 0;
+			memset(&ep->udp_retry_at, 0, sizeof ep->udp_retry_at);
+		}
+	}
+
+	mesh->bb_private.ever_proven = true;
+	path_backbone_udp_clear_candidate(mesh);
+}
+
 void path_backbone_udp_observe_reply(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *from, uint64_t nonce, const sockaddr_t *observed) {
 	backbone_udp_path_t *p;
 
@@ -452,6 +654,33 @@ void path_backbone_udp_observe_reply(meshlink_handle_t *mesh, node_t *n, const s
 
 	p = &mesh->backbone_udp;
 
+	if(p->cand.nonce && nonce == p->cand.nonce && !sockaddrcmp(from, &p->cand.endpoint)) {
+		/* The set can expire or be withdrawn between send and reply. */
+		if(p->cand.session_id != n->session_id
+		                || p->cand.revision != mesh->bb_private.revision
+		                || p->cand.network_epoch != (uint32_t)mesh->lan_network_epoch
+		                || !path_backbone_private_vouches(mesh, n, &p->cand.endpoint)
+		                || local_network_is_own_address(mesh, &p->cand.endpoint)) {
+			path_backbone_udp_clear_candidate(mesh);
+			return;
+		}
+
+		path_copy_sockaddr(&p->endpoint, &p->cand.endpoint);
+		p->source = ADDR_SRC_BACKBONE_PRIVATE;
+		p->confirmed = true;
+		p->confirmed_at = mesh->loop.now;
+		p->liveness_nonce = 0;
+		p->unanswered = 0;
+		p->establish_step = 0;
+		update_node_udp_from(mesh, n, &p->endpoint, ADDR_SRC_BACKBONE_PRIVATE);
+		n->status.udp_confirmed = true;
+		path_note_udp_confirmed(mesh, n);
+		path_backbone_udp_mark_private_proven(mesh);
+		path_backbone_udp_arm_keepalive(mesh);
+		logger(mesh, MESHLINK_INFO, "Backbone private UDP to %s confirmed", n->name);
+		return;
+	}
+
 	if(!p->liveness_nonce || nonce != p->liveness_nonce || sockaddrcmp(from, &p->endpoint)) {
 		return;
 	}
@@ -459,6 +688,17 @@ void path_backbone_udp_observe_reply(meshlink_handle_t *mesh, node_t *n, const s
 	p->unanswered = 0;
 	p->liveness_nonce = 0;
 	p->last_authenticated_reply = mesh->loop.now;
+
+	/* The regular probe can win the race to a vouched endpoint (for example
+	   the private META address). It is the same proof; record it as private. */
+	if(!p->confirmed && p->source != ADDR_SRC_BACKBONE_PRIVATE
+	                && path_backbone_private_vouches(mesh, n, &p->endpoint)
+	                && !local_network_is_own_address(mesh, &p->endpoint)) {
+		p->source = ADDR_SRC_BACKBONE_PRIVATE;
+		path_backbone_udp_mark_private_proven(mesh);
+		logger(mesh, MESHLINK_INFO, "Backbone private UDP to %s confirmed", n->name);
+	}
+
 	update_node_udp_from(mesh, n, &p->endpoint, p->source);
 
 	if(!p->confirmed) {

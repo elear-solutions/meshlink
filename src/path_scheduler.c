@@ -104,6 +104,9 @@ static int path_scheduler_rank(path_transaction_priority_t priority) {
 	case PATH_TX_BACKBONE_REQUIRED:
 		return 0;
 
+	case PATH_TX_BACKBONE_PRIVATE:
+		return 1;
+
 	case PATH_TX_ACTIVE_ROUTE_RECOVERY:
 	case PATH_TX_REBIND:
 	case PATH_TX_KEEPALIVE:
@@ -625,6 +628,9 @@ static path_transaction_type_t path_scheduler_type_for_priority(path_transaction
 	case PATH_TX_RELAY_HOP:
 		return PATH_TXN_RELAY_HOP;
 
+	case PATH_TX_BACKBONE_PRIVATE:
+		return PATH_TXN_BACKBONE_PRIVATE;
+
 	case PATH_TX_LIVENESS:
 		*have_type = false;
 		return PATH_TXN_PROMOTION;
@@ -713,7 +719,8 @@ path_sched_admit_t path_scheduler_emit_packet(meshlink_handle_t *mesh, path_sche
 	}
 
 	/* These state machines own retries and cannot track queued sends. */
-	if(req.priority == PATH_TX_RELAY_HOP || req.priority == PATH_TX_KEEPALIVE || req.priority == PATH_TX_PLPMTU_PROBE || req.priority == PATH_TX_LIVENESS) {
+	if(req.priority == PATH_TX_RELAY_HOP || req.priority == PATH_TX_KEEPALIVE || req.priority == PATH_TX_PLPMTU_PROBE || req.priority == PATH_TX_LIVENESS
+	                || req.priority == PATH_TX_BACKBONE_PRIVATE) {
 		return PATH_SCHED_DENIED;
 	}
 

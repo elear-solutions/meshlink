@@ -513,6 +513,11 @@ static bool local_candidate_with_class(const node_t *node,
 		return false;
 	}
 
+	if(source == ADDR_SRC_DISCOVERY && node->mesh && path_address_is_local(address)
+	                && !local_network_on_link(node->mesh, address)) {
+		return false;
+	}
+
 	return path_address_is_local(address)
 	       && (capability & PATH_CAP_META)
 	       && (source == ADDR_SRC_DISCOVERY || source == ADDR_SRC_AUTH_DIRECT);

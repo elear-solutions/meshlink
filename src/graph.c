@@ -166,6 +166,7 @@ static void check_reachability(meshlink_handle_t *mesh) {
 			logger(mesh, MESHLINK_DEBUG, "Node %s has a new session ID", n->name);
 
 			n->session_id = n->prevedge->reverse->session_id;
+			path_backbone_private_on_session_change(mesh, n);
 			n->last_path_tier = PATH_TIER_NONE;
 			path_clear_udp_observation(n);
 

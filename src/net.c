@@ -442,7 +442,9 @@ void retry(meshlink_handle_t *mesh) {
 			continue;
 		}
 
-		int sock = socket(sa.sa.sa_family, SOCK_STREAM, IPPROTO_TCP);
+		/* retry() also runs on the app thread (hint_network_change); probe the
+		   address in the mesh's namespace, not the caller's. */
+		int sock = socket_in_netns(sa.sa.sa_family, SOCK_STREAM, IPPROTO_TCP, mesh->netns);
 
 		if(sock == -1) {
 			continue;

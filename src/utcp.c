@@ -22,10 +22,6 @@
 
 #include "utcp_priv.h"
 
-#ifndef EBADMSG
-#define EBADMSG         104
-#endif
-
 #ifndef SHUT_RDWR
 #define SHUT_RDWR 2
 #endif

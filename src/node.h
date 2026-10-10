@@ -280,6 +280,8 @@ typedef struct node_t {
 	uint32_t relay_oversize_drops;          /* Legacy name: UDP sends skipped for hop MTU. */
 	time_t fallback_oversize_logged_at;     /* Last redirect INFO; at most once per 10s */
 	time_t relay_oversize_logged_at;        /* Last oversize INFO; at most once per 10s. */
+	uint32_t non_channel_drops;             /* Records UTCP rejected since the last report (meshlink_send() while channels are enabled) */
+	time_t non_channel_logged_at;           /* Last non-channel drop WARNING; at most once per 10s */
 	uint16_t devtool_drop_size_probes_above; /* Test: receiver drops SIZE_REQUEST longer than this; 0 = off */
 	uint8_t devtool_drop_liveness_replies;  /* Test: drop this many LIVENESS echoes */
 	unsigned devtool_drop_direct_udp_records; /* Test: next N direct-UDP application sends are discarded */

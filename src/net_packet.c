@@ -332,11 +332,11 @@ void send_suspect_probe(meshlink_handle_t *mesh, node_t *n) {
 	s->probes_sent++;
 }
 
-void send_backbone_udp_probe(meshlink_handle_t *mesh) {
+void send_backbone_udp_probe_at(meshlink_handle_t *mesh, const sockaddr_t *dest, uint64_t nonce) {
 	node_t *n;
 	vpn_packet_t packet;
 
-	if(!mesh || !mesh->backbone_udp.node || !mesh->backbone_udp.liveness_nonce) {
+	if(!mesh || !mesh->backbone_udp.node || !nonce || !dest) {
 		return;
 	}
 
@@ -346,8 +346,7 @@ void send_backbone_udp_probe(meshlink_handle_t *mesh) {
 		return;
 	}
 
-	if(mesh->backbone_udp.endpoint.sa.sa_family == AF_UNSPEC
-	                || mesh->backbone_udp.endpoint.sa.sa_family == AF_UNKNOWN) {
+	if(dest->sa.sa_family == AF_UNSPEC || dest->sa.sa_family == AF_UNKNOWN) {
 		return;
 	}
 
@@ -355,11 +354,28 @@ void send_backbone_udp_probe(meshlink_handle_t *mesh) {
 	packet.probe = true;
 	packet.data[0] = PROBE_KIND_ECHO_REQUEST;
 	packet.data[PROBE_PURPOSE_OFFSET] = PROBE_PURPOSE_BACKBONE;
-	memcpy(packet.data + PROBE_NONCE_OFFSET, &mesh->backbone_udp.liveness_nonce, sizeof mesh->backbone_udp.liveness_nonce);
+	memcpy(packet.data + PROBE_NONCE_OFFSET, &nonce, sizeof nonce);
 	randomize(packet.data + 14, PATH_PROMOTION_PROBE_LEN - 14);
 	packet.len = PATH_PROMOTION_PROBE_LEN;
 	n->out_meta += packet.len + PROBE_OVERHEAD;
-	send_probe_to(mesh, n, &packet, &mesh->backbone_udp.endpoint);
+	send_probe_to(mesh, n, &packet, dest);
+}
+
+void send_backbone_udp_probe(meshlink_handle_t *mesh) {
+	if(!mesh || !mesh->backbone_udp.node || !mesh->backbone_udp.liveness_nonce) {
+		return;
+	}
+
+	if(!mesh->backbone_udp.node->status.reachable || !mesh->backbone_udp.node->status.validkey) {
+		return;
+	}
+
+	if(mesh->backbone_udp.endpoint.sa.sa_family == AF_UNSPEC
+	                || mesh->backbone_udp.endpoint.sa.sa_family == AF_UNKNOWN) {
+		return;
+	}
+
+	send_backbone_udp_probe_at(mesh, &mesh->backbone_udp.endpoint, mesh->backbone_udp.liveness_nonce);
 }
 
 static bool sockaddr_is_set(const sockaddr_t *sa) {

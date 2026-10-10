@@ -279,6 +279,7 @@ bool path_canonical_unresolved(const struct node_t *n);
 bool path_canonical_is_hostname(const struct node_t *n);
 bool path_tier_better(path_tier_t a, path_tier_t b);
 bool path_address_is_local(const sockaddr_t *sa);
+bool path_address_is_loopback(const sockaddr_t *sa);
 path_tier_t path_udp_tier_for(const sockaddr_t *sa, address_source_t src);
 
 /* Numeric "host port" -> cached canonical_sa. Hostname stays in canonical_address until resolve. */
@@ -354,6 +355,9 @@ void path_backbone_udp_observe_reply(struct meshlink_handle *mesh, struct node_t
    of the same endpoint must not collapse establish_step. */
 void path_backbone_udp_note_direct(struct meshlink_handle *mesh, struct node_t *n,
                                    const sockaddr_t *sa, address_source_t src, path_cap_t cap);
+/* Validate a vouched private endpoint without disturbing a confirmed public carrier. */
+void path_backbone_udp_note_private(struct meshlink_handle *mesh, struct node_t *n, const sockaddr_t *sa);
+void path_backbone_udp_clear_candidate(struct meshlink_handle *mesh);
 
 /* --- promotion of one candidate endpoint, and honest demotion ------------- */
 

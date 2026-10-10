@@ -30,6 +30,8 @@
 #include "hash.h"
 #include "meshlink.h"
 #include "meshlink_queue.h"
+#include "local_network.h"
+#include "path_backbone_private.h"
 #include "path_policy.h"
 #include "sockaddr.h"
 #include "sptps.h"
@@ -95,6 +97,16 @@ typedef struct backbone_udp_path_t {
 	struct timespec last_authenticated_reply;
 	struct timespec confirmed_at;          /* first proof of the current UDP carrier */
 	timeout_t timer;                      /* due-time owner; packets admit through path_scheduler_emit_packet() */
+	struct {
+		sockaddr_t endpoint;
+		uint64_t nonce;
+		uint8_t unanswered;
+		uint32_t session_id;
+		uint32_t revision;
+		uint32_t network_epoch;
+		bool active;
+		timeout_t timer;
+	} cand;                               /* private candidate; does not touch the live endpoint */
 } backbone_udp_path_t;
 
 /// Device class traits
@@ -196,6 +208,9 @@ struct meshlink_handle {
 	backbone_identity_t backbone;
 	backbone_udp_path_t backbone_udp;
 	int backbone_udp_keepalive_sec;       /* Default PATH_BACKBONE_UDP_KEEPALIVE_SEC; tests may shorten */
+	backbone_private_t bb_private;
+	local_network_t local_network;
+	int backbone_path_policy;             /* meshlink_backbone_path_policy_t; runtime only */
 	uint64_t lan_network_epoch;           /* Bumped on interface/network change; 0 is never current */
 	path_probe_budget_t probe_budget;
 	struct list_t *probe_queue;
@@ -348,6 +363,8 @@ extern meshlink_log_level_t global_log_level;
 extern meshlink_log_cb_t global_log_cb;
 void handle_duplicate_node(meshlink_handle_t *mesh, struct node_t *n);
 void handle_network_change(meshlink_handle_t *mesh, bool online);
+/* socket(2) inside netns, or in the caller's namespace when netns is -1. */
+int socket_in_netns(int domain, int type, int protocol, int netns);
 void call_error_cb(meshlink_handle_t *mesh, meshlink_errno_t meshlink_errno);
 void channel_receive(meshlink_handle_t *mesh, meshlink_node_t *node, const void *data, size_t len);
 

@@ -124,8 +124,11 @@ static void apply_backoff(meshlink_handle_t *mesh, node_t *n) {
 
 void start_upgrade_probe(meshlink_handle_t *mesh, node_t *n) {
 	sockaddr_t sa;
+	bool from_private;
 
-	if(!pick_probe_address(n, &sa)) {
+	from_private = path_backbone_private_pick_meta(mesh, n, &sa);
+
+	if(!from_private && !pick_probe_address(n, &sa)) {
 		upgrade_probe_failed(mesh, n, "no direct address left to try");
 		return;
 	}
@@ -133,12 +136,17 @@ void start_upgrade_probe(meshlink_handle_t *mesh, node_t *n) {
 	connection_t *c = new_connection();
 	c->outgoing = NULL;
 	c->status.upgrade_probe = true;
+	c->status.bb_private_probe = from_private;
 	c->name = xstrdup(n->name);
 	c->address = sa;
 
 	path_log_validation(mesh, n, &c->address, "probe-start", "direct META");
 
 	if(!connect_meta_socket(mesh, c)) {
+		if(from_private) {
+			path_backbone_private_note_meta_failure(mesh, n, &sa);
+		}
+
 		free_connection(c);
 		upgrade_probe_failed(mesh, n, "could not connect");
 		return;
@@ -178,6 +186,11 @@ void try_upgrade_probe(meshlink_handle_t *mesh, node_t *n) {
 
 void upgrade_probe_failed(meshlink_handle_t *mesh, node_t *n, const char *reason) {
 	connection_t *c = n->connection;
+	connection_t *probe = n->upgrade_probe;
+
+	if(probe && path_backbone_private_vouches(mesh, n, &probe->address)) {
+		path_backbone_private_note_meta_failure(mesh, n, &probe->address);
+	}
 
 	n->upgrade_probe = NULL;
 
@@ -942,6 +955,37 @@ static bool cutover_log_commit(meshlink_handle_t *mesh, node_t *n, connection_t 
 	return upgrade_standby_replay(mesh, neu, neu);
 }
 
+/* A standby dialed from the private set, or a local non-canonical address
+   still in it, needs live authority. An ordinary auth-direct LAN address does
+   not. The provenance bit keeps a withdrawn endpoint (no longer known) private. */
+static bool cutover_standby_authorized(meshlink_handle_t *mesh, node_t *n, connection_t *standby) {
+	bool private_standby;
+
+	if(!standby) {
+		return false;
+	}
+
+	private_standby = standby->status.bb_private_probe
+	                  || (connection_policy_is_backbone(mesh, n) && path_address_is_local(&standby->address)
+	                      && !path_meta_is_canonical(n, standby)
+	                      && path_backbone_private_knows(mesh, &standby->address));
+
+	return !private_standby || path_backbone_private_vouches(mesh, n, &standby->address);
+}
+
+/* The peer may already have committed, so the barrier still completes on our
+   side. A withdrawn private endpoint must not stay primary: close it after the
+   stack unwinds and let the node reconnect. */
+static void cutover_drop_unauthorized(meshlink_handle_t *mesh, node_t *n, connection_t *neu, bool authorized, uint64_t id) {
+	if(authorized || !neu || n->connection != neu) {
+		return;
+	}
+
+	logger(mesh, MESHLINK_WARNING, "META cutover with %s id=%" PRIu64 " committed to a withdrawn private endpoint, closing it",
+	       n->name, id);
+	connection_defer_teardown(mesh, neu);
+}
+
 static void cutover_handoff_standby(meshlink_handle_t *mesh, node_t *n, connection_t *old, connection_t *neu) {
 	if(old && old->outgoing && !neu->outgoing) {
 		neu->outgoing = old->outgoing;
@@ -957,6 +1001,30 @@ static void cutover_handoff_standby(meshlink_handle_t *mesh, node_t *n, connecti
 	timeout_del(&mesh->loop, &neu->drain_ev);
 	neu->status.spare = false;
 	neu->status.upgrade_probe = false;
+
+	/* Same META session, new socket. The stable-session clock belongs to the
+	   node, not the socket that just authenticated. */
+	if(old && old->activated_at && (!neu->activated_at || old->activated_at < neu->activated_at)) {
+		neu->activated_at = old->activated_at;
+	}
+
+	/* Backbone side: the member's CHANGED subscription and reply budget
+	   follow it to the new socket. */
+	if(old) {
+		neu->status.bb_private_queried |= old->status.bb_private_queried;
+		neu->status.bb_private_asked |= old->status.bb_private_asked;
+
+		if(old->bb_private_reply_at > neu->bb_private_reply_at) {
+			neu->bb_private_reply_at = old->bb_private_reply_at;
+		}
+	}
+
+	neu->status.private_carrier = path_backbone_private_vouches(mesh, n, &neu->address);
+
+	if(neu->status.private_carrier) {
+		path_backbone_private_note_meta_proven(mesh, n, &neu->address);
+	}
+
 	install_node_connection(mesh, n, neu);
 }
 
@@ -967,6 +1035,8 @@ static bool cutover_promote(meshlink_handle_t *mesh, node_t *n, bool send_ack, b
 	list_t *q;
 	uint64_t id;
 	bool initiator;
+	bool authorized;
+	bool ok;
 
 	if(!co || !co->new_standby) {
 		return false;
@@ -977,6 +1047,7 @@ static bool cutover_promote(meshlink_handle_t *mesh, node_t *n, bool send_ack, b
 	neu = co->new_standby;
 	id = co->id;
 	initiator = neu->status.initiator;
+	authorized = cutover_standby_authorized(mesh, n, neu);
 	q = cutover_take_queue(co);
 
 	cutover_handoff_standby(mesh, n, old, neu);
@@ -1001,7 +1072,9 @@ static bool cutover_promote(meshlink_handle_t *mesh, node_t *n, bool send_ack, b
 		add_connection_edge(mesh, neu);
 	}
 
-	return cutover_log_commit(mesh, n, neu, id, initiator, uncertain);
+	ok = cutover_log_commit(mesh, n, neu, id, initiator, uncertain);
+	cutover_drop_unauthorized(mesh, n, neu, authorized, id);
+	return ok;
 }
 
 static void cutover_send_emergency(meshlink_handle_t *mesh, struct meta_cutover *co) {
@@ -1085,6 +1158,8 @@ static bool cutover_finish_sync(meshlink_handle_t *mesh, node_t *n, bool uncerta
 	list_t *q;
 	uint64_t id;
 	bool initiator;
+	bool authorized;
+	bool ok;
 
 	if(!co || !co->new_standby) {
 		return false;
@@ -1093,13 +1168,16 @@ static bool cutover_finish_sync(meshlink_handle_t *mesh, node_t *n, bool uncerta
 	neu = co->new_standby;
 	id = co->id;
 	initiator = neu->status.initiator;
+	authorized = cutover_standby_authorized(mesh, n, neu);
 	q = cutover_take_queue(co);
 	timeout_del(&mesh->loop, &co->timer);
 	n->meta_cutover = NULL;
 	free(co);
 
 	(void)flush_queue(mesh, neu, q);
-	return cutover_log_commit(mesh, n, neu, id, initiator, uncertain);
+	ok = cutover_log_commit(mesh, n, neu, id, initiator, uncertain);
+	cutover_drop_unauthorized(mesh, n, neu, authorized, id);
+	return ok;
 }
 
 void upgrade_cutover_on_timeout(meshlink_handle_t *mesh, node_t *n) {
@@ -1224,6 +1302,11 @@ bool upgrade_cutover_begin(meshlink_handle_t *mesh, node_t *n, connection_t *old
 		return false;
 	}
 
+	if(!cutover_standby_authorized(mesh, n, standby)) {
+		logger(mesh, MESHLINK_INFO, "Refusing META cutover with %s: private endpoint is no longer vouched", n->name);
+		return false;
+	}
+
 	co = upgrade_cutover_create(n);
 	co->state = META_CUTOVER_INIT_WAIT_READY;
 	co->id = cutover_new_id(mesh);
@@ -1345,6 +1428,15 @@ bool meta_cutover_ready_h(meshlink_handle_t *mesh, connection_t *c, const char *
 
 	if(!co || co->state != META_CUTOVER_INIT_WAIT_READY || co->id != id || c != co->old_primary) {
 		return cutover_ignore_stale(mesh, c, "READY");
+	}
+
+	/* Last point where we can still decline: the peer commits on COMMIT. */
+	if(!cutover_standby_authorized(mesh, n, co->new_standby)) {
+		connection_t *standby = co->new_standby;
+
+		upgrade_cutover_abort(mesh, n, "private endpoint withdrawn", true, CUTOVER_ABORT_DROP);
+		connection_defer_teardown(mesh, standby);
+		return true;
 	}
 
 	co->state = META_CUTOVER_INIT_WAIT_ACK;

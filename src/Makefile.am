@@ -44,6 +44,7 @@ libmeshlink_la_SOURCES = \
 	connection_policy.c connection_policy.h \
 	crypto.c crypto.h \
 	discovery.c discovery.h \
+	local_network.c local_network.h \
 	dropin.c dropin.h \
 	ecdh.h \
 	ecdsa.h \
@@ -72,6 +73,7 @@ libmeshlink_la_SOURCES = \
 	path_scheduler.c path_scheduler.h \
 	path_types.h \
 	path_backbone_udp.c \
+	path_backbone_private.c path_backbone_private.h \
 	path_plpmtu.c path_plpmtu.h path_plpmtu_cover.c \
 	path_liveness.c path_liveness.h \
 	path_probe.h \
