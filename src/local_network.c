@@ -98,6 +98,11 @@ static bool prefix_match(const sockaddr_t *addr, uint8_t prefix, const sockaddr_
 		return false;
 	}
 
+	/* A missing netmask is prefix 0. That is not "the whole address space". */
+	if(!prefix) {
+		return false;
+	}
+
 	if(prefix > len * 8) {
 		prefix = (uint8_t)(len * 8);
 	}
@@ -297,8 +302,16 @@ static void *local_index_fill(void *arg) {
 
 /* if_nametoindex() resolves in the calling thread's namespace, and an app
    thread is not in the mesh netns. Resolve every entry where getifaddrs ran. */
-static void local_resolve_indices(struct meshlink_handle *mesh, const struct ifaddrs *ifa, int *out, size_t max) {
-	struct local_index_params params = {ifa, out, max, mesh->netns};
+void local_network_resolve_ifindexes(struct meshlink_handle *mesh, const struct ifaddrs *ifa, int *out, size_t max) {
+	struct local_index_params params;
+
+	if(!mesh || !out || !max) {
+		return;
+	}
+
+	params = (struct local_index_params) {
+		ifa, out, max, mesh->netns
+	};
 
 	if(mesh->netns == -1) {
 		local_index_fill(&params);
@@ -338,6 +351,13 @@ static void *local_getifaddrs_thread(void *arg) {
 	return NULL;
 }
 #endif
+#else
+void local_network_resolve_ifindexes(struct meshlink_handle *mesh, const struct ifaddrs *ifa, int *out, size_t max) {
+	(void)mesh;
+	(void)ifa;
+	(void)out;
+	(void)max;
+}
 #endif
 
 int local_network_getifaddrs(struct meshlink_handle *mesh, struct ifaddrs **ifa) {
@@ -390,6 +410,10 @@ bool local_network_ingest(struct meshlink_handle *mesh, struct ifaddrs *ifa) {
 		return false;
 	}
 
+	if(mesh->local_network.retired) {
+		return false;
+	}
+
 	if(mesh->local_network.override) {
 		return mesh->local_network.valid;
 	}
@@ -399,7 +423,7 @@ bool local_network_ingest(struct meshlink_handle *mesh, struct ifaddrs *ifa) {
 	int *indices = xzalloc((entries ? entries : 1) * sizeof *indices);
 	size_t k = 0;
 
-	local_resolve_indices(mesh, ifa, indices, entries);
+	local_network_resolve_ifindexes(mesh, ifa, indices, entries);
 	built = xzalloc(LOCAL_NETWORK_MAX * sizeof *built);
 
 	for(ifap = ifa; ifap && count < LOCAL_NETWORK_MAX; ifap = ifap->ifa_next, k++) {
@@ -458,6 +482,10 @@ bool local_network_refresh(struct meshlink_handle *mesh) {
 		return false;
 	}
 
+	if(mesh->local_network.retired) {
+		return false;
+	}
+
 	if(mesh->local_network.override) {
 		return mesh->local_network.valid;
 	}
@@ -489,6 +517,7 @@ void local_network_teardown(struct meshlink_handle *mesh) {
 
 	free(mesh->local_network.addrs);
 	memset(&mesh->local_network, 0, sizeof mesh->local_network);
+	mesh->local_network.retired = true;
 }
 
 bool local_network_on_link(const struct meshlink_handle *mesh, const sockaddr_t *sa) {

@@ -41,10 +41,13 @@ typedef struct local_network {
 	bool valid;
 	bool failed;         /* last scan failed; snapshot may still be fresh */
 	bool override;       /* devtool snapshot; refresh does not replace it */
+	bool retired;        /* teardown ran; the next start clears this before scanning */
 	bool test_fail_scans;
 } local_network_t;
 
 uint8_t local_network_prefix_from_mask(const struct sockaddr *mask, int family);
+/* if_nametoindex() for each ifaddrs entry, in the mesh netns. Unnamed entries are 0. */
+void local_network_resolve_ifindexes(struct meshlink_handle *mesh, const struct ifaddrs *ifa, int *out, size_t max);
 
 bool local_network_refresh(struct meshlink_handle *mesh);
 /* Record a snapshot from a list the caller already fetched. Does not free it. */

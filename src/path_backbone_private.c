@@ -52,14 +52,18 @@ static struct timespec ahead(const struct timespec *now, int sec) {
 	return t;
 }
 
-static int ladder_base(uint8_t step) {
-	static const int ladder[] = {1, 2, 5, 10, 30, 120};
+static const int query_ladder[] = {1, 2, 5, 10, 30, 120};
 
-	if(step >= sizeof ladder / sizeof ladder[0]) {
-		step = (uint8_t)(sizeof ladder / sizeof ladder[0] - 1);
+static uint8_t ladder_last(void) {
+	return (uint8_t)(sizeof query_ladder / sizeof query_ladder[0] - 1);
+}
+
+static int ladder_base(uint8_t step) {
+	if(step >= sizeof query_ladder / sizeof query_ladder[0]) {
+		step = ladder_last();
 	}
 
-	return ladder[step];
+	return query_ladder[step];
 }
 
 static int ladder_delay(meshlink_handle_t *mesh, uint8_t step) {
@@ -556,6 +560,15 @@ static void member_send(meshlink_handle_t *mesh, node_t *bb) {
 			mesh->bb_private.query_id = 0;
 		}
 
+		/* The route tick would otherwise send again on the next pass.
+		   Wait out this ladder step, and climb it, without keeping an id
+		   for a request that never left. */
+		if(mesh->bb_private.ladder_step < ladder_last()) {
+			mesh->bb_private.ladder_step++;
+		}
+
+		mesh->bb_private.query_hold = true;
+		mesh->bb_private.next_query_at = ahead(&mesh->loop.now, ladder_delay(mesh, mesh->bb_private.ladder_step));
 		logger(mesh, MESHLINK_INFO, "Backbone private query to %s was not sent", bb->name);
 		return;
 	}
@@ -564,6 +577,7 @@ static void member_send(meshlink_handle_t *mesh, node_t *bb) {
 	logger(mesh, MESHLINK_INFO, "Backbone private query %" PRIu64 " to %s", id, bb->name);
 
 	if(mesh->bb_private.query_id == id) {
+		mesh->bb_private.query_hold = false;
 		mesh->bb_private.next_query_at = ahead(&mesh->loop.now, ladder_delay(mesh, mesh->bb_private.ladder_step));
 	}
 }
@@ -581,7 +595,17 @@ static void member_query_tick(meshlink_handle_t *mesh, node_t *n) {
 	bool asked = n->connection->status.bb_private_asked;
 
 	if(asked && current && !mesh->bb_private.changed_pending && (private_udp_up(mesh, n) || private_meta_up(mesh, n))) {
+		mesh->bb_private.query_hold = false;
 		return;
+	}
+
+	/* A failed write armed this. A stale set still asks at once once it expires. */
+	if(mesh->bb_private.query_hold) {
+		if(!timespec_due(&mesh->loop.now, &mesh->bb_private.next_query_at)) {
+			return;
+		}
+
+		mesh->bb_private.query_hold = false;
 	}
 
 	/* A new connection asks at once. So does a set from another network or
@@ -592,7 +616,7 @@ static void member_query_tick(meshlink_handle_t *mesh, node_t *n) {
 
 	/* The in-flight query on this connection timed out. */
 	if(asked && mesh->bb_private.query_id) {
-		if(mesh->bb_private.ladder_step < 5) {
+		if(mesh->bb_private.ladder_step < ladder_last()) {
 			mesh->bb_private.ladder_step++;
 		}
 
@@ -600,7 +624,7 @@ static void member_query_tick(meshlink_handle_t *mesh, node_t *n) {
 	}
 
 	if(mesh->bb_private.empty) {
-		mesh->bb_private.ladder_step = 5;
+		mesh->bb_private.ladder_step = ladder_last();
 	}
 
 	member_send(mesh, n);
@@ -839,8 +863,8 @@ bool path_backbone_private_handle_answer(meshlink_handle_t *mesh, connection_t *
 	note_live_private_meta(mesh, from);
 
 	if(count == 0) {
-		mesh->bb_private.ladder_step = 5;
-		mesh->bb_private.next_query_at = ahead(&mesh->loop.now, ladder_base(5));
+		mesh->bb_private.ladder_step = ladder_last();
+		mesh->bb_private.next_query_at = ahead(&mesh->loop.now, ladder_base(ladder_last()));
 	} else {
 		mesh->bb_private.ladder_step = 0;
 		mesh->bb_private.next_query_at = mesh->bb_private.expires_at;

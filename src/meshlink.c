@@ -2048,12 +2048,17 @@ static void *meshlink_main_loop(void *arg) {
 #endif // HAVE_SETNS
 	}
 
-	if(mesh->discovery.enabled) {
-		discovery_start(mesh);
-	}
-
+	/* discovery_start() scans before the event loop exists. hint_network_change()
+	   and the Apple reachability callback also scan, and they take this lock.
+	   Hold it across the scan so those callers cannot free the same snapshot. */
 	if(pthread_mutex_lock(&mesh->mutex) != 0) {
 		abort();
+	}
+
+	mesh->local_network.retired = false;
+
+	if(mesh->discovery.enabled) {
+		discovery_start(mesh);
 	}
 
 	/* Stop tears the inventory down with the mesh thread. Rescan on every
@@ -2080,6 +2085,16 @@ static void *meshlink_main_loop(void *arg) {
 	if(mesh->discovery.enabled) {
 		discovery_stop(mesh);
 	}
+
+	/* The Apple callback can ingest after teardown drops the mutex and before
+	   discovery_stop joins it. retired makes that ingest a no-op; free again
+	   in case a snapshot was committed before the flag was visible. */
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	local_network_teardown(mesh);
+	pthread_mutex_unlock(&mesh->mutex);
 
 	return NULL;
 }
@@ -2318,6 +2333,7 @@ void meshlink_close(meshlink_handle_t *mesh) {
 	meshlink_queue_exit(&mesh->outpacketqueue);
 
 	connection_policy_exit(mesh);
+	local_network_teardown(mesh);
 
 	free(mesh->name);
 	free(mesh->appname);

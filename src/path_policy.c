@@ -387,9 +387,14 @@ bool path_is_meta_candidate(const node_t *n, const sockaddr_t *sa, address_sourc
 	}
 
 	/* A reflexive slot that later gained META stays eligible; it must not
-	   inherit HINT's unresolved-hostname block. INDIRECT/CANONICAL never walk. */
+	   inherit HINT's unresolved-hostname block. It still has to be on-link
+	   (or vouched) when the address is local. INDIRECT/CANONICAL never walk. */
 	if(src == ADDR_SRC_UDP_REFLEXIVE) {
-		return n && sa && !path_address_matches_canonical(n, sa);
+		if(!n || !sa || path_address_matches_canonical(n, sa)) {
+			return false;
+		}
+
+		return path_private_destination_eligible(n, sa, src);
 	}
 
 	return path_is_direct_candidate(n, sa, src);

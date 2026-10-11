@@ -504,15 +504,22 @@ static void devtool_get_reset_node_status(meshlink_handle_t *mesh, meshlink_node
 
 		status->devtool_status_version = DEVTOOL_NODE_STATUS_VERSION;
 
-		if((mesh->backbone_udp.confirmed && mesh->backbone_udp.source == ADDR_SRC_BACKBONE_PRIVATE)
+		/* Query and proven/unavailable state is the mesh's backbone exchange.
+		   Only the backbone node reports it. private_carrier is per connection. */
+		if((connection_policy_is_backbone(mesh, internal)
+		                && mesh->backbone_udp.confirmed
+		                && mesh->backbone_udp.source == ADDR_SRC_BACKBONE_PRIVATE)
 		                || (internal->connection && internal->connection->status.private_carrier)) {
-			status->private_path_state = 2;
-		} else if(mesh->bb_private.ever_proven && !path_backbone_private_public_data_allowed(mesh, internal)) {
-			status->private_path_state = 3;
-		} else if(mesh->bb_private.query_id || mesh->bb_private.count) {
-			status->private_path_state = 1;
+			status->private_path_state = DEVTOOL_PRIVATE_PATH_PROVEN;
+		} else if(connection_policy_is_backbone(mesh, internal)
+		                && mesh->bb_private.ever_proven
+		                && !path_backbone_private_public_data_allowed(mesh, internal)) {
+			status->private_path_state = DEVTOOL_PRIVATE_PATH_UNAVAILABLE;
+		} else if(connection_policy_is_backbone(mesh, internal)
+		                && (mesh->bb_private.query_id || mesh->bb_private.count)) {
+			status->private_path_state = DEVTOOL_PRIVATE_PATH_QUERYING;
 		} else {
-			status->private_path_state = 0;
+			status->private_path_state = DEVTOOL_PRIVATE_PATH_NONE;
 		}
 
 		status->local_discovery_active = internal->local_discovery.active;

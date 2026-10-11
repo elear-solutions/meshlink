@@ -58,6 +58,7 @@ typedef struct backbone_private_t {
 	bool empty;
 	bool ever_proven;
 	bool changed_pending;
+	bool query_hold; /* send failed; honor next_query_at before asking again */
 	bb_private_endpoint_t endpoints[BB_PRIVATE_MAX];
 	size_t count;
 	uint32_t publish_revision;

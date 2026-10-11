@@ -626,8 +626,14 @@ static void addr_add(meshlink_handle_t *mesh, const discovery_address_t *addr) {
 	discovery_address_t *p = bsearch(addr, mesh->discovery.addresses, mesh->discovery.address_count, sizeof(*p), address_compare);
 
 	if(p) {
-		p->prefix_len = addr->prefix_len;
-		p->flags = addr->flags;
+		if(addr->prefix_len) {
+			p->prefix_len = addr->prefix_len;
+		}
+
+		if(addr->flags) {
+			p->flags = addr->flags;
+		}
+
 		return;
 	}
 
@@ -657,26 +663,40 @@ static void addr_del(meshlink_handle_t *mesh, const discovery_address_t *addr) {
 void scan_ifaddrs(meshlink_handle_t *mesh) {
 #ifdef HAVE_GETIFADDRS
 	struct ifaddrs *ifa = NULL;
+	struct ifaddrs *ifap;
+	int *ifindex;
+	size_t nifa = 0;
+	size_t k;
+
+	if(mesh->local_network.retired) {
+		return;
+	}
 
 	if(local_network_getifaddrs(mesh, &ifa) != 0) {
 		logger(mesh, MESHLINK_ERROR, "Could not get list of interface addresses: %s", strerror(errno));
 		return;
 	}
 
+	for(ifap = ifa; ifap; ifap = ifap->ifa_next) {
+		nifa++;
+	}
+
+	ifindex = xzalloc((nifa ? nifa : 1) * sizeof *ifindex);
+	local_network_resolve_ifindexes(mesh, ifa, ifindex, nifa);
 	local_network_ingest(mesh, ifa);
 
 	// Check for interfaces being removed
 	for(int i = 0; i < mesh->discovery.iface_count;) {
 		bool found = false;
 
-		for(struct ifaddrs *ifap = ifa; ifap; ifap = ifap->ifa_next) {
+		k = 0;
+
+		for(ifap = ifa; ifap; ifap = ifap->ifa_next, k++) {
 			if(!ifap->ifa_name) {
 				continue;
 			}
 
-			int index = if_nametoindex(ifap->ifa_name);
-
-			if(mesh->discovery.ifaces[i] == index) {
+			if(mesh->discovery.ifaces[i] == ifindex[k]) {
 				found = true;
 				break;
 			}
@@ -694,14 +714,14 @@ void scan_ifaddrs(meshlink_handle_t *mesh) {
 		discovery_address_t *p = &mesh->discovery.addresses[i];
 		bool found = false;
 
-		for(struct ifaddrs *ifap = ifa; ifap; ifap = ifap->ifa_next) {
+		k = 0;
+
+		for(ifap = ifa; ifap; ifap = ifap->ifa_next, k++) {
 			if(!ifap->ifa_name || !ifap->ifa_addr) {
 				continue;
 			}
 
-			int index = if_nametoindex(ifap->ifa_name);
-
-			if(p->index == index && sockaddrcmp_noport(&p->address, (sockaddr_t *)ifap->ifa_addr) == 0) {
+			if(p->index == ifindex[k] && sockaddrcmp_noport(&p->address, (sockaddr_t *)ifap->ifa_addr) == 0) {
 				found = true;
 				break;
 			}
@@ -715,12 +735,16 @@ void scan_ifaddrs(meshlink_handle_t *mesh) {
 	}
 
 	// Check for interfaces state changes and addresses going up
-	for(struct ifaddrs *ifap = ifa; ifap; ifap = ifap->ifa_next) {
+	k = 0;
+
+	for(ifap = ifa; ifap; ifap = ifap->ifa_next, k++) {
+		int index;
+
 		if(!ifap->ifa_name) {
 			continue;
 		}
 
-		int index = if_nametoindex(ifap->ifa_name);
+		index = ifindex[k];
 
 		if(ifap->ifa_flags & IFF_UP && ifap->ifa_flags & IFF_MULTICAST
 		                && !(ifap->ifa_flags & IFF_LOOPBACK)
@@ -760,6 +784,7 @@ void scan_ifaddrs(meshlink_handle_t *mesh) {
 		}
 	}
 
+	free(ifindex);
 	freeifaddrs(ifa);
 	discovery_commit_address_set(mesh);
 #else
@@ -821,6 +846,7 @@ static void netlink_parse_addr(meshlink_handle_t *mesh, const struct nlmsghdr *n
 		if(rta->rta_type == IFA_ADDRESS) {
 			discovery_address_t addr  = {
 				.index = ifa->ifa_index,
+				.prefix_len = ifa->ifa_prefixlen,
 			};
 
 			if(rta->rta_len == 8) {
@@ -1114,6 +1140,7 @@ static void pfroute_parse_iface(meshlink_handle_t *mesh, const struct rt_msghdr 
 static void pfroute_parse_addr(meshlink_handle_t *mesh, const struct rt_msghdr *rtm) {
 	const struct ifa_msghdr *ifam = (const struct ifa_msghdr *)rtm;
 	const char *p = (const char *)(ifam + 1);
+	uint8_t prefix = 0;
 
 	for(unsigned int i = 1; i; i <<= 1) {
 		if(!(ifam->ifam_addrs & i)) {
@@ -1122,9 +1149,15 @@ static void pfroute_parse_addr(meshlink_handle_t *mesh, const struct rt_msghdr *
 
 		const sockaddr_t *sa = (const sockaddr_t *)p;
 
+		if(i == RTA_NETMASK && sa->sa.sa_family != AF_UNSPEC) {
+			prefix = local_network_prefix_from_mask(&sa->sa, sa->sa.sa_family);
+		}
+
 		if(i == RTA_IFA) {
 			discovery_address_t addr = {
 				.index = ifam->ifam_index,
+				.prefix_len = prefix,
+				.flags = (uint32_t)ifam->ifam_flags,
 			};
 
 			if(sa->sa.sa_family == AF_INET) {

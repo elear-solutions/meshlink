@@ -116,6 +116,13 @@ typedef enum {
 	DEVTOOL_LIVENESS_PROBING
 } devtool_liveness_state_t;
 
+typedef enum {
+	DEVTOOL_PRIVATE_PATH_NONE = 0,
+	DEVTOOL_PRIVATE_PATH_QUERYING = 1,
+	DEVTOOL_PRIVATE_PATH_PROVEN = 2,
+	DEVTOOL_PRIVATE_PATH_UNAVAILABLE = 3
+} __attribute__((__packed__)) devtool_private_path_state_t;
+
 typedef struct devtool_plpmtu_cache_entry {
 	uint8_t family;
 	uint8_t addr[16];
@@ -271,8 +278,8 @@ struct devtool_node_status {
 	uint32_t relay_fallback_unready, relay_fallback_oversize, relay_fallback_no_socket;
 	uint32_t relay_fallback_would_block, relay_fallback_emsgsize, relay_fallback_hard_error;
 
-	/* DEVTOOL_NODE_STATUS_VERSION 8. Append only. */
-	uint8_t private_path_state;           /// 0 none, 1 querying, 2 proven, 3 unavailable
+	/* DEVTOOL_NODE_STATUS_VERSION 8. Append only. One byte, same as the old uint8_t. */
+	devtool_private_path_state_t private_path_state;
 
 	/* DEVTOOL_NODE_STATUS_VERSION 9. Append only. */
 	bool local_discovery_active;
@@ -548,6 +555,12 @@ void devtool_set_meta_status_cb(struct meshlink_handle *mesh, meshlink_node_stat
  *  @param external_ip_address    "host port", or NULL to clear.
  */
 void devtool_set_external_ip_address(struct meshlink_handle *mesh, struct meshlink_node *node, const char *external_ip_address);
+
+/// Pin a wide on-link snapshot so tests can treat RFC1918/ULA destinations as local.
+/** Replaces the scanned interface list until the next real refresh.
+ *
+ *  @param mesh  Mesh handle.
+ */
 void devtool_set_broad_local_network(struct meshlink_handle *mesh);
 
 /// Apply update_node_udp() as if this address was learned from the graph or a peer.

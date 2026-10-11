@@ -211,7 +211,7 @@ struct meshlink_handle {
 	int backbone_udp_keepalive_sec;       /* Default PATH_BACKBONE_UDP_KEEPALIVE_SEC; tests may shorten */
 	backbone_private_t bb_private;
 	local_network_t local_network;
-	int backbone_path_policy;             /* meshlink_backbone_path_policy_t; runtime only */
+	meshlink_backbone_path_policy_t backbone_path_policy; /* runtime only, not stored */
 	uint64_t lan_network_epoch;           /* Bumped on interface/network change; 0 is never current */
 	path_probe_budget_t probe_budget;
 	struct list_t *probe_queue;

@@ -222,6 +222,18 @@ int main(void) {
 	}
 #endif
 
+	/* A prefix of 0 is a missing netmask, not "every address of this family". */
+	addrs[0] = v4("10.20.0.1", 0, 2, IFF_UP);
+	assert(local_network_set_snapshot(mesh, addrs, 1));
+	sa = dest4("10.20.0.2");
+	assert(!local_network_on_link(mesh, &sa));
+	sa = dest4("192.0.2.1");
+	assert(!local_network_on_link(mesh, &sa));
+	addrs[0] = v6("fd00:20::1", 0, 5, 0, IFF_UP);
+	assert(local_network_set_snapshot(mesh, addrs, 1));
+	sa = dest6("fd00:20::2", 0);
+	assert(!local_network_on_link(mesh, &sa));
+
 	meshlink_close(mesh);
 	return 0;
 }
