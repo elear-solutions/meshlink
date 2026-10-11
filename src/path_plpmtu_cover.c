@@ -10,10 +10,14 @@
 
 #include "system.h"
 
+#include <arpa/inet.h>
+#include <net/if.h>
 #include <string.h>
 #include <time.h>
 
+#include "connection_policy.h"
 #include "edge.h"
+#include "local_network.h"
 #include "logger.h"
 #include "meshlink_internal.h"
 #include "net.h"
@@ -32,6 +36,16 @@
 			logger(mesh, MESHLINK_ERROR, "path_plpmtu_cover_unit failed: %s", #cond); \
 			goto done; \
 		} \
+	} while(0)
+
+#define EXPECT_ECHO(tap, node, broadcast_flag, dest_sa) do { \
+		CHECK((tap).count >= 1); \
+		CHECK((tap).last.probe_kind == PROBE_KIND_ECHO_REQUEST); \
+		CHECK((tap).last.probe_purpose == PROBE_PURPOSE_LOCAL_DISCOVERY); \
+		CHECK((tap).last.length == PROBE_FIXED_LEN); \
+		CHECK((tap).last.probe_nonce == (node).local_discovery.nonce); \
+		CHECK((tap).last.broadcast == (broadcast_flag)); \
+		CHECK(!sockaddrcmp(&(tap).last.dest, &(dest_sa))); \
 	} while(0)
 
 static uint16_t cover_pmtu_seen;
@@ -62,9 +76,9 @@ static void advance_ms(meshlink_handle_t *mesh, int ms) {
 	}
 }
 
-static void plant_confirmed_udp_peer(node_t *n, meshlink_handle_t *mesh, char *name, uint32_t ip) {
+static void plant_confirmed_udp_peer(node_t *n, meshlink_handle_t *mesh, const char *name, uint32_t ip) {
 	memset(n, 0, sizeof *n);
-	n->name = name;
+	n->name = (char *)name;
 	n->mesh = mesh;
 	n->devclass = DEV_CLASS_STATIONARY;
 	n->status.udp_confirmed = true;
@@ -720,6 +734,8 @@ done:
 	return ok;
 }
 
+static void set_lan_snapshot(meshlink_handle_t *mesh);
+
 static bool liveness_admission_cover(meshlink_handle_t *mesh) {
 	node_t n;
 	unsigned saved_max = mesh->probe_max_transactions;
@@ -758,6 +774,10 @@ static bool liveness_admission_cover(meshlink_handle_t *mesh) {
 	/* Local discovery shares the timer-owned liveness priority. Denial
 	   must not exhaust its finite probe ladder either. */
 	n.status.udp_confirmed = false;
+	set_lan_snapshot(mesh);
+	n.address = v4(0xc0a80114, 9);
+	n.address_source = ADDR_SRC_DISCOVERY;
+	n.address_cap = PATH_CAP_BOTH;
 	path_local_discovery_start(mesh, &n);
 	path_scheduler_set_budget(mesh, 0, 100, 8);
 	for(int i = 0; i < PATH_LOCAL_DISCOVERY_TRIES + 2; i++) {
@@ -775,6 +795,7 @@ static bool liveness_admission_cover(meshlink_handle_t *mesh) {
 
 done:
 	stop_peer_path_activity(mesh, &n);
+	local_network_set_snapshot(mesh, NULL, 0);
 	path_scheduler_set_budget(mesh, 1000, 1000, saved_max);
 	return ok;
 }
@@ -782,9 +803,7 @@ done:
 static bool liveness_cover(meshlink_handle_t *mesh) {
 	node_t n;
 	node_t low;
-	int t;
 	sockaddr_t other;
-	edge_t edge;
 	node_t *saved_bb = mesh->backbone_udp.node;
 	char lower[128];
 	char higher[128];
@@ -900,41 +919,6 @@ static bool liveness_cover(meshlink_handle_t *mesh) {
 	CHECK(n.liveness.state == LIVENESS_IDLE);
 	CHECK(!n.liveness.timer.cb);
 	mesh->backbone_udp.node = saved_bb;
-
-	/* Local discovery: purpose, nonce, local source, then ten tries. */
-	stop_peer_path_activity(mesh, &n);
-	plant_confirmed_udp_peer(&n, mesh, "discovery-peer", 0x7f000001);
-	n.status.udp_confirmed = false;
-	n.peer_udp.channel_count = 0;
-	memset(&edge, 0, sizeof edge);
-	n.prevedge = &edge;
-	path_local_discovery_start(mesh, &n);
-	CHECK(n.local_discovery.active);
-	CHECK(!path_local_discovery_accept(mesh, &n, &n.address, n.local_discovery.nonce, PROBE_PURPOSE_NONE));
-	CHECK(!path_local_discovery_accept(mesh, &n, &n.address, n.local_discovery.nonce ^ 1, PROBE_PURPOSE_LOCAL_DISCOVERY));
-	other = v4(0xcb007199, 9);
-	CHECK(!path_local_discovery_accept(mesh, &n, &other, n.local_discovery.nonce, PROBE_PURPOSE_LOCAL_DISCOVERY));
-	n.address = v4(0x7f000001, 4000);
-	CHECK(path_local_discovery_accept(mesh, &n, &n.address, n.local_discovery.nonce, PROBE_PURPOSE_LOCAL_DISCOVERY));
-	CHECK(n.status.udp_confirmed);
-	CHECK(!n.local_discovery.active);
-
-	stop_peer_path_activity(mesh, &n);
-	plant_confirmed_udp_peer(&n, mesh, "discovery-peer", 0x7f000001);
-	n.status.udp_confirmed = false;
-	n.peer_udp.channel_count = 0;
-	n.prevedge = &edge;
-	n.status.want_udp = false;
-	path_local_discovery_start(mesh, &n);
-
-	for(t = 0; t < PATH_LOCAL_DISCOVERY_TRIES; t++) {
-		path_local_discovery_tick(mesh, &n);
-		CHECK(path_local_discovery_did_broadcast(mesh) == (t < PATH_LOCAL_DISCOVERY_BROADCAST_TRIES));
-	}
-
-	path_local_discovery_tick(mesh, &n);
-	CHECK(n.local_discovery.exhausted);
-	CHECK(!n.local_discovery.active);
 
 	ok = true;
 
@@ -1379,6 +1363,636 @@ done:
 	return ok;
 }
 
+static local_iface_addr_t iface4(const char *ip, uint8_t prefix, int index, uint32_t flags) {
+	local_iface_addr_t a;
+
+	memset(&a, 0, sizeof a);
+	a.ifindex = index;
+	a.flags = flags;
+	a.prefix_len = prefix;
+	a.address.in.sin_family = AF_INET;
+	inet_pton(AF_INET, ip, &a.address.in.sin_addr);
+	return a;
+}
+
+static local_iface_addr_t iface6(const char *ip, uint8_t prefix, int index, uint32_t flags, uint32_t scope) {
+	local_iface_addr_t a;
+
+	memset(&a, 0, sizeof a);
+	a.ifindex = index;
+	a.flags = flags;
+	a.prefix_len = prefix;
+	a.address.in6.sin6_family = AF_INET6;
+	inet_pton(AF_INET6, ip, &a.address.in6.sin6_addr);
+	a.address.in6.sin6_scope_id = scope;
+	return a;
+}
+
+static sockaddr_t v6(const char *ip, uint16_t port, uint32_t scope) {
+	sockaddr_t sa;
+
+	memset(&sa, 0, sizeof sa);
+	sa.in6.sin6_family = AF_INET6;
+	inet_pton(AF_INET6, ip, &sa.in6.sin6_addr);
+	sa.in6.sin6_port = htons(port);
+	sa.in6.sin6_scope_id = scope;
+	return sa;
+}
+
+static void set_lan_snapshot(meshlink_handle_t *mesh) {
+	local_iface_addr_t addrs[4];
+
+	addrs[0] = iface4("127.0.0.1", 8, 1, IFF_UP | IFF_LOOPBACK);
+	addrs[1] = iface4("192.168.1.10", 24, 2, IFF_UP | IFF_BROADCAST | IFF_MULTICAST);
+	addrs[2] = iface6("fe80::10", 64, 2, IFF_UP | IFF_MULTICAST, 2);
+	addrs[3] = iface6("fd00::10", 64, 2, IFF_UP | IFF_MULTICAST, 0);
+	local_network_set_snapshot(mesh, addrs, 4);
+}
+
+static void set_cellular_snapshot(meshlink_handle_t *mesh) {
+	local_iface_addr_t addrs[2];
+
+	addrs[0] = iface4("127.0.0.1", 8, 1, IFF_UP | IFF_LOOPBACK);
+	addrs[1] = iface4("100.64.10.2", 30, 3, IFF_UP | IFF_POINTOPOINT);
+	local_network_set_snapshot(mesh, addrs, 2);
+}
+
+static bool broadcast_matches(meshlink_handle_t *mesh, const sockaddr_t *near, uint16_t port, const sockaddr_t *expect) {
+	sockaddr_t out;
+
+	if(!local_network_broadcast_target(mesh, near, htons(port), &out) || sockaddrcmp(&out, expect)) {
+		return false;
+	}
+
+	return expect->sa.sa_family != AF_INET6 || out.in6.sin6_scope_id == expect->in6.sin6_scope_id;
+}
+
+static void plant_discovery_peer(node_t *n, edge_t *edge, meshlink_handle_t *mesh, const char *name, uint32_t ip, address_source_t src) {
+	/* The peer lives on the stack and is reused. A still-armed discovery
+	   timer is linked into the event loop by address; zeroing the node
+	   first would leave that node in the tree and the next arm aborts. */
+	path_local_discovery_stop(mesh, n);
+	plant_confirmed_udp_peer(n, mesh, name, ip);
+	n->status.udp_confirmed = false;
+	n->address_source = src;
+	n->address_cap = PATH_CAP_BOTH;
+	memset(edge, 0, sizeof *edge);
+	edge->address = v4(ip, 7000);
+	n->prevedge = edge;
+}
+
+static void give_lan_presence(meshlink_handle_t *mesh, node_t *n, uint32_t ip) {
+	memset(n->recent, 0, sizeof n->recent);
+	n->recent[0] = v4(ip, 7000);
+	n->recent_source[0] = ADDR_SRC_DISCOVERY;
+	n->recent_cap[0] = PATH_CAP_BOTH;
+	n->lan_presence.network_epoch = mesh->lan_network_epoch;
+	n->lan_presence.last_discovered_at = mesh->loop.now.tv_sec ? mesh->loop.now.tv_sec : 1;
+}
+
+/* A network-change hint: new lan epoch, same interface snapshot. */
+static void bump_lan_epoch(meshlink_handle_t *mesh) {
+	mesh->lan_network_epoch++;
+
+	if(!mesh->lan_network_epoch) {
+		mesh->lan_network_epoch = 1;
+	}
+}
+
+static bool local_discovery_cover(meshlink_handle_t *mesh) {
+	node_t n;
+	edge_t edge;
+	path_probe_tap_t tap;
+	sockaddr_t near;
+	sockaddr_t out;
+	sockaddr_t expect;
+	sockaddr_t bcast;
+	sockaddr_t uni;
+	local_iface_addr_t one;
+	unsigned saved_max = mesh->probe_max_transactions;
+	unsigned before;
+	uint64_t saved_epoch = mesh->lan_network_epoch;
+	uint64_t saved_nonce;
+	uint64_t prev_nonce;
+	sockaddr_t want_dest;
+	int saved_fam[MAXSOCKETS];
+	int i;
+	int t;
+	bool families_saved = false;
+	bool ok = false;
+
+	memset(&tap, 0, sizeof tap);
+	memset(&n, 0, sizeof n);
+	tap.swallow = true;
+	tap.result = RELAY_UDP_SENT;
+	path_scheduler_set_tap(mesh, &tap);
+	path_scheduler_set_budget(mesh, 100, 100, 8);
+	CHECK(mesh->listen_sockets > 0);
+
+	/* 1. Directed broadcast from the matching interface, never a limited one. */
+	set_lan_snapshot(mesh);
+	near = v4(0xc0a80114, 1);
+	expect = v4(0xc0a801ff, 7000);
+	CHECK(broadcast_matches(mesh, &near, 7000, &expect));
+	near = v4(0x0a1401b5, 1);
+	CHECK(!local_network_broadcast_target(mesh, &near, htons(7000), &out));
+	near = v4(0x7f000001, 1);
+	CHECK(!local_network_broadcast_target(mesh, &near, htons(7000), &out));
+	near = v4(0xc0a80114, 1);
+	CHECK(!local_network_broadcast_target(mesh, &near, 0, &out));
+
+	one = iface4("192.168.5.0", 31, 2, IFF_UP | IFF_BROADCAST | IFF_MULTICAST);
+	local_network_set_snapshot(mesh, &one, 1);
+	near = v4(0xc0a80501, 1);
+	CHECK(!local_network_broadcast_target(mesh, &near, htons(7000), &out));
+
+	one = iface4("10.9.0.1", 24, 2, IFF_UP);
+	local_network_set_snapshot(mesh, &one, 1);
+	near = v4(0x0a090005, 1);
+	CHECK(!local_network_broadcast_target(mesh, &near, htons(7000), &out));
+
+	one = iface4("10.9.0.1", 24, 2, IFF_UP | IFF_BROADCAST | IFF_POINTOPOINT);
+	local_network_set_snapshot(mesh, &one, 1);
+	CHECK(!local_network_broadcast_target(mesh, &near, htons(7000), &out));
+
+	one = iface4("192.168.1.10", 24, 2, 0);
+	local_network_set_snapshot(mesh, &one, 1);
+	near = v4(0xc0a80114, 1);
+	CHECK(!local_network_broadcast_target(mesh, &near, htons(7000), &out));
+
+	set_lan_snapshot(mesh);
+	near = v6("fe80::20", 9, 2);
+	expect = v6("ff02::1", 7000, 2);
+	CHECK(broadcast_matches(mesh, &near, 7000, &expect));
+	near = v6("fe80::20", 9, 0);
+	CHECK(!local_network_broadcast_target(mesh, &near, htons(7000), &out));
+	near = v6("fd00::20", 9, 0);
+	expect = v6("ff02::1", 7000, 2);
+	CHECK(broadcast_matches(mesh, &near, 7000, &expect));
+
+	one = iface6("fd00:1::10", 64, 7, IFF_UP | IFF_MULTICAST, 0);
+	local_network_set_snapshot(mesh, &one, 1);
+	near = v6("fd00:1::20", 9, 0);
+	CHECK(!local_network_broadcast_target(mesh, &near, htons(7000), &out));
+
+	set_lan_snapshot(mesh);
+	local_network_force_stale(mesh);
+	near = v4(0xc0a80114, 1);
+	CHECK(!local_network_broadcast_target(mesh, &near, htons(7000), &out));
+
+	/* 2. Current LAN evidence broadcasts three times, then unicasts. */
+	set_lan_snapshot(mesh);
+	plant_discovery_peer(&n, &edge, mesh, "discovery-lan", 0xc0a80114, ADDR_SRC_DISCOVERY);
+	give_lan_presence(mesh, &n, 0xc0a80114);
+	bcast = v4(0xc0a801ff, 7000);
+	uni = v4(0xc0a80114, 9);
+	path_local_discovery_start(mesh, &n);
+	CHECK(n.local_discovery.active);
+	before = tap.count;
+
+	for(t = 0; t < PATH_LOCAL_DISCOVERY_TRIES; t++) {
+		bool is_bcast = t < PATH_LOCAL_DISCOVERY_BROADCAST_TRIES;
+		sockaddr_t expect_dest = is_bcast ? bcast : uni;
+
+		path_local_discovery_tick(mesh, &n);
+		CHECK(tap.count == before + (unsigned)t + 1);
+		EXPECT_ECHO(tap, n, is_bcast, expect_dest);
+		advance_ms(mesh, 1000);
+	}
+
+	path_local_discovery_tick(mesh, &n);
+	CHECK(n.local_discovery.exhausted && !n.local_discovery.active);
+	CHECK(n.local_discovery.broadcasts == PATH_LOCAL_DISCOVERY_BROADCAST_TRIES);
+	CHECK(n.local_discovery.unicasts == PATH_LOCAL_DISCOVERY_TRIES - PATH_LOCAL_DISCOVERY_BROADCAST_TRIES);
+	CHECK(tap.count == before + PATH_LOCAL_DISCOVERY_TRIES);
+
+	/* 3. A graph edge is not locality. A public peer does not get a probe. */
+	before = tap.count;
+	plant_discovery_peer(&n, &edge, mesh, "discovery-wan", 0xcb007105, ADDR_SRC_EDGE_DIRECT);
+	path_local_discovery_start(mesh, &n);
+	CHECK(!n.local_discovery.active);
+	CHECK(tap.count == before);
+	CHECK(n.local_discovery.skips == 1);
+	CHECK(n.local_discovery.skip_reason);
+	n.local_discovery.active = true;
+	path_local_discovery_tick(mesh, &n);
+	CHECK(!n.local_discovery.active);
+	CHECK(tap.count == before);
+
+	/* 4. Off-link private graph address. */
+	before = tap.count;
+	plant_discovery_peer(&n, &edge, mesh, "discovery-off", 0x0a1401b5, ADDR_SRC_EDGE_DIRECT);
+	path_local_discovery_start(mesh, &n);
+	CHECK(!n.local_discovery.active && tap.count == before);
+
+	/* 5. Routed-private backbone evidence never becomes a LAN probe. */
+	before = tap.count;
+	plant_discovery_peer(&n, &edge, mesh, "discovery-bb", 0x0a1e0102, ADDR_SRC_BACKBONE_PRIVATE);
+	n.devclass = DEV_CLASS_BACKBONE;
+	path_local_discovery_start(mesh, &n);
+	CHECK(!n.local_discovery.active && tap.count == before);
+	CHECK(!n.lan_presence.last_discovered_at);
+
+	/* 6. On-link without LAN evidence is unicast only. */
+	plant_discovery_peer(&n, &edge, mesh, "discovery-edge", 0xc0a8011e, ADDR_SRC_EDGE_DIRECT);
+	uni = v4(0xc0a8011e, 9);
+	path_local_discovery_start(mesh, &n);
+	CHECK(n.local_discovery.active);
+	before = tap.count;
+
+	for(t = 0; t < PATH_LOCAL_DISCOVERY_TRIES; t++) {
+		path_local_discovery_tick(mesh, &n);
+		CHECK(tap.count == before + (unsigned)t + 1);
+		EXPECT_ECHO(tap, n, false, uni);
+		advance_ms(mesh, 1000);
+	}
+
+	path_local_discovery_tick(mesh, &n);
+	CHECK(n.local_discovery.exhausted);
+	CHECK(n.local_discovery.broadcasts == 0);
+	CHECK(n.local_discovery.unicasts == PATH_LOCAL_DISCOVERY_TRIES);
+
+	/* 7. A network change drops a peer that left the LAN, and restarts one that did not. */
+	plant_discovery_peer(&n, &edge, mesh, "discovery-move", 0xc0a80114, ADDR_SRC_DISCOVERY);
+	give_lan_presence(mesh, &n, 0xc0a80114);
+	path_local_discovery_start(mesh, &n);
+	before = tap.count;
+	path_local_discovery_tick(mesh, &n);
+	CHECK(tap.count == before + 1);
+	EXPECT_ECHO(tap, n, true, bcast);
+	saved_nonce = n.local_discovery.nonce;
+	set_cellular_snapshot(mesh);
+	mesh->lan_network_epoch++;
+
+	if(!mesh->lan_network_epoch) {
+		mesh->lan_network_epoch = 1;
+	}
+
+	path_local_discovery_tick(mesh, &n);
+	CHECK(!n.local_discovery.active && tap.count == before + 1);
+	set_lan_snapshot(mesh);
+	give_lan_presence(mesh, &n, 0xc0a80114);
+	path_local_discovery_on_lan_evidence(mesh, &n);
+	CHECK(n.local_discovery.active);
+	path_local_discovery_tick(mesh, &n);
+	CHECK(n.local_discovery.nonce != saved_nonce && n.local_discovery.tries == 1);
+	EXPECT_ECHO(tap, n, true, bcast);
+	CHECK(!path_local_discovery_accept(mesh, &n, &n.address, saved_nonce, PROBE_PURPOSE_LOCAL_DISCOVERY));
+
+	/* 8. No usable broadcast carrier does not spend a try. */
+	one = iface4("192.168.1.10", 24, 2, IFF_UP);
+	local_network_set_snapshot(mesh, &one, 1);
+	plant_discovery_peer(&n, &edge, mesh, "discovery-nobcast", 0xc0a80114, ADDR_SRC_DISCOVERY);
+	give_lan_presence(mesh, &n, 0xc0a80114);
+	uni = v4(0xc0a80114, 9);
+	path_local_discovery_start(mesh, &n);
+	before = tap.count;
+
+	for(t = 0; t < PATH_LOCAL_DISCOVERY_TRIES; t++) {
+		path_local_discovery_tick(mesh, &n);
+		EXPECT_ECHO(tap, n, false, uni);
+		advance_ms(mesh, 1000);
+	}
+
+	CHECK(n.local_discovery.broadcasts == 0);
+	CHECK(tap.count == before + PATH_LOCAL_DISCOVERY_TRIES);
+	stop_peer_path_activity(mesh, &n);
+
+	set_lan_snapshot(mesh);
+	plant_discovery_peer(&n, &edge, mesh, "discovery-v6sock", 0xc0a80114, ADDR_SRC_DISCOVERY);
+	give_lan_presence(mesh, &n, 0xc0a80114);
+
+	for(i = 0; i < mesh->listen_sockets && i < MAXSOCKETS; i++) {
+		saved_fam[i] = mesh->listen_socket[i].sa.sa.sa_family;
+		mesh->listen_socket[i].sa.sa.sa_family = AF_INET6;
+	}
+
+	families_saved = true;
+	path_local_discovery_start(mesh, &n);
+	CHECK(n.local_discovery.active);
+	before = tap.count;
+	path_local_discovery_tick(mesh, &n);
+	EXPECT_ECHO(tap, n, false, uni);
+	CHECK(tap.count == before + 1);
+
+	for(i = 0; i < mesh->listen_sockets && i < MAXSOCKETS; i++) {
+		mesh->listen_socket[i].sa.sa.sa_family = saved_fam[i];
+	}
+
+	families_saved = false;
+	stop_peer_path_activity(mesh, &n);
+
+	plant_discovery_peer(&n, &edge, mesh, "discovery-hard", 0xc0a80114, ADDR_SRC_DISCOVERY);
+	give_lan_presence(mesh, &n, 0xc0a80114);
+	tap.result = RELAY_UDP_HARD_ERROR;
+	path_local_discovery_start(mesh, &n);
+	before = tap.count;
+	path_local_discovery_tick(mesh, &n);
+	CHECK(tap.count == before + 1);
+	CHECK(!n.local_discovery.tries && n.local_discovery.carrier_failures == 1);
+	CHECK(n.local_discovery.broadcast_blocked_epoch == mesh->lan_network_epoch);
+	tap.result = RELAY_UDP_SENT;
+	path_local_discovery_tick(mesh, &n);
+	EXPECT_ECHO(tap, n, false, uni);
+	CHECK(n.local_discovery.tries == 1);
+	stop_peer_path_activity(mesh, &n);
+
+	plant_discovery_peer(&n, &edge, mesh, "discovery-nosock", 0xc0a80114, ADDR_SRC_DISCOVERY);
+	give_lan_presence(mesh, &n, 0xc0a80114);
+	tap.result = RELAY_UDP_NO_SOCKET;
+	path_local_discovery_start(mesh, &n);
+	path_local_discovery_tick(mesh, &n);
+	CHECK(!n.local_discovery.tries && n.local_discovery.carrier_failures == 1);
+	tap.result = RELAY_UDP_SENT;
+	stop_peer_path_activity(mesh, &n);
+
+	plant_discovery_peer(&n, &edge, mesh, "discovery-block", 0xc0a80114, ADDR_SRC_DISCOVERY);
+	give_lan_presence(mesh, &n, 0xc0a80114);
+	tap.result = RELAY_UDP_WOULD_BLOCK;
+	path_local_discovery_start(mesh, &n);
+	before = tap.count;
+	path_local_discovery_tick(mesh, &n);
+	CHECK(tap.count == before + 1 && !n.local_discovery.tries && !n.local_discovery.carrier_failures);
+	tap.result = RELAY_UDP_SENT;
+	path_local_discovery_tick(mesh, &n);
+	EXPECT_ECHO(tap, n, true, bcast);
+	CHECK(n.local_discovery.tries == 1);
+	stop_peer_path_activity(mesh, &n);
+
+	/* 9. Scheduler denial keeps the ladder on its first broadcast. */
+	plant_discovery_peer(&n, &edge, mesh, "discovery-deny", 0xc0a80114, ADDR_SRC_DISCOVERY);
+	give_lan_presence(mesh, &n, 0xc0a80114);
+	path_local_discovery_start(mesh, &n);
+	path_scheduler_set_budget(mesh, 0, 100, 8);
+	before = tap.count;
+
+	for(t = 0; t < PATH_LOCAL_DISCOVERY_TRIES + 2; t++) {
+		path_local_discovery_tick(mesh, &n);
+		advance_ms(mesh, 1000);
+	}
+
+	CHECK(n.local_discovery.active && !n.local_discovery.exhausted && !n.local_discovery.tries);
+	CHECK(tap.count == before);
+	path_scheduler_set_budget(mesh, 100, 100, 8);
+	path_local_discovery_tick(mesh, &n);
+	EXPECT_ECHO(tap, n, true, bcast);
+	CHECK(n.local_discovery.tries == 1 && n.local_discovery.broadcasts == 1);
+
+	/* 10. A reply is proof only from an on-link source. */
+	stop_peer_path_activity(mesh, &n);
+	plant_discovery_peer(&n, &edge, mesh, "discovery-accept", 0xc0a80114, ADDR_SRC_DISCOVERY);
+	give_lan_presence(mesh, &n, 0xc0a80114);
+	path_local_discovery_start(mesh, &n);
+	CHECK(n.local_discovery.active);
+	near = v4(0x0a1401b5, 9);
+	CHECK(!path_local_discovery_accept(mesh, &n, &near, n.local_discovery.nonce, PROBE_PURPOSE_LOCAL_DISCOVERY));
+	near = v4(0xc0a80114, 9);
+	CHECK(path_local_discovery_accept(mesh, &n, &near, n.local_discovery.nonce, PROBE_PURPOSE_LOCAL_DISCOVERY));
+	CHECK(n.status.udp_confirmed && !n.local_discovery.active);
+
+	/* 11. One silent run per epoch, then one more if broadcast becomes possible. */
+	stop_peer_path_activity(mesh, &n);
+	plant_discovery_peer(&n, &edge, mesh, "discovery-bound", 0xc0a8011e, ADDR_SRC_EDGE_DIRECT);
+	path_local_discovery_start(mesh, &n);
+
+	for(t = 0; t < PATH_LOCAL_DISCOVERY_TRIES; t++) {
+		path_local_discovery_tick(mesh, &n);
+		advance_ms(mesh, 1000);
+	}
+
+	path_local_discovery_tick(mesh, &n);
+	CHECK(n.local_discovery.exhausted && !n.local_discovery.active && !n.local_discovery.broadcasts);
+	path_local_discovery_on_lan_evidence(mesh, &n);
+	CHECK(!n.local_discovery.active);
+	give_lan_presence(mesh, &n, 0xc0a8011e);
+	path_local_discovery_on_lan_evidence(mesh, &n);
+	CHECK(n.local_discovery.active && n.local_discovery.last_run_broadcast);
+	before = tap.count;
+
+	for(t = 0; t < PATH_LOCAL_DISCOVERY_TRIES; t++) {
+		path_local_discovery_tick(mesh, &n);
+
+		if(!t) {
+			CHECK(tap.last.broadcast && tap.count == before + 1);
+		}
+
+		advance_ms(mesh, 1000);
+	}
+
+	path_local_discovery_tick(mesh, &n);
+	CHECK(!n.local_discovery.active);
+	path_local_discovery_on_lan_evidence(mesh, &n);
+	CHECK(!n.local_discovery.active);
+
+	/* 12. A peer refused for its key starts when the key is ready. */
+	plant_discovery_peer(&n, &edge, mesh, "discovery-cold", 0xc0a80114, ADDR_SRC_DISCOVERY);
+	give_lan_presence(mesh, &n, 0xc0a80114);
+	n.status.validkey = false;
+	before = tap.count;
+	path_local_discovery_start(mesh, &n);
+	CHECK(!n.local_discovery.active && n.local_discovery.skips == 1);
+	CHECK(n.local_discovery.skip_reason && !strcmp(n.local_discovery.skip_reason, "no valid key"));
+	n.status.validkey = true;
+	path_local_discovery_on_key_ready(mesh, &n);
+	CHECK(n.local_discovery.active && !n.local_discovery.skip_reason && n.local_discovery.runs == 1);
+	path_local_discovery_tick(mesh, &n);
+	CHECK(tap.count == before + 1);
+	EXPECT_ECHO(tap, n, true, bcast);
+
+	plant_discovery_peer(&n, &edge, mesh, "discovery-cold-wan", 0xcb007105, ADDR_SRC_EDGE_DIRECT);
+	n.status.validkey = false;
+	before = tap.count;
+	path_local_discovery_start(mesh, &n);
+	n.status.validkey = true;
+	path_local_discovery_on_key_ready(mesh, &n);
+	CHECK(!n.local_discovery.active && !n.local_discovery.runs && n.local_discovery.skips == 2);
+	CHECK(n.local_discovery.skip_reason && !strcmp(n.local_discovery.skip_reason, "no on-link candidate or LAN evidence"));
+	CHECK(tap.count == before);
+
+	/* 13. A rekey resumes the ladder and never buys more tries. */
+	plant_discovery_peer(&n, &edge, mesh, "discovery-rekey", 0xc0a80114, ADDR_SRC_DISCOVERY);
+	give_lan_presence(mesh, &n, 0xc0a80114);
+	path_local_discovery_start(mesh, &n);
+	before = tap.count;
+	path_local_discovery_tick(mesh, &n);
+	advance_ms(mesh, 1000);
+	path_local_discovery_tick(mesh, &n);
+	advance_ms(mesh, 1000);
+	CHECK(n.local_discovery.tries == 2);
+
+	for(t = 0; t < 5; t++) {
+		prev_nonce = n.local_discovery.nonce;
+		n.status.validkey = false;
+		path_local_discovery_tick(mesh, &n);
+		CHECK(!n.local_discovery.active && tap.count == before + 2 + (unsigned)t);
+		n.status.validkey = true;
+		path_local_discovery_on_key_ready(mesh, &n);
+		CHECK(n.local_discovery.active && n.local_discovery.tries == 2 + t);
+		CHECK(n.local_discovery.nonce && n.local_discovery.nonce != prev_nonce);
+		path_local_discovery_tick(mesh, &n);
+		advance_ms(mesh, 1000);
+	}
+
+	for(t = 0; t < 2 * PATH_LOCAL_DISCOVERY_TRIES && n.local_discovery.active; t++) {
+		path_local_discovery_tick(mesh, &n);
+		advance_ms(mesh, 1000);
+	}
+
+	CHECK(n.local_discovery.exhausted && n.local_discovery.runs == 1);
+	CHECK(tap.count == before + PATH_LOCAL_DISCOVERY_TRIES);
+	CHECK(n.local_discovery.broadcasts == PATH_LOCAL_DISCOVERY_BROADCAST_TRIES);
+	path_local_discovery_on_key_ready(mesh, &n);
+	CHECK(!n.local_discovery.active && tap.count == before + PATH_LOCAL_DISCOVERY_TRIES);
+
+	/* 14. LAN evidence during a unicast ladder adds the broadcast prefix once. */
+	plant_discovery_peer(&n, &edge, mesh, "discovery-upgrade", 0xc0a8011e, ADDR_SRC_EDGE_DIRECT);
+	uni = v4(0xc0a8011e, 9);
+	path_local_discovery_start(mesh, &n);
+	before = tap.count;
+
+	for(t = 0; t < 4; t++) {
+		path_local_discovery_tick(mesh, &n);
+		EXPECT_ECHO(tap, n, false, uni);
+		advance_ms(mesh, 1000);
+	}
+
+	give_lan_presence(mesh, &n, 0xc0a8011e);
+	path_local_discovery_on_lan_evidence(mesh, &n);
+	CHECK(n.local_discovery.active && n.local_discovery.last_run_broadcast);
+
+	for(t = 0; t < PATH_LOCAL_DISCOVERY_TRIES - 4; t++) {
+		bool is_bcast = t < PATH_LOCAL_DISCOVERY_BROADCAST_TRIES;
+
+		want_dest = is_bcast ? bcast : uni;
+		path_local_discovery_tick(mesh, &n);
+		EXPECT_ECHO(tap, n, is_bcast, want_dest);
+		advance_ms(mesh, 1000);
+	}
+
+	path_local_discovery_tick(mesh, &n);
+	CHECK(n.local_discovery.exhausted);
+	CHECK(n.local_discovery.broadcasts == PATH_LOCAL_DISCOVERY_BROADCAST_TRIES);
+	CHECK(n.local_discovery.unicasts == PATH_LOCAL_DISCOVERY_TRIES - PATH_LOCAL_DISCOVERY_BROADCAST_TRIES);
+	CHECK(tap.count == before + PATH_LOCAL_DISCOVERY_TRIES);
+	path_local_discovery_on_lan_evidence(mesh, &n);
+	CHECK(!n.local_discovery.active);
+
+	/* Evidence after the last unicast, before the exhausting tick, is the worst
+	   case: still bounded by TRIES + BROADCAST_TRIES. */
+	plant_discovery_peer(&n, &edge, mesh, "discovery-late", 0xc0a8011e, ADDR_SRC_EDGE_DIRECT);
+	path_local_discovery_start(mesh, &n);
+	before = tap.count;
+
+	for(t = 0; t < PATH_LOCAL_DISCOVERY_TRIES; t++) {
+		path_local_discovery_tick(mesh, &n);
+		advance_ms(mesh, 1000);
+	}
+
+	CHECK(n.local_discovery.active && n.local_discovery.tries == PATH_LOCAL_DISCOVERY_TRIES);
+	give_lan_presence(mesh, &n, 0xc0a8011e);
+	path_local_discovery_on_lan_evidence(mesh, &n);
+	CHECK(n.local_discovery.tries == PATH_LOCAL_DISCOVERY_TRIES - PATH_LOCAL_DISCOVERY_BROADCAST_TRIES);
+
+	for(t = 0; t < PATH_LOCAL_DISCOVERY_BROADCAST_TRIES; t++) {
+		path_local_discovery_tick(mesh, &n);
+		EXPECT_ECHO(tap, n, true, bcast);
+		advance_ms(mesh, 1000);
+	}
+
+	path_local_discovery_tick(mesh, &n);
+	CHECK(n.local_discovery.exhausted);
+	CHECK(tap.count == before + PATH_LOCAL_DISCOVERY_TRIES + PATH_LOCAL_DISCOVERY_BROADCAST_TRIES);
+
+	/* 15. A reply after a network change but before the tick proves nothing. */
+	plant_discovery_peer(&n, &edge, mesh, "discovery-late-reply", 0xc0a80114, ADDR_SRC_DISCOVERY);
+	give_lan_presence(mesh, &n, 0xc0a80114);
+	path_local_discovery_start(mesh, &n);
+	path_local_discovery_tick(mesh, &n);
+	prev_nonce = n.local_discovery.nonce;
+	bump_lan_epoch(mesh);
+	near = v4(0xc0a80114, 9);
+	CHECK(!path_local_discovery_accept(mesh, &n, &near, prev_nonce, PROBE_PURPOSE_LOCAL_DISCOVERY));
+	CHECK(!n.status.udp_confirmed && n.local_discovery.active);
+	path_local_discovery_tick(mesh, &n);
+	CHECK(n.local_discovery.nonce != prev_nonce && n.local_discovery.tries == 2 && n.local_discovery.runs == 1);
+	CHECK(path_local_discovery_accept(mesh, &n, &near, n.local_discovery.nonce, PROBE_PURPOSE_LOCAL_DISCOVERY));
+	CHECK(n.status.udp_confirmed && n.local_discovery.confirms == 1);
+
+	/* 16. Hints over unchanged interfaces keep one ladder; a new snapshot starts another. */
+	stop_peer_path_activity(mesh, &n);
+	plant_discovery_peer(&n, &edge, mesh, "discovery-flap", 0xc0a8011e, ADDR_SRC_EDGE_DIRECT);
+	path_local_discovery_start(mesh, &n);
+	before = tap.count;
+
+	for(t = 0; t < 2 * PATH_LOCAL_DISCOVERY_TRIES && n.local_discovery.active; t++) {
+		path_local_discovery_tick(mesh, &n);
+		bump_lan_epoch(mesh);
+		advance_ms(mesh, 1000);
+	}
+
+	CHECK(n.local_discovery.exhausted && n.local_discovery.runs == 1);
+	CHECK(tap.count == before + PATH_LOCAL_DISCOVERY_TRIES);
+	bump_lan_epoch(mesh);
+	path_local_discovery_on_lan_evidence(mesh, &n);
+	CHECK(!n.local_discovery.active);
+	path_local_discovery_on_key_ready(mesh, &n);
+	CHECK(!n.local_discovery.active);
+	set_cellular_snapshot(mesh);
+	set_lan_snapshot(mesh);
+	path_local_discovery_on_lan_evidence(mesh, &n);
+	CHECK(n.local_discovery.active && n.local_discovery.runs == 2);
+
+	/* 17. A broadcast-only ladder ends exhausted, also when its carrier fails. */
+	plant_discovery_peer(&n, &edge, mesh, "discovery-bonly", 0xcb007105, ADDR_SRC_EDGE_DIRECT);
+	give_lan_presence(mesh, &n, 0xc0a80114);
+	n.recent_cap[0] = PATH_CAP_META;
+	path_local_discovery_start(mesh, &n);
+	CHECK(n.local_discovery.active);
+	before = tap.count;
+
+	for(t = 0; t < PATH_LOCAL_DISCOVERY_BROADCAST_TRIES; t++) {
+		path_local_discovery_tick(mesh, &n);
+		EXPECT_ECHO(tap, n, true, bcast);
+		advance_ms(mesh, 1000);
+	}
+
+	path_local_discovery_tick(mesh, &n);
+	CHECK(n.local_discovery.exhausted && !n.local_discovery.active);
+	CHECK(tap.count == before + PATH_LOCAL_DISCOVERY_BROADCAST_TRIES);
+
+	plant_discovery_peer(&n, &edge, mesh, "discovery-bonly-fail", 0xcb007105, ADDR_SRC_EDGE_DIRECT);
+	give_lan_presence(mesh, &n, 0xc0a80114);
+	n.recent_cap[0] = PATH_CAP_META;
+	tap.result = RELAY_UDP_HARD_ERROR;
+	path_local_discovery_start(mesh, &n);
+	path_local_discovery_tick(mesh, &n);
+	tap.result = RELAY_UDP_SENT;
+	CHECK(n.local_discovery.exhausted && !n.local_discovery.active);
+	CHECK(n.local_discovery.carrier_failures == 1 && !n.local_discovery.tries);
+
+	/* 18. The nonce-zero confirm path refuses an off-link private source too. */
+	plant_discovery_peer(&n, &edge, mesh, "legacy-offlink", 0x0a1401b5, ADDR_SRC_EDGE_DIRECT);
+	near = v4(0x0a1401b5, 9);
+	CHECK(path_try_confirm_udp_probe_reply(mesh, &n, &near, 0));
+	CHECK(!n.status.udp_confirmed);
+
+	ok = true;
+
+done:
+	if(families_saved) {
+		for(i = 0; i < mesh->listen_sockets && i < MAXSOCKETS; i++) {
+			mesh->listen_socket[i].sa.sa.sa_family = saved_fam[i];
+		}
+	}
+
+	path_scheduler_set_tap(mesh, NULL);
+	local_network_set_snapshot(mesh, NULL, 0);
+	mesh->lan_network_epoch = saved_epoch ? saved_epoch : 1;
+	stop_peer_path_activity(mesh, &n);
+	path_scheduler_set_budget(mesh, 1000, 1000, saved_max);
+	return ok;
+}
+
 bool path_plpmtu_cover_unit(meshlink_handle_t *mesh) {
 	struct timespec saved_now;
 	unsigned char saved_budget[sizeof mesh->probe_budget];
@@ -1409,6 +2023,7 @@ bool path_plpmtu_cover_unit(meshlink_handle_t *mesh) {
 	     && plpmtu_recovery_cover(mesh)
 	     && liveness_admission_cover(mesh)
 	     && liveness_cover(mesh)
+	     && local_discovery_cover(mesh)
 	     && keepalive_legacy_cache_cover(mesh)
 	     && keepalive_default_cover(mesh)
 	     && keepalive_probe_tx_cover(mesh)

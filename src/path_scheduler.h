@@ -15,6 +15,8 @@
 #include <stdint.h>
 #include <time.h>
 
+#include "sockaddr.h"
+
 struct meshlink_handle;
 struct node_t;
 
@@ -83,7 +85,17 @@ struct path_probe_request_t {
 	uint8_t probe_kind;
 	uint8_t probe_purpose;
 	uint64_t probe_nonce;
+	sockaddr_t dest;                        /* AF_UNSPEC: let the send path choose */
 };
+
+/* Cover and devtools only. Dispatch records each admitted request. With
+   swallow set it writes result to node->udp_send_result instead of sending. */
+typedef struct path_probe_tap {
+	path_probe_request_t last;
+	unsigned count;
+	bool swallow;
+	unsigned result;                        /* RELAY_UDP_* applied when swallowing */
+} path_probe_tap_t;
 
 typedef struct path_probe_budget_t {
 	unsigned active_transactions;           /* live begin() slots, not queued packets */
@@ -117,6 +129,7 @@ void path_scheduler_cancel_node(struct meshlink_handle *mesh, struct node_t *nod
 void path_scheduler_drain(struct meshlink_handle *mesh);
 void path_scheduler_refill(struct meshlink_handle *mesh);
 void path_scheduler_set_budget(struct meshlink_handle *mesh, unsigned second, unsigned minute, unsigned txns);
+void path_scheduler_set_tap(struct meshlink_handle *mesh, path_probe_tap_t *tap);
 
 /* Owner hook passed to begin(). Probing promotion discards; a validated
    candidate stays parked so tick can reacquire and commit. PMTU pauses. */

@@ -147,8 +147,16 @@ typedef struct path_keepalive_t {
 
 typedef struct path_local_discovery_t {
 	uint64_t nonce;
+	uint64_t network_epoch;                 /* lan_network_epoch of the current ladder */
+	uint64_t broadcast_blocked_epoch;       /* a broadcast carrier failed in this epoch */
+	uint64_t last_run_epoch;                /* kept across stop(); bounds restarts */
+	uint32_t local_epoch;                   /* interface snapshot epoch of the current ladder */
 	uint8_t tries;
+	uint8_t run_broadcasts;                 /* broadcasts in the current ladder */
 	bool active, exhausted;
+	bool last_run_broadcast;                /* the current ladder could broadcast, or already upgraded */
+	uint32_t broadcasts, unicasts, skips, carrier_failures, runs, confirms;
+	const char *skip_reason;                /* static string; NULL when the last plan allowed a send */
 	timeout_t timer;
 } path_local_discovery_t;
 
@@ -193,6 +201,7 @@ typedef struct node_t {
 	uint64_t out_meta;                      /* Bytes sent on meta-connections, heartbeat packets etc. */
 
 	uint16_t mtu_probe_request_len;         /* Outbound probe-request payload length; set only around sptps_send_record for dest-IP DEBUG log */
+	sockaddr_t broadcast_dest;              /* Set only around a broadcast probe send */
 	path_plpmtu_t plpmtu;
 	relay_hop_t relay_hop;
 	unsigned udp_send_result;
@@ -273,6 +282,7 @@ typedef struct node_t {
 	peer_path_demand_t peer_udp;            /* Channel refcount + grace for ordinary-peer UDP */
 	sockaddr_t probe_dest_override;          /* Dest for a PKT_PROBE while override is active */
 	bool probe_dest_override_active;        /* Armed around one send_udppacket, then cleared */
+	bool probe_dest_speculative;            /* Override names an unproved address; never alias it */
 	sockaddr_t app_udp_override;            /* Committed application UDP dest for one send */
 	bool app_udp_override_active;           /* Armed around one application/type-8 UDP send */
 	bool devtool_force_meta;                /* Test-only persistent application-route override */

@@ -352,6 +352,19 @@ static void path_scheduler_dispatch(meshlink_handle_t *mesh, const path_probe_re
 	path_scheduler_note_promotion_emit(req);
 	path_scheduler_consume(mesh, req);
 
+	if(mesh->probe_tap) {
+		mesh->probe_tap->last = *req;
+		mesh->probe_tap->count++;
+
+		if(mesh->probe_tap->swallow) {
+			if(req->node) {
+				req->node->udp_send_result = mesh->probe_tap->result;
+			}
+
+			return;
+		}
+	}
+
 	if(req->send) {
 		req->send(mesh, req);
 	}
@@ -725,6 +738,12 @@ path_sched_admit_t path_scheduler_emit_packet(meshlink_handle_t *mesh, path_sche
 	}
 
 	return path_scheduler_enqueue(mesh, &req);
+}
+
+void path_scheduler_set_tap(meshlink_handle_t *mesh, path_probe_tap_t *tap) {
+	if(mesh) {
+		mesh->probe_tap = tap;
+	}
 }
 
 void path_scheduler_set_budget(meshlink_handle_t *mesh, unsigned second, unsigned minute, unsigned txns) {

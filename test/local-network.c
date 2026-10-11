@@ -5,6 +5,11 @@
 #include "system.h"
 
 #include <net/if.h>
+#include <string.h>
+
+#ifdef HAVE_GETIFADDRS
+#include <ifaddrs.h>
+#endif
 
 #include "meshlink_internal.h"
 #include "local_network.h"
@@ -150,7 +155,73 @@ int main(void) {
 	assert(!local_network_on_link(mesh, &sa));
 	local_network_test_fail_scans(mesh, false);
 
+	addrs[0] = v6("fd12:3456::1", 64, 4, 0, IFF_UP | IFF_MULTICAST);
+	addrs[1] = v6("fe80::1", 64, 4, 4, IFF_UP | IFF_MULTICAST);
+	assert(local_network_set_snapshot(mesh, addrs, 2));
+	sa = dest6("fd12:3456::20", 0);
+	{
+		sockaddr_t out;
+
+		assert(local_network_broadcast_target(mesh, &sa, htons(7000), &out));
+		assert(out.in6.sin6_family == AF_INET6);
+		assert(out.in6.sin6_addr.s6_addr[0] == 0xff);
+		assert(out.in6.sin6_addr.s6_addr[1] == 0x02);
+		assert(out.in6.sin6_addr.s6_addr[15] == 0x01);
+		assert(out.in6.sin6_scope_id == 4);
+	}
+
 	assert(local_network_set_snapshot(mesh, NULL, 0));
+
+#ifdef HAVE_GETIFADDRS
+	/* Same ULA plus link-local, but the interface is gone before the index
+	   lookup, so both entries are cached with ifindex 0. The prefix is still
+	   on-link; the multicast query must not return unscoped ff02::1. */
+	{
+		struct ifaddrs entries[2];
+		struct sockaddr_in6 ula;
+		struct sockaddr_in6 link_local;
+		struct sockaddr_in6 mask;
+		sockaddr_t near;
+		sockaddr_t out;
+		sockaddr_t poisoned;
+		char gone[] = "ml-vanished0";
+
+		assert(if_nametoindex(gone) == 0);
+		memset(entries, 0, sizeof entries);
+		memset(&ula, 0, sizeof ula);
+		memset(&link_local, 0, sizeof link_local);
+		memset(&mask, 0, sizeof mask);
+		ula.sin6_family = AF_INET6;
+		assert(inet_pton(AF_INET6, "fd12:3456::1", &ula.sin6_addr) == 1);
+		link_local.sin6_family = AF_INET6;
+		assert(inet_pton(AF_INET6, "fe80::1", &link_local.sin6_addr) == 1);
+		mask.sin6_family = AF_INET6;
+		memset(mask.sin6_addr.s6_addr, 0xff, 8);
+
+		entries[0].ifa_next = &entries[1];
+		entries[0].ifa_name = gone;
+		entries[0].ifa_flags = IFF_UP | IFF_MULTICAST;
+		entries[0].ifa_addr = (struct sockaddr *)&ula;
+		entries[0].ifa_netmask = (struct sockaddr *)&mask;
+		entries[1].ifa_name = gone;
+		entries[1].ifa_flags = IFF_UP | IFF_MULTICAST;
+		entries[1].ifa_addr = (struct sockaddr *)&link_local;
+		entries[1].ifa_netmask = (struct sockaddr *)&mask;
+
+		assert(!mesh->local_network.override);
+		assert(local_network_ingest(mesh, entries));
+		assert(mesh->local_network.count == 2);
+		assert(mesh->local_network.addrs[0].ifindex == 0);
+		assert(mesh->local_network.addrs[1].ifindex == 0);
+		near = dest6("fd12:3456::20", 0);
+		assert(local_network_on_link(mesh, &near));
+		memset(&poisoned, 0xa5, sizeof poisoned);
+		out = poisoned;
+		assert(!local_network_broadcast_target(mesh, &near, htons(7000), &out));
+		assert(!memcmp(&out, &poisoned, sizeof out));
+	}
+#endif
+
 	meshlink_close(mesh);
 	return 0;
 }

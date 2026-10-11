@@ -567,6 +567,87 @@ bool local_network_is_own_address(const struct meshlink_handle *mesh, const sock
 	return false;
 }
 
+static bool iface_has_link_local(const struct meshlink_handle *mesh, int ifindex) {
+	size_t i;
+
+	for(i = 0; i < mesh->local_network.count; i++) {
+		const local_iface_addr_t *a = &mesh->local_network.addrs[i];
+
+		if(a->ifindex == ifindex && (a->flags & IFF_UP) && ipv6_link_local(&a->address)) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool local_network_broadcast_target(const struct meshlink_handle *mesh, const sockaddr_t *near, uint16_t port, sockaddr_t *out) {
+	size_t i;
+
+	if(!snapshot_usable(mesh) || !near || !out || !port || address_is_loopback(near)) {
+		return false;
+	}
+
+	for(i = 0; i < mesh->local_network.count; i++) {
+		const local_iface_addr_t *a = &mesh->local_network.addrs[i];
+
+		if(!(a->flags & IFF_UP) || (a->flags & (IFF_LOOPBACK | IFF_POINTOPOINT))) {
+			continue;
+		}
+
+		if(a->address.sa.sa_family != near->sa.sa_family) {
+			continue;
+		}
+
+		if(near->sa.sa_family == AF_INET) {
+			if(!(a->flags & IFF_BROADCAST) || !a->prefix_len || a->prefix_len > 30
+			                || !prefix_match(&a->address, a->prefix_len, near)) {
+				continue;
+			}
+
+			memset(out, 0, sizeof *out);
+			out->in.sin_family = AF_INET;
+			out->in.sin_addr.s_addr = htonl(ntohl(a->address.in.sin_addr.s_addr) | (0xffffffffu >> a->prefix_len));
+			out->in.sin_port = port;
+			return true;
+		}
+
+		if(!(a->flags & IFF_MULTICAST)) {
+			continue;
+		}
+
+		/* if_nametoindex() is 0 when the interface disappears between
+		   enumeration and the lookup. ff02::1 with scope 0 is unscoped. */
+		if(a->ifindex <= 0) {
+			continue;
+		}
+
+		if(ipv6_link_local(near)) {
+			if(!ipv6_link_local(&a->address) || !near->in6.sin6_scope_id
+			                || near->in6.sin6_scope_id != (uint32_t)a->ifindex) {
+				continue;
+			}
+		} else if(ipv6_link_local(&a->address) || !prefix_match(&a->address, a->prefix_len, near)) {
+			continue;
+		}
+
+		if(!iface_has_link_local(mesh, a->ifindex)) {
+			continue;
+		}
+
+		memset(out, 0, sizeof *out);
+		out->in6.sin6_family = AF_INET6;
+		out->in6.sin6_addr.s6_addr[0] = 0xff;
+		out->in6.sin6_addr.s6_addr[1] = 0x02;
+		out->in6.sin6_addr.s6_addr[15] = 0x01;
+		out->in6.sin6_port = port;
+		out->in6.sin6_scope_id = (uint32_t)a->ifindex;
+		return true;
+	}
+
+	return false;
+}
+
 size_t local_network_private_publishable(const struct meshlink_handle *mesh, int family, sockaddr_t *out, size_t max) {
 	size_t n = 0;
 	size_t i;

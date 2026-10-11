@@ -27,7 +27,7 @@ struct ifaddrs;
 
 typedef struct local_iface_addr {
 	int ifindex;
-	uint32_t flags;      /* IFF_UP, IFF_LOOPBACK, IFF_POINTOPOINT, IFF_MULTICAST */
+	uint32_t flags;      /* raw ifa_flags: IFF_UP, IFF_LOOPBACK, IFF_POINTOPOINT, IFF_BROADCAST, IFF_MULTICAST */
 	sockaddr_t address;  /* port 0; sin6_scope_id preserved */
 	uint8_t prefix_len;
 } local_iface_addr_t;
@@ -52,6 +52,11 @@ bool local_network_ingest(struct meshlink_handle *mesh, struct ifaddrs *ifa);
 void local_network_teardown(struct meshlink_handle *mesh);
 bool local_network_on_link(const struct meshlink_handle *mesh, const sockaddr_t *sa);
 bool local_network_is_own_address(const struct meshlink_handle *mesh, const sockaddr_t *sa);
+/* Directed IPv4 broadcast, or ff02::1 scoped to the interface, for the up,
+   non-loopback, non-point-to-point interface that holds near. port is in
+   network byte order. Fails closed on a stale snapshot, and on an IPv6
+   carrier whose interface index is unknown. */
+bool local_network_broadcast_target(const struct meshlink_handle *mesh, const sockaddr_t *near, uint16_t port, sockaddr_t *out);
 size_t local_network_private_publishable(const struct meshlink_handle *mesh, int family, sockaddr_t *out, size_t max);
 int local_network_getifaddrs(struct meshlink_handle *mesh, struct ifaddrs **ifa);
 

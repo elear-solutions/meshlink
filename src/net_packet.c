@@ -139,15 +139,24 @@ void net_probe_sched_send(meshlink_handle_t *mesh, const path_probe_request_t *r
 
 	if(req->probe_kind == PROBE_KIND_SIZE_ACK || req->probe_kind == PROBE_KIND_ECHO_REPLY) {
 		dest = &n->last_udp_from;
+	} else if(!req->broadcast && req->dest.sa.sa_family) {
+		dest = &req->dest;
 	}
 
 	if(dest && dest->sa.sa_family) {
 		path_copy_sockaddr(&n->probe_dest_override, dest);
 		n->probe_dest_override_active = true;
+		n->probe_dest_speculative = dest == &req->dest;
+	}
+
+	if(req->broadcast) {
+		path_copy_sockaddr(&n->broadcast_dest, &req->dest);
 	}
 
 	send_udppacket(mesh, n, &packet);
 	n->probe_dest_override_active = false;
+	n->probe_dest_speculative = false;
+	memset(&n->broadcast_dest, 0, sizeof n->broadcast_dest);
 	n->status.broadcast = saved_broadcast;
 	n->mtu_probe_request_len = saved_len;
 }
@@ -985,17 +994,17 @@ void choose_udp_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **s
 	finish_udp_dest(mesh, sa, sock);
 }
 
+/* The caller resolved the interface-scoped target. Never fall back to a
+   limited broadcast or a socket of another family. */
 static void choose_broadcast_address(meshlink_handle_t *mesh, const node_t *n, const sockaddr_t **sa, int *sock) {
-	*sock = prng(mesh, mesh->listen_sockets);
-	sockaddr_t *broadcast_sa = &mesh->listen_socket[*sock].broadcast_sa;
+	*sa = NULL;
+	*sock = -1;
 
-	if(broadcast_sa->sa.sa_family == AF_INET6) {
-		broadcast_sa->in6.sin6_port = n->prevedge->address.in.sin_port;
-	} else {
-		broadcast_sa->in.sin_port = n->prevedge->address.in.sin_port;
+	if(!n->broadcast_dest.sa.sa_family || !select_listen_socket(mesh, &n->broadcast_dest, sock)) {
+		return;
 	}
 
-	*sa = broadcast_sa;
+	*sa = &n->broadcast_dest;
 }
 
 static void send_udppacket(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *origpkt) {
@@ -1212,7 +1221,9 @@ bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 				return false;
 			}
 
-			node_udp_cache_alias(mesh, to, &dest);
+			if(!to->probe_dest_speculative) {
+				node_udp_cache_alias(mesh, to, &dest);
+			}
 
 			ssize_t sent = sendto(mesh->listen_socket[sock].udp.fd, data, len, 0, &dest.sa, SALEN(dest.sa));
 			to->udp_send_result = sent >= 0 ? RELAY_UDP_SENT : sockwouldblock(sockerrno) ? RELAY_UDP_WOULD_BLOCK : sockmsgsize(sockerrno) ? RELAY_UDP_EMSGSIZE : RELAY_UDP_HARD_ERROR;
@@ -1261,6 +1272,7 @@ bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t
 
 			path_apply_pending_punch_hint(mesh, from);
 			path_punch_arm_ingress(mesh, from);
+			path_local_discovery_on_key_ready(mesh, from);
 		}
 
 		return true;

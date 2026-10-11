@@ -99,7 +99,7 @@ typedef struct devtool_node_status devtool_node_status_t;
 
 /** Append-only snapshot. Bump when fields are added. New fields go at the end.
  *  devtool_get_node_status() writes devtool_status_version. */
-#define DEVTOOL_NODE_STATUS_VERSION 8
+#define DEVTOOL_NODE_STATUS_VERSION 9
 
 typedef enum {
 	DEVTOOL_PLPMTU_DISABLED = 0,
@@ -273,6 +273,18 @@ struct devtool_node_status {
 
 	/* DEVTOOL_NODE_STATUS_VERSION 8. Append only. */
 	uint8_t private_path_state;           /// 0 none, 1 querying, 2 proven, 3 unavailable
+
+	/* DEVTOOL_NODE_STATUS_VERSION 9. Append only. */
+	bool local_discovery_active;
+	bool local_discovery_exhausted;
+	uint8_t local_discovery_tries;
+	uint32_t local_discovery_broadcasts;  /// directed broadcast/multicast probes sent
+	uint32_t local_discovery_unicasts;    /// on-link unicast probes sent
+	uint32_t local_discovery_skips;       /// plans that allowed no send
+	uint32_t local_discovery_carrier_failures; /// broadcasts blocked by the send path
+	const char *local_discovery_skip_reason; /// static string, NULL if none (not owned)
+	uint32_t local_discovery_runs;        /// ladders armed
+	uint32_t local_discovery_confirms;    /// UDP confirmations by a discovery reply
 
 };
 
@@ -577,6 +589,12 @@ bool devtool_choose_udp_address_advance(struct meshlink_handle *mesh, struct mes
  *  @param confirmed  New udp_confirmed flag.
  */
 void devtool_set_udp_confirmed(struct meshlink_handle *mesh, struct meshlink_node *node, bool confirmed);
+
+/// Demote a confirmed UDP path and start a fresh local-discovery ladder.
+/** Returns true when the ladder armed; false when the plan refused it
+ *  (see local_discovery_skip_reason). Requires mesh->mutex not held.
+ */
+bool devtool_restart_local_discovery(struct meshlink_handle *mesh, struct meshlink_node *node);
 
 /// Age the confirmed-endpoint receive timestamp so a rebind challenge can start.
 /** age_ms is how long ago the current endpoint last spoke. Requires mesh->mutex not held. */

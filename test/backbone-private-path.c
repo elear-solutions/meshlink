@@ -204,6 +204,20 @@ static bool wait_until(bool (*cond)(meshlink_handle_t *), meshlink_handle_t *mes
 	return cond(mesh);
 }
 
+static bool discovery_quiet(meshlink_handle_t *mesh, const char *name) {
+	meshlink_node_t *node = meshlink_get_node(mesh, name);
+	devtool_node_status_t st;
+	bool quiet;
+
+	assert(node);
+	memset(&st, 0, sizeof st);
+	devtool_get_node_status(mesh, node, &st);
+	quiet = !st.local_discovery_runs && !st.local_discovery_broadcasts && !st.local_discovery_unicasts
+	        && !st.local_discovery_active;
+	devtool_free_node_status(&st);
+	return quiet;
+}
+
 static bool both_private(meshlink_handle_t *mesh) {
 	return meta_private(mesh) && udp_private(mesh);
 }
@@ -301,6 +315,8 @@ int main(void) {
 	}
 
 	assert(private_state(vsn_mesh) == 2);
+	assert(discovery_quiet(vsn_mesh, "nmn"));
+	assert(discovery_quiet(nmn_mesh, "vsn"));
 	assert(meshlink_channel_send(vsn_mesh, channel, "B1B2", 4) == 4);
 
 	if(!wait_channel("A1A2B1B2", 20)) {

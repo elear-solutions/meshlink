@@ -46,6 +46,8 @@
    first hop. Anything beyond that falls back to a full node walk. */
 #define ROUTE_GUARD_DEFERRED_MAX 4
 
+struct path_probe_tap;
+
 static const char meshlink_invitation_label[] = "MeshLink invitation";
 static const char meshlink_tcp_label[] = "MeshLink TCP";
 static const char meshlink_udp_label[] = "MeshLink UDP";
@@ -58,7 +60,6 @@ typedef struct listen_socket_t {
 	struct io_t tcp;
 	struct io_t udp;
 	sockaddr_t sa;
-	sockaddr_t broadcast_sa;
 } listen_socket_t;
 
 struct meshlink_open_params {
@@ -292,8 +293,8 @@ struct meshlink_handle {
 	bool ans_witness_rewritten;
 	bool ans_witness_has_addr;
 
-	/* Last local-discovery tick on this mesh. Cover witness only. */
-	bool discovery_did_broadcast;
+	/* Cover and devtools: records admitted probes. NULL in production. */
+	struct path_probe_tap *probe_tap;
 };
 
 static inline const char *mesh_conf_write_subdir(const struct meshlink_handle *mesh) {

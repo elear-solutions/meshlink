@@ -67,11 +67,26 @@ void path_keepalive_observe_local_endpoint(struct meshlink_handle *mesh, struct 
 void path_keepalive_tick(struct meshlink_handle *mesh, struct node_t *n);
 uint32_t path_keepalive_backbone_interval_ms(struct meshlink_handle *mesh, struct node_t *n);
 
+typedef struct path_local_discovery_plan_t {
+	bool unicast;                           /* an on-link UDP candidate exists */
+	bool broadcast;                         /* current LAN evidence and a usable carrier */
+	sockaddr_t unicast_dest;
+	sockaddr_t broadcast_dest;              /* directed IPv4 or scoped ff02::1, with port */
+	const char *skip_reason;                /* set when neither is allowed */
+} path_local_discovery_plan_t;
+
 void path_local_discovery_start(struct meshlink_handle *mesh, struct node_t *n);
 void path_local_discovery_stop(struct meshlink_handle *mesh, struct node_t *n);
 bool path_local_discovery_accept(struct meshlink_handle *mesh, struct node_t *n, const sockaddr_t *from, uint64_t nonce, uint8_t purpose);
 void path_local_discovery_tick(struct meshlink_handle *mesh, struct node_t *n);
-/* Last discovery tick on this mesh. Cover witness, not a route decision. */
-bool path_local_discovery_did_broadcast(const struct meshlink_handle *mesh);
+/* Pure: reads state, sends nothing. False sets skip_reason. */
+bool path_local_discovery_plan(struct meshlink_handle *mesh, const struct node_t *n, path_local_discovery_plan_t *out);
+/* New on-link LAN evidence or a network change. An active ladder that could
+   not broadcast gains the broadcast prefix once. An idle peer runs a new ladder
+   only after an interface change, or once more when broadcast becomes possible. */
+void path_local_discovery_on_lan_evidence(struct meshlink_handle *mesh, struct node_t *n);
+/* Node SPTPS became valid. Starts a ladder that the missing key refused, or
+   resumes one the key cut off without restoring its spent tries. */
+void path_local_discovery_on_key_ready(struct meshlink_handle *mesh, struct node_t *n);
 
 #endif

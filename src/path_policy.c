@@ -3056,7 +3056,8 @@ bool path_try_confirm_udp_probe_reply(meshlink_handle_t *mesh, node_t *n, const 
 	}
 
 	if(path_peer_udp_punching_allowed(mesh, n)) {
-		if(path_address_is_local(from) && nonce == 0) {
+		/* Same locality rule as local discovery: on-link, not address class. */
+		if(nonce == 0 && local_network_on_link(mesh, from)) {
 			/* from may alias n->last_udp_from, which update forgets before it copies. */
 			sockaddr_t ep;
 
@@ -3328,13 +3329,12 @@ bool path_channel_acquire(meshlink_handle_t *mesh, node_t *peer) {
 	path_punch_arm_ingress(mesh, peer);
 	path_consider_promotion(mesh, peer, PATH_PROMOTION_TICK);
 
-	/* WAN punch stays on the challenge. A local address has nothing to punch
-	   and still discovers PMTU from the channel. */
+	/* Local discovery owns its eligibility. WAN peers stay on the punch challenge. */
 	if(peer->status.udp_confirmed) {
 		path_plpmtu_on_confirmed(mesh, peer);
 		path_liveness_on_confirmed(mesh, peer);
 		path_keepalive_on_confirmed(mesh, peer);
-	} else if(path_address_is_local(&peer->address)) {
+	} else {
 		path_local_discovery_start(mesh, peer);
 	}
 

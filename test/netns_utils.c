@@ -232,7 +232,9 @@ peer_config_t *setup_relay_peer_nut(const char *prefix) {
 	return peers;
 }
 
-/// Same LAN bridge, but 203.0.113/24 so path_address_is_local is false (WAN UDP).
+/// Same LAN bridge with 203.0.113/24. The addresses are public by class, but they
+/// are on-link in the local-network inventory, so this is not a WAN-only
+/// fixture for local discovery.
 peer_config_t *setup_relay_peer_nut_wan(const char *prefix) {
 	static peer_config_t peers[] = {
 		{"relay", DEV_CLASS_BACKBONE, NULL, 0, NULL},

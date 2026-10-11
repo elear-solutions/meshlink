@@ -330,12 +330,17 @@ TESTS += backbone-private-path
 check_PROGRAMS += backbone-private-path
 TESTS += backbone-private-relocate
 check_PROGRAMS += backbone-private-relocate
+TESTS += local-discovery-eligibility
+check_PROGRAMS += local-discovery-eligibility
 
 backbone_private_path_SOURCES = backbone-private-path.c netns_utils.c netns_utils.h utils.c utils.h
 backbone_private_path_LDADD = $(top_builddir)/src/libmeshlink.la
 
 backbone_private_relocate_SOURCES = backbone-private-relocate.c netns_utils.c netns_utils.h utils.c utils.h
 backbone_private_relocate_LDADD = $(top_builddir)/src/libmeshlink.la
+
+local_discovery_eligibility_SOURCES = local-discovery-eligibility.c netns_utils.c netns_utils.h utils.c utils.h
+local_discovery_eligibility_LDADD = $(top_builddir)/src/libmeshlink.la
 
 discovery_failure_SOURCES = discovery-failure.c
 discovery_failure_LDADD = $(top_builddir)/src/.libs/libmeshlink.a

@@ -20,6 +20,7 @@
 #include "node.h"
 #include "relay.h"
 #include "packmsg.h"
+#include "path_liveness.h"
 #include "path_policy.h"
 #include "protocol.h"
 #include "splay_tree.h"
@@ -1387,6 +1388,7 @@ void connection_policy_on_discovery(meshlink_handle_t *mesh, node_t *node,
 
 		node->lan_presence.network_epoch = mesh->lan_network_epoch;
 		node->lan_presence.last_discovered_at = now;
+		path_local_discovery_on_lan_evidence(mesh, node);
 	}
 
 	node->last_connect_try = 0;
@@ -1457,6 +1459,7 @@ void connection_policy_advance_network_epoch(meshlink_handle_t *mesh) {
 			memset(&n->udp_observation, 0, sizeof n->udp_observation);
 			n->lan_auth_direct_until = 0;
 			n->lan_admitted_epoch = 0;
+			path_local_discovery_on_lan_evidence(mesh, n);
 		}
 	}
 

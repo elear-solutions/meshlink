@@ -118,6 +118,7 @@ test/backbone-private-path
 test/backbone-private-relocate
 test/datagram-channel-mix
 test/local-network
+test/local-discovery-eligibility
 test/transport-recent
 test/mtu-probe-log
 test/port-range
