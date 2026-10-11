@@ -535,7 +535,7 @@ bool path_backbone_private_fill_meta(const meshlink_handle_t *mesh, const node_t
 	return c && c->status.active && c->status.private_carrier && !path_meta_is_canonical(n, c);
 }
 
-static void member_send(meshlink_handle_t *mesh, node_t *bb) {
+static void member_send(meshlink_handle_t *mesh, node_t *bb, bool climb_on_fail) {
 	uint64_t id;
 
 	if(!bb->connection || bb->connection->protocol_minor < PROT_MINOR_BACKBONE_PRIVATE) {
@@ -561,9 +561,9 @@ static void member_send(meshlink_handle_t *mesh, node_t *bb) {
 		}
 
 		/* The route tick would otherwise send again on the next pass.
-		   Wait out this ladder step, and climb it, without keeping an id
-		   for a request that never left. */
-		if(mesh->bb_private.ladder_step < ladder_last()) {
+		   Wait out this ladder step. Climb only when this attempt is not
+		   already the retry of a timed-out query. */
+		if(climb_on_fail && mesh->bb_private.ladder_step < ladder_last()) {
 			mesh->bb_private.ladder_step++;
 		}
 
@@ -614,20 +614,25 @@ static void member_query_tick(meshlink_handle_t *mesh, node_t *n) {
 		return;
 	}
 
-	/* The in-flight query on this connection timed out. */
+	/* The in-flight query on this connection timed out. That climb is the
+	   retry. A failed resend must not climb again. */
+	bool climbed = false;
+
 	if(asked && mesh->bb_private.query_id) {
 		if(mesh->bb_private.ladder_step < ladder_last()) {
 			mesh->bb_private.ladder_step++;
 		}
 
 		mesh->bb_private.query_id = 0;
+		climbed = true;
 	}
 
 	if(mesh->bb_private.empty) {
 		mesh->bb_private.ladder_step = ladder_last();
+		climbed = true;
 	}
 
-	member_send(mesh, n);
+	member_send(mesh, n, !climbed);
 }
 
 /* Each transport validates on its own schedule, whatever the other one does.
