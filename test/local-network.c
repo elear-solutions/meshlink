@@ -148,12 +148,21 @@ int main(void) {
 	local_network_test_fail_scans(mesh, true);
 	local_network_test_age(mesh, LOCAL_NETWORK_STALE_SEC - 5);
 	assert(!local_network_refresh(mesh));
-	scan_ifaddrs(mesh);
 	assert(local_network_on_link(mesh, &sa));
 	local_network_test_age(mesh, 10);
 	assert(!local_network_refresh(mesh));
 	assert(!local_network_on_link(mesh, &sa));
 	assert(!local_network_refresh(mesh));
+	assert(!local_network_on_link(mesh, &sa));
+
+	/* Apple reachability and hint_network_change call scan_ifaddrs with no
+	   following refresh. That path has to age the snapshot by itself. */
+	assert(local_network_set_snapshot(mesh, addrs, 1));
+	local_network_test_age(mesh, LOCAL_NETWORK_STALE_SEC - 5);
+	scan_ifaddrs(mesh);
+	assert(local_network_on_link(mesh, &sa));
+	local_network_test_age(mesh, 10);
+	scan_ifaddrs(mesh);
 	assert(!local_network_on_link(mesh, &sa));
 	local_network_test_fail_scans(mesh, false);
 
