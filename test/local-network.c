@@ -13,6 +13,7 @@
 
 #include "meshlink_internal.h"
 #include "local_network.h"
+#include "discovery.h"
 
 static local_iface_addr_t v4(const char *ip, uint8_t prefix, int index, uint32_t flags) {
 	local_iface_addr_t a;
@@ -147,6 +148,7 @@ int main(void) {
 	local_network_test_fail_scans(mesh, true);
 	local_network_test_age(mesh, LOCAL_NETWORK_STALE_SEC - 5);
 	assert(!local_network_refresh(mesh));
+	scan_ifaddrs(mesh);
 	assert(local_network_on_link(mesh, &sa));
 	local_network_test_age(mesh, 10);
 	assert(!local_network_refresh(mesh));

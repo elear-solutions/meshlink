@@ -881,6 +881,22 @@ static void test_backbone_private_races(void) {
 	free_connection(standby);
 	close_fixture(&f);
 
+	/* An expired advertisement no longer names the address. An ordinary
+	   on-link standby is not held. A probe dialed from the set still needs
+	   a live voucher. */
+	f = private_fixture(&priv);
+	f.mesh->loop.now = f.mesh->bb_private.expires_at;
+	assert(!path_backbone_private_knows(f.mesh, &priv));
+	assert(!path_backbone_private_vouches(f.mesh, f.backbone, &priv));
+	standby = private_standby(&f, &priv);
+	standby->status.bb_private_probe = false;
+	assert(upgrade_cutover_begin(f.mesh, f.backbone, f.meta, standby));
+	upgrade_cutover_test_abort(f.mesh, f.backbone);
+	standby->status.bb_private_probe = true;
+	assert(!upgrade_cutover_begin(f.mesh, f.backbone, f.meta, standby));
+	free_connection(standby);
+	close_fixture(&f);
+
 	/* Withdrawn after COMMIT went out: the peer has committed, so ACK still
 	   completes, but the withdrawn connection does not stay primary. */
 	f = private_fixture(&priv);

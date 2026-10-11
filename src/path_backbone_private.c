@@ -259,7 +259,9 @@ void path_backbone_private_publish_refresh(meshlink_handle_t *mesh) {
 bool path_backbone_private_knows(const meshlink_handle_t *mesh, const sockaddr_t *sa) {
 	size_t i;
 
-	if(!mesh || !sa) {
+	/* Expiry drops the advertisement. A probe's provenance bit is separate
+	   and still has to be vouched; an ordinary on-link listener does not. */
+	if(!mesh || !sa || set_expired(mesh)) {
 		return false;
 	}
 

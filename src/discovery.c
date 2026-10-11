@@ -672,8 +672,12 @@ void scan_ifaddrs(meshlink_handle_t *mesh) {
 		return;
 	}
 
-	if(local_network_getifaddrs(mesh, &ifa) != 0) {
-		logger(mesh, MESHLINK_ERROR, "Could not get list of interface addresses: %s", strerror(errno));
+	if(mesh->local_network.test_fail_scans || local_network_getifaddrs(mesh, &ifa) != 0) {
+		logger(mesh, MESHLINK_ERROR, "Could not get list of interface addresses: %s",
+		       mesh->local_network.test_fail_scans ? "test failure" : strerror(errno));
+		/* Same contract as local_network_refresh: keep the last success and
+		   let it age out. A failed scan must not renew the snapshot. */
+		mesh->local_network.failed = true;
 		return;
 	}
 
