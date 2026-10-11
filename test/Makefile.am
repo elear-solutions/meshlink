@@ -15,6 +15,7 @@ TESTS = \
 	channels-no-partial \
 	channels-udp \
 	channels-udp-cornercases \
+	datagram-channel-mix \
 	discovery \
 	discovery-learn \
 	duplicate \
@@ -48,6 +49,8 @@ TESTS = \
 	udp-relay \
 	relay-coverage \
 	path-policy-coverage \
+	local-network \
+	peer-control \
 	backbone-identity \
 	connection-policy \
 	backbone-udp \
@@ -91,6 +94,7 @@ check_PROGRAMS = \
 	channels-no-partial \
 	channels-udp \
 	channels-udp-cornercases \
+	datagram-channel-mix \
 	discovery \
 	discovery-learn \
 	duplicate \
@@ -126,6 +130,8 @@ check_PROGRAMS = \
 	udp-relay \
 	relay-coverage \
 	path-policy-coverage \
+	local-network \
+	peer-control \
 	backbone-identity \
 	connection-policy \
 	backbone-udp \
@@ -171,6 +177,9 @@ channels_no_partial_LDADD = $(top_builddir)/src/libmeshlink.la
 
 channels_failure_SOURCES = channels-failure.c utils.c utils.h
 channels_failure_LDADD = $(top_builddir)/src/libmeshlink.la
+
+datagram_channel_mix_SOURCES = datagram-channel-mix.c utils.c utils.h
+datagram_channel_mix_LDADD = $(top_builddir)/src/libmeshlink.la
 
 channels_timeout_SOURCES = channels-timeout.c utils.c utils.h
 channels_timeout_LDADD = $(top_builddir)/src/libmeshlink.la
@@ -289,6 +298,9 @@ relay_coverage_LDADD = $(top_builddir)/src/libmeshlink.la
 path_policy_coverage_SOURCES = path-policy-coverage.c utils.c utils.h
 path_policy_coverage_LDADD = $(top_builddir)/src/libmeshlink.la
 
+local_network_SOURCES = local-network.c
+local_network_LDADD = $(top_builddir)/src/.libs/libmeshlink.a
+
 backbone_identity_SOURCES = backbone-identity.c utils.c utils.h
 backbone_identity_LDADD = $(top_builddir)/src/libmeshlink.la
 
@@ -314,8 +326,26 @@ TESTS += relay-hop
 check_PROGRAMS += relay-hop
 TESTS += discovery-failure
 check_PROGRAMS += discovery-failure
+TESTS += backbone-private-path
+check_PROGRAMS += backbone-private-path
+TESTS += backbone-private-relocate
+check_PROGRAMS += backbone-private-relocate
+TESTS += local-discovery-eligibility
+check_PROGRAMS += local-discovery-eligibility
+
+backbone_private_path_SOURCES = backbone-private-path.c netns_utils.c netns_utils.h utils.c utils.h
+backbone_private_path_LDADD = $(top_builddir)/src/libmeshlink.la
+
+backbone_private_relocate_SOURCES = backbone-private-relocate.c netns_utils.c netns_utils.h utils.c utils.h
+backbone_private_relocate_LDADD = $(top_builddir)/src/libmeshlink.la
+
+local_discovery_eligibility_SOURCES = local-discovery-eligibility.c netns_utils.c netns_utils.h utils.c utils.h
+local_discovery_eligibility_LDADD = $(top_builddir)/src/libmeshlink.la
 
 discovery_failure_SOURCES = discovery-failure.c
 discovery_failure_LDADD = $(top_builddir)/src/.libs/libmeshlink.a
 discovery_failure_LDFLAGS = $(AM_LDFLAGS) -Wl,--wrap=bind -Wl,--wrap=setsockopt -Wl,--wrap=getifaddrs -Wl,--wrap=freeifaddrs
 endif
+
+peer_control_SOURCES = peer-control.c utils.c utils.h
+peer_control_LDADD = $(top_builddir)/src/.libs/libmeshlink.a

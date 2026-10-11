@@ -90,6 +90,12 @@ typedef enum {
 	MESHLINK_STORAGE_KEYS_ONLY   ///< Only store updates when a node's key has changed.
 } meshlink_storage_policy_t;
 
+/// How a member treats private carriers to its backbone. Runtime only.
+typedef enum {
+	MESHLINK_BACKBONE_PATH_PREFER_PRIVATE = 0, ///< Prove private, then fall back to public.
+	MESHLINK_BACKBONE_PATH_PRIVATE_ONLY        ///< After a private carrier is proven, do not send data on public.
+} meshlink_backbone_path_policy_t;
+
 /// Invitation flags
 static const uint32_t MESHLINK_INVITE_LOCAL = 1;    // Only use local addresses in the URL
 static const uint32_t MESHLINK_INVITE_PUBLIC = 2;   // Only use public or canonical addresses in the URL
@@ -422,6 +428,9 @@ typedef void (*meshlink_receive_cb_t)(struct meshlink_handle *mesh, struct meshl
  *  to hand the data over to the application's thread.
  *  The callback should also not block itself and return as quickly as possible.
  *
+ *  The callback is not called for nodes that the local node has channel state for;
+ *  their packets are handled as channel traffic. See meshlink_send().
+ *
  *  \memberof meshlink_handle
  *  @param mesh      A handle which represents an instance of MeshLink.
  *  @param cb        A pointer to the function which will be called when another node sends data to the local node.
@@ -645,6 +654,17 @@ void meshlink_set_thread_status_cb(struct meshlink_handle *mesh, meshlink_thread
  *  Packets that are too big to be sent over the network as one unit might be dropped, and this function may return an error if this situation can be detected beforehand.
  *  The application should not send packets that are larger than the path MTU, which can be queried with meshlink_get_pmtu().
  *  The application should take care of getting an acknowledgement and retransmission if necessary.
+ *
+ *  Datagrams and channels do not mix between the same pair of nodes. Once the receiving
+ *  node has channel state for the sender, every packet from the sender is handled as
+ *  channel traffic, and datagrams from it never reach the receive callback. The receiver
+ *  creates that state when it sets a channel accept callback (for every reachable node),
+ *  opens a channel to the sender, or sets a channel timeout for it. The state lasts until
+ *  the receiver forgets the node, normally when its mesh is closed, so it persists after
+ *  all channels are closed. A datagram dropped this way is reported with a rate-limited
+ *  warning on the receiver. A datagram that happens to parse as a channel segment header
+ *  is handled as one and is not reported. Use either channels (MESHLINK_CHANNEL_UDP gives
+ *  datagram semantics) or meshlink_send() for a given peer, not both.
  *
  *  \memberof meshlink_node
  *  @param mesh         A handle which represents an instance of MeshLink.
@@ -1439,6 +1459,10 @@ void meshlink_set_channel_listen_cb(struct meshlink_handle *mesh, meshlink_chann
  *
  *  If no listen or accept callbacks are set, incoming channels are rejected.
  *
+ *  Setting an accept callback creates channel state for every reachable node. From then on,
+ *  meshlink_send() datagrams from those nodes are no longer delivered to the receive callback.
+ *  See meshlink_send().
+ *
  *  \memberof meshlink_handle
  *  @param mesh      A handle which represents an instance of MeshLink.
  *  @param cb        A pointer to the function which will be called when a new channel has been opened by a remote node.
@@ -1556,6 +1580,10 @@ void meshlink_set_channel_flags(struct meshlink_handle *mesh, struct meshlink_ch
  *                      If len is 0, the data pointer is copied into the channel's priv member.
  *  @param len          The length of the data, or 0 if there is no data to send.
  *  @param flags        A bitwise-or'd combination of flags that set the semantics for this channel.
+ *
+ *  Opening a channel creates channel state for @a node, which stays after the channel is
+ *  closed. Datagrams that @a node sends with meshlink_send() are then no longer delivered
+ *  to the receive callback. See meshlink_send().
  *
  *  @return             A handle for the channel, or NULL in case of an error.
  *                      The handle is valid until meshlink_channel_close() is called.
@@ -1957,6 +1985,15 @@ void meshlink_set_scheduling_granularity(struct meshlink_handle *mesh, long gran
  *  @param policy  The storage policy to use.
  */
 void meshlink_set_storage_policy(struct meshlink_handle *mesh, meshlink_storage_policy_t policy);
+
+/// Prefer a proven private backbone path, or refuse public data after one was proven.
+/** The default is MESHLINK_BACKBONE_PATH_PREFER_PRIVATE. This is not stored.
+ *
+ *  \memberof meshlink_handle
+ *  @param mesh    A handle which represents an instance of MeshLink.
+ *  @param policy  Private-path preference for the backbone link.
+ */
+void meshlink_set_backbone_path_policy(struct meshlink_handle *mesh, meshlink_backbone_path_policy_t policy);
 
 #ifdef __cplusplus
 }

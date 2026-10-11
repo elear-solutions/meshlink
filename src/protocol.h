@@ -25,12 +25,14 @@
 /* Protocol version. Different major versions are incompatible. */
 
 #define PROT_MAJOR 17
-#define PROT_MINOR 8 /* Should not exceed 255! */
+#define PROT_MINOR 9 /* Should not exceed 255! */
 /* Direct META upgrades require this minor. Older peers stay on canonical META. */
 #define PROT_MINOR_ORDERED_CUTOVER 5
 /* One-direction PLPMTU size acks. No mixed-version negotiation. */
 #define PROT_MINOR_PLPMTU 6
 #define PROT_MINOR_SPTPS_APP 8
+/* Backbone private listening endpoints. Older peers never see the request. */
+#define PROT_MINOR_BACKBONE_PRIVATE 9
 
 /* Silly Windows */
 
@@ -63,6 +65,9 @@ typedef enum request_t {
 	REQ_META_CUTOVER_ACK,
 	REQ_META_CUTOVER_EMERGENCY, /* primary died before the barrier; sync before ordinary META */
 	REQ_SPTPS_APP, /* application-only encrypted datagram envelope */
+	REQ_BACKBONE_PRIVATE, /* member asks the backbone for its private listeners */
+	ANS_BACKBONE_PRIVATE,
+	REQ_BACKBONE_PRIVATE_CHANGED,
 	NUM_REQUESTS
 } request_t;
 
@@ -147,7 +152,9 @@ bool meta_cutover_emergency_h(struct meshlink_handle *mesh, struct connection_t 
 
 /* Node SPTPS recovery. One watchdog, owned by the node, not by a META socket.
    node_kex_clear keeps key_retry_epoch. node_kex_on_session_change zeros it. */
-void node_kex_arm(struct meshlink_handle *mesh, struct node_t *n);
+/* Ensure ordinary demand progresses once per deadline; send_req_key forces a
+   handshake restart when a known peer changed its listen port or for devtools. */
+bool node_kex_ensure(struct meshlink_handle *mesh, struct node_t *n);
 void node_kex_clear(struct meshlink_handle *mesh, struct node_t *n);
 void node_kex_note_demand(struct meshlink_handle *mesh, struct node_t *n);
 void node_kex_mark_uncertain(struct meshlink_handle *mesh, struct node_t *n);

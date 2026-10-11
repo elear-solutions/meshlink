@@ -12,8 +12,10 @@
 
 #include <string.h>
 
+#include "connection_policy.h"
 #include "crypto.h"
 #include "event.h"
+#include "local_network.h"
 #include "logger.h"
 #include "meshlink_internal.h"
 #include "net.h"
@@ -28,10 +30,6 @@
 #include "relay.h"
 
 static bool same_ip_portless(const sockaddr_t *a, const sockaddr_t *b);
-
-bool path_local_discovery_did_broadcast(const meshlink_handle_t *mesh) {
-	return mesh && mesh->discovery_did_broadcast;
-}
 
 uint64_t path_probe_fresh_nonce(void) {
 	uint64_t nonce = 0;
@@ -101,7 +99,7 @@ static int try_gap_ms(const meshlink_handle_t *mesh, const node_t *n) {
 	return gap < PATH_LIVENESS_TRY_GAP_FLOOR_MS ? PATH_LIVENESS_TRY_GAP_FLOOR_MS : gap;
 }
 
-static bool emit_echo(meshlink_handle_t *mesh, node_t *n, uint8_t purpose, uint64_t nonce, bool broadcast, path_transaction_priority_t prio) {
+static bool emit_echo(meshlink_handle_t *mesh, node_t *n, uint8_t purpose, uint64_t nonce, bool broadcast, const sockaddr_t *dest, path_transaction_priority_t prio) {
 	path_probe_request_t req;
 	path_sched_admit_t admit;
 
@@ -114,6 +112,11 @@ static bool emit_echo(meshlink_handle_t *mesh, node_t *n, uint8_t purpose, uint6
 	req.probe_kind = PROBE_KIND_ECHO_REQUEST;
 	req.probe_purpose = purpose;
 	req.probe_nonce = nonce;
+
+	if(dest) {
+		req.dest = *dest;
+	}
+
 	admit = path_scheduler_emit_packet(mesh, NULL, &req);
 	return admit == PATH_SCHED_SENT;
 }
@@ -228,7 +231,7 @@ void path_liveness_tick(meshlink_handle_t *mesh, node_t *n) {
 		return;
 	}
 
-	if(emit_echo(mesh, n, PROBE_PURPOSE_LIVENESS, n->liveness.nonce, false, PATH_TX_LIVENESS)) {
+	if(emit_echo(mesh, n, PROBE_PURPOSE_LIVENESS, n->liveness.nonce, false, NULL, PATH_TX_LIVENESS)) {
 		n->liveness.probes_sent++;
 		n->keepalive.last_probe_at = mesh->loop.now;
 
@@ -555,15 +558,249 @@ void path_local_discovery_stop(meshlink_handle_t *mesh, node_t *n) {
 	n->local_discovery.nonce = 0;
 }
 
+static bool listen_family_available(const meshlink_handle_t *mesh, int family) {
+	int i;
+
+	for(i = 0; i < mesh->listen_sockets; i++) {
+		if(mesh->listen_socket[i].sa.sa.sa_family == family) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/* Locality proof, not address class: a live local META adjacency, or a
+   current-epoch mDNS sighting with an on-link discovered address. */
+static bool discovery_lan_evidence(meshlink_handle_t *mesh, const node_t *n, sockaddr_t *near) {
+	int i;
+
+	if(connection_policy_is_local_adjacency(mesh, n) && local_network_on_link(mesh, &n->connection->address)) {
+		*near = n->connection->address;
+		return true;
+	}
+
+	if(!connection_policy_has_current_lan_discovery(mesh, n)) {
+		return false;
+	}
+
+	for(i = 0; i < MAX_RECENT && n->recent[i].sa.sa_family; i++) {
+		if(n->recent_source[i] == ADDR_SRC_DISCOVERY && local_network_on_link(mesh, &n->recent[i])) {
+			*near = n->recent[i];
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static bool discovery_unicast_dest(meshlink_handle_t *mesh, const node_t *n, sockaddr_t *out) {
+	int i;
+
+	if(n->address.sa.sa_family && path_is_udp_candidate(n, &n->address, n->address_source, n->address_cap)
+	                && local_network_on_link(mesh, &n->address)) {
+		*out = n->address;
+		return true;
+	}
+
+	for(i = 0; i < MAX_RECENT && n->recent[i].sa.sa_family; i++) {
+		if(path_is_udp_candidate(n, &n->recent[i], n->recent_source[i], n->recent_cap[i])
+		                && local_network_on_link(mesh, &n->recent[i])) {
+			*out = n->recent[i];
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/* prevedge supplies the listen port only, never locality. */
+static uint16_t discovery_port(const node_t *n, const sockaddr_t *near) {
+	const sockaddr_t *src = n->prevedge ? &n->prevedge->address : near;
+
+	return src->sa.sa_family == AF_INET6 ? src->in6.sin6_port : src->in.sin_port;
+}
+
+bool path_local_discovery_plan(meshlink_handle_t *mesh, const node_t *n, path_local_discovery_plan_t *out) {
+	sockaddr_t near;
+
+	memset(out, 0, sizeof *out);
+
+	if(!mesh || !n) {
+		out->skip_reason = "no node";
+		return false;
+	}
+
+	if(!path_peer_udp_punching_allowed(mesh, n)) {
+		out->skip_reason = "not a demanded ordinary peer";
+		return false;
+	}
+
+	if(!n->status.reachable || !n->status.validkey) {
+		out->skip_reason = "no valid key";
+		return false;
+	}
+
+	if(n->status.udp_confirmed) {
+		out->skip_reason = "UDP already confirmed";
+		return false;
+	}
+
+	out->unicast = discovery_unicast_dest(mesh, n, &out->unicast_dest);
+
+	if(discovery_lan_evidence(mesh, n, &near)
+	                && n->local_discovery.broadcast_blocked_epoch != mesh->lan_network_epoch
+	                && local_network_broadcast_target(mesh, &near, discovery_port(n, &near), &out->broadcast_dest)
+	                && listen_family_available(mesh, out->broadcast_dest.sa.sa_family)) {
+		out->broadcast = true;
+	}
+
+	if(!out->unicast && !out->broadcast) {
+		out->skip_reason = "no on-link candidate or LAN evidence";
+		return false;
+	}
+
+	return true;
+}
+
+static void discovery_reset(meshlink_handle_t *mesh, node_t *n, const path_local_discovery_plan_t *plan) {
+	n->local_discovery.active = true;
+	n->local_discovery.exhausted = false;
+	n->local_discovery.tries = 0;
+	n->local_discovery.run_broadcasts = 0;
+	n->local_discovery.nonce = fresh_nonce();
+	n->local_discovery.network_epoch = mesh->lan_network_epoch;
+	n->local_discovery.last_run_epoch = mesh->lan_network_epoch;
+	n->local_discovery.local_epoch = local_network_epoch(mesh);
+	n->local_discovery.last_run_broadcast = plan->broadcast;
+	n->local_discovery.skip_reason = NULL;
+	n->local_discovery.runs++;
+}
+
+/* A hint advances lan_network_epoch even when nothing changed. Only a new
+   interface snapshot is a new network for the ladder. */
+static bool discovery_interfaces_changed(const meshlink_handle_t *mesh, const node_t *n) {
+	return n->local_discovery.local_epoch != local_network_epoch(mesh);
+}
+
+/* Once per ladder: LAN evidence arrived for a ladder that could not broadcast. */
+static bool discovery_can_upgrade(const node_t *n, const path_local_discovery_plan_t *plan) {
+	return plan->broadcast && !n->local_discovery.last_run_broadcast;
+}
+
+/* Leave room for the broadcast prefix, so a ladder runs at most
+   PATH_LOCAL_DISCOVERY_TRIES + PATH_LOCAL_DISCOVERY_BROADCAST_TRIES tries. */
+static void discovery_upgrade(meshlink_handle_t *mesh, node_t *n) {
+	n->local_discovery.last_run_broadcast = true;
+
+	if(n->local_discovery.tries > PATH_LOCAL_DISCOVERY_TRIES - PATH_LOCAL_DISCOVERY_BROADCAST_TRIES) {
+		n->local_discovery.tries = PATH_LOCAL_DISCOVERY_TRIES - PATH_LOCAL_DISCOVERY_BROADCAST_TRIES;
+	}
+
+	logger(mesh, MESHLINK_DEBUG, "Local discovery for %s: LAN evidence, adding broadcasts", n->name);
+}
+
+/* An idle peer runs a new ladder only on a new network, or once more when
+   broadcast becomes possible. */
+static bool discovery_may_rerun(const meshlink_handle_t *mesh, const node_t *n, const path_local_discovery_plan_t *plan) {
+	if(!n->local_discovery.last_run_epoch || discovery_interfaces_changed(mesh, n)) {
+		return true;
+	}
+
+	return discovery_can_upgrade(n, plan);
+}
+
+/* New lan epoch, same interfaces: retire the nonce, keep the ladder. */
+static void discovery_next_epoch(meshlink_handle_t *mesh, node_t *n) {
+	n->local_discovery.nonce = fresh_nonce();
+	n->local_discovery.network_epoch = mesh->lan_network_epoch;
+	n->local_discovery.last_run_epoch = mesh->lan_network_epoch;
+}
+
+static void discovery_note_skip(meshlink_handle_t *mesh, node_t *n, const char *reason, const char *what) {
+	n->local_discovery.skips++;
+	n->local_discovery.skip_reason = reason;
+	logger(mesh, MESHLINK_DEBUG, "Local discovery for %s %s: %s", n->name, what, reason);
+}
+
 void path_local_discovery_start(meshlink_handle_t *mesh, node_t *n) {
+	path_local_discovery_plan_t plan;
+
 	if(!mesh || !n || n->status.udp_confirmed) {
 		return;
 	}
 
-	n->local_discovery.active = true;
-	n->local_discovery.exhausted = false;
-	n->local_discovery.tries = 0;
-	n->local_discovery.nonce = fresh_nonce();
+	if(!path_local_discovery_plan(mesh, n, &plan)) {
+		discovery_note_skip(mesh, n, plan.skip_reason, "skipped");
+		return;
+	}
+
+	discovery_reset(mesh, n, &plan);
+	arm_ms(mesh, &n->local_discovery.timer, discovery_timer, n, 0);
+}
+
+void path_local_discovery_on_lan_evidence(meshlink_handle_t *mesh, node_t *n) {
+	path_local_discovery_plan_t plan;
+
+	if(!mesh || !n || n->status.udp_confirmed) {
+		return;
+	}
+
+	if(!path_local_discovery_plan(mesh, n, &plan)) {
+		return;
+	}
+
+	if(n->local_discovery.active) {
+		if(n->local_discovery.network_epoch == mesh->lan_network_epoch && discovery_can_upgrade(n, &plan)) {
+			discovery_upgrade(mesh, n);
+			arm_ms(mesh, &n->local_discovery.timer, discovery_timer, n, 0);
+		}
+
+		return;
+	}
+
+	if(!discovery_may_rerun(mesh, n, &plan)) {
+		return;
+	}
+
+	discovery_reset(mesh, n, &plan);
+	arm_ms(mesh, &n->local_discovery.timer, discovery_timer, n, 0);
+}
+
+void path_local_discovery_on_key_ready(meshlink_handle_t *mesh, node_t *n) {
+	path_local_discovery_plan_t plan;
+	path_local_discovery_t *d;
+
+	if(!mesh || !n || n->local_discovery.active || n->status.udp_confirmed) {
+		return;
+	}
+
+	if(!path_peer_udp_punching_allowed(mesh, n)) {
+		return;
+	}
+
+	if(!path_local_discovery_plan(mesh, n, &plan)) {
+		discovery_note_skip(mesh, n, plan.skip_reason, "skipped after key exchange");
+		return;
+	}
+
+	d = &n->local_discovery;
+
+	if(d->last_run_epoch && !d->exhausted && d->tries && !discovery_interfaces_changed(mesh, n)) {
+		/* A ladder cut off by the key resumes; a rekey cannot buy more tries. */
+		d->active = true;
+		discovery_next_epoch(mesh, n);
+		d->skip_reason = NULL;
+
+		if(discovery_can_upgrade(n, &plan)) {
+			discovery_upgrade(mesh, n);
+		}
+	} else if(d->exhausted && !discovery_may_rerun(mesh, n, &plan)) {
+		return;
+	} else {
+		discovery_reset(mesh, n, &plan);
+	}
+
 	arm_ms(mesh, &n->local_discovery.timer, discovery_timer, n, 0);
 }
 
@@ -578,7 +815,13 @@ bool path_local_discovery_accept(meshlink_handle_t *mesh, node_t *n, const socka
 		return false;
 	}
 
-	if(!path_address_is_local(from)) {
+	/* The nonce rotates on the next tick; until then a reply from before the
+	   network change must not prove the new one. */
+	if(n->local_discovery.network_epoch != mesh->lan_network_epoch) {
+		return false;
+	}
+
+	if(!local_network_on_link(mesh, from)) {
 		return false;
 	}
 
@@ -590,38 +833,105 @@ bool path_local_discovery_accept(meshlink_handle_t *mesh, node_t *n, const socka
 		node_add_recent_address_cap(mesh, n, &n->address, ADDR_SRC_UDP_REFLEXIVE, PATH_CAP_UDP);
 	}
 
+	n->local_discovery.confirms++;
 	path_local_discovery_stop(mesh, n);
 	path_note_udp_confirmed(mesh, n);
 	return true;
 }
 
+static void discovery_exhaust(meshlink_handle_t *mesh, node_t *n) {
+	n->local_discovery.exhausted = true;
+	n->local_discovery.active = false;
+	path_local_discovery_stop(mesh, n);
+
+	if(n->status.want_udp && n->nexthop && n->nexthop->connection) {
+		send_request(mesh, n->nexthop->connection, NULL, "%d %s %s . -1 -1 -1 0", ANS_KEY, mesh->self->name, n->name);
+		n->status.want_udp = false;
+	}
+}
+
 void path_local_discovery_tick(meshlink_handle_t *mesh, node_t *n) {
+	path_local_discovery_plan_t plan;
+	const sockaddr_t *dest;
 	bool broadcast;
+	bool sent;
+	char *host;
+	char *port;
 
 	if(!mesh || !n || !n->local_discovery.active || n->status.udp_confirmed) {
 		path_local_discovery_stop(mesh, n);
 		return;
 	}
 
-	if(n->local_discovery.tries >= PATH_LOCAL_DISCOVERY_TRIES) {
-		n->local_discovery.exhausted = true;
-		n->local_discovery.active = false;
+	if(!path_local_discovery_plan(mesh, n, &plan)) {
+		discovery_note_skip(mesh, n, plan.skip_reason, "stopped");
 		path_local_discovery_stop(mesh, n);
-
-		if(n->status.want_udp && n->nexthop && n->nexthop->connection) {
-			send_request(mesh, n->nexthop->connection, NULL, "%d %s %s . -1 -1 -1 0", ANS_KEY, mesh->self->name, n->name);
-			n->status.want_udp = false;
-		}
-
 		return;
 	}
 
-	broadcast = n->local_discovery.tries < PATH_LOCAL_DISCOVERY_BROADCAST_TRIES && n->prevedge;
-	bool sent = emit_echo(mesh, n, PROBE_PURPOSE_LOCAL_DISCOVERY, n->local_discovery.nonce, broadcast, PATH_TX_LIVENESS);
-	mesh->discovery_did_broadcast = sent && broadcast;
-	if(sent) {
-		n->local_discovery.tries++;
+	if(n->local_discovery.network_epoch != mesh->lan_network_epoch) {
+		if(discovery_interfaces_changed(mesh, n)) {
+			logger(mesh, MESHLINK_DEBUG, "Local discovery for %s restarted after a network change", n->name);
+			discovery_reset(mesh, n, &plan);
+		} else {
+			discovery_next_epoch(mesh, n);
+		}
 	}
+
+	if(discovery_can_upgrade(n, &plan)) {
+		discovery_upgrade(mesh, n);
+	}
+
+	if(n->local_discovery.tries >= PATH_LOCAL_DISCOVERY_TRIES) {
+		discovery_exhaust(mesh, n);
+		return;
+	}
+
+	broadcast = plan.broadcast && n->local_discovery.run_broadcasts < PATH_LOCAL_DISCOVERY_BROADCAST_TRIES;
+
+	if(!broadcast && !plan.unicast) {
+		discovery_exhaust(mesh, n);
+		return;
+	}
+
+	dest = broadcast ? &plan.broadcast_dest : &plan.unicast_dest;
+	n->udp_send_result = RELAY_UDP_UNREADY;
+	sent = emit_echo(mesh, n, PROBE_PURPOSE_LOCAL_DISCOVERY, n->local_discovery.nonce, broadcast, dest, PATH_TX_LIVENESS);
+
+	if(sent && broadcast && (n->udp_send_result == RELAY_UDP_NO_SOCKET || n->udp_send_result == RELAY_UDP_HARD_ERROR)) {
+		n->local_discovery.broadcast_blocked_epoch = mesh->lan_network_epoch;
+		n->local_discovery.carrier_failures++;
+		logger(mesh, MESHLINK_DEBUG, "Local discovery for %s: no broadcast carrier on this network", n->name);
+
+		/* With no unicast target this ladder has nothing left to send. */
+		if(!plan.unicast) {
+			discovery_exhaust(mesh, n);
+			return;
+		}
+
+		arm_ms(mesh, &n->local_discovery.timer, discovery_timer, n, 0);
+		return;
+	}
+
+	if(sent && n->udp_send_result != RELAY_UDP_WOULD_BLOCK) {
+		n->local_discovery.tries++;
+
+		if(broadcast) {
+			n->local_discovery.run_broadcasts++;
+			n->local_discovery.broadcasts++;
+		} else {
+			n->local_discovery.unicasts++;
+		}
+
+		if(mesh->log_level <= MESHLINK_DEBUG) {
+			sockaddr2str(dest, &host, &port);
+			logger(mesh, MESHLINK_DEBUG, "Local discovery for %s try %u/%u: %s %s port %s", n->name,
+			       n->local_discovery.tries, PATH_LOCAL_DISCOVERY_TRIES, broadcast ? "broadcast" : "unicast", host, port);
+			free(host);
+			free(port);
+		}
+	}
+
 	arm_ms(mesh, &n->local_discovery.timer, discovery_timer, n, PATH_LOCAL_DISCOVERY_REARM_MS);
 }
 

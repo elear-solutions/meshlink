@@ -192,7 +192,12 @@ static void stability_open_trio(const char *prefix, const char *app,
 		m[i] = meshlink_open(path, names[i], app, classes[i]);
 		assert(m[i]);
 		meshlink_enable_discovery(m[i], false);
-		assert(meshlink_set_canonical_address(m[i], meshlink_get_self(m[i]), "localhost", NULL));
+		/* Ordinary peers need a canonical address distinct from loopback
+		   discovery and UDP reply sources. Otherwise key exchange sanitizes
+		   the discovered listen address and two source interfaces can win
+		   opposite sides of the liveness test. */
+		const char *canonical = i == 0 ? "localhost" : "127.0.0.2";
+		assert(meshlink_set_canonical_address(m[i], meshlink_get_self(m[i]), canonical, NULL));
 	}
 
 	join_meshlink_peer(m[0], m[1]);
@@ -2708,12 +2713,30 @@ int main(int argc, char **argv) {
 	setvbuf(stdout, NULL, _IOLBF, 0);
 	setvbuf(stderr, NULL, _IONBF, 0);
 	meshlink_set_log_cb(NULL, MESHLINK_WARNING, NULL);
+	if(getenv("MESHLINK_TEST_DEBUG")) {
+		meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
+	}
 
-	/* Keep the demand-expiry/reopen case independently reproducible with
+	/* Keep connection setup and demand cases independently reproducible with
 	   carrier and probe logs when diagnosing timing-dependent failures. */
 	if(argc == 2 && !strcmp(argv[1], "--peer-demand")) {
 		meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
 		test_idle_peer_is_not_probed();
+		return 0;
+	}
+	if(argc == 2 && !strcmp(argv[1], "--local-meta")) {
+		meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
+		test_local_peer_meta_route();
+		return 0;
+	}
+	if(argc == 2 && !strcmp(argv[1], "--half-close")) {
+		meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
+		test_half_open_keeps_demand();
+		return 0;
+	}
+	if(argc == 2 && !strcmp(argv[1], "--idle-channel")) {
+		meshlink_set_log_cb(NULL, MESHLINK_DEBUG, log_cb);
+		test_idle_channel_traffic();
 		return 0;
 	}
 	assert(argc == 1);

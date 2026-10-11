@@ -139,15 +139,24 @@ void net_probe_sched_send(meshlink_handle_t *mesh, const path_probe_request_t *r
 
 	if(req->probe_kind == PROBE_KIND_SIZE_ACK || req->probe_kind == PROBE_KIND_ECHO_REPLY) {
 		dest = &n->last_udp_from;
+	} else if(!req->broadcast && req->dest.sa.sa_family) {
+		dest = &req->dest;
 	}
 
 	if(dest && dest->sa.sa_family) {
 		path_copy_sockaddr(&n->probe_dest_override, dest);
 		n->probe_dest_override_active = true;
+		n->probe_dest_speculative = dest == &req->dest;
+	}
+
+	if(req->broadcast) {
+		path_copy_sockaddr(&n->broadcast_dest, &req->dest);
 	}
 
 	send_udppacket(mesh, n, &packet);
 	n->probe_dest_override_active = false;
+	n->probe_dest_speculative = false;
+	memset(&n->broadcast_dest, 0, sizeof n->broadcast_dest);
 	n->status.broadcast = saved_broadcast;
 	n->mtu_probe_request_len = saved_len;
 }
@@ -332,11 +341,11 @@ void send_suspect_probe(meshlink_handle_t *mesh, node_t *n) {
 	s->probes_sent++;
 }
 
-void send_backbone_udp_probe(meshlink_handle_t *mesh) {
+void send_backbone_udp_probe_at(meshlink_handle_t *mesh, const sockaddr_t *dest, uint64_t nonce) {
 	node_t *n;
 	vpn_packet_t packet;
 
-	if(!mesh || !mesh->backbone_udp.node || !mesh->backbone_udp.liveness_nonce) {
+	if(!mesh || !mesh->backbone_udp.node || !nonce || !dest) {
 		return;
 	}
 
@@ -346,8 +355,7 @@ void send_backbone_udp_probe(meshlink_handle_t *mesh) {
 		return;
 	}
 
-	if(mesh->backbone_udp.endpoint.sa.sa_family == AF_UNSPEC
-	                || mesh->backbone_udp.endpoint.sa.sa_family == AF_UNKNOWN) {
+	if(dest->sa.sa_family == AF_UNSPEC || dest->sa.sa_family == AF_UNKNOWN) {
 		return;
 	}
 
@@ -355,11 +363,28 @@ void send_backbone_udp_probe(meshlink_handle_t *mesh) {
 	packet.probe = true;
 	packet.data[0] = PROBE_KIND_ECHO_REQUEST;
 	packet.data[PROBE_PURPOSE_OFFSET] = PROBE_PURPOSE_BACKBONE;
-	memcpy(packet.data + PROBE_NONCE_OFFSET, &mesh->backbone_udp.liveness_nonce, sizeof mesh->backbone_udp.liveness_nonce);
+	memcpy(packet.data + PROBE_NONCE_OFFSET, &nonce, sizeof nonce);
 	randomize(packet.data + 14, PATH_PROMOTION_PROBE_LEN - 14);
 	packet.len = PATH_PROMOTION_PROBE_LEN;
 	n->out_meta += packet.len + PROBE_OVERHEAD;
-	send_probe_to(mesh, n, &packet, &mesh->backbone_udp.endpoint);
+	send_probe_to(mesh, n, &packet, dest);
+}
+
+void send_backbone_udp_probe(meshlink_handle_t *mesh) {
+	if(!mesh || !mesh->backbone_udp.node || !mesh->backbone_udp.liveness_nonce) {
+		return;
+	}
+
+	if(!mesh->backbone_udp.node->status.reachable || !mesh->backbone_udp.node->status.validkey) {
+		return;
+	}
+
+	if(mesh->backbone_udp.endpoint.sa.sa_family == AF_UNSPEC
+	                || mesh->backbone_udp.endpoint.sa.sa_family == AF_UNKNOWN) {
+		return;
+	}
+
+	send_backbone_udp_probe_at(mesh, &mesh->backbone_udp.endpoint, mesh->backbone_udp.liveness_nonce);
 }
 
 static bool sockaddr_is_set(const sockaddr_t *sa) {
@@ -611,7 +636,7 @@ static void receive_udppacket(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *
 	if(!n->sptps.state) {
 		if(!n->status.waitingforkey) {
 			logger(mesh, MESHLINK_DEBUG, "Got packet from %s but we haven't exchanged keys yet", n->name);
-			send_req_key(mesh, n);
+			node_kex_ensure(mesh, n);
 		} else {
 			logger(mesh, MESHLINK_DEBUG, "Got packet from %s but he hasn't got our key yet", n->name);
 		}
@@ -646,7 +671,7 @@ static void send_sptps_packet(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *
 		logger(mesh, MESHLINK_INFO, "No valid key known yet for %s", n->name);
 
 		if(!n->status.waitingforkey) {
-			send_req_key(mesh, n);
+			node_kex_ensure(mesh, n);
 		} else {
 			node_kex_consider(mesh, n);
 		}
@@ -969,17 +994,17 @@ void choose_udp_address(meshlink_handle_t *mesh, node_t *n, const sockaddr_t **s
 	finish_udp_dest(mesh, sa, sock);
 }
 
+/* The caller resolved the interface-scoped target. Never fall back to a
+   limited broadcast or a socket of another family. */
 static void choose_broadcast_address(meshlink_handle_t *mesh, const node_t *n, const sockaddr_t **sa, int *sock) {
-	*sock = prng(mesh, mesh->listen_sockets);
-	sockaddr_t *broadcast_sa = &mesh->listen_socket[*sock].broadcast_sa;
+	*sa = NULL;
+	*sock = -1;
 
-	if(broadcast_sa->sa.sa_family == AF_INET6) {
-		broadcast_sa->in6.sin6_port = n->prevedge->address.in.sin_port;
-	} else {
-		broadcast_sa->in.sin_port = n->prevedge->address.in.sin_port;
+	if(!n->broadcast_dest.sa.sa_family || !select_listen_socket(mesh, &n->broadcast_dest, sock)) {
+		return;
 	}
 
-	*sa = broadcast_sa;
+	*sa = &n->broadcast_dest;
 }
 
 static void send_udppacket(meshlink_handle_t *mesh, node_t *n, vpn_packet_t *origpkt) {
@@ -1196,7 +1221,9 @@ bool send_sptps_data(void *handle, uint8_t type, const void *data, size_t len) {
 				return false;
 			}
 
-			node_udp_cache_alias(mesh, to, &dest);
+			if(!to->probe_dest_speculative) {
+				node_udp_cache_alias(mesh, to, &dest);
+			}
 
 			ssize_t sent = sendto(mesh->listen_socket[sock].udp.fd, data, len, 0, &dest.sa, SALEN(dest.sa));
 			to->udp_send_result = sent >= 0 ? RELAY_UDP_SENT : sockwouldblock(sockerrno) ? RELAY_UDP_WOULD_BLOCK : sockmsgsize(sockerrno) ? RELAY_UDP_EMSGSIZE : RELAY_UDP_HARD_ERROR;
@@ -1245,6 +1272,7 @@ bool receive_sptps_record(void *handle, uint8_t type, const void *data, uint16_t
 
 			path_apply_pending_punch_hint(mesh, from);
 			path_punch_arm_ingress(mesh, from);
+			path_local_discovery_on_key_ready(mesh, from);
 		}
 
 		return true;

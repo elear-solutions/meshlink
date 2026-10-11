@@ -19,6 +19,7 @@
 
 #include "system.h"
 #include <assert.h>
+#include <net/if.h>
 
 #include "connection.h"
 #include "list.h"
@@ -503,6 +504,35 @@ static void devtool_get_reset_node_status(meshlink_handle_t *mesh, meshlink_node
 
 		status->devtool_status_version = DEVTOOL_NODE_STATUS_VERSION;
 
+		/* Query and proven/unavailable state is the mesh's backbone exchange.
+		   Only the backbone node reports it. private_carrier is per connection. */
+		if((connection_policy_is_backbone(mesh, internal)
+		                && mesh->backbone_udp.confirmed
+		                && mesh->backbone_udp.source == ADDR_SRC_BACKBONE_PRIVATE)
+		                || (internal->connection && internal->connection->status.private_carrier)) {
+			status->private_path_state = DEVTOOL_PRIVATE_PATH_PROVEN;
+		} else if(connection_policy_is_backbone(mesh, internal)
+		                && mesh->bb_private.ever_proven
+		                && !path_backbone_private_public_data_allowed(mesh, internal)) {
+			status->private_path_state = DEVTOOL_PRIVATE_PATH_UNAVAILABLE;
+		} else if(connection_policy_is_backbone(mesh, internal)
+		                && (mesh->bb_private.query_id || mesh->bb_private.count)) {
+			status->private_path_state = DEVTOOL_PRIVATE_PATH_QUERYING;
+		} else {
+			status->private_path_state = DEVTOOL_PRIVATE_PATH_NONE;
+		}
+
+		status->local_discovery_active = internal->local_discovery.active;
+		status->local_discovery_exhausted = internal->local_discovery.exhausted;
+		status->local_discovery_tries = internal->local_discovery.tries;
+		status->local_discovery_broadcasts = internal->local_discovery.broadcasts;
+		status->local_discovery_unicasts = internal->local_discovery.unicasts;
+		status->local_discovery_skips = internal->local_discovery.skips;
+		status->local_discovery_carrier_failures = internal->local_discovery.carrier_failures;
+		status->local_discovery_skip_reason = internal->local_discovery.skip_reason;
+		status->local_discovery_runs = internal->local_discovery.runs;
+		status->local_discovery_confirms = internal->local_discovery.confirms;
+
 		for list_each(connection_t, other, mesh->connections) {
 			if(other->status.drain_only && other->name && !strcmp(other->name, internal->name)) {
 				status->meta_drain_active = true;
@@ -542,6 +572,12 @@ static void devtool_get_reset_node_status(meshlink_handle_t *mesh, meshlink_node
 		internal->out_forward = 0;
 		internal->in_meta = 0;
 		internal->out_meta = 0;
+		internal->local_discovery.broadcasts = 0;
+		internal->local_discovery.unicasts = 0;
+		internal->local_discovery.skips = 0;
+		internal->local_discovery.carrier_failures = 0;
+		internal->local_discovery.runs = 0;
+		internal->local_discovery.confirms = 0;
 	}
 
 	pthread_mutex_unlock(&mesh->mutex);
@@ -1258,6 +1294,62 @@ void devtool_set_external_ip_address(meshlink_handle_t *mesh, meshlink_node_t *n
 	pthread_mutex_unlock(&mesh->mutex);
 }
 
+/* RFC1918/ULA/loopback prefixes so a devtool-pinned speculative address stays
+   on-link. Refresh does not replace an override. */
+void devtool_set_broad_local_network(meshlink_handle_t *mesh) {
+	local_iface_addr_t addrs[6];
+
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	memset(addrs, 0, sizeof addrs);
+	addrs[0].ifindex = 1;
+	addrs[0].flags = IFF_UP | IFF_LOOPBACK;
+	addrs[0].prefix_len = 8;
+	addrs[0].address.sa.sa_family = AF_INET;
+	inet_pton(AF_INET, "127.0.0.1", &addrs[0].address.in.sin_addr);
+
+	addrs[1].ifindex = 2;
+	addrs[1].flags = IFF_UP;
+	addrs[1].prefix_len = 8;
+	addrs[1].address.sa.sa_family = AF_INET;
+	inet_pton(AF_INET, "10.0.0.1", &addrs[1].address.in.sin_addr);
+
+	addrs[2].ifindex = 3;
+	addrs[2].flags = IFF_UP;
+	addrs[2].prefix_len = 16;
+	addrs[2].address.sa.sa_family = AF_INET;
+	inet_pton(AF_INET, "192.168.0.1", &addrs[2].address.in.sin_addr);
+
+	addrs[3].ifindex = 4;
+	addrs[3].flags = IFF_UP;
+	addrs[3].prefix_len = 12;
+	addrs[3].address.sa.sa_family = AF_INET;
+	inet_pton(AF_INET, "172.16.0.1", &addrs[3].address.in.sin_addr);
+
+	addrs[4].ifindex = 5;
+	addrs[4].flags = IFF_UP;
+	addrs[4].prefix_len = 7;
+	addrs[4].address.sa.sa_family = AF_INET6;
+	inet_pton(AF_INET6, "fd00::1", &addrs[4].address.in6.sin6_addr);
+
+	addrs[5].ifindex = 6;
+	addrs[5].flags = IFF_UP;
+	addrs[5].prefix_len = 10;
+	addrs[5].address.sa.sa_family = AF_INET6;
+	inet_pton(AF_INET6, "fe80::1", &addrs[5].address.in6.sin6_addr);
+	addrs[5].address.in6.sin6_scope_id = 6;
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	local_network_set_snapshot(mesh, addrs, 6);
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
 void devtool_update_node_udp(meshlink_handle_t *mesh, meshlink_node_t *node, const struct sockaddr *addr) {
 	if(!mesh || !node) {
 		meshlink_errno = MESHLINK_EINVAL;
@@ -1438,11 +1530,32 @@ void devtool_set_udp_confirmed(meshlink_handle_t *mesh, meshlink_node_t *node, b
 	} else if(n->active_route.kind == DATA_ROUTE_DIRECT_UDP) {
 		commit_ranked_route(mesh, n);
 	} else if(!n->devtool_force_meta && n->status.validkey && n->status.reachable
-	                && path_peer_udp_punching_allowed(mesh, n) && path_address_is_local(&n->address)) {
+	                && path_peer_udp_punching_allowed(mesh, n)) {
 		path_local_discovery_start(mesh, n);
 	}
 
 	pthread_mutex_unlock(&mesh->mutex);
+}
+
+bool devtool_restart_local_discovery(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	node_t *n;
+	bool active;
+
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	n = (node_t *)node;
+	path_note_udp_demoted_reason(mesh, n, "devtool local discovery");
+	path_local_discovery_start(mesh, n);
+	active = n->local_discovery.active;
+	pthread_mutex_unlock(&mesh->mutex);
+	return active;
 }
 
 void devtool_rebind_age_current_rx(meshlink_handle_t *mesh, meshlink_node_t *node, int age_ms) {
@@ -2585,6 +2698,33 @@ unsigned devtool_backbone_udp_establish_step(meshlink_handle_t *mesh) {
 	return step;
 }
 
+size_t devtool_backbone_private_set(meshlink_handle_t *mesh, struct sockaddr_storage *addrs, size_t max, uint32_t *revision) {
+	size_t count;
+
+	if(!mesh || (max && !addrs)) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return 0;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	count = mesh->bb_private.count;
+
+	for(size_t i = 0; i < count && i < max; i++) {
+		memset(&addrs[i], 0, sizeof addrs[i]);
+		path_copy_sockaddr((sockaddr_t *)&addrs[i], &mesh->bb_private.endpoints[i].sa);
+	}
+
+	if(revision) {
+		*revision = mesh->bb_private.revision;
+	}
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return count;
+}
+
 bool devtool_relay_cover_unit(meshlink_handle_t *mesh, meshlink_node_t *from, meshlink_node_t *dest, meshlink_node_t *hop) {
 	if(!mesh || !from || !dest || !hop) {
 		meshlink_errno = MESHLINK_EINVAL;
@@ -2650,10 +2790,15 @@ bool devtool_inject_broadcast_hard_send(meshlink_handle_t *mesh, meshlink_node_t
 	bool saved = n->status.broadcast;
 	uint8_t probe[64];
 	memset(probe, 0, sizeof probe);
+	memset(&n->broadcast_dest, 0, sizeof n->broadcast_dest);
+	n->broadcast_dest.in.sin_family = AF_INET;
+	n->broadcast_dest.in.sin_addr.s_addr = htonl(0xffffffffu);
+	n->broadcast_dest.in.sin_port = n->prevedge->address.in.sin_port;
 	n->status.broadcast = true;
 	relay_devtool_get(mesh)->inject_hard_send_error = true;
 	(void)sptps_send_record(&n->sptps, PKT_PROBE, probe, sizeof probe);
 	n->status.broadcast = saved;
+	memset(&n->broadcast_dest, 0, sizeof n->broadcast_dest);
 
 	bool injected = !relay_devtool_get(mesh)->inject_hard_send_error;
 	relay_devtool_get(mesh)->inject_hard_send_error = false;

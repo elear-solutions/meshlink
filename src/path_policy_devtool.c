@@ -10,6 +10,8 @@
 
 #include "system.h"
 
+#include <net/if.h>
+
 #include "connection.h"
 #include "logger.h"
 #include "meshlink_internal.h"
@@ -63,6 +65,92 @@ static bool timespec_neq(const struct timespec *a, const struct timespec *b) {
 	return a->tv_sec != b->tv_sec || a->tv_nsec != b->tv_nsec;
 }
 
+static local_iface_addr_t cover_v4(const char *ip, uint8_t prefix, int index) {
+	local_iface_addr_t a;
+
+	memset(&a, 0, sizeof a);
+	a.ifindex = index;
+	a.flags = IFF_UP;
+	a.prefix_len = prefix;
+	a.address.sa.sa_family = AF_INET;
+	inet_pton(AF_INET, ip, &a.address.in.sin_addr);
+	return a;
+}
+
+static local_iface_addr_t cover_v6(const char *ip, uint8_t prefix, int index, uint32_t scope) {
+	local_iface_addr_t a;
+
+	memset(&a, 0, sizeof a);
+	a.ifindex = index;
+	a.flags = IFF_UP;
+	a.prefix_len = prefix;
+	a.address.sa.sa_family = AF_INET6;
+	inet_pton(AF_INET6, ip, &a.address.in6.sin6_addr);
+	a.address.in6.sin6_scope_id = scope;
+	return a;
+}
+
+static void cover_install_broad_snapshot(meshlink_handle_t *mesh) {
+	local_iface_addr_t addrs[6];
+
+	addrs[0] = cover_v4("127.0.0.1", 8, 1);
+	addrs[0].flags |= IFF_LOOPBACK;
+	addrs[1] = cover_v4("10.0.0.1", 8, 2);
+	addrs[2] = cover_v4("192.168.0.1", 16, 3);
+	addrs[3] = cover_v4("172.16.0.1", 12, 4);
+	addrs[4] = cover_v6("fd00::1", 7, 5, 0);
+	addrs[5] = cover_v6("fe80::1", 10, 6, 6);
+	local_network_set_snapshot(mesh, addrs, 6);
+}
+
+static bool cover_private_eligibility(meshlink_handle_t *mesh) {
+	local_iface_addr_t narrow;
+	local_iface_addr_t wide;
+	node_t n;
+	sockaddr_t sa;
+	sockaddr_t ula;
+	sockaddr_t out;
+	path_endpoint_t ep;
+
+	memset(&n, 0, sizeof n);
+	memset(&sa, 0, sizeof sa);
+	memset(&ula, 0, sizeof ula);
+	n.mesh = mesh;
+	n.name = "off-subnet";
+	sa.sa.sa_family = AF_INET;
+	assert(inet_pton(AF_INET, "10.20.1.181", &sa.in.sin_addr) == 1);
+	sa.in.sin_port = htons(7777);
+	n.recent[0] = sa;
+	n.recent_source[0] = ADDR_SRC_EDGE_DIRECT;
+	n.recent_cap[0] = PATH_CAP_BOTH;
+
+	narrow = cover_v4("10.20.4.1", 24, 2);
+	CHECK(local_network_set_snapshot(mesh, &narrow, 1));
+	CHECK(!path_is_direct_candidate(&n, &sa, ADDR_SRC_EDGE_DIRECT));
+	CHECK(!path_is_udp_candidate(&n, &sa, ADDR_SRC_EDGE_DIRECT, PATH_CAP_BOTH));
+	CHECK(!path_is_meta_candidate(&n, &sa, ADDR_SRC_EDGE_DIRECT, PATH_CAP_BOTH));
+	CHECK(!path_best_startup_meta(&n, NULL, &out, NULL));
+	CHECK(!path_pick_local_udp_candidate(mesh, &n, &ep));
+	CHECK(path_is_direct_candidate(&n, &sa, ADDR_SRC_HINT));
+
+	ula.sa.sa_family = AF_INET6;
+	assert(inet_pton(AF_INET6, "fd12:3456::181", &ula.in6.sin6_addr) == 1);
+	ula.in6.sin6_port = htons(7777);
+	CHECK(!path_is_udp_candidate(&n, &ula, ADDR_SRC_UNKNOWN, PATH_CAP_UDP));
+
+	wide = cover_v4("10.20.0.1", 20, 2);
+	CHECK(local_network_set_snapshot(mesh, &wide, 1));
+	CHECK(path_is_direct_candidate(&n, &sa, ADDR_SRC_EDGE_DIRECT));
+	CHECK(path_is_udp_candidate(&n, &sa, ADDR_SRC_EDGE_DIRECT, PATH_CAP_BOTH));
+	CHECK(path_best_startup_meta(&n, NULL, &out, NULL));
+
+	n.recent_source[0] = ADDR_SRC_BACKBONE_PRIVATE;
+	CHECK(path_sanitize_recent(mesh, &n));
+	CHECK(n.recent_source[0] == ADDR_SRC_UNKNOWN);
+	cover_install_broad_snapshot(mesh);
+	return true;
+}
+
 static bool cover_names(meshlink_handle_t *mesh) {
 	CHECK(!strcmp(address_source_name(ADDR_SRC_AUTH_DIRECT), "auth-direct"));
 	CHECK(!strcmp(address_source_name(ADDR_SRC_DISCOVERY), "discovery"));
@@ -72,6 +160,7 @@ static bool cover_names(meshlink_handle_t *mesh) {
 	CHECK(!strcmp(address_source_name(ADDR_SRC_CANONICAL), "canonical"));
 	CHECK(!strcmp(address_source_name(ADDR_SRC_INDIRECT), "indirect"));
 	CHECK(!strcmp(address_source_name(ADDR_SRC_UDP_REFLEXIVE), "udp-reflexive"));
+	CHECK(!strcmp(address_source_name(ADDR_SRC_BACKBONE_PRIVATE), "backbone-private"));
 	CHECK(!strcmp(address_source_name(ADDR_SRC_UNKNOWN), "unknown"));
 	CHECK(!strcmp(address_source_name((address_source_t)99), "unknown"));
 	CHECK(!strcmp(path_cap_name(PATH_CAP_BOTH), "meta+udp"));
@@ -100,6 +189,7 @@ static bool cover_names(meshlink_handle_t *mesh) {
 	CHECK(path_source_is_direct(ADDR_SRC_EXTERNAL));
 	CHECK(path_source_is_direct(ADDR_SRC_EDGE_DIRECT));
 	CHECK(path_source_is_direct(ADDR_SRC_UNKNOWN));
+	CHECK(path_source_is_direct(ADDR_SRC_BACKBONE_PRIVATE));
 	CHECK(!path_source_is_direct(ADDR_SRC_CANONICAL));
 	CHECK(!path_source_is_direct(ADDR_SRC_INDIRECT));
 	CHECK(!path_source_is_direct(ADDR_SRC_UDP_REFLEXIVE));
@@ -3791,7 +3881,8 @@ bool path_policy_cover_unit(meshlink_handle_t *mesh, node_t *live) {
 
 	saved_max = mesh->probe_max_transactions;
 	mesh->probe_max_transactions = 32;
-	ok = cover_names(mesh)
+	ok = cover_private_eligibility(mesh)
+	                && cover_names(mesh)
 	                && cover_local_classify(mesh)
 	                && cover_canonical(mesh)
 	                && cover_learn_sanitize(mesh)
@@ -3820,6 +3911,7 @@ bool path_policy_cover_unit(meshlink_handle_t *mesh, node_t *live) {
 	                && path_plpmtu_cover_unit(mesh)
 	                && node_kex_cover_unit(mesh)
 	                && utcp_mtu_reentry_unit();
+	local_network_set_snapshot(mesh, NULL, 0);
 	mesh->probe_max_transactions = saved_max;
 	return ok;
 }

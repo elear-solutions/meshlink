@@ -35,6 +35,7 @@ devtool_backbone_udp_timer_armed
 devtool_backbone_udp_endpoint
 devtool_backbone_udp_failed_endpoint
 devtool_backbone_udp_establish_step
+devtool_backbone_private_set
 devtool_self_initiates_meta
 devtool_set_node_devclass
 devtool_set_allow_peer_bootstrap
@@ -75,9 +76,11 @@ devtool_queue_req_key
 devtool_inject_meta_request
 devtool_abort_meta_cutover
 devtool_reset_node_counters
+devtool_restart_local_discovery
 devtool_seed_relay_report
 devtool_send_meta_sptps
 devtool_set_external_ip_address
+devtool_set_broad_local_network
 devtool_set_inviter_commits_first
 devtool_set_meta_status_cb
 devtool_send_raw_record
@@ -219,6 +222,7 @@ meshlink_sign
 meshlink_start
 meshlink_stop
 meshlink_set_storage_policy
+meshlink_set_backbone_path_policy
 meshlink_strerror
 meshlink_submesh_open
 meshlink_verify

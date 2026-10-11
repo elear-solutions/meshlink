@@ -20,6 +20,7 @@
 #include "node.h"
 #include "relay.h"
 #include "packmsg.h"
+#include "path_liveness.h"
 #include "path_policy.h"
 #include "protocol.h"
 #include "splay_tree.h"
@@ -510,6 +511,11 @@ static bool local_candidate_with_class(const node_t *node,
 	}
 
 	if(!connection_policy_lan_device_class(devclass)) {
+		return false;
+	}
+
+	if(source == ADDR_SRC_DISCOVERY && node->mesh && path_address_is_local(address)
+	                && !local_network_on_link(node->mesh, address)) {
 		return false;
 	}
 
@@ -1138,7 +1144,7 @@ static void fill_lan_overlay(meshlink_handle_t *mesh) {
 
 		if(!node_read_public_key(mesh, peer)) {
 			if(peer->status.reachable) {
-				send_req_key(mesh, peer);
+				node_kex_ensure(mesh, peer);
 			}
 
 			ensure_lan_outgoing(mesh, peer, false);
@@ -1336,7 +1342,7 @@ void connection_policy_tick(meshlink_handle_t *mesh) {
 
 		if(!node_read_public_key(mesh, bb)) {
 			if(bb->status.reachable) {
-				send_req_key(mesh, bb);
+				node_kex_ensure(mesh, bb);
 			}
 
 			ensure_backbone_outgoing(mesh, bb, false);
@@ -1382,6 +1388,7 @@ void connection_policy_on_discovery(meshlink_handle_t *mesh, node_t *node,
 
 		node->lan_presence.network_epoch = mesh->lan_network_epoch;
 		node->lan_presence.last_discovered_at = now;
+		path_local_discovery_on_lan_evidence(mesh, node);
 	}
 
 	node->last_connect_try = 0;
@@ -1452,6 +1459,7 @@ void connection_policy_advance_network_epoch(meshlink_handle_t *mesh) {
 			memset(&n->udp_observation, 0, sizeof n->udp_observation);
 			n->lan_auth_direct_until = 0;
 			n->lan_admitted_epoch = 0;
+			path_local_discovery_on_lan_evidence(mesh, n);
 		}
 	}
 

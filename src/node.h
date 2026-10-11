@@ -27,6 +27,12 @@
 #include "utcp.h"
 #include "submesh.h"
 
+typedef enum node_kex_phase_t {
+	NODE_KEX_IDLE,
+	NODE_KEX_PUBLIC_KEY,
+	NODE_KEX_HANDSHAKE,
+} node_kex_phase_t;
+
 typedef struct node_status_t {
 	uint16_t validkey: 1;               /* 1 if we currently have a valid key for him */
 	uint16_t waitingforkey: 1;          /* 1 if we already sent out a request */
@@ -141,8 +147,16 @@ typedef struct path_keepalive_t {
 
 typedef struct path_local_discovery_t {
 	uint64_t nonce;
+	uint64_t network_epoch;                 /* lan_network_epoch of the current ladder */
+	uint64_t broadcast_blocked_epoch;       /* a broadcast carrier failed in this epoch */
+	uint64_t last_run_epoch;                /* kept across stop(); bounds restarts */
+	uint32_t local_epoch;                   /* interface snapshot epoch of the current ladder */
 	uint8_t tries;
+	uint8_t run_broadcasts;                 /* broadcasts in the current ladder */
 	bool active, exhausted;
+	bool last_run_broadcast;                /* the current ladder could broadcast, or already upgraded */
+	uint32_t broadcasts, unicasts, skips, carrier_failures, runs, confirms;
+	const char *skip_reason;                /* static string; NULL when the last plan allowed a send */
 	timeout_t timer;
 } path_local_discovery_t;
 
@@ -187,6 +201,7 @@ typedef struct node_t {
 	uint64_t out_meta;                      /* Bytes sent on meta-connections, heartbeat packets etc. */
 
 	uint16_t mtu_probe_request_len;         /* Outbound probe-request payload length; set only around sptps_send_record for dest-IP DEBUG log */
+	sockaddr_t broadcast_dest;              /* Set only around a broadcast probe send */
 	path_plpmtu_t plpmtu;
 	relay_hop_t relay_hop;
 	unsigned udp_send_result;
@@ -206,11 +221,12 @@ typedef struct node_t {
 	time_t last_req_key;
 
 	/* Node-owned SPTPS recovery. Not tied to one META socket. */
+	node_kex_phase_t key_retry_phase;       /* acquisition and handshake use independent backoff */
 	struct timespec key_retry_at;           /* {0,0} = watchdog not armed */
 	uint8_t key_retry_step;                 /* index into 2,5,10,30,60s */
-	uint32_t key_retry_epoch;               /* increments in node_kex_arm(), including send_req_key() and the responder handshake */
+	uint32_t key_retry_epoch;               /* increments when an initiator or responder handshake starts */
 	bool key_delivery_uncertain;            /* cutover lost the old primary before the barrier */
-	bool key_retry_wanted;                  /* inbound REQ_SPTPS asked for a retry; not channel demand */
+	bool key_retry_wanted;                  /* ordinary acquisition or inbound REQ_SPTPS needs recovery */
 
 	struct ecdsa *ecdsa;                    /* His public ECDSA key */
 
@@ -266,6 +282,7 @@ typedef struct node_t {
 	peer_path_demand_t peer_udp;            /* Channel refcount + grace for ordinary-peer UDP */
 	sockaddr_t probe_dest_override;          /* Dest for a PKT_PROBE while override is active */
 	bool probe_dest_override_active;        /* Armed around one send_udppacket, then cleared */
+	bool probe_dest_speculative;            /* Override names an unproved address; never alias it */
 	sockaddr_t app_udp_override;            /* Committed application UDP dest for one send */
 	bool app_udp_override_active;           /* Armed around one application/type-8 UDP send */
 	bool devtool_force_meta;                /* Test-only persistent application-route override */
@@ -273,6 +290,8 @@ typedef struct node_t {
 	uint32_t relay_oversize_drops;          /* Legacy name: UDP sends skipped for hop MTU. */
 	time_t fallback_oversize_logged_at;     /* Last redirect INFO; at most once per 10s */
 	time_t relay_oversize_logged_at;        /* Last oversize INFO; at most once per 10s. */
+	uint32_t non_channel_drops;             /* Records UTCP rejected since the last report (meshlink_send() while channels are enabled) */
+	time_t non_channel_logged_at;           /* Last non-channel drop WARNING; at most once per 10s */
 	uint16_t devtool_drop_size_probes_above; /* Test: receiver drops SIZE_REQUEST longer than this; 0 = off */
 	uint8_t devtool_drop_liveness_replies;  /* Test: drop this many LIVENESS echoes */
 	unsigned devtool_drop_direct_udp_records; /* Test: next N direct-UDP application sends are discarded */

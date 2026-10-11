@@ -99,8 +99,10 @@ same session can challenge it again.
 
 One peer shares one request ladder across every channel to it: immediate
 on the 0→1 transition, then 1, 2, 5, 10, and 30 seconds while direct UDP
-is still unconfirmed. The route tick drives it. A new hint, a network
-epoch change, or a new demand epoch restarts the ladder. Confirmation,
+is still unconfirmed. The route tick drives it. A changed hint resets
+future backoff while preserving the already-owned request deadline and any
+session-change stop; endpoint validation starts independently. A network
+epoch change or a new demand epoch restarts the ladder. Confirmation,
 idle expiry, or a session change stops it. The request is META control
 traffic, not a UDP probe, and it does not restart SPTPS.
 

@@ -151,7 +151,7 @@ static void *socket_in_netns_thread(void *arg) {
 }
 #endif // HAVE_SETNS
 
-static int socket_in_netns(int domain, int type, int protocol, int netns) {
+int socket_in_netns(int domain, int type, int protocol, int netns) {
 	if(netns == -1) {
 		return socket(domain, type, protocol);
 	}
@@ -429,52 +429,6 @@ static bool is_localaddr(sockaddr_t *sa) {
 	}
 }
 
-#ifdef HAVE_GETIFADDRS
-struct getifaddrs_in_netns_params {
-	struct ifaddrs **ifa;
-	int netns;
-};
-
-#ifdef HAVE_SETNS
-static void *getifaddrs_in_netns_thread(void *arg) {
-	struct getifaddrs_in_netns_params *params = arg;
-
-	if(setns(params->netns, CLONE_NEWNET) == -1) {
-		meshlink_errno = MESHLINK_EINVAL;
-		return NULL;
-	}
-
-	if(getifaddrs(params->ifa) != 0) {
-		*params->ifa = NULL;
-	}
-
-	return NULL;
-}
-#endif // HAVE_SETNS
-
-static int getifaddrs_in_netns(struct ifaddrs **ifa, int netns) {
-	if(netns == -1) {
-		return getifaddrs(ifa);
-	}
-
-#ifdef HAVE_SETNS
-	struct getifaddrs_in_netns_params params = {ifa, netns};
-	pthread_t thr;
-
-	if(pthread_create(&thr, NULL, getifaddrs_in_netns_thread, &params) == 0) {
-		if(pthread_join(thr, NULL) != 0) {
-			abort();
-		}
-	}
-
-	return *params.ifa ? 0 : -1;
-#else
-	return -1;
-#endif // HAVE_SETNS
-
-}
-#endif
-
 char *meshlink_get_local_address_for_family(meshlink_handle_t *mesh, int family) {
 	logger(mesh, MESHLINK_DEBUG, "meshlink_get_local_address_for_family(%d)", family);
 
@@ -497,7 +451,7 @@ char *meshlink_get_local_address_for_family(meshlink_handle_t *mesh, int family)
 
 	if(!success) {
 		struct ifaddrs *ifa = NULL;
-		getifaddrs_in_netns(&ifa, mesh->netns);
+		local_network_getifaddrs(mesh, &ifa);
 
 		for(struct ifaddrs *ifap = ifa; ifap; ifap = ifap->ifa_next) {
 			sockaddr_t *sa = (sockaddr_t *)ifap->ifa_addr;
@@ -2094,13 +2048,22 @@ static void *meshlink_main_loop(void *arg) {
 #endif // HAVE_SETNS
 	}
 
+	/* discovery_start() scans before the event loop exists. hint_network_change()
+	   and the Apple reachability callback also scan, and they take this lock.
+	   Hold it across the scan so those callers cannot free the same snapshot. */
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	mesh->local_network.retired = false;
+
 	if(mesh->discovery.enabled) {
 		discovery_start(mesh);
 	}
 
-	if(pthread_mutex_lock(&mesh->mutex) != 0) {
-		abort();
-	}
+	/* Stop tears the inventory down with the mesh thread. Rescan on every
+	   start, under the mutex: hint_network_change() refreshes from app threads. */
+	local_network_refresh(mesh);
 
 	if(mesh->thread_status_cb) {
 		mesh->thread_status_cb(mesh, true);
@@ -2115,12 +2078,23 @@ static void *meshlink_main_loop(void *arg) {
 		mesh->thread_status_cb(mesh, false);
 	}
 
+	local_network_teardown(mesh);
 	pthread_mutex_unlock(&mesh->mutex);
 
 	// Stop discovery
 	if(mesh->discovery.enabled) {
 		discovery_stop(mesh);
 	}
+
+	/* The Apple callback can ingest after teardown drops the mutex and before
+	   discovery_stop joins it. retired makes that ingest a no-op; free again
+	   in case a snapshot was committed before the flag was visible. */
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	local_network_teardown(mesh);
+	pthread_mutex_unlock(&mesh->mutex);
 
 	return NULL;
 }
@@ -2359,6 +2333,7 @@ void meshlink_close(meshlink_handle_t *mesh) {
 	meshlink_queue_exit(&mesh->outpacketqueue);
 
 	connection_policy_exit(mesh);
+	local_network_teardown(mesh);
 
 	free(mesh->name);
 	free(mesh->appname);
@@ -4799,15 +4774,36 @@ void meshlink_set_channel_receive_cb(meshlink_handle_t *mesh, meshlink_channel_t
 	channel->receive_cb = cb;
 }
 
+/* Once a node has a UTCP context every record from it is parsed as a channel
+   segment, so meshlink_send() datagrams from that node never reach the receive
+   callback. Report what UTCP rejects instead of dropping it silently. */
+static void channel_note_non_channel_drop(meshlink_handle_t *mesh, node_t *n, size_t len) {
+	if(n->non_channel_drops < UINT32_MAX) {
+		n->non_channel_drops++;
+	}
+
+	if(mesh->loop.now.tv_sec < n->non_channel_logged_at + 10) {
+		return;
+	}
+
+	logger(mesh, MESHLINK_WARNING,
+	       "Dropped %zu-byte packet from %s that is not a channel segment (%u since last report). "
+	       "Channels are enabled for %s, so meshlink_send() datagrams from it are not delivered to the receive callback",
+	       len, n->name, (unsigned)n->non_channel_drops, n->name);
+	n->non_channel_logged_at = mesh->loop.now.tv_sec;
+	n->non_channel_drops = 0;
+}
+
 void channel_receive(meshlink_handle_t *mesh, meshlink_node_t *source, const void *data, size_t len) {
-	(void)mesh;
 	node_t *n = (node_t *)source;
 
 	if(!n->utcp) {
 		abort();
 	}
 
-	utcp_recv(n->utcp, data, len);
+	if(utcp_recv(n->utcp, data, len) < 0 && errno == EBADMSG) {
+		channel_note_non_channel_drop(mesh, n, len);
+	}
 }
 
 static void channel_poll(struct utcp_connection *connection, size_t len) {
@@ -5607,7 +5603,10 @@ void meshlink_hint_network_change(struct meshlink_handle *mesh) {
 	connection_policy_advance_network_epoch(mesh);
 
 	if(mesh->discovery.enabled) {
+		/* scan_ifaddrs records the inventory from the same getifaddrs result. */
 		scan_ifaddrs(mesh);
+	} else {
+		local_network_refresh(mesh);
 	}
 
 	if(mesh->loop.now.tv_sec > mesh->discovery.last_update + 5) {
@@ -5749,6 +5748,27 @@ void meshlink_set_scheduling_granularity(struct meshlink_handle *mesh, long gran
 	}
 
 	utcp_set_clock_granularity(granularity);
+}
+
+void meshlink_set_backbone_path_policy(struct meshlink_handle *mesh, meshlink_backbone_path_policy_t policy) {
+	logger(mesh, MESHLINK_DEBUG, "meshlink_set_backbone_path_policy(%d)", (int)policy);
+
+	if(!mesh) {
+		meshlink_errno = EINVAL;
+		return;
+	}
+
+	if(policy != MESHLINK_BACKBONE_PATH_PREFER_PRIVATE && policy != MESHLINK_BACKBONE_PATH_PRIVATE_ONLY) {
+		meshlink_errno = EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	mesh->backbone_path_policy = policy;
+	pthread_mutex_unlock(&mesh->mutex);
 }
 
 void meshlink_set_storage_policy(struct meshlink_handle *mesh, meshlink_storage_policy_t policy) {

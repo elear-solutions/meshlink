@@ -351,8 +351,8 @@ bool punch_endpoint_cover_unit(meshlink_handle_t *mesh) {
 		PUNCH_CHECK(src->peer_udp.challenge.active);
 		PUNCH_CHECK(src->peer_udp.challenge.provenance == PUNCH_PROV_NMN_HINT);
 		PUNCH_CHECK(ntohs(src->peer_udp.challenge.endpoint.in.sin_port) == 4400);
-		PUNCH_CHECK(src->peer_udp.requests_sent == requests_before + 1);
-		PUNCH_CHECK(src->peer_udp.request_step == 1);
+		PUNCH_CHECK(src->peer_udp.requests_sent == requests_before);
+		PUNCH_CHECK(src->peer_udp.request_step == 0);
 	}
 	{
 		node_t *during_bb = mesh->backbone.node;

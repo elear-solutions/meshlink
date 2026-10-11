@@ -647,15 +647,6 @@ static bool add_listen_sockets(meshlink_handle_t *mesh) {
 		// to show the actual assigned port, not the requested port 0
 
 		memcpy(&mesh->listen_socket[mesh->listen_sockets].sa, aip->ai_addr, aip->ai_addrlen);
-		memcpy(&mesh->listen_socket[mesh->listen_sockets].broadcast_sa, aip->ai_addr, aip->ai_addrlen);
-
-		if(aip->ai_family == AF_INET6) {
-			mesh->listen_socket[mesh->listen_sockets].broadcast_sa.in6.sin6_addr.s6_addr[0x0] = 0xff;
-			mesh->listen_socket[mesh->listen_sockets].broadcast_sa.in6.sin6_addr.s6_addr[0x1] = 0x02;
-			mesh->listen_socket[mesh->listen_sockets].broadcast_sa.in6.sin6_addr.s6_addr[0xf] = 0x01;
-		} else {
-			mesh->listen_socket[mesh->listen_sockets].broadcast_sa.in.sin_addr.s_addr = 0xffffffff;
-		}
 
 		mesh->listen_sockets++;
 		success = true;
@@ -775,6 +766,8 @@ static bool setup_myself(meshlink_handle_t *mesh) {
 			return false;
 		}
 	}
+
+	local_network_refresh(mesh);
 
 	if(!mesh->listen_sockets) {
 		logger(mesh, MESHLINK_ERROR, "Unable to create any listening socket!");

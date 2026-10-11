@@ -28,6 +28,11 @@ extern void close_relay_peer_nut(peer_config_t *peers);
 extern peer_config_t *setup_nat_hole_punch(const char *prefix, bool symmetric);
 extern peer_config_t *setup_nat_hole_punch_asymm(const char *prefix, bool app_symmetric, bool cam_symmetric);
 extern void close_nat_hole_punch(peer_config_t *peers);
+
+/// NMN on 10.30.1.2 and 203.0.113.2, VSN on 10.30.2.2 and 203.0.113.3, router between the private subnets.
+/// Returns two peers (NMN, VSN). NULL if the topology cannot be built.
+extern peer_config_t *setup_backbone_private_routed(const char *prefix);
+extern void close_backbone_private_routed(peer_config_t *peers);
 /// Delete UDP conntrack in the camera NAT namespace so the next send reallocates a port.
 /// False when conntrack is missing or the namespace is gone. Callers must assert, not skip.
 extern bool nat_force_rebind(void);

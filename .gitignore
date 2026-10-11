@@ -114,9 +114,16 @@ test/join-canonical-nlb
 test/backbone-identity
 test/connection-policy
 test/backbone-udp
+test/backbone-private-path
+test/backbone-private-relocate
+test/datagram-channel-mix
+test/local-network
+test/local-discovery-eligibility
 test/transport-recent
 test/mtu-probe-log
 test/port-range
 test/reconnect-backoff
 
 test/relay-hop
+
+test/peer-control

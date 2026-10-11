@@ -99,7 +99,7 @@ typedef struct devtool_node_status devtool_node_status_t;
 
 /** Append-only snapshot. Bump when fields are added. New fields go at the end.
  *  devtool_get_node_status() writes devtool_status_version. */
-#define DEVTOOL_NODE_STATUS_VERSION 7
+#define DEVTOOL_NODE_STATUS_VERSION 9
 
 typedef enum {
 	DEVTOOL_PLPMTU_DISABLED = 0,
@@ -115,6 +115,13 @@ typedef enum {
 	DEVTOOL_LIVENESS_PARKED,
 	DEVTOOL_LIVENESS_PROBING
 } devtool_liveness_state_t;
+
+typedef enum {
+	DEVTOOL_PRIVATE_PATH_NONE = 0,
+	DEVTOOL_PRIVATE_PATH_QUERYING = 1,
+	DEVTOOL_PRIVATE_PATH_PROVEN = 2,
+	DEVTOOL_PRIVATE_PATH_UNAVAILABLE = 3
+} __attribute__((__packed__)) devtool_private_path_state_t;
 
 typedef struct devtool_plpmtu_cache_entry {
 	uint8_t family;
@@ -218,7 +225,7 @@ struct devtool_node_status {
 	size_t cutover_pending_bytes;         /// bytes in that FIFO
 	bool cutover_has_standby;             /// a direct socket is held beside the canonical one
 	uint8_t key_retry_step;               /// index into the 2/5/10/30/60s ladder
-	uint32_t key_retry_epoch;             /// increments on each node_kex_arm()
+	uint32_t key_retry_epoch;             /// increments when an initiator or responder handshake starts
 	bool key_retry_armed;                 /// watchdog deadline is set
 	bool key_delivery_uncertain;          /// old primary died before the barrier was proven
 	bool pending_punch_hint;              /// a hint is staged ahead of validkey
@@ -270,6 +277,21 @@ struct devtool_node_status {
 	uint32_t relay_udp_sent, relay_meta_fallbacks;
 	uint32_t relay_fallback_unready, relay_fallback_oversize, relay_fallback_no_socket;
 	uint32_t relay_fallback_would_block, relay_fallback_emsgsize, relay_fallback_hard_error;
+
+	/* DEVTOOL_NODE_STATUS_VERSION 8. Append only. One byte, same as the old uint8_t. */
+	devtool_private_path_state_t private_path_state;
+
+	/* DEVTOOL_NODE_STATUS_VERSION 9. Append only. */
+	bool local_discovery_active;
+	bool local_discovery_exhausted;
+	uint8_t local_discovery_tries;
+	uint32_t local_discovery_broadcasts;  /// directed broadcast/multicast probes sent
+	uint32_t local_discovery_unicasts;    /// on-link unicast probes sent
+	uint32_t local_discovery_skips;       /// plans that allowed no send
+	uint32_t local_discovery_carrier_failures; /// broadcasts blocked by the send path
+	const char *local_discovery_skip_reason; /// static string, NULL if none (not owned)
+	uint32_t local_discovery_runs;        /// ladders armed
+	uint32_t local_discovery_confirms;    /// UDP confirmations by a discovery reply
 
 };
 
@@ -534,6 +556,13 @@ void devtool_set_meta_status_cb(struct meshlink_handle *mesh, meshlink_node_stat
  */
 void devtool_set_external_ip_address(struct meshlink_handle *mesh, struct meshlink_node *node, const char *external_ip_address);
 
+/// Pin a wide on-link snapshot so tests can treat RFC1918/ULA destinations as local.
+/** Replaces the scanned interface list until the next real refresh.
+ *
+ *  @param mesh  Mesh handle.
+ */
+void devtool_set_broad_local_network(struct meshlink_handle *mesh);
+
 /// Apply update_node_udp() as if this address was learned from the graph or a peer.
 /** @param mesh  Mesh handle.
  *  @param node  Node whose UDP dest to set.
@@ -573,6 +602,12 @@ bool devtool_choose_udp_address_advance(struct meshlink_handle *mesh, struct mes
  *  @param confirmed  New udp_confirmed flag.
  */
 void devtool_set_udp_confirmed(struct meshlink_handle *mesh, struct meshlink_node *node, bool confirmed);
+
+/// Demote a confirmed UDP path and start a fresh local-discovery ladder.
+/** Returns true when the ladder armed; false when the plan refused it
+ *  (see local_discovery_skip_reason). Requires mesh->mutex not held.
+ */
+bool devtool_restart_local_discovery(struct meshlink_handle *mesh, struct meshlink_node *node);
 
 /// Age the confirmed-endpoint receive timestamp so a rebind challenge can start.
 /** age_ms is how long ago the current endpoint last spoke. Requires mesh->mutex not held. */
@@ -810,6 +845,10 @@ bool devtool_backbone_udp_failed_endpoint(struct meshlink_handle *mesh, struct s
 
 /// Current telescopic establishment backoff step (0 at start / after a new dest).
 unsigned devtool_backbone_udp_establish_step(struct meshlink_handle *mesh);
+
+/// Copy up to `max` endpoints of the member's backbone private set and its revision.
+/// Returns the full set size, which may exceed `max`. 0 when no set is held.
+size_t devtool_backbone_private_set(struct meshlink_handle *mesh, struct sockaddr_storage *addrs, size_t max, uint32_t *revision);
 
 /// Force-clear a candidate cooldown. Production eligibility is the observation epoch gate.
 void devtool_candidate_clear_cooldown(struct meshlink_handle *mesh, struct meshlink_node *node);

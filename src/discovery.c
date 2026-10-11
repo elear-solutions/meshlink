@@ -91,6 +91,8 @@ typedef struct discovery_address {
 	bool up;
 	sockaddr_t address;
 	time_t last_response_sent;
+	uint8_t prefix_len;
+	uint32_t flags;
 } discovery_address_t;
 
 static int iface_compare(const void *va, const void *vb) {
@@ -135,6 +137,8 @@ static uint64_t discovery_address_set_fingerprint(const meshlink_handle_t *mesh)
 		const discovery_address_t *a = &mesh->discovery.addresses[i];
 		discovery_fnv1a(&h, &a->index, sizeof a->index);
 		discovery_fnv1a(&h, &a->up, sizeof a->up);
+		discovery_fnv1a(&h, &a->prefix_len, sizeof a->prefix_len);
+		discovery_fnv1a(&h, &a->flags, sizeof a->flags);
 		discovery_fnv1a(&h, &a->address, sizeof a->address);
 	}
 
@@ -218,7 +222,9 @@ void discovery_consider_lan_query(meshlink_handle_t *mesh) {
 }
 
 static void discovery_commit_address_set(meshlink_handle_t *mesh) {
-	uint64_t fp = discovery_address_set_fingerprint(mesh);
+	uint64_t fp;
+
+	fp = discovery_address_set_fingerprint(mesh);
 	bool first;
 
 	if(fp == mesh->discovery.addr_set_fingerprint) {
@@ -620,6 +626,14 @@ static void addr_add(meshlink_handle_t *mesh, const discovery_address_t *addr) {
 	discovery_address_t *p = bsearch(addr, mesh->discovery.addresses, mesh->discovery.address_count, sizeof(*p), address_compare);
 
 	if(p) {
+		if(addr->prefix_len) {
+			p->prefix_len = addr->prefix_len;
+		}
+
+		if(addr->flags) {
+			p->flags = addr->flags;
+		}
+
 		return;
 	}
 
@@ -649,24 +663,44 @@ static void addr_del(meshlink_handle_t *mesh, const discovery_address_t *addr) {
 void scan_ifaddrs(meshlink_handle_t *mesh) {
 #ifdef HAVE_GETIFADDRS
 	struct ifaddrs *ifa = NULL;
+	struct ifaddrs *ifap;
+	int *ifindex;
+	size_t nifa = 0;
+	size_t k;
 
-	if(getifaddrs(&ifa) == -1) {
-		logger(mesh, MESHLINK_ERROR, "Could not get list of interface addresses: %s", strerror(errno));
+	if(mesh->local_network.retired) {
 		return;
 	}
+
+	if(mesh->local_network.test_fail_scans || local_network_getifaddrs(mesh, &ifa) != 0) {
+		logger(mesh, MESHLINK_ERROR, "Could not get list of interface addresses: %s",
+		       mesh->local_network.test_fail_scans ? "test failure" : strerror(errno));
+		/* Same contract as local_network_refresh: keep the last success and
+		   let it age out. A failed scan must not renew the snapshot. */
+		mesh->local_network.failed = true;
+		return;
+	}
+
+	for(ifap = ifa; ifap; ifap = ifap->ifa_next) {
+		nifa++;
+	}
+
+	ifindex = xzalloc((nifa ? nifa : 1) * sizeof *ifindex);
+	local_network_resolve_ifindexes(mesh, ifa, ifindex, nifa);
+	local_network_ingest(mesh, ifa);
 
 	// Check for interfaces being removed
 	for(int i = 0; i < mesh->discovery.iface_count;) {
 		bool found = false;
 
-		for(struct ifaddrs *ifap = ifa; ifap; ifap = ifap->ifa_next) {
+		k = 0;
+
+		for(ifap = ifa; ifap; ifap = ifap->ifa_next, k++) {
 			if(!ifap->ifa_name) {
 				continue;
 			}
 
-			int index = if_nametoindex(ifap->ifa_name);
-
-			if(mesh->discovery.ifaces[i] == index) {
+			if(mesh->discovery.ifaces[i] == ifindex[k]) {
 				found = true;
 				break;
 			}
@@ -684,14 +718,14 @@ void scan_ifaddrs(meshlink_handle_t *mesh) {
 		discovery_address_t *p = &mesh->discovery.addresses[i];
 		bool found = false;
 
-		for(struct ifaddrs *ifap = ifa; ifap; ifap = ifap->ifa_next) {
+		k = 0;
+
+		for(ifap = ifa; ifap; ifap = ifap->ifa_next, k++) {
 			if(!ifap->ifa_name || !ifap->ifa_addr) {
 				continue;
 			}
 
-			int index = if_nametoindex(ifap->ifa_name);
-
-			if(p->index == index && sockaddrcmp_noport(&p->address, (sockaddr_t *)ifap->ifa_addr) == 0) {
+			if(p->index == ifindex[k] && sockaddrcmp_noport(&p->address, (sockaddr_t *)ifap->ifa_addr) == 0) {
 				found = true;
 				break;
 			}
@@ -705,12 +739,16 @@ void scan_ifaddrs(meshlink_handle_t *mesh) {
 	}
 
 	// Check for interfaces state changes and addresses going up
-	for(struct ifaddrs *ifap = ifa; ifap; ifap = ifap->ifa_next) {
+	k = 0;
+
+	for(ifap = ifa; ifap; ifap = ifap->ifa_next, k++) {
+		int index;
+
 		if(!ifap->ifa_name) {
 			continue;
 		}
 
-		int index = if_nametoindex(ifap->ifa_name);
+		index = ifindex[k];
 
 		if(ifap->ifa_flags & IFF_UP && ifap->ifa_flags & IFF_MULTICAST
 		                && !(ifap->ifa_flags & IFF_LOOPBACK)
@@ -726,7 +764,12 @@ void scan_ifaddrs(meshlink_handle_t *mesh) {
 
 		discovery_address_t addr  = {
 			.index = index,
+			.flags = ifap->ifa_flags,
 		};
+
+		if(ifap->ifa_addr) {
+			addr.prefix_len = local_network_prefix_from_mask(ifap->ifa_netmask, ifap->ifa_addr->sa_family);
+		}
 
 		sockaddr_t *sa = (sockaddr_t *)ifap->ifa_addr;
 
@@ -745,6 +788,7 @@ void scan_ifaddrs(meshlink_handle_t *mesh) {
 		}
 	}
 
+	free(ifindex);
 	freeifaddrs(ifa);
 	discovery_commit_address_set(mesh);
 #else
@@ -806,6 +850,7 @@ static void netlink_parse_addr(meshlink_handle_t *mesh, const struct nlmsghdr *n
 		if(rta->rta_type == IFA_ADDRESS) {
 			discovery_address_t addr  = {
 				.index = ifa->ifa_index,
+				.prefix_len = ifa->ifa_prefixlen,
 			};
 
 			if(rta->rta_len == 8) {
@@ -917,6 +962,7 @@ static void netlink_io_handler(event_loop_t *loop, void *data, int flags) {
 	}
 
 	if(mesh->discovery.addr_dump_complete) {
+		local_network_refresh(mesh);
 		discovery_commit_address_set(mesh);
 	}
 }
@@ -1098,6 +1144,7 @@ static void pfroute_parse_iface(meshlink_handle_t *mesh, const struct rt_msghdr 
 static void pfroute_parse_addr(meshlink_handle_t *mesh, const struct rt_msghdr *rtm) {
 	const struct ifa_msghdr *ifam = (const struct ifa_msghdr *)rtm;
 	const char *p = (const char *)(ifam + 1);
+	uint8_t prefix = 0;
 
 	for(unsigned int i = 1; i; i <<= 1) {
 		if(!(ifam->ifam_addrs & i)) {
@@ -1106,9 +1153,15 @@ static void pfroute_parse_addr(meshlink_handle_t *mesh, const struct rt_msghdr *
 
 		const sockaddr_t *sa = (const sockaddr_t *)p;
 
+		if(i == RTA_NETMASK && sa->sa.sa_family != AF_UNSPEC) {
+			prefix = local_network_prefix_from_mask(&sa->sa, sa->sa.sa_family);
+		}
+
 		if(i == RTA_IFA) {
 			discovery_address_t addr = {
 				.index = ifam->ifam_index,
+				.prefix_len = prefix,
+				.flags = (uint32_t)ifam->ifam_flags,
 			};
 
 			if(sa->sa.sa_family == AF_INET) {
@@ -1180,6 +1233,7 @@ static void pfroute_io_handler(event_loop_t *loop, void *data, int flags) {
 		}
 	}
 
+	local_network_refresh(mesh);
 	discovery_commit_address_set(mesh);
 }
 #endif

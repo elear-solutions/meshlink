@@ -340,7 +340,7 @@ bool id_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 
 		if(n->status.reachable && !n->status.waitingforkey) {
 			logger(mesh, MESHLINK_INFO, "Requesting key from peer %s", c->name);
-			send_req_key(mesh, n);
+			node_kex_ensure(mesh, n);
 		}
 
 		return false;
@@ -535,7 +535,20 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	bool was_upgrade_probe = c->status.upgrade_probe;
 	connection_t *old = (n->connection && n->connection != c) ? n->connection : NULL;
 	bool old_was_canonical = old && old->status.active && path_meta_is_canonical(n, old);
+	/* Public-direct to a vouched private listener uses the same barrier as
+	   canonical. Closing the live socket here restamps activated_at and looks
+	   like a flap. */
+	bool private_cutover = was_upgrade_probe && old && old->status.active
+	                && connection_policy_is_backbone(mesh, n)
+	                && path_backbone_private_vouches(mesh, n, &c->address);
 	bool drain_old = was_upgrade_probe && old_was_canonical;
+
+	/* Withdrawn while the probe was authenticating. Without this it would fall
+	   through to an ordinary replace and become primary with no authority. */
+	if(was_upgrade_probe && c->status.bb_private_probe && !path_backbone_private_vouches(mesh, n, &c->address)) {
+		logger(mesh, MESHLINK_INFO, "Refusing private META probe to %s: endpoint is no longer vouched", n->name);
+		return false;
+	}
 
 	if(deferred_ack && n->connection && n->connection != c && n->connection->status.active) {
 		if(c->protocol_minor < PROT_MINOR_ORDERED_CUTOVER) {
@@ -549,7 +562,7 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 
 	/* Initiator: canonical stays primary. The direct socket is only a standby
 	   until PREPARE/READY/COMMIT/ACK moves the graph. */
-	if(was_upgrade_probe && old && old->status.active && path_meta_is_canonical(n, old)) {
+	if(was_upgrade_probe && old && old->status.active && (old_was_canonical || private_cutover)) {
 		if(old->protocol_minor < PROT_MINOR_ORDERED_CUTOVER) {
 			logger(mesh, MESHLINK_INFO, "Refusing direct META upgrade to %s: protocol %d.%d", n->name, old->protocol_major, old->protocol_minor);
 			return false;
@@ -718,12 +731,15 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 			if(warm && port_known_before_edge) {
 				send_canonical_address(mesh, n);
 				send_external_ip_address(mesh, n);
-			} else {
+			} else if(warm) {
+				/* A changed listen port explicitly invalidates the warm session. */
 				send_req_key(mesh, n);
+			} else {
+				node_kex_ensure(mesh, n);
 			}
 		} else if(path_peer_udp_punching_allowed(mesh, n)
 		                && !n->status.validkey && !n->status.waitingforkey) {
-			send_req_key(mesh, n);
+			node_kex_ensure(mesh, n);
 		}
 	} else if(n->status.validkey || n->status.waitingforkey) {
 		send_canonical_address(mesh, n);
