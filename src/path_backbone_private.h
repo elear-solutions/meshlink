@@ -64,9 +64,17 @@ typedef struct backbone_private_t {
 	uint32_t hold_session_id;
 	bb_private_endpoint_t endpoints[BB_PRIVATE_MAX];
 	size_t count;
+	/* Session change wipes every field above this line.
+	   Publication identity starts at publish_revision and must stay at the end. */
 	uint32_t publish_revision;
 	uint64_t publish_hash;
 } backbone_private_t;
+
+_Static_assert(offsetof(backbone_private_t, publish_revision) ==
+               offsetof(backbone_private_t, count) + sizeof(size_t),
+               "member state must end at count; session reset wipes up to publish_revision");
+_Static_assert(offsetof(backbone_private_t, publish_hash) + sizeof(uint64_t) == sizeof(backbone_private_t),
+               "publish_hash must be the last field so publication identity survives session reset");
 
 void path_backbone_private_tick(struct meshlink_handle *mesh, struct node_t *n);
 /* Backbone side: recompute the published set and push CHANGED to queried members. */

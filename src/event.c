@@ -259,12 +259,6 @@ void signal_trigger(event_loop_t *loop, signal_t *sig) {
 		   of leaving the signal permanently marked as pending. */
 		atomic_flag_clear(&sig->set);
 	}
-#else
-	if(wrote != 1) {
-		/* The non-atomic implementation also retries on the next trigger. */
-		errno = saved_errno;
-		return;
-	}
 #endif
 	errno = saved_errno;
 }

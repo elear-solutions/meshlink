@@ -1305,6 +1305,7 @@ static void test_backbone_private_publisher(void) {
 int main(void) {
 	const char *regression = getenv("MESHLINK_PRIVATE_QUERY_REGRESSION");
 	if(regression) {
+		fprintf(stderr, "private query regression %s\n", regression);
 		if(!strcmp(regression, "reconnect")) {
 			test_private_query_failed_reconnect();
 		} else {
