@@ -116,7 +116,8 @@ static bool cover_private_eligibility(meshlink_handle_t *mesh) {
 	memset(&sa, 0, sizeof sa);
 	memset(&ula, 0, sizeof ula);
 	n.mesh = mesh;
-	n.name = "off-subnet";
+	char name[] = "off-subnet";
+	n.name = name;
 	sa.sa.sa_family = AF_INET;
 	assert(inet_pton(AF_INET, "10.20.1.181", &sa.in.sin_addr) == 1);
 	sa.in.sin_port = htons(7777);

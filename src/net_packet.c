@@ -387,31 +387,6 @@ void send_backbone_udp_probe(meshlink_handle_t *mesh) {
 	send_backbone_udp_probe_at(mesh, &mesh->backbone_udp.endpoint, mesh->backbone_udp.liveness_nonce);
 }
 
-static bool sockaddr_is_set(const sockaddr_t *sa) {
-	return sa->sa.sa_family != AF_UNSPEC && sa->sa.sa_family != AF_UNKNOWN;
-}
-
-/* The probe we would send uses the confirmed UDP dest. That can differ from
-   the data route when application records still ride local META. A confirmed
-   alias is the same session: the source port is often not n->address. */
-static bool liveness_request_from_active_endpoint(meshlink_handle_t *mesh, const node_t *n) {
-	if(!n->status.udp_confirmed || !sockaddr_is_set(&n->last_udp_from)) {
-		return false;
-	}
-
-	if(sockaddr_is_set(&n->address) && !sockaddrcmp(&n->last_udp_from, &n->address)) {
-		return true;
-	}
-
-	if(n->active_route.kind == DATA_ROUTE_DIRECT_UDP
-	                && sockaddr_is_set(&n->active_route.udp_endpoint)
-	                && !sockaddrcmp(&n->last_udp_from, &n->active_route.udp_endpoint)) {
-		return true;
-	}
-
-	return lookup_node_udp(mesh, &n->last_udp_from) == n;
-}
-
 /* Higher name's next liveness sits past the lower name's next probe. */
 #define GREATER_NAME_PARK_SLACK_SEC 1
 

@@ -53,17 +53,28 @@ typedef struct backbone_private_t {
 	struct timespec next_query_at;
 	uint32_t session_id;
 	uint32_t revision;
-	uint32_t network_epoch;
+	uint64_t network_epoch;
 	struct timespec expires_at;
 	bool empty;
 	bool ever_proven;
 	bool changed_pending;
-	bool query_hold; /* send failed; honor next_query_at before asking again */
+	bool query_hold; /* Failed write; next_query_at belongs to the context below */
+	uint64_t hold_connection_generation;
+	uint64_t hold_network_epoch;
+	uint32_t hold_session_id;
 	bb_private_endpoint_t endpoints[BB_PRIVATE_MAX];
 	size_t count;
+	/* Session change wipes every field above this line.
+	   Publication identity starts at publish_revision and must stay at the end. */
 	uint32_t publish_revision;
 	uint64_t publish_hash;
 } backbone_private_t;
+
+_Static_assert(offsetof(backbone_private_t, publish_revision) ==
+               offsetof(backbone_private_t, count) + sizeof(size_t),
+               "member state must end at count; session reset wipes up to publish_revision");
+_Static_assert(offsetof(backbone_private_t, publish_hash) + sizeof(uint64_t) == sizeof(backbone_private_t),
+               "publish_hash must be the last field so publication identity survives session reset");
 
 void path_backbone_private_tick(struct meshlink_handle *mesh, struct node_t *n);
 /* Backbone side: recompute the published set and push CHANGED to queried members. */
@@ -76,6 +87,8 @@ bool path_backbone_private_has_unproven_meta(const struct meshlink_handle *mesh,
 bool path_backbone_private_pick_meta(struct meshlink_handle *mesh, struct node_t *n, sockaddr_t *out);
 void path_backbone_private_note_meta_failure(struct meshlink_handle *mesh, struct node_t *n, const sockaddr_t *sa);
 void path_backbone_private_note_meta_proven(struct meshlink_handle *mesh, struct node_t *n, const sockaddr_t *sa);
+/* Retires only a failed write and its deadline, not endpoint/publication state. */
+void path_backbone_private_on_connection_closed(struct meshlink_handle *mesh, const struct connection_t *c);
 void path_backbone_private_on_session_change(struct meshlink_handle *mesh, struct node_t *n);
 bool path_backbone_private_public_data_allowed(const struct meshlink_handle *mesh, const struct node_t *n);
 bool path_backbone_private_fill_udp(const struct meshlink_handle *mesh, const struct node_t *n, sockaddr_t *out);

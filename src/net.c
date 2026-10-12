@@ -135,6 +135,7 @@ void terminate_connection(meshlink_handle_t *mesh, connection_t *c, bool report)
 	bool flapped = was_active && mesh->loop.now.tv_sec - c->last_key_renewal < min_connection_lifetime;
 	time_t activated_at = c->activated_at;
 
+	path_backbone_private_on_connection_closed(mesh, c);
 	timeout_del(&mesh->loop, &c->drain_ev);
 
 	if(c->status.active && !c->status.drain_only) {

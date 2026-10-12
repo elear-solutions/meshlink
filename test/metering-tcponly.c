@@ -135,7 +135,7 @@ int main(void) {
 	assert(peer);
 	channel = meshlink_channel_open(peers[2].mesh, peer, 1, NULL, NULL, 0);
 	assert(channel);
-	init_sync_flag(&aio_done);
+	reset_sync_flag(&aio_done);
 	assert(meshlink_channel_aio_send(peers[2].mesh, channel, buffer, size, aio_cb, NULL));
 	assert(wait_sync_flag(&aio_done, 90));
 	meshlink_channel_close(peers[2].mesh, channel);

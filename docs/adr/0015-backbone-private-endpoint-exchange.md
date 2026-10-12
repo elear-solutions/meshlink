@@ -77,8 +77,15 @@ The member re-queries on authenticated reconnect, session change, a
 `CHANGED` notice, local network epoch change, expiry when a candidate needs
 reuse, and private-path failure. A set from another session or network
 vouches for nothing, so that query goes out at once rather than at the set's
-expiry; only an in-flight query holds it back. A healthy proven private
-carrier does not keep querying.
+expiry; an accepted in-flight query retains its deadline. A failed write is
+not in flight: its retry hold belongs to the exact META connection generation,
+backbone session and full local network epoch. An unchanged failed first write
+is paced even before the connection has subscribed. Reconnect, cutover or network
+change retires that obsolete hold and its shared deadline before the owner checks
+pacing; teardown also retires it. Subscription and warm-session transfer remain
+separate from failed-write ownership. Timeout plus failed resend advances the
+ladder once. Endpoint cooldowns and publication state are unaffected by hold
+retirement. A healthy proven private carrier does not keep querying.
 
 ### Promotion
 

@@ -83,7 +83,9 @@ AS_IF([test "x$enable_hardening" != "xno"],
    esac
    AX_CHECK_LINK_FLAG([-Wl,-z,relro], [LDFLAGS="$LDFLAGS -Wl,-z,relro"])
    AX_CHECK_LINK_FLAG([-Wl,-z,now], [LDFLAGS="$LDFLAGS -Wl,-z,now"])
-   AX_CHECK_COMPILE_FLAG([-Wextra -pedantic -Wreturn-type -Wold-style-definition -Wmissing-declarations -Wmissing-prototypes -Wstrict-prototypes -Wredundant-decls -Wshadow -Wbad-function-cast -Wwrite-strings -fdiagnostics-show-option -fstrict-aliasing -Wmissing-noreturn], [CPPFLAGS="$CPPFLAGS -Wextra -pedantic -Wreturn-type -Wold-style-definition -Wmissing-declarations -Wmissing-prototypes -Wstrict-prototypes -Wredundant-decls -Wshadow -Wbad-function-cast -Wwrite-strings -fdiagnostics-show-option -fstrict-aliasing -Wmissing-noreturn"])
+   AX_CHECK_COMPILE_FLAG([-Wextra -pedantic -Wreturn-type -Wmissing-declarations -Wredundant-decls -Wshadow -Wwrite-strings -fdiagnostics-show-option -fstrict-aliasing -Wmissing-noreturn], [CPPFLAGS="$CPPFLAGS -Wextra -pedantic -Wreturn-type -Wmissing-declarations -Wredundant-decls -Wshadow -Wwrite-strings -fdiagnostics-show-option -fstrict-aliasing -Wmissing-noreturn"])
+   dnl C-only diagnostics belong in CFLAGS, never in the shared CPPFLAGS.
+   AX_CHECK_COMPILE_FLAG([-Wold-style-definition -Wmissing-prototypes -Wstrict-prototypes -Wbad-function-cast], [CFLAGS="$CFLAGS -Wold-style-definition -Wmissing-prototypes -Wstrict-prototypes -Wbad-function-cast"])
   ]
 );
 

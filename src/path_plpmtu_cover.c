@@ -305,7 +305,9 @@ static bool plpmtu_cover(meshlink_handle_t *mesh) {
 	CHECK(cache_slot(&n, 0x0a000001 + PATH_MTU_CACHE_ENTRIES) >= 0);
 
 	/* A different local network fingerprint ignores the entry. */
-	mesh->self->external_ip_address = "203.0.113.9 1";
+	char network_a[] = "203.0.113.9 1";
+	char network_b[] = "198.51.100.9 1";
+	mesh->self->external_ip_address = network_a;
 	n.address = v4(0xcb00710a, 9);
 	memset(n.mtu_cache, 0, sizeof n.mtu_cache);
 	memset(&n.plpmtu, 0, sizeof n.plpmtu);
@@ -316,7 +318,7 @@ static bool plpmtu_cover(meshlink_handle_t *mesh) {
 	n.plpmtu.path_ip.in.sin_port = 0;
 	n.plpmtu.path_net_fp = path_local_network_fp(mesh);
 	path_plpmtu_stop(mesh, &n);
-	mesh->self->external_ip_address = "198.51.100.9 1";
+	mesh->self->external_ip_address = network_b;
 	n.status.udp_confirmed = true;
 	hits = n.plpmtu.cache_hits;
 	path_plpmtu_on_confirmed(mesh, &n);

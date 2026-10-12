@@ -322,6 +322,12 @@ relay_hop_LDADD = $(top_builddir)/src/.libs/libmeshlink.a
 relay_hop_LDFLAGS = $(AM_LDFLAGS) -Wl,--wrap=sendto
 
 if LINUX
+TESTS += event-signal
+check_PROGRAMS += event-signal
+
+event_signal_SOURCES = event-signal.c
+event_signal_LDADD = $(top_builddir)/src/.libs/libmeshlink.a
+event_signal_LDFLAGS = $(AM_LDFLAGS) -Wl,--wrap=write
 TESTS += relay-hop
 check_PROGRAMS += relay-hop
 TESTS += discovery-failure
