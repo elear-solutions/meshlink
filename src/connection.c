@@ -59,6 +59,7 @@ void free_connection(connection_t *c) {
 	assert(c);
 
 	if(c->mesh) {
+		path_backbone_private_on_connection_closed(c->mesh, c);
 		timeout_del(&c->mesh->loop, &c->drain_ev);
 	}
 
@@ -89,6 +90,12 @@ void free_connection(connection_t *c) {
 void connection_add(meshlink_handle_t *mesh, connection_t *c) {
 	assert(c);
 
+	/* Wrapping would reuse identity; it cannot be reached in a practical lifetime. */
+	if(mesh->connection_generation == UINT64_MAX) {
+		abort();
+	}
+
+	c->generation = ++mesh->connection_generation;
 	c->mesh = mesh;
 	list_insert_tail(mesh->connections, c);
 }

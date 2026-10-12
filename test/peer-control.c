@@ -13,6 +13,7 @@
 #include "net_upgrade.h"
 #include "net_upgrade_internal.h"
 #include "netutl.h"
+#include "meta.h"
 #include "path_policy.h"
 #include "protocol.h"
 #include <assert.h>
@@ -23,6 +24,8 @@ typedef struct {
 	node_t *backbone;
 	connection_t *meta;
 	int reader;
+	unsigned synchronous_writes;
+	unsigned *private_query_attempts;
 } fixture_t;
 
 static void unused_io(event_loop_t *loop, void *data, int flags) {
@@ -74,7 +77,14 @@ static fixture_t fixture(const char *self, const char *peer) {
 	return f;
 }
 
+static void free_query_counter(fixture_t *f) {
+	f->mesh->priv = NULL;
+	free(f->private_query_attempts);
+	f->private_query_attempts = NULL;
+}
+
 static void close_fixture(fixture_t *f) {
+	free_query_counter(f);
 	f->backbone->connection = NULL;
 	connection_del(f->mesh, f->meta);
 	close(f->reader);
@@ -493,6 +503,248 @@ static void test_backbone_private_exchange(void) {
 	f.backbone->session_id = 42;
 	path_backbone_private_tick(f.mesh, f.backbone);
 	assert(take_requests(&f, REQ_BACKBONE_PRIVATE) == 0);
+	close_fixture(&f);
+}
+
+/* Failed writes have no in-flight query. Their deadline belongs only to the
+   attempted META socket/network, including a first write with asked == false. */
+/* Observe submissions to the real writer, including rejected writes. Accepted
+   records are counted independently by take_requests() reading its output. */
+static void count_private_query_attempt(meshlink_handle_t *mesh, meshlink_log_level_t level, const char *text) {
+	(void)level;
+	if(!mesh || !mesh->priv || strncmp(text, "Sending REQ_KEY ", 16)) {
+		return;
+	}
+	const char *request = strstr(text, ": ");
+	int extension;
+	if(request && sscanf(request + 2, "%*d %*s %*s %d", &extension) == 1
+	                && extension == REQ_BACKBONE_PRIVATE) {
+		unsigned *attempts = mesh->priv;
+		(*attempts)++;
+	}
+}
+
+static fixture_t failed_private_query(bool empty) {
+	fixture_t f = fixture("cam", "other");
+	f.meta->protocol_minor = PROT_MINOR_BACKBONE_PRIVATE;
+	f.backbone->session_id = 42;
+	f.private_query_attempts = calloc(1, sizeof *f.private_query_attempts);
+	assert(f.private_query_attempts);
+	f.mesh->priv = f.private_query_attempts;
+	meshlink_set_log_cb(f.mesh, MESHLINK_DEBUG, count_private_query_attempt);
+	if(empty) {
+		path_backbone_private_tick(f.mesh, f.backbone);
+		assert(take_requests(&f, REQ_BACKBONE_PRIVATE) == 1);
+		assert(path_backbone_private_test_offer(f.mesh, f.meta, f.backbone,
+		                f.mesh->bb_private.query_id, 42, 1, 300, NULL, PATH_CAP_NONE));
+		f.mesh->loop.now = f.mesh->bb_private.next_query_at;
+	}
+	f.meta->meta_teardown = true;
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(take_requests(&f, REQ_BACKBONE_PRIVATE) == 0);
+	assert(f.mesh->bb_private.query_hold && !f.mesh->bb_private.query_id);
+	assert(*f.private_query_attempts == (empty ? 2 : 1));
+	if(empty) {
+		time_t delay = f.mesh->bb_private.next_query_at.tv_sec - f.mesh->loop.now.tv_sec;
+		assert(delay >= 96 && delay <= 144);
+	}
+	return f;
+}
+
+static void test_private_query_failure_pacing(void) {
+	fixture_t f = failed_private_query(false);
+	assert(!f.meta->status.bb_private_asked);
+	assert(f.mesh->bb_private.ladder_step == 1);
+	struct timespec deadline = f.mesh->bb_private.next_query_at;
+	for(int i = 0; i < 5; i++) {
+		path_backbone_private_tick(f.mesh, f.backbone);
+		assert(f.mesh->bb_private.query_hold);
+		assert(*f.private_query_attempts == 1);
+		assert(f.mesh->bb_private.ladder_step == 1);
+		assert(same_time(deadline, f.mesh->bb_private.next_query_at));
+	}
+	before_deadline(&f, deadline);
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(same_time(deadline, f.mesh->bb_private.next_query_at));
+	assert(*f.private_query_attempts == 1);
+	f.meta->meta_teardown = false;
+	f.mesh->loop.now = deadline;
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(take_requests(&f, REQ_BACKBONE_PRIVATE) == 1);
+	assert(!f.mesh->bb_private.query_hold && f.mesh->bb_private.query_id);
+	assert(*f.private_query_attempts == 2);
+	deadline = f.mesh->bb_private.next_query_at;
+	/* An accepted query remains pending even across a network change. */
+	connection_policy_advance_network_epoch(f.mesh);
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(take_requests(&f, REQ_BACKBONE_PRIVATE) == 0);
+	assert(same_time(deadline, f.mesh->bb_private.next_query_at));
+	/* A timeout followed by a failed write climbs once. */
+	f.mesh->loop.now = deadline;
+	f.meta->meta_teardown = true;
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(f.mesh->bb_private.query_hold && f.mesh->bb_private.ladder_step == 2);
+	assert(*f.private_query_attempts == 3);
+	deadline = f.mesh->bb_private.next_query_at;
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(same_time(deadline, f.mesh->bb_private.next_query_at));
+	assert(f.mesh->bb_private.ladder_step == 2);
+	assert(*f.private_query_attempts == 3);
+	f.meta->meta_teardown = false;
+	f.mesh->loop.now = deadline;
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(take_requests(&f, REQ_BACKBONE_PRIVATE) == 1);
+	assert(path_backbone_private_test_offer(f.mesh, f.meta, f.backbone,
+	                f.mesh->bb_private.query_id, 42, 1, 300, NULL, PATH_CAP_NONE));
+	assert(!f.mesh->bb_private.query_hold && !f.mesh->bb_private.query_id);
+	assert(*f.private_query_attempts == 4);
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(take_requests(&f, REQ_BACKBONE_PRIVATE) == 0);
+	close_fixture(&f);
+}
+
+/* SPTPS can synchronously dispatch a response from its send callback. Count
+   actual META writes and require the answer's deadline to survive member_send. */
+static bool synchronous_private_answer(void *handle, uint8_t type, const void *data, size_t len) {
+	fixture_t *f = handle;
+	assert(type == 0 && f->mesh->bb_private.query_id);
+	assert(send_meta_sptps(f->meta, type, data, len));
+	f->synchronous_writes++;
+	assert(path_backbone_private_test_offer(f->mesh, f->meta, f->backbone,
+	                f->mesh->bb_private.query_id, 42, 1, 300, NULL, PATH_CAP_NONE));
+	return true;
+}
+
+static void test_private_query_synchronous_answer(void) {
+	fixture_t f = failed_private_query(false);
+	f.meta->meta_teardown = false;
+	f.meta->allow_request = ALL;
+	f.meta->sptps.handle = &f;
+	f.meta->sptps.outstate = true;
+	f.meta->sptps.send_data = synchronous_private_answer;
+	f.meta->sptps.outcipher = chacha_poly1305_init();
+	assert(f.meta->sptps.outcipher);
+	uint8_t key[CHACHA_POLY1305_KEYLEN] = {0};
+	assert(chacha_poly1305_set_key(f.meta->sptps.outcipher, key));
+	f.mesh->loop.now = f.mesh->bb_private.next_query_at;
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(f.synchronous_writes == 1 && f.meta->outbuf.len > 0);
+	assert(f.meta->status.bb_private_asked);
+	assert(!f.mesh->bb_private.query_id && !f.mesh->bb_private.query_hold);
+	assert(f.mesh->bb_private.empty && f.mesh->bb_private.ladder_step == 5);
+	assert(f.mesh->bb_private.next_query_at.tv_sec == f.mesh->loop.now.tv_sec + 120);
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(f.synchronous_writes == 1);
+	close_fixture(&f);
+}
+
+static bool synchronous_private_network_change(void *handle, uint8_t type, const void *data, size_t len) {
+	fixture_t *f = handle;
+	uint64_t id = f->mesh->bb_private.query_id;
+	assert(id && type == 0);
+	assert(send_meta_sptps(f->meta, type, data, len));
+	f->synchronous_writes++;
+	connection_policy_advance_network_epoch(f->mesh);
+	assert(f->mesh->bb_private.query_id == id);
+	return true;
+}
+
+static void test_private_query_accepted_network_reentrancy(void) {
+	fixture_t f = failed_private_query(false);
+	f.meta->meta_teardown = false;
+	f.meta->allow_request = ALL;
+	f.meta->sptps.handle = &f;
+	f.meta->sptps.outstate = true;
+	f.meta->sptps.send_data = synchronous_private_network_change;
+	f.meta->sptps.outcipher = chacha_poly1305_init();
+	assert(f.meta->sptps.outcipher);
+	uint8_t key[CHACHA_POLY1305_KEYLEN] = {0};
+	assert(chacha_poly1305_set_key(f.meta->sptps.outcipher, key));
+	f.mesh->loop.now = f.mesh->bb_private.next_query_at;
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(f.synchronous_writes == 1 && f.meta->outbuf.len > 0);
+	assert(f.mesh->bb_private.query_id && f.meta->status.bb_private_asked);
+	assert(!f.mesh->bb_private.query_hold);
+	struct timespec deadline = f.mesh->bb_private.next_query_at;
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(f.synchronous_writes == 1);
+	assert(same_time(deadline, f.mesh->bb_private.next_query_at));
+	assert(path_backbone_private_test_offer(f.mesh, f.meta, f.backbone,
+	                f.mesh->bb_private.query_id, 42, 1, 300, NULL, PATH_CAP_NONE));
+	close_fixture(&f);
+}
+
+static void test_private_query_failed_reconnect(void) {
+	fixture_t f = failed_private_query(true);
+	struct timespec deadline = f.mesh->bb_private.next_query_at;
+	/* Retire through production, then allocate and register a fresh connection.
+	   This also works if malloc reuses the old address or the session is warm. */
+	terminate_connection(f.mesh, f.meta, false);
+	close(f.reader);
+	int fd[2];
+	assert(socketpair(AF_UNIX, SOCK_STREAM, 0, fd) == 0);
+	f.reader = fd[1];
+	f.meta = new_connection();
+	f.meta->name = strdup("backbone");
+	f.meta->socket = fd[0];
+	f.meta->node = f.backbone;
+	f.meta->status.active = true;
+	f.meta->allow_request = ID;
+	f.meta->protocol_minor = PROT_MINOR_BACKBONE_PRIVATE;
+	connection_add(f.mesh, f.meta);
+	io_add(&f.mesh->loop, &f.meta->io, unused_io, NULL, fd[0], IO_READ);
+	f.backbone->connection = f.meta;
+	assert(f.backbone->session_id == 42);
+	assert(!same_time(f.mesh->loop.now, deadline));
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(take_requests(&f, REQ_BACKBONE_PRIVATE) == 1);
+	assert(!f.mesh->bb_private.query_hold);
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(take_requests(&f, REQ_BACKBONE_PRIVATE) == 0);
+	close_fixture(&f);
+}
+
+static void test_private_query_failed_network_change(void) {
+	fixture_t f = failed_private_query(true);
+	struct timespec deadline = f.mesh->bb_private.next_query_at;
+	f.meta->meta_teardown = false;
+	/* Query-context retirement must preserve transport-specific cooldowns. */
+	bb_private_endpoint_t endpoint = {0};
+	endpoint.sa = public_endpoint(4000);
+	endpoint.cap = PATH_CAP_BOTH;
+	endpoint.meta_state = BB_EP_FAILED;
+	endpoint.udp_state = BB_EP_FAILED;
+	endpoint.meta_failures = 3;
+	endpoint.udp_failures = 4;
+	endpoint.meta_retry_at = (struct timespec) {1000, 0};
+	endpoint.udp_retry_at = (struct timespec) {1100, 0};
+	f.mesh->bb_private.endpoints[0] = endpoint;
+	f.mesh->bb_private.count = 1;
+	/* The high bits must matter even when the advertisement's low bits match. */
+	f.mesh->lan_network_epoch += UINT64_C(1) << 32;
+	connection_policy_advance_network_epoch(f.mesh);
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(take_requests(&f, REQ_BACKBONE_PRIVATE) == 1);
+	assert(f.mesh->loop.now.tv_sec < deadline.tv_sec);
+	assert(!f.mesh->bb_private.query_hold && f.mesh->bb_private.query_id);
+	assert(f.mesh->bb_private.count == 1);
+	bb_private_endpoint_t *saved = &f.mesh->bb_private.endpoints[0];
+	assert(!sockaddrcmp(&endpoint.sa, &saved->sa) && saved->cap == endpoint.cap);
+	assert(saved->meta_state == BB_EP_FAILED && saved->udp_state == BB_EP_FAILED);
+	assert(saved->meta_failures == 3 && saved->udp_failures == 4);
+	assert(same_time(saved->meta_retry_at, endpoint.meta_retry_at));
+	assert(same_time(saved->udp_retry_at, endpoint.udp_retry_at));
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(take_requests(&f, REQ_BACKBONE_PRIVATE) == 0);
+	close_fixture(&f);
+
+	/* Identical low epoch bits cannot alias an obsolete failed context. */
+	f = failed_private_query(true);
+	f.meta->meta_teardown = false;
+	f.mesh->lan_network_epoch += UINT64_C(1) << 32;
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(take_requests(&f, REQ_BACKBONE_PRIVATE) == 1);
+	assert(!f.mesh->bb_private.query_hold);
 	close_fixture(&f);
 }
 
@@ -920,6 +1172,88 @@ static void test_backbone_private_races(void) {
 	close_fixture(&f);
 }
 
+static void assert_hold_retired(fixture_t *f) {
+	assert(!f->mesh->bb_private.query_hold);
+	assert(!f->mesh->bb_private.hold_connection_generation);
+	assert(!f->mesh->bb_private.hold_network_epoch);
+	assert(!f->mesh->bb_private.hold_session_id);
+}
+
+static void test_private_query_retirement(void) {
+	fixture_t f = failed_private_query(true);
+	f.mesh->bb_private.publish_revision = 17;
+	f.mesh->bb_private.publish_hash = 12345;
+	f.backbone->session_id++;
+	path_backbone_private_on_session_change(f.mesh, f.backbone);
+	assert_hold_retired(&f);
+	assert(!f.mesh->bb_private.query_id && !f.mesh->bb_private.count);
+	assert(same_time(f.mesh->bb_private.next_query_at, (struct timespec) {0, 0}));
+	assert(f.mesh->bb_private.publish_revision == 17);
+	assert(f.mesh->bb_private.publish_hash == 12345);
+	f.meta->meta_teardown = false;
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(take_requests(&f, REQ_BACKBONE_PRIVATE) == 1);
+	close_fixture(&f);
+
+	f = failed_private_query(true);
+	meshlink_stop(f.mesh);
+	f.meta = NULL;
+	assert_hold_retired(&f);
+	assert(same_time(f.mesh->bb_private.next_query_at, (struct timespec) {0, 0}));
+	assert(!f.mesh->connections->count);
+	free_query_counter(&f);
+	close(f.reader);
+	meshlink_close(f.mesh);
+
+	/* Direct list cleanup also retires context, independently of terminate. */
+	f = failed_private_query(false);
+	close_fixture(&f);
+}
+
+static void test_private_query_failed_cutover(void) {
+	fixture_t f = failed_private_query(true);
+	struct timespec deadline = f.mesh->bb_private.next_query_at;
+	connection_t *old = f.meta;
+	int old_reader = f.reader;
+	int old_fd = old->socket;
+	int fd[2];
+	assert(socketpair(AF_UNIX, SOCK_STREAM, 0, fd) == 0);
+	sockaddr_t public = public_endpoint(4000);
+	connection_t *standby = private_standby(&f, &public);
+	standby->status.bb_private_probe = false;
+	standby->protocol_minor = PROT_MINOR_BACKBONE_PRIVATE;
+	standby->allow_request = ID;
+	standby->socket = fd[0];
+	connection_add(f.mesh, standby);
+	io_add(&f.mesh->loop, &standby->io, unused_io, NULL, fd[0], IO_READ);
+	assert(standby->generation != old->generation);
+	/* Keep the old object alive through promotion to test normalization even
+	   before the retiring object's destructor clears anything. */
+	old->socket = -1;
+	old->meta_teardown = false;
+	old->status.bb_private_queried = true;
+	old->bb_private_reply_at = 321;
+	old->activated_at = 50;
+	assert(upgrade_cutover_begin(f.mesh, f.backbone, old, standby));
+	send_cutover_reply(&f, old, REQ_META_CUTOVER_READY);
+	send_cutover_reply(&f, standby, REQ_META_CUTOVER_ACK);
+	assert(f.backbone->connection == standby);
+	assert(standby->status.bb_private_asked && standby->status.bb_private_queried);
+	assert(standby->activated_at == 50 && standby->bb_private_reply_at == 321);
+	f.meta = standby;
+	f.reader = fd[1];
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(take_requests(&f, REQ_BACKBONE_PRIVATE) == 1);
+	assert_hold_retired(&f);
+	assert(f.mesh->loop.now.tv_sec < deadline.tv_sec);
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(take_requests(&f, REQ_BACKBONE_PRIVATE) == 0);
+	old->socket = old_fd;
+	connection_del(f.mesh, old);
+	close(old_reader);
+	close_fixture(&f);
+}
+
 /* The backbone side: minor-8 members never get the exchange, minor-9
    members are answered within the reply window and pushed CHANGED. */
 static void test_backbone_private_publisher(void) {
@@ -969,6 +1303,16 @@ static void test_backbone_private_publisher(void) {
 }
 
 int main(void) {
+	const char *regression = getenv("MESHLINK_PRIVATE_QUERY_REGRESSION");
+	if(regression) {
+		if(!strcmp(regression, "reconnect")) {
+			test_private_query_failed_reconnect();
+		} else {
+			assert(!strcmp(regression, "network"));
+			test_private_query_failed_network_change();
+		}
+		return 0;
+	}
 	fprintf(stderr, "channel start\n");
 	test_channel_start();
 	fprintf(stderr, "key phases\n");
@@ -995,5 +1339,12 @@ int main(void) {
 	test_backbone_private_races();
 	fprintf(stderr, "backbone private publisher\n");
 	test_backbone_private_publisher();
+	test_private_query_failure_pacing();
+	test_private_query_synchronous_answer();
+	test_private_query_accepted_network_reentrancy();
+	test_private_query_failed_reconnect();
+	test_private_query_failed_network_change();
+	test_private_query_retirement();
+	test_private_query_failed_cutover();
 	return 0;
 }

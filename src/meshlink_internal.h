@@ -212,6 +212,7 @@ struct meshlink_handle {
 	backbone_private_t bb_private;
 	local_network_t local_network;
 	meshlink_backbone_path_policy_t backbone_path_policy; /* runtime only, not stored */
+	uint64_t connection_generation;      /* Never reused within this mesh, including stop/start */
 	uint64_t lan_network_epoch;           /* Bumped on interface/network change; 0 is never current */
 	path_probe_budget_t probe_budget;
 	struct list_t *probe_queue;

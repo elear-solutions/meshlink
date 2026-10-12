@@ -40,7 +40,7 @@ static void timespec_add(const struct timespec *a, const struct timespec *b, str
 	r->tv_sec = a->tv_sec + b->tv_sec;
 	r->tv_nsec = a->tv_nsec + b->tv_nsec;
 
-	if(r->tv_nsec > 1000000000) {
+	if(r->tv_nsec >= 1000000000) {
 		r->tv_sec++, r->tv_nsec -= 1000000000;
 	}
 }
@@ -64,6 +64,7 @@ static bool timespec_lt(const struct timespec *a, const struct timespec *b) {
 
 static void timespec_clear(struct timespec *a) {
 	a->tv_sec = 0;
+	a->tv_nsec = 0;
 }
 
 static int io_compare(const io_t *a, const io_t *b) {
@@ -245,8 +246,27 @@ void signal_trigger(event_loop_t *loop, signal_t *sig) {
 #endif
 
 	uint8_t signum = sig->signum;
-	write(loop->pipefd[1], &signum, 1);
-	return;
+	/* Preserve the caller's errno: this can also run in a signal handler. */
+	int saved_errno = errno;
+	ssize_t wrote;
+	do {
+		wrote = write(loop->pipefd[1], &signum, 1);
+	} while(wrote < 0 && errno == EINTR);
+
+#ifdef HAVE_STDATOMIC_H
+	if(wrote != 1) {
+		/* No byte was queued. Permit a subsequent trigger to retry instead
+		   of leaving the signal permanently marked as pending. */
+		atomic_flag_clear(&sig->set);
+	}
+#else
+	if(wrote != 1) {
+		/* The non-atomic implementation also retries on the next trigger. */
+		errno = saved_errno;
+		return;
+	}
+#endif
+	errno = saved_errno;
 }
 
 void signal_add(event_loop_t *loop, signal_t *sig, signal_cb_t cb, void *data, uint8_t signum) {

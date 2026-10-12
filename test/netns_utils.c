@@ -1,6 +1,6 @@
 #define _GNU_SOURCE 1
 
-#ifndef NDEBUG
+#ifdef NDEBUG
 #undef NDEBUG
 #endif
 
@@ -38,12 +38,18 @@ bool netns_available(void) {
 		return false;
 	}
 
-	(void)system(del_cmd);
+	/* Absence is normal on the first cleanup; failure to start the shell is not. */
+	rc = system(del_cmd);
+	if(rc == -1) {
+		free(add_cmd);
+		free(del_cmd);
+		return false;
+	}
 	rc = system(add_cmd);
-	(void)system(del_cmd);
+	int cleanup_rc = system(del_cmd);
 	free(add_cmd);
 	free(del_cmd);
-	return rc == 0;
+	return rc == 0 && cleanup_rc == 0;
 }
 
 /// SKIP (exit 77) when this environment cannot create netns.
@@ -220,9 +226,9 @@ static void close_peers(peer_config_t *peers, int npeers) {
 /// Set up relay, peer and NUT that are directly connected
 peer_config_t *setup_relay_peer_nut(const char *prefix) {
 	static peer_config_t peers[] = {
-		{"relay", DEV_CLASS_BACKBONE, NULL, 0, NULL},
-		{"peer", DEV_CLASS_STATIONARY, NULL, 0, NULL},
-		{"nut", DEV_CLASS_STATIONARY, NULL, 0, NULL},
+		{.name = "relay", .devclass = DEV_CLASS_BACKBONE},
+		{.name = "peer", .devclass = DEV_CLASS_STATIONARY},
+		{.name = "nut", .devclass = DEV_CLASS_STATIONARY},
 	};
 
 	create_peers(peers, 3, prefix);
@@ -237,9 +243,9 @@ peer_config_t *setup_relay_peer_nut(const char *prefix) {
 /// fixture for local discovery.
 peer_config_t *setup_relay_peer_nut_wan(const char *prefix) {
 	static peer_config_t peers[] = {
-		{"relay", DEV_CLASS_BACKBONE, NULL, 0, NULL},
-		{"peer", DEV_CLASS_STATIONARY, NULL, 0, NULL},
-		{"nut", DEV_CLASS_STATIONARY, NULL, 0, NULL},
+		{.name = "relay", .devclass = DEV_CLASS_BACKBONE},
+		{.name = "peer", .devclass = DEV_CLASS_STATIONARY},
+		{.name = "nut", .devclass = DEV_CLASS_STATIONARY},
 	};
 
 	create_peers(peers, 3, prefix);
@@ -255,9 +261,9 @@ peer_config_t *setup_relay_peer_nut_wan(const char *prefix) {
 /// Set up relay, peer and NUT that are directly connected
 peer_config_t *setup_relay_peer_nut_indirect(const char *prefix) {
 	static peer_config_t peers[] = {
-		{"relay", DEV_CLASS_BACKBONE, NULL, 0, NULL},
-		{"peer", DEV_CLASS_STATIONARY, NULL, 0, NULL},
-		{"nut", DEV_CLASS_STATIONARY, NULL, 0, NULL},
+		{.name = "relay", .devclass = DEV_CLASS_BACKBONE},
+		{.name = "peer", .devclass = DEV_CLASS_STATIONARY},
+		{.name = "nut", .devclass = DEV_CLASS_STATIONARY},
 	};
 
 	create_peers(peers, 3, prefix);
@@ -311,7 +317,9 @@ static void forget_nat_netns(void) {
 		}
 
 		assert(asprintf(&command, "/bin/ip netns delete %s >/dev/null 2>&1", nat_netns_name[i]) > 0);
-		(void)system(command);
+		if(system(command) != 0) {
+			fprintf(stderr, "Failed to delete NAT namespace %s\n", nat_netns_name[i]);
+		}
 		free(command);
 		free(nat_netns_name[i]);
 		nat_netns_name[i] = NULL;
@@ -646,7 +654,9 @@ bool nat_set_conntrack_udp_timeout(int side, int sec) {
 }
 
 static pthread_t nat_punisher_thread;
-static volatile int nat_punisher_stop;
+static pthread_mutex_t nat_punisher_lock = PTHREAD_MUTEX_INITIALIZER;
+static bool nat_punisher_stopping;
+static bool nat_punisher_running;
 static int nat_punisher_side;
 static unsigned long nat_punisher_last;
 /* The other peer's WAN address. Side 1 is the cam NAT, so its app flow is to .2. */
@@ -716,7 +726,13 @@ static unsigned long nat_forward_packets(int side) {
 static void *nat_punisher_main(void *arg) {
 	(void)arg;
 
-	while(!nat_punisher_stop) {
+	for(;;) {
+		assert(pthread_mutex_lock(&nat_punisher_lock) == 0);
+		bool stopping = nat_punisher_stopping;
+		assert(pthread_mutex_unlock(&nat_punisher_lock) == 0);
+		if(stopping) {
+			break;
+		}
 		unsigned long pkts = nat_forward_packets(nat_punisher_side);
 
 		if(pkts > nat_punisher_last) {
@@ -738,19 +754,23 @@ bool nat_oversize_punisher_start(int side, int ip_len) {
 	}
 
 	nat_punisher_side = side;
-	nat_punisher_stop = 0;
+	assert(!nat_punisher_running);
+	nat_punisher_stopping = false;
 	nat_punisher_last = nat_forward_packets(side);
-	return pthread_create(&nat_punisher_thread, NULL, nat_punisher_main, NULL) == 0;
+	nat_punisher_running = pthread_create(&nat_punisher_thread, NULL, nat_punisher_main, NULL) == 0;
+	return nat_punisher_running;
 }
 
 void nat_oversize_punisher_stop(void) {
-	if(!nat_punisher_thread) {
+	if(!nat_punisher_running) {
 		return;
 	}
 
-	nat_punisher_stop = 1;
-	pthread_join(nat_punisher_thread, NULL);
-	nat_punisher_thread = 0;
+	assert(pthread_mutex_lock(&nat_punisher_lock) == 0);
+	nat_punisher_stopping = true;
+	assert(pthread_mutex_unlock(&nat_punisher_lock) == 0);
+	assert(pthread_join(nat_punisher_thread, NULL) == 0);
+	nat_punisher_running = false;
 }
 
 void close_nat_hole_punch(peer_config_t *peers) {

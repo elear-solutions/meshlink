@@ -285,7 +285,7 @@ bool path_backbone_private_vouches(const meshlink_handle_t *mesh, const node_t *
 		return false;
 	}
 
-	if(mesh->bb_private.network_epoch != (uint32_t)mesh->lan_network_epoch) {
+	if(mesh->bb_private.network_epoch != mesh->lan_network_epoch) {
 		return false;
 	}
 
@@ -484,12 +484,36 @@ bool path_backbone_private_meta_superseded(const meshlink_handle_t *mesh, const 
 	       && !path_backbone_private_vouches(mesh, n, &c->address);
 }
 
+/* A hold owns the shared deadline only while query_hold is set. Accepted
+   queries and endpoint cooldowns have independent lifetimes. */
+static void clear_query_hold(backbone_private_t *p) {
+	p->query_hold = false;
+	p->hold_connection_generation = 0;
+	p->hold_network_epoch = 0;
+	p->hold_session_id = 0;
+}
+
+static void retire_query_hold(backbone_private_t *p) {
+	if(p->query_hold) {
+		memset(&p->next_query_at, 0, sizeof p->next_query_at);
+	}
+	clear_query_hold(p);
+}
+
+void path_backbone_private_on_connection_closed(meshlink_handle_t *mesh, const connection_t *c) {
+	if(mesh && c && c->generation && mesh->bb_private.query_hold
+	                && mesh->bb_private.hold_connection_generation == c->generation) {
+		retire_query_hold(&mesh->bb_private);
+	}
+}
+
 void path_backbone_private_on_session_change(meshlink_handle_t *mesh, node_t *n) {
 	if(!mesh || !n || !connection_policy_is_backbone(mesh, n)) {
 		return;
 	}
 
-	memset(&mesh->bb_private, 0, sizeof mesh->bb_private);
+	/* Member state reset must not erase backbone publication identity. */
+	memset(&mesh->bb_private, 0, offsetof(backbone_private_t, publish_revision));
 	path_backbone_udp_clear_candidate(mesh);
 }
 
@@ -539,8 +563,12 @@ bool path_backbone_private_fill_meta(const meshlink_handle_t *mesh, const node_t
 
 static void member_send(meshlink_handle_t *mesh, node_t *bb, bool climb_on_fail) {
 	uint64_t id;
+	connection_t *c = bb->connection;
+	const uint64_t generation = c ? c->generation : 0;
+	const uint64_t epoch = mesh->lan_network_epoch;
+	const uint32_t session = bb->session_id;
 
-	if(!bb->connection || bb->connection->protocol_minor < PROT_MINOR_BACKBONE_PRIVATE) {
+	if(!c || c->protocol_minor < PROT_MINOR_BACKBONE_PRIVATE) {
 		return;
 	}
 
@@ -556,11 +584,26 @@ static void member_send(meshlink_handle_t *mesh, node_t *bb, bool climb_on_fail)
 	mesh->bb_private.query_id = id;
 	mesh->bb_private.changed_pending = false;
 
-	if(!send_request(mesh, bb->connection, NULL, "%d %s %s %d %" PRIu64,
-	                 REQ_KEY, mesh->self->name, bb->name, REQ_BACKBONE_PRIVATE, id)) {
-		if(mesh->bb_private.query_id == id) {
-			mesh->bb_private.query_id = 0;
+	bool sent = send_request(mesh, c, NULL, "%d %s %s %d %" PRIu64,
+	                       REQ_KEY, mesh->self->name, bb->name, REQ_BACKBONE_PRIVATE, id);
+
+	if(!sent) {
+		/* META can synchronously dispatch a reply or replay a cutover. Never
+		   install failed-attempt state into a replacement context. Accepted
+		   queries retain their existing in-flight semantics across epochs. */
+		if(!bb->connection || bb->connection->generation != generation
+		                || !bb->connection->status.active || bb->session_id != session
+		                || mesh->lan_network_epoch != epoch) {
+			if(mesh->bb_private.query_id == id) {
+				mesh->bb_private.query_id = 0;
+			}
+			return;
 		}
+
+		if(mesh->bb_private.query_id != id) {
+			return; /* A synchronous answer or another owner already consumed it. */
+		}
+		mesh->bb_private.query_id = 0;
 
 		/* The route tick would otherwise send again on the next pass.
 		   Wait out this ladder step. Climb only when this attempt is not
@@ -570,44 +613,58 @@ static void member_send(meshlink_handle_t *mesh, node_t *bb, bool climb_on_fail)
 		}
 
 		mesh->bb_private.query_hold = true;
+		mesh->bb_private.hold_connection_generation = generation;
+		mesh->bb_private.hold_network_epoch = epoch;
+		mesh->bb_private.hold_session_id = session;
 		mesh->bb_private.next_query_at = ahead(&mesh->loop.now, ladder_delay(mesh, mesh->bb_private.ladder_step));
 		logger(mesh, MESHLINK_INFO, "Backbone private query to %s was not sent", bb->name);
 		return;
 	}
 
-	bb->connection->status.bb_private_asked = true;
+	/* Do not claim a newly authenticated replacement subscribed merely
+	   because the retired socket accepted a record. Cutover transfers an
+	   existing subscription independently. Never dereference c after send. */
+	if(bb->connection && bb->connection->status.active && bb->connection->generation == generation) {
+		bb->connection->status.bb_private_asked = true;
+	}
 	logger(mesh, MESHLINK_INFO, "Backbone private query %" PRIu64 " to %s", id, bb->name);
 
 	if(mesh->bb_private.query_id == id) {
-		mesh->bb_private.query_hold = false;
+		clear_query_hold(&mesh->bb_private);
 		mesh->bb_private.next_query_at = ahead(&mesh->loop.now, ladder_delay(mesh, mesh->bb_private.ladder_step));
 	}
 }
 
 static bool set_current(const meshlink_handle_t *mesh, const node_t *n) {
 	return !set_expired(mesh)
-	       && mesh->bb_private.network_epoch == (uint32_t)mesh->lan_network_epoch
+	       && mesh->bb_private.network_epoch == mesh->lan_network_epoch
 	       && mesh->bb_private.session_id == n->session_id;
 }
 
 /* Queries stop while a private carrier is healthy and its set is current. */
 static void member_query_tick(meshlink_handle_t *mesh, node_t *n) {
+	backbone_private_t *p = &mesh->bb_private;
+	if(p->query_hold && (p->hold_connection_generation != n->connection->generation
+	                || p->hold_network_epoch != mesh->lan_network_epoch
+	                || p->hold_session_id != n->session_id)) {
+		retire_query_hold(p);
+	}
 	bool current = set_current(mesh, n);
 	/* The backbone pushes CHANGED only on connections that asked. */
 	bool asked = n->connection->status.bb_private_asked;
 
 	if(asked && current && !mesh->bb_private.changed_pending && (private_udp_up(mesh, n) || private_meta_up(mesh, n))) {
-		mesh->bb_private.query_hold = false;
+		clear_query_hold(&mesh->bb_private);
 		return;
 	}
 
-	/* A failed write armed this. A stale set still asks at once once it expires. */
+	/* An unchanged failed first write is paced even with asked == false. */
 	if(mesh->bb_private.query_hold) {
 		if(!timespec_due(&mesh->loop.now, &mesh->bb_private.next_query_at)) {
 			return;
 		}
 
-		mesh->bb_private.query_hold = false;
+		clear_query_hold(&mesh->bb_private);
 	}
 
 	/* A new connection asks at once. So does a set from another network or
@@ -862,11 +919,12 @@ bool path_backbone_private_handle_answer(meshlink_handle_t *mesh, connection_t *
 	mesh->bb_private.count = (size_t)count;
 	mesh->bb_private.session_id = session_id;
 	mesh->bb_private.revision = revision;
-	mesh->bb_private.network_epoch = (uint32_t)mesh->lan_network_epoch;
+	mesh->bb_private.network_epoch = mesh->lan_network_epoch;
 	mesh->bb_private.expires_at = ahead(&mesh->loop.now, lifetime);
 	mesh->bb_private.empty = count == 0;
 	mesh->bb_private.query_id = 0;
 	mesh->bb_private.changed_pending = false;
+	clear_query_hold(&mesh->bb_private);
 	note_live_private_meta(mesh, from);
 
 	if(count == 0) {

@@ -224,7 +224,14 @@ replies and scheduler denial must not reset it or spin. An ordinary field device
 that cannot reach the NMN's private endpoints records bounded failures and backs
 off. Refresh on authenticated reconnect/session change, endpoint-set change,
 local network change, expiry when a candidate needs reuse, and private-path
-failure. A healthy private carrier does not require continuous endpoint queries.
+failure. A failed-write delay is scoped to its authenticated META connection
+generation, backbone session and full local network epoch; reconnect/cutover or
+network change retires that delay through the existing query owner. Unchanged
+failed writes remain paced, accepted queries retain their in-flight deadlines,
+and timeout plus failed resend advances once. Hold retirement does not erase
+endpoint cooldowns or backbone publication revision/hash. Deterministic lifecycle
+regressions cover these contracts; field acceptance still requires the evidence
+below. A healthy private carrier does not require continuous endpoint queries.
 
 #### Validation and carrier promotion
 

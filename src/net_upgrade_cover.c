@@ -88,7 +88,8 @@ bool upgrade_cutover_cover_unit(meshlink_handle_t *mesh) {
 	}
 
 	memset(&n, 0, sizeof(n));
-	n.name = "cutover-unit";
+	char name[] = "cutover-unit";
+	n.name = name;
 	n.mesh = mesh;
 	old = new_connection();
 	neu = new_connection();

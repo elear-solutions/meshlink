@@ -127,3 +127,5 @@ test/reconnect-backoff
 test/relay-hop
 
 test/peer-control
+
+test/event-signal

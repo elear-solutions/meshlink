@@ -455,7 +455,17 @@ bool wait_sync_flag(struct sync_flag *s, int seconds) {
 void join_meshlink_peer(meshlink_handle_t *backbone, meshlink_handle_t *peer) {
 	assert(backbone && peer);
 	assert(meshlink_start(backbone));
-	char *url = meshlink_invite(backbone, NULL, meshlink_get_self(peer)->name);
+	/* Same-host fixtures do not need Internet address discovery. Keep an
+	   explicitly configured canonical endpoint (and its provenance) in the
+	   invitation, but do not fall back to findmyip when none is configured. */
+	devtool_node_status_t status;
+	devtool_get_node_status(backbone, meshlink_get_self(backbone), &status);
+	uint32_t flags = MESHLINK_INVITE_LOCAL;
+	if(status.canonical_address && *status.canonical_address) {
+		flags |= MESHLINK_INVITE_PUBLIC;
+	}
+	devtool_free_node_status(&status);
+	char *url = meshlink_invite_ex(backbone, NULL, meshlink_get_self(peer)->name, flags);
 	assert(url);
 	assert(meshlink_join(peer, url));
 	free(url);

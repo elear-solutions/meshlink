@@ -53,12 +53,15 @@ typedef struct backbone_private_t {
 	struct timespec next_query_at;
 	uint32_t session_id;
 	uint32_t revision;
-	uint32_t network_epoch;
+	uint64_t network_epoch;
 	struct timespec expires_at;
 	bool empty;
 	bool ever_proven;
 	bool changed_pending;
-	bool query_hold; /* send failed; honor next_query_at before asking again */
+	bool query_hold; /* Failed write; next_query_at belongs to the context below */
+	uint64_t hold_connection_generation;
+	uint64_t hold_network_epoch;
+	uint32_t hold_session_id;
 	bb_private_endpoint_t endpoints[BB_PRIVATE_MAX];
 	size_t count;
 	uint32_t publish_revision;
@@ -76,6 +79,8 @@ bool path_backbone_private_has_unproven_meta(const struct meshlink_handle *mesh,
 bool path_backbone_private_pick_meta(struct meshlink_handle *mesh, struct node_t *n, sockaddr_t *out);
 void path_backbone_private_note_meta_failure(struct meshlink_handle *mesh, struct node_t *n, const sockaddr_t *sa);
 void path_backbone_private_note_meta_proven(struct meshlink_handle *mesh, struct node_t *n, const sockaddr_t *sa);
+/* Retires only a failed write and its deadline, not endpoint/publication state. */
+void path_backbone_private_on_connection_closed(struct meshlink_handle *mesh, const struct connection_t *c);
 void path_backbone_private_on_session_change(struct meshlink_handle *mesh, struct node_t *n);
 bool path_backbone_private_public_data_allowed(const struct meshlink_handle *mesh, const struct node_t *n);
 bool path_backbone_private_fill_udp(const struct meshlink_handle *mesh, const struct node_t *n, sockaddr_t *out);

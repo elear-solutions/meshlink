@@ -70,6 +70,7 @@ typedef struct connection_t {
 	int socket;                     /* socket used for this connection */
 	union sockaddr_t address;       /* his real (internet) ip */
 
+	uint64_t generation;           /* Assigned by connection_add for every accepted/outgoing socket */
 	struct meshlink_handle *mesh;   /* the mesh this connection belongs to */
 
 	// I/O

@@ -38,9 +38,6 @@ static devtool_node_status_t status_at_reachable;
 static const char *watched_peer;
 static int hint_port_on_reachable;  /* T5: direct address to hint the moment the peer comes up, 0 = none */
 
-static struct sync_flag peer_meta_up;
-static devtool_node_status_t status_at_meta_up;
-
 static bool is_rfc1918(const char *ip) {
 	struct in_addr in;
 
@@ -67,17 +64,6 @@ static void status_cb(meshlink_handle_t *mesh, meshlink_node_t *node, bool reach
 
 	devtool_get_node_status(mesh, node, &status_at_reachable);
 	set_sync_flag(&peer_reachable, true);
-}
-
-/* Snapshot the peer's first meta connection as it activates (devtool meta status
-   callback, also inside ack_h()), before an upgrade probe can replace it. */
-static void meta_status_cb(meshlink_handle_t *mesh, meshlink_node_t *node, bool up) {
-	if(!up || strcmp(node->name, watched_peer) || check_sync_flag(&peer_meta_up)) {
-		return;
-	}
-
-	devtool_get_node_status(mesh, node, &status_at_meta_up);
-	set_sync_flag(&peer_meta_up, true);
 }
 
 static void open_pair(meshlink_handle_t **a, meshlink_handle_t **b, const char *prefix) {

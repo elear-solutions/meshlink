@@ -256,7 +256,8 @@ bool upgrade_preserve_cover_unit(meshlink_handle_t *mesh) {
 	memset(&n, 0, sizeof n);
 	memset(&pred, 0, sizeof pred);
 	memset(&reverse, 0, sizeof reverse);
-	n.name = "preserve";
+	char name[] = "preserve";
+	n.name = name;
 	n.status.validkey = true;
 	n.sptps.state = SPTPS_SECONDARY_KEX;
 
