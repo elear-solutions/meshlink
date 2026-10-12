@@ -9,6 +9,10 @@
 
 using namespace std;
 
+static_assert(MESHLINK_BACKBONE_PATH_PREFER_PRIVATE == 0, "prefer ABI");
+static_assert(MESHLINK_BACKBONE_PATH_ONLY_PRIVATE == 1, "only ABI");
+static_assert(MESHLINK_BACKBONE_PATH_DISABLE_PRIVATE == 2, "disable ABI");
+
 int main(void) {
 	assert(meshlink::destroy("basicpp_conf"));
 
@@ -27,6 +31,8 @@ int main(void) {
 		// Disable local discovery.
 
 		mesh.enable_discovery(false);
+		mesh.set_backbone_path_policy(MESHLINK_BACKBONE_PATH_ONLY_PRIVATE);
+		mesh.set_backbone_path_policy(MESHLINK_BACKBONE_PATH_DISABLE_PRIVATE);
 
 		// Start and stop the mesh.
 

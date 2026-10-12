@@ -19,11 +19,32 @@ private carrier. The public punch exchange (ADR 0008) stays public-only.
 
 ## Decision
 
+### Member opt-in and publication
+
+New persistent and ephemeral handles use `MESHLINK_BACKBONE_PATH_DISABLE_PRIVATE`
+(value 2). Disabled members do not query, accept advertisements, validate feature-owned
+META/UDP candidates or promote them. This policy does not ban private IPs: ordinary
+on-link LAN discovery, authenticated LAN adjacency, canonical endpoints, public
+punching and relay behavior keep their contracts.
+
+The backbone's request handler, private-listener publication and CHANGED notifications
+remain available with its own member policy disabled. An NMN left at the default can
+serve an opted-in VSN. Authenticated requester checks and reply rate limits remain.
+
+The setting is runtime-only and survives a join on the same handle. Close/reopen
+restores the disabled default. Enable/disable transitions require stop/configure/start;
+while started (including startup/shutdown), the setter leaves state unchanged and
+sets `MESHLINK_ENOTSUP`. Same-value calls are no-ops, and live switches between the
+two enabled policies remain supported. Invalid arguments set `MESHLINK_EINVAL`.
+Stopped boundary transitions and stop clear query IDs/deadlines/holds, validation and
+candidate scheduler work; the member reset preserves publisher revision/hash and
+unrelated path configuration.
+
 ### Provenance
 
 `ADDR_SRC_BACKBONE_PRIVATE` is the only provenance that may leave the local
-prefix. It is runtime evidence. `path_sanitize_recent()` rewrites a stored
-copy to `ADDR_SRC_UNKNOWN` on load. Restart does not restore authority,
+prefix. It is runtime evidence. `path_sanitize_recent()` removes feature-owned cached
+entries when runtime authority is discarded. Restart does not restore authority,
 freshness or confirmation.
 
 `ADDR_SRC_HINT`, `ADDR_SRC_AUTH_DIRECT` and `ADDR_SRC_CANONICAL` keep their
@@ -138,14 +159,14 @@ current set, so a multi-homed backbone does not churn between listeners.
 
 ### Outage policy
 
-`MESHLINK_BACKBONE_PATH_PREFER_PRIVATE` is the default. Ranking puts proven
-private carriers first; when none is up, public UDP and canonical META carry
+`MESHLINK_BACKBONE_PATH_PREFER_PRIVATE` (value 0) explicitly enables discovery.
+Ranking puts proven private carriers first; when none is up, public UDP and canonical META carry
 data immediately. There is no hold-down: withholding public here would only
 turn a private outage into a data outage. The member keeps re-querying and
 promotes back once private is proven again.
 
-`MESHLINK_BACKBONE_PATH_PRIVATE_ONLY` is opt-in and runtime-only. Until a
-private carrier has been proven in the current backbone session, public
+`MESHLINK_BACKBONE_PATH_ONLY_PRIVATE` (value 1) explicitly enables discovery
+and is runtime-only. Until a private carrier has been proven in the current backbone session, public
 carriers carry data (bootstrap, and recovery after a new session). After
 that, every send resolution, including an already recorded route and the
 temporary fallback for a suspect private route, is limited to private
@@ -164,7 +185,8 @@ commit. This does not promise hitless channels across a process restart.
 
 ## Consequences
 
-- Protocol minor becomes 9. Public punch messages are unchanged.
+- The existing exchange uses protocol minor 9. Opt-in adds no wire-format or
+  protocol-minor change. Public punch messages are unchanged.
 - Off-subnet RFC1918 and ULA graph, unknown and restored entries are not
   dialed unless the exchange vouches for them. Tests that used an invented
   private address need a matching interface snapshot.

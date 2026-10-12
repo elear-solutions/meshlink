@@ -1812,6 +1812,7 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 
 	meshlink_handle_t *mesh = xzalloc(sizeof(meshlink_handle_t));
 	connection_policy_init(mesh);
+	mesh->backbone_path_policy = MESHLINK_BACKBONE_PATH_DISABLE_PRIVATE;
 
 	if(params->confbase) {
 		mesh->confbase = xstrdup(params->confbase);
@@ -2181,8 +2182,10 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 		return false;
 	}
 
-	pthread_cond_wait(&mesh->cond, &mesh->mutex);
+	/* The condition wait releases the mutex: startup callbacks must already
+	   observe the started lifecycle, even before the event loop is ready. */
 	mesh->threadstarted = true;
+	pthread_cond_wait(&mesh->cond, &mesh->mutex);
 
 	// Ensure we are considered reachable
 	graph(mesh);
@@ -2255,6 +2258,7 @@ void meshlink_stop(meshlink_handle_t *mesh) {
 	}
 
 	exit_adns(mesh);
+	path_backbone_private_reset_member(mesh);
 
 	if(mesh->nodes) {
 		for splay_each(node_t, n, mesh->nodes) {
@@ -5753,18 +5757,28 @@ void meshlink_set_scheduling_granularity(struct meshlink_handle *mesh, long gran
 void meshlink_set_backbone_path_policy(struct meshlink_handle *mesh, meshlink_backbone_path_policy_t policy) {
 	logger(mesh, MESHLINK_DEBUG, "meshlink_set_backbone_path_policy(%d)", (int)policy);
 
-	if(!mesh) {
-		meshlink_errno = EINVAL;
-		return;
-	}
-
-	if(policy != MESHLINK_BACKBONE_PATH_PREFER_PRIVATE && policy != MESHLINK_BACKBONE_PATH_PRIVATE_ONLY) {
-		meshlink_errno = EINVAL;
+	if(!mesh || (policy != MESHLINK_BACKBONE_PATH_PREFER_PRIVATE
+	                && policy != MESHLINK_BACKBONE_PATH_ONLY_PRIVATE
+	                && policy != MESHLINK_BACKBONE_PATH_DISABLE_PRIVATE)) {
+		meshlink_errno = MESHLINK_EINVAL;
 		return;
 	}
 
 	if(pthread_mutex_lock(&mesh->mutex) != 0) {
 		abort();
+	}
+
+	bool boundary = (policy == MESHLINK_BACKBONE_PATH_DISABLE_PRIVATE)
+	                != (mesh->backbone_path_policy == MESHLINK_BACKBONE_PATH_DISABLE_PRIVATE);
+
+	if(boundary && mesh->threadstarted) {
+		meshlink_errno = MESHLINK_ENOTSUP;
+		pthread_mutex_unlock(&mesh->mutex);
+		return;
+	}
+
+	if(boundary) {
+		path_backbone_private_reset_member(mesh);
 	}
 
 	mesh->backbone_path_policy = policy;

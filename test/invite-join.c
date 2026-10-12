@@ -2,6 +2,8 @@
 #undef NDEBUG
 #endif
 
+#include "system.h"
+
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -10,7 +12,7 @@
 #include <assert.h>
 #include <errno.h>
 
-#include "meshlink.h"
+#include "meshlink_internal.h"
 #include "devtools.h"
 #include "utils.h"
 
@@ -101,7 +103,9 @@ int main(void) {
 	// Have the second instance join the first.
 
 	meshlink_stop(mesh2);
+	meshlink_set_backbone_path_policy(mesh2, MESHLINK_BACKBONE_PATH_PREFER_PRIVATE);
 	assert(meshlink_join(mesh2, baz_url));
+	assert(mesh2->backbone_path_policy == MESHLINK_BACKBONE_PATH_PREFER_PRIVATE);
 	assert(meshlink_start(mesh2));
 
 	// Wait for the two to connect.

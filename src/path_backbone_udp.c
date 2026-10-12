@@ -201,6 +201,11 @@ static int path_backbone_udp_pingtimeout(meshlink_handle_t *mesh, const node_t *
 }
 
 static void path_backbone_udp_packet(meshlink_handle_t *mesh, const path_probe_request_t *req) {
+	if(mesh->backbone_udp.source == ADDR_SRC_BACKBONE_PRIVATE
+	                && !path_backbone_private_enabled(mesh)) {
+		return;
+	}
+
 	/* A queued backbone request may drain immediately after a size send. */
 	if(path_plpmtu_probe_recent(mesh, req->node)) {
 		path_backbone_udp_arm(mesh, 0, PATH_PLPMTU_LIVENESS_GUARD_MS * 1000000L);
@@ -502,6 +507,17 @@ static void path_backbone_udp_candidate_fail(meshlink_handle_t *mesh) {
 
 static void path_backbone_udp_candidate_packet(meshlink_handle_t *mesh, const path_probe_request_t *req) {
 	(void)req;
+
+	backbone_udp_path_t *p = &mesh->backbone_udp;
+
+	if(!p->cand.active || !p->cand.nonce || !p->node
+	                || p->cand.session_id != p->node->session_id
+	                || p->cand.revision != mesh->bb_private.revision
+	                || p->cand.network_epoch != (uint32_t)mesh->lan_network_epoch
+	                || !path_backbone_private_vouches(mesh, p->node, &p->cand.endpoint)) {
+		return;
+	}
+
 	send_backbone_udp_probe_at(mesh, &mesh->backbone_udp.cand.endpoint, mesh->backbone_udp.cand.nonce);
 }
 
@@ -678,6 +694,10 @@ void path_backbone_udp_observe_reply(meshlink_handle_t *mesh, node_t *n, const s
 		path_backbone_udp_mark_private_proven(mesh);
 		path_backbone_udp_arm_keepalive(mesh);
 		logger(mesh, MESHLINK_INFO, "Backbone private UDP to %s confirmed", n->name);
+		return;
+	}
+
+	if(p->source == ADDR_SRC_BACKBONE_PRIVATE && !path_backbone_private_enabled(mesh)) {
 		return;
 	}
 

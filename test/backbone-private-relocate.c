@@ -239,6 +239,8 @@ int main(void) {
 	configure_nmn(nmn_mesh);
 	meshlink_enable_discovery(vsn_mesh, false);
 	meshlink_hint_network_change(vsn_mesh);
+	meshlink_set_backbone_path_policy(vsn_mesh, MESHLINK_BACKBONE_PATH_PREFER_PRIVATE);
+	/* The NMN publishes private listeners with its default disabled member policy. */
 	devtool_set_backbone_udp_keepalive(vsn_mesh, 1);
 	meshlink_set_dev_class_timeouts(vsn_mesh, DEV_CLASS_BACKBONE, 3, 2);
 	meshlink_set_log_cb(vsn_mesh, log_level, log_cb);

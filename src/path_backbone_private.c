@@ -29,6 +29,20 @@
 #include <stdio.h>
 #include <string.h>
 
+bool path_backbone_private_enabled(const meshlink_handle_t *mesh) {
+	return mesh && mesh->backbone_path_policy != MESHLINK_BACKBONE_PATH_DISABLE_PRIVATE;
+}
+
+void path_backbone_private_reset_member(meshlink_handle_t *mesh) {
+	if(!mesh) {
+		return;
+	}
+
+	/* Member state must not erase the NMN's publication revision and hash. */
+	memset(&mesh->bb_private, 0, offsetof(backbone_private_t, publish_revision));
+	path_backbone_udp_clear_candidate(mesh);
+}
+
 static bool timespec_due(const struct timespec *now, const struct timespec *when) {
 	if(!when->tv_sec && !when->tv_nsec) {
 		return true;
@@ -261,7 +275,7 @@ bool path_backbone_private_knows(const meshlink_handle_t *mesh, const sockaddr_t
 
 	/* Expiry drops the advertisement. A probe's provenance bit is separate
 	   and still has to be vouched; an ordinary on-link listener does not. */
-	if(!mesh || !sa || set_expired(mesh)) {
+	if(!path_backbone_private_enabled(mesh) || !sa || set_expired(mesh)) {
 		return false;
 	}
 
@@ -277,7 +291,7 @@ bool path_backbone_private_knows(const meshlink_handle_t *mesh, const sockaddr_t
 bool path_backbone_private_vouches(const meshlink_handle_t *mesh, const node_t *n, const sockaddr_t *sa) {
 	size_t i;
 
-	if(!mesh || !n || !sa || !connection_policy_is_backbone(mesh, n)) {
+	if(!path_backbone_private_enabled(mesh) || !n || !sa || !connection_policy_is_backbone(mesh, n)) {
 		return false;
 	}
 
@@ -305,7 +319,7 @@ bool path_backbone_private_vouches(const meshlink_handle_t *mesh, const node_t *
 bool path_backbone_private_has_unproven_meta(const meshlink_handle_t *mesh, const node_t *n) {
 	size_t i;
 
-	if(!mesh || !n) {
+	if(!path_backbone_private_enabled(mesh) || !n) {
 		return false;
 	}
 
@@ -337,7 +351,7 @@ bool path_backbone_private_has_unproven_meta(const meshlink_handle_t *mesh, cons
 bool path_backbone_private_pick_meta(meshlink_handle_t *mesh, node_t *n, sockaddr_t *out) {
 	size_t i;
 
-	if(!mesh || !n || !out) {
+	if(!path_backbone_private_enabled(mesh) || !n || !out) {
 		return false;
 	}
 
@@ -406,7 +420,7 @@ static int cooldown_sec(uint8_t failures) {
 void path_backbone_private_note_meta_failure(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa) {
 	bb_private_endpoint_t *e;
 
-	if(!mesh) {
+	if(!path_backbone_private_enabled(mesh)) {
 		return;
 	}
 
@@ -455,7 +469,7 @@ static void note_live_private_meta(meshlink_handle_t *mesh, node_t *n) {
 void path_backbone_private_note_meta_proven(meshlink_handle_t *mesh, node_t *n, const sockaddr_t *sa) {
 	bb_private_endpoint_t *e;
 
-	if(!mesh) {
+	if(!path_backbone_private_enabled(mesh)) {
 		return;
 	}
 
@@ -474,7 +488,7 @@ void path_backbone_private_note_meta_proven(meshlink_handle_t *mesh, node_t *n, 
 bool path_backbone_private_meta_superseded(const meshlink_handle_t *mesh, const node_t *n) {
 	const connection_t *c;
 
-	if(!mesh || !n || !connection_policy_is_backbone(mesh, n)) {
+	if(!path_backbone_private_enabled(mesh) || !n || !connection_policy_is_backbone(mesh, n)) {
 		return false;
 	}
 
@@ -513,19 +527,18 @@ void path_backbone_private_on_session_change(meshlink_handle_t *mesh, node_t *n)
 	}
 
 	/* Member state reset must not erase backbone publication identity. */
-	memset(&mesh->bb_private, 0, offsetof(backbone_private_t, publish_revision));
-	path_backbone_udp_clear_candidate(mesh);
+	path_backbone_private_reset_member(mesh);
 }
 
 /* Ranking already puts proven private carriers first, so PREFER_PRIVATE never
-   withholds public. PRIVATE_ONLY allows public data only until this backbone
+   withholds public. ONLY_PRIVATE allows public data only until this backbone
    session has proven a private carrier: bootstrap and session recovery. */
 bool path_backbone_private_public_data_allowed(const meshlink_handle_t *mesh, const node_t *n) {
 	if(!mesh || !n || !connection_policy_is_backbone(mesh, n)) {
 		return true;
 	}
 
-	if(mesh->backbone_path_policy != MESHLINK_BACKBONE_PATH_PRIVATE_ONLY) {
+	if(mesh->backbone_path_policy != MESHLINK_BACKBONE_PATH_ONLY_PRIVATE) {
 		return true;
 	}
 
@@ -533,7 +546,7 @@ bool path_backbone_private_public_data_allowed(const meshlink_handle_t *mesh, co
 }
 
 bool path_backbone_private_fill_udp(const meshlink_handle_t *mesh, const node_t *n, sockaddr_t *out) {
-	if(!mesh || !n || !out || n != mesh->backbone_udp.node) {
+	if(!path_backbone_private_enabled(mesh) || !n || !out || n != mesh->backbone_udp.node) {
 		return false;
 	}
 
@@ -552,7 +565,7 @@ bool path_backbone_private_fill_udp(const meshlink_handle_t *mesh, const node_t 
 bool path_backbone_private_fill_meta(const meshlink_handle_t *mesh, const node_t *n) {
 	const connection_t *c;
 
-	if(!mesh || !n || !connection_policy_is_backbone(mesh, n)) {
+	if(!path_backbone_private_enabled(mesh) || !n || !connection_policy_is_backbone(mesh, n)) {
 		return false;
 	}
 
@@ -732,7 +745,7 @@ static void member_validate_tick(meshlink_handle_t *mesh, node_t *n) {
 }
 
 void path_backbone_private_tick(meshlink_handle_t *mesh, node_t *n) {
-	if(!mesh || !n || n == mesh->self || !connection_policy_is_backbone(mesh, n)) {
+	if(!path_backbone_private_enabled(mesh) || !n || n == mesh->self || !connection_policy_is_backbone(mesh, n)) {
 		return;
 	}
 
@@ -838,7 +851,7 @@ bool path_backbone_private_handle_answer(meshlink_handle_t *mesh, connection_t *
 	int i;
 	const char *cursor;
 
-	if(!mesh || !c || !from || !request || !direct_from_node(c, from)) {
+	if(!path_backbone_private_enabled(mesh) || !c || !from || !request || !direct_from_node(c, from)) {
 		return true;
 	}
 
@@ -942,7 +955,7 @@ bool path_backbone_private_handle_changed(meshlink_handle_t *mesh, connection_t 
 	uint32_t session_id = 0;
 	uint32_t revision = 0;
 
-	if(!mesh || !c || !from || !direct_from_node(c, from)) {
+	if(!path_backbone_private_enabled(mesh) || !c || !from || !direct_from_node(c, from)) {
 		return true;
 	}
 

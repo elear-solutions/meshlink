@@ -76,6 +76,10 @@ _Static_assert(offsetof(backbone_private_t, publish_revision) ==
 _Static_assert(offsetof(backbone_private_t, publish_hash) + sizeof(uint64_t) == sizeof(backbone_private_t),
                "publish_hash must be the last field so publication identity survives session reset");
 
+/* Publication remains available independently of the member-side policy. */
+bool path_backbone_private_enabled(const struct meshlink_handle *mesh);
+void path_backbone_private_reset_member(struct meshlink_handle *mesh);
+
 void path_backbone_private_tick(struct meshlink_handle *mesh, struct node_t *n);
 /* Backbone side: recompute the published set and push CHANGED to queried members. */
 void path_backbone_private_publish_refresh(struct meshlink_handle *mesh);

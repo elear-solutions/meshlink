@@ -271,6 +271,8 @@ int main(void) {
 	/* Interfaces are attached after open, so the open-time inventory is only loopback. */
 	meshlink_hint_network_change(nmn_mesh);
 	meshlink_hint_network_change(vsn_mesh);
+	meshlink_set_backbone_path_policy(vsn_mesh, MESHLINK_BACKBONE_PATH_PREFER_PRIVATE);
+	/* The NMN publishes private listeners with its default disabled member policy. */
 	devtool_set_backbone_udp_keepalive(vsn_mesh, 1);
 
 	/* A blackholed private META must be noticed in seconds, not minutes. */
@@ -314,6 +316,12 @@ int main(void) {
 		assert(false);
 	}
 
+	/* Rejected running boundary changes leave both publication and the
+	   proven carriers usable by the existing application channel. */
+	meshlink_set_backbone_path_policy(vsn_mesh, MESHLINK_BACKBONE_PATH_DISABLE_PRIVATE);
+	assert(meshlink_errno == MESHLINK_ENOTSUP);
+	meshlink_set_backbone_path_policy(nmn_mesh, MESHLINK_BACKBONE_PATH_PREFER_PRIVATE);
+	assert(meshlink_errno == MESHLINK_ENOTSUP);
 	assert(private_state(vsn_mesh) == 2);
 	assert(discovery_quiet(vsn_mesh, "nmn"));
 	assert(discovery_quiet(nmn_mesh, "vsn"));
@@ -346,9 +354,9 @@ int main(void) {
 		}
 	}
 
-	/* 4. PRIVATE_ONLY: losing every private carrier makes data unavailable,
+	/* 4. ONLY_PRIVATE: losing every private carrier makes data unavailable,
 	   even though canonical META reconnects. */
-	meshlink_set_backbone_path_policy(vsn_mesh, MESHLINK_BACKBONE_PATH_PRIVATE_ONLY);
+	meshlink_set_backbone_path_policy(vsn_mesh, MESHLINK_BACKBONE_PATH_ONLY_PRIVATE);
 	block_private(true);
 
 	if(!wait_until(public_meta_only, vsn_mesh, 45)) {
@@ -370,7 +378,7 @@ int main(void) {
 
 	/* 5. PREFER_PRIVATE: the same outage falls back to public at once. No
 	   hold-down turns a private outage into a data outage, and the bytes held
-	   back under PRIVATE_ONLY arrive in order ahead of new ones. */
+	   back under ONLY_PRIVATE arrive in order ahead of new ones. */
 	meshlink_set_backbone_path_policy(vsn_mesh, MESHLINK_BACKBONE_PATH_PREFER_PRIVATE);
 	assert(meshlink_channel_send(vsn_mesh, channel, "C1C2", 4) == 4);
 
