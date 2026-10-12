@@ -37,4 +37,13 @@ typedef uint8_t path_cap_t;
 #define PATH_CAP_UDP  0x02
 #define PATH_CAP_BOTH (PATH_CAP_META | PATH_CAP_UDP)
 
+/* Authenticated TCP from a feature-owned probe is not LAN evidence. */
+static inline address_source_t address_source_from_auth(bool bb_private_probe, bool private_carrier) {
+	if(bb_private_probe || private_carrier) {
+		return ADDR_SRC_BACKBONE_PRIVATE;
+	}
+
+	return ADDR_SRC_AUTH_DIRECT;
+}
+
 #endif

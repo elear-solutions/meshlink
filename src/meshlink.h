@@ -90,11 +90,11 @@ typedef enum {
 	MESHLINK_STORAGE_KEYS_ONLY   ///< Only store updates when a node's key has changed.
 } meshlink_storage_policy_t;
 
-/// How a member treats private carriers to its backbone. Runtime only.
+/// How a member treats private carriers to its backbone, or disables that discovery. Runtime only.
 typedef enum {
 	MESHLINK_BACKBONE_PATH_PREFER_PRIVATE = 0, ///< Prove private, then fall back to public.
 	MESHLINK_BACKBONE_PATH_ONLY_PRIVATE = 1, ///< After a private carrier is proven, do not send data on public.
-	MESHLINK_BACKBONE_PATH_DISABLE_PRIVATE = 2 ///< Disable member-side backbone private discovery (default).
+	MESHLINK_BACKBONE_PATH_DISABLE_PRIVATE = 2 ///< Do not discover private backbone endpoints (default).
 } meshlink_backbone_path_policy_t;
 
 /// Invitation flags
@@ -2001,7 +2001,7 @@ void meshlink_set_storage_policy(struct meshlink_handle *mesh, meshlink_storage_
  *
  *  \memberof meshlink_handle
  *  @param mesh    A handle which represents an instance of MeshLink.
- *  @param policy  Private-path preference for the backbone link.
+ *  @param policy  Private-path policy: prefer, only-private, or disable.
  */
 void meshlink_set_backbone_path_policy(struct meshlink_handle *mesh, meshlink_backbone_path_policy_t policy);
 

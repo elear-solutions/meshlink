@@ -515,9 +515,7 @@ void upgrade_hold_standby(meshlink_handle_t *mesh, connection_t *c, node_t *n, c
 	c->status.spare = true;
 	c->edge = new_connection_edge(mesh, c, n, hisport, devclass);
 
-	/* Authentication does not turn a feature-owned probe into LAN evidence. */
-	address_source_t source = (c->status.bb_private_probe || c->status.private_carrier)
-	                          ? ADDR_SRC_BACKBONE_PRIVATE : ADDR_SRC_AUTH_DIRECT;
+	address_source_t source = address_source_from_auth(c->status.bb_private_probe, c->status.private_carrier);
 	node_add_recent_address_cap(mesh, n, &c->address, source, PATH_CAP_BOTH);
 
 	/* Until PREPARE arrives, this is the only deadline. The barrier timer replaces it. */

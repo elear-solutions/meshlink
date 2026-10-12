@@ -699,9 +699,7 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	if(!c->status.via_canonical
 	                && !path_meta_is_canonical(n, c)
 	                && !path_address_matches_canonical(n, &c->address)) {
-		/* Authentication does not turn a feature-owned probe into LAN evidence. */
-		address_source_t source = (c->status.bb_private_probe || c->status.private_carrier)
-		                          ? ADDR_SRC_BACKBONE_PRIVATE : ADDR_SRC_AUTH_DIRECT;
+		address_source_t source = address_source_from_auth(c->status.bb_private_probe, c->status.private_carrier);
 		node_add_recent_address_cap(mesh, n, &c->address, source, PATH_CAP_BOTH);
 	}
 

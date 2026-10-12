@@ -820,8 +820,7 @@ void path_reclassify_active_meta(meshlink_handle_t *mesh, node_t *n) {
 	}
 
 	if(!path_canonical_unresolved(n) && !path_meta_is_canonical(n, c)) {
-		address_source_t source = (c->status.bb_private_probe || c->status.private_carrier)
-		                          ? ADDR_SRC_BACKBONE_PRIVATE : ADDR_SRC_AUTH_DIRECT;
+		address_source_t source = address_source_from_auth(c->status.bb_private_probe, c->status.private_carrier);
 		path_learn_address_cap(mesh, n, &c->address, source, PATH_CAP_BOTH);
 	}
 }
@@ -896,6 +895,24 @@ static int source_trust(address_source_t src) {
 	}
 }
 
+/* Independent auth, LAN, or hint replaces backbone-private. Private does not
+   replace those. Otherwise the stored source wins on a trust tie. */
+static bool independent_replaces_private(address_source_t stored, address_source_t incoming) {
+	return stored == ADDR_SRC_BACKBONE_PRIVATE && source_is_independent_direct(incoming);
+}
+
+static bool recent_prefers_stored_source(address_source_t stored, address_source_t incoming) {
+	if(incoming == ADDR_SRC_BACKBONE_PRIVATE && source_is_independent_direct(stored)) {
+		return true;
+	}
+
+	if(independent_replaces_private(stored, incoming)) {
+		return false;
+	}
+
+	return source_trust(stored) >= source_trust(incoming);
+}
+
 static int recent_count(const node_t *n) {
 	int i;
 
@@ -921,12 +938,8 @@ static void recent_store_front(node_t *n, int i, const sockaddr_t *sa, address_s
 	if(i >= 0) {
 		/* Keep independent LAN/application authority in either learning order.
 		   Graph/unknown cannot launder feature-owned provenance. */
-		if(src == ADDR_SRC_BACKBONE_PRIVATE && source_is_independent_direct(n->recent_source[i])) {
+		if(recent_prefers_stored_source(n->recent_source[i], src)) {
 			keep = n->recent_source[i];
-		} else if(n->recent_source[i] != ADDR_SRC_BACKBONE_PRIVATE || !source_is_independent_direct(src)) {
-			if(source_trust(n->recent_source[i]) >= source_trust(src)) {
-				keep = n->recent_source[i];
-			}
 		}
 
 		keep_cap = (path_cap_t)(n->recent_cap[i] | cap);
@@ -989,7 +1002,7 @@ bool path_learn_address_cap_ex(meshlink_handle_t *mesh, node_t *n, const sockadd
 			path_cap_t merged = (path_cap_t)(n->recent_cap[i] | cap);
 
 			upgraded = source_trust(src) > source_trust(n->recent_source[i]) || merged != n->recent_cap[i]
-			           || (n->recent_source[i] == ADDR_SRC_BACKBONE_PRIVATE && source_is_independent_direct(src));
+			           || independent_replaces_private(n->recent_source[i], src);
 
 			if(i == 0 && !upgraded) {
 				if((merged & PATH_CAP_UDP) && path_address_is_local(sa)) {

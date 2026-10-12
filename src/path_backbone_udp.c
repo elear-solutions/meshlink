@@ -505,16 +505,21 @@ static void path_backbone_udp_candidate_fail(meshlink_handle_t *mesh) {
 	path_backbone_udp_clear_candidate(mesh);
 }
 
+/* Session, revision, epoch, and vouch must still match the queued candidate. */
+static bool path_backbone_udp_candidate_current(const meshlink_handle_t *mesh, const node_t *n, const backbone_udp_path_t *p) {
+	return p->cand.session_id == n->session_id
+	       && p->cand.revision == mesh->bb_private.revision
+	       && p->cand.network_epoch == (uint32_t)mesh->lan_network_epoch
+	       && path_backbone_private_vouches(mesh, n, &p->cand.endpoint);
+}
+
 static void path_backbone_udp_candidate_packet(meshlink_handle_t *mesh, const path_probe_request_t *req) {
 	(void)req;
 
 	backbone_udp_path_t *p = &mesh->backbone_udp;
 
 	if(!p->cand.active || !p->cand.nonce || !p->node
-	                || p->cand.session_id != p->node->session_id
-	                || p->cand.revision != mesh->bb_private.revision
-	                || p->cand.network_epoch != (uint32_t)mesh->lan_network_epoch
-	                || !path_backbone_private_vouches(mesh, p->node, &p->cand.endpoint)) {
+	                || !path_backbone_udp_candidate_current(mesh, p->node, p)) {
 		return;
 	}
 
@@ -539,10 +544,7 @@ static void path_backbone_udp_candidate_timer(event_loop_t *loop, void *data) {
 		return;
 	}
 
-	if(p->cand.session_id != p->node->session_id
-	                || p->cand.revision != mesh->bb_private.revision
-	                || p->cand.network_epoch != (uint32_t)mesh->lan_network_epoch
-	                || !path_backbone_private_vouches(mesh, p->node, &p->cand.endpoint)) {
+	if(!path_backbone_udp_candidate_current(mesh, p->node, p)) {
 		path_backbone_udp_clear_candidate(mesh);
 		return;
 	}
@@ -672,10 +674,7 @@ void path_backbone_udp_observe_reply(meshlink_handle_t *mesh, node_t *n, const s
 
 	if(p->cand.nonce && nonce == p->cand.nonce && !sockaddrcmp(from, &p->cand.endpoint)) {
 		/* The set can expire or be withdrawn between send and reply. */
-		if(p->cand.session_id != n->session_id
-		                || p->cand.revision != mesh->bb_private.revision
-		                || p->cand.network_epoch != (uint32_t)mesh->lan_network_epoch
-		                || !path_backbone_private_vouches(mesh, n, &p->cand.endpoint)
+		if(!path_backbone_udp_candidate_current(mesh, n, p)
 		                || local_network_is_own_address(mesh, &p->cand.endpoint)) {
 			path_backbone_udp_clear_candidate(mesh);
 			return;
