@@ -2135,10 +2135,31 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 	assert(mesh->self->ecdsa);
 	assert(!memcmp((uint8_t *)mesh->self->ecdsa + 64, (uint8_t *)mesh->private_key + 64, 32));
 
-	if(mesh->threadstarted) {
+	/* A failed start joins with the mutex dropped. Do not pthread_create over
+	   that pthread_t, and do not report success until the worker is in the loop. */
+	while(mesh->thread_join_claimed) {
+		pthread_cond_wait(&mesh->cond, &mesh->mutex);
+	}
+
+	if(mesh->threadstarted && !(mesh->thread_in_loop && mesh->loop.running)) {
+		while(mesh->threadstarted && !mesh->thread_in_loop && !mesh->thread_failed) {
+			pthread_cond_wait(&mesh->cond, &mesh->mutex);
+		}
+
+		while(mesh->thread_join_claimed) {
+			pthread_cond_wait(&mesh->cond, &mesh->mutex);
+		}
+	}
+
+	if(mesh->threadstarted && mesh->thread_in_loop && mesh->loop.running) {
 		logger(mesh, MESHLINK_DEBUG, "thread was already running\n");
 		pthread_mutex_unlock(&mesh->mutex);
 		return true;
+	}
+
+	if(mesh->threadstarted || mesh->thread_join_claimed) {
+		pthread_mutex_unlock(&mesh->mutex);
+		return false;
 	}
 
 	if(mesh->listen_socket[0].tcp.fd < 0) {
@@ -2196,6 +2217,8 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 		memset(&mesh->thread, 0, sizeof(mesh)->thread);
 		meshlink_errno = MESHLINK_EINTERNAL;
 		event_loop_stop(&mesh->loop);
+		exit_adns(mesh);
+		exit_outgoings(mesh);
 		pthread_mutex_unlock(&mesh->mutex);
 		return false;
 	}
@@ -2214,14 +2237,18 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 	if(mesh->thread_failed || !mesh->threadstarted || !mesh->loop.running) {
 		if(mesh->threadstarted && !mesh->thread_join_claimed) {
 			bool failed = mesh->thread_failed;
+			pthread_t thread = mesh->thread;
 
+			/* Claim stays set across the unlocked join so another start cannot
+			   pthread_create over this pthread_t. threadstarted drops only so
+			   waiters do not treat the mesh as up. */
 			mesh->thread_join_claimed = true;
 			mesh->threadstarted = false;
 			mesh->thread_in_loop = false;
 			mesh->thread_failed = false;
 			pthread_mutex_unlock(&mesh->mutex);
 
-			if(pthread_join(mesh->thread, NULL) != 0) {
+			if(pthread_join(thread, NULL) != 0) {
 				abort();
 			}
 
@@ -2229,6 +2256,9 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 				abort();
 			}
 
+			event_loop_stop(&mesh->loop);
+			exit_adns(mesh);
+			exit_outgoings(mesh);
 			mesh->thread_join_claimed = false;
 			pthread_cond_broadcast(&mesh->cond);
 			pthread_mutex_unlock(&mesh->mutex);
@@ -2290,11 +2320,14 @@ void meshlink_stop(meshlink_handle_t *mesh) {
 	}
 
 	if(mesh->threadstarted && !mesh->thread_join_claimed) {
-		/* Claim the join before dropping the lock so start cannot join too. */
+		/* Claim the join before dropping the lock so start cannot join too.
+		   Copy pthread_t under the lock; the failure path must not overwrite it. */
+		pthread_t thread = mesh->thread;
+
 		mesh->thread_join_claimed = true;
 		pthread_mutex_unlock(&mesh->mutex);
 
-		if(pthread_join(mesh->thread, NULL) != 0) {
+		if(pthread_join(thread, NULL) != 0) {
 			abort();
 		}
 
