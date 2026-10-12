@@ -2136,12 +2136,19 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 	assert(!memcmp((uint8_t *)mesh->self->ecdsa + 64, (uint8_t *)mesh->private_key + 64, 32));
 
 	/* A failed start joins with the mutex dropped. Do not pthread_create over
-	   that pthread_t, and do not report success until the worker is in the loop. */
+	   that pthread_t, and do not report success until the worker is in the loop.
+	   If we observed an in-flight start or stop, do not relaunch when it ends:
+	   meshlink_stop must leave the mesh stopped. */
+	bool saw_inflight = false;
+
 	while(mesh->thread_join_claimed) {
+		saw_inflight = true;
 		pthread_cond_wait(&mesh->cond, &mesh->mutex);
 	}
 
 	if(mesh->threadstarted && !(mesh->thread_in_loop && mesh->loop.running)) {
+		saw_inflight = true;
+
 		while(mesh->threadstarted && !mesh->thread_in_loop && !mesh->thread_failed) {
 			pthread_cond_wait(&mesh->cond, &mesh->mutex);
 		}
@@ -2157,7 +2164,7 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 		return true;
 	}
 
-	if(mesh->threadstarted || mesh->thread_join_claimed) {
+	if(mesh->threadstarted || mesh->thread_join_claimed || saw_inflight) {
 		pthread_mutex_unlock(&mesh->mutex);
 		return false;
 	}

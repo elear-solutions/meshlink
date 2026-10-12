@@ -1164,8 +1164,11 @@ bool path_sanitize_recent(meshlink_handle_t *mesh, node_t *n) {
 
 	for(int i = 0; i < MAX_RECENT && n->recent[i].sa.sa_family; i++) {
 		/* Feature-owned endpoints must not become ordinary LAN hints when
-		   their runtime authority is discarded. */
-		if(n->recent_source[i] == ADDR_SRC_BACKBONE_PRIVATE) {
+		   their runtime authority is gone. A live vouched address stays;
+		   canonical resolution also calls this path. */
+		if(n->recent_source[i] == ADDR_SRC_BACKBONE_PRIVATE
+		                && mesh
+		                && !path_backbone_private_vouches(mesh, n, &n->recent[i])) {
 			changed = true;
 			continue;
 		}
