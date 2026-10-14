@@ -129,3 +129,4 @@ test/relay-hop
 test/peer-control
 
 test/event-signal
+test/lifecycle-start-stop

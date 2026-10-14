@@ -90,10 +90,11 @@ typedef enum {
 	MESHLINK_STORAGE_KEYS_ONLY   ///< Only store updates when a node's key has changed.
 } meshlink_storage_policy_t;
 
-/// How a member treats private carriers to its backbone. Runtime only.
+/// How a member treats private carriers to its backbone, or disables that discovery. Runtime only.
 typedef enum {
 	MESHLINK_BACKBONE_PATH_PREFER_PRIVATE = 0, ///< Prove private, then fall back to public.
-	MESHLINK_BACKBONE_PATH_PRIVATE_ONLY        ///< After a private carrier is proven, do not send data on public.
+	MESHLINK_BACKBONE_PATH_ONLY_PRIVATE = 1, ///< After a private carrier is proven, do not send data on public.
+	MESHLINK_BACKBONE_PATH_DISABLE_PRIVATE = 2 ///< Do not discover private backbone endpoints (default).
 } meshlink_backbone_path_policy_t;
 
 /// Invitation flags
@@ -1986,12 +1987,21 @@ void meshlink_set_scheduling_granularity(struct meshlink_handle *mesh, long gran
  */
 void meshlink_set_storage_policy(struct meshlink_handle *mesh, meshlink_storage_policy_t policy);
 
-/// Prefer a proven private backbone path, or refuse public data after one was proven.
-/** The default is MESHLINK_BACKBONE_PATH_PREFER_PRIVATE. This is not stored.
+/// Configure member-side authenticated backbone private-endpoint discovery.
+/** The default is MESHLINK_BACKBONE_PATH_DISABLE_PRIVATE. This is not stored.
+ *  PREFER_PRIVATE enables discovery with public fallback. ONLY_PRIVATE enables
+ *  discovery and restricts public data after private proof in the backbone session;
+ *  public bootstrap remains allowed. Backbone publication and ordinary LAN discovery
+ *  are independent of this policy.
+ *
+ *  Enable/disable transitions require stop/configure/start. While started, they
+ *  leave the policy unchanged and set meshlink_errno to MESHLINK_ENOTSUP. A same-value
+ *  call is a no-op; live switches between the two enabled policies are supported.
+ *  Invalid arguments set meshlink_errno to MESHLINK_EINVAL.
  *
  *  \memberof meshlink_handle
  *  @param mesh    A handle which represents an instance of MeshLink.
- *  @param policy  Private-path preference for the backbone link.
+ *  @param policy  Private-path policy: prefer, only-private, or disable.
  */
 void meshlink_set_backbone_path_policy(struct meshlink_handle *mesh, meshlink_backbone_path_policy_t policy);
 

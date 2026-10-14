@@ -17,6 +17,7 @@
 #include "path_policy.h"
 #include "protocol.h"
 #include <assert.h>
+#include <net/if.h>
 
 typedef struct {
 	meshlink_handle_t *mesh;
@@ -35,9 +36,10 @@ static void unused_io(event_loop_t *loop, void *data, int flags) {
 	abort();
 }
 
-static fixture_t fixture(const char *self, const char *peer) {
+static fixture_t fixture_with_config(const char *self, const char *peer, const char *confbase) {
 	fixture_t f = {0};
-	f.mesh = meshlink_open_ephemeral(self, "peer-control", DEV_CLASS_STATIONARY);
+	f.mesh = confbase ? meshlink_open(confbase, self, "peer-control", DEV_CLASS_STATIONARY)
+	         : meshlink_open_ephemeral(self, "peer-control", DEV_CLASS_STATIONARY);
 	assert(f.mesh);
 	f.mesh->loop.now = (struct timespec) {100, 0};
 	init_outgoings(f.mesh);
@@ -75,6 +77,10 @@ static fixture_t fixture(const char *self, const char *peer) {
 	f.peer->nexthop = f.backbone;
 	node_add(f.mesh, f.peer);
 	return f;
+}
+
+static fixture_t fixture(const char *self, const char *peer) {
+	return fixture_with_config(self, peer, NULL);
 }
 
 static void free_query_counter(fixture_t *f) {
@@ -453,6 +459,7 @@ static void test_punch_cadence(void) {
 
 static void test_backbone_private_exchange(void) {
 	fixture_t f = fixture("cam", "other");
+	meshlink_set_backbone_path_policy(f.mesh, MESHLINK_BACKBONE_PATH_PREFER_PRIVATE);
 	sockaddr_t sa;
 	uint64_t qid;
 
@@ -499,6 +506,7 @@ static void test_backbone_private_exchange(void) {
 	close_fixture(&f);
 
 	f = fixture("cam", "other");
+	meshlink_set_backbone_path_policy(f.mesh, MESHLINK_BACKBONE_PATH_PREFER_PRIVATE);
 	f.meta->protocol_minor = 8;
 	f.backbone->session_id = 42;
 	path_backbone_private_tick(f.mesh, f.backbone);
@@ -526,6 +534,7 @@ static void count_private_query_attempt(meshlink_handle_t *mesh, meshlink_log_le
 
 static fixture_t failed_private_query(bool empty) {
 	fixture_t f = fixture("cam", "other");
+	meshlink_set_backbone_path_policy(f.mesh, MESHLINK_BACKBONE_PATH_PREFER_PRIVATE);
 	f.meta->protocol_minor = PROT_MINOR_BACKBONE_PRIVATE;
 	f.backbone->session_id = 42;
 	f.private_query_attempts = calloc(1, sizeof *f.private_query_attempts);
@@ -761,6 +770,7 @@ static sockaddr_t v4_endpoint(const char *ip, uint16_t port) {
 /* A member with one vouched private endpoint from session 42. */
 static fixture_t private_fixture(const sockaddr_t *sa) {
 	fixture_t f = fixture("cam", "other");
+	meshlink_set_backbone_path_policy(f.mesh, MESHLINK_BACKBONE_PATH_PREFER_PRIVATE);
 	uint64_t qid;
 
 	f.meta->protocol_minor = PROT_MINOR_BACKBONE_PRIVATE;
@@ -800,14 +810,14 @@ static void test_backbone_private_policy(void) {
 	f.mesh->bb_private.ever_proven = true;
 	assert(path_backbone_private_public_data_allowed(f.mesh, f.backbone));
 
-	/* PRIVATE_ONLY allows public only until this session proves private. */
-	f.mesh->backbone_path_policy = MESHLINK_BACKBONE_PATH_PRIVATE_ONLY;
+	/* ONLY_PRIVATE allows public only until this session proves private. */
+	f.mesh->backbone_path_policy = MESHLINK_BACKBONE_PATH_ONLY_PRIVATE;
 	f.mesh->bb_private.ever_proven = false;
 	assert(path_backbone_private_public_data_allowed(f.mesh, f.backbone));
 	f.mesh->bb_private.ever_proven = true;
 	assert(!path_backbone_private_public_data_allowed(f.mesh, f.backbone));
 
-	/* A recorded public route is not a way around PRIVATE_ONLY. */
+	/* A recorded public route is not a way around ONLY_PRIVATE. */
 	set_backbone_udp(&f, &pub, ADDR_SRC_UDP_REFLEXIVE);
 	set_route_udp(&f, &pub, ADDR_SRC_UDP_REFLEXIVE, false);
 	assert(!path_active_send_target(f.mesh, f.backbone, &target));
@@ -818,8 +828,8 @@ static void test_backbone_private_policy(void) {
 	assert(!sockaddrcmp(&target.udp_endpoint, &pub));
 
 	/* A suspect private UDP route has no public temporary fallback under
-	   PRIVATE_ONLY; it keeps carrying on the private endpoint. */
-	f.mesh->backbone_path_policy = MESHLINK_BACKBONE_PATH_PRIVATE_ONLY;
+	   ONLY_PRIVATE; it keeps carrying on the private endpoint. */
+	f.mesh->backbone_path_policy = MESHLINK_BACKBONE_PATH_ONLY_PRIVATE;
 	set_backbone_udp(&f, &priv, ADDR_SRC_BACKBONE_PRIVATE);
 	set_route_udp(&f, &priv, ADDR_SRC_BACKBONE_PRIVATE, true);
 	assert(!path_has_live_fallback(f.mesh, f.backbone));
@@ -977,7 +987,7 @@ static void test_backbone_private_stale_proofs(void) {
 	assert(!f.mesh->bb_private.count);
 	assert(!path_backbone_private_vouches(f.mesh, f.backbone, &priv));
 	assert(!path_backbone_private_fill_udp(f.mesh, f.backbone, &out));
-	f.mesh->backbone_path_policy = MESHLINK_BACKBONE_PATH_PRIVATE_ONLY;
+	f.mesh->backbone_path_policy = MESHLINK_BACKBONE_PATH_ONLY_PRIVATE;
 	assert(path_backbone_private_public_data_allowed(f.mesh, f.backbone));
 	f.mesh->backbone_path_policy = MESHLINK_BACKBONE_PATH_PREFER_PRIVATE;
 
@@ -1302,7 +1312,204 @@ static void test_backbone_private_publisher(void) {
 	close_fixture(&f);
 }
 
+static void test_backbone_private_default(void) {
+	const char *confbase = "peer-control-private-default";
+	sockaddr_t sa = v4_endpoint("10.30.1.9", 4000);
+	assert(meshlink_destroy(confbase));
+
+	for(unsigned persistent = 0; persistent < 2; persistent++) {
+		fixture_t f = fixture_with_config("cam", "other", persistent ? confbase : NULL);
+		path_probe_tap_t tap = {.swallow = true};
+		path_scheduler_set_tap(f.mesh, &tap);
+		assert(f.mesh->backbone_path_policy == MESHLINK_BACKBONE_PATH_DISABLE_PRIVATE);
+		f.meta->protocol_minor = PROT_MINOR_BACKBONE_PRIVATE;
+		f.backbone->session_id = 42;
+		f.mesh->backbone_udp.node = f.backbone;
+
+		for(unsigned i = 0; i < 20; i++) {
+			path_backbone_private_tick(f.mesh, f.backbone);
+			f.mesh->loop.now.tv_sec += 120;
+		}
+
+		assert(take_requests(&f, REQ_BACKBONE_PRIVATE) == 0);
+		assert(!f.mesh->bb_private.query_id && !f.mesh->backbone_udp.cand.active);
+		assert(!f.backbone->upgrade_probe && !tap.count);
+
+		/* Even a matching late answer and a newer CHANGED cannot install work. */
+		f.mesh->bb_private.query_id = 123;
+		assert(path_backbone_private_test_offer(f.mesh, f.meta, f.backbone, 123, 42, 1, 300, &sa, PATH_CAP_BOTH));
+		assert(!f.mesh->bb_private.count && f.mesh->bb_private.query_id == 123);
+		char line[MAX_STRING_SIZE];
+		snprintf(line, sizeof line, "%d backbone cam %d 42 2", REQ_KEY, REQ_BACKBONE_PRIVATE_CHANGED);
+		assert(path_backbone_private_handle_changed(f.mesh, f.meta, f.backbone, line));
+		assert(!f.mesh->bb_private.changed_pending && f.mesh->bb_private.query_id == 123);
+
+		/* Planted private provenance is ineligible even for public/loopback IPs. */
+		const char *addresses[] = {"10.30.1.9", "203.0.113.2", "127.0.0.1"};
+		for(unsigned i = 0; i < sizeof addresses / sizeof addresses[0]; i++) {
+			sockaddr_t planted = v4_endpoint(addresses[i], 4000);
+			assert(!path_is_meta_candidate(f.backbone, &planted, ADDR_SRC_BACKBONE_PRIVATE, PATH_CAP_BOTH));
+			assert(!path_is_udp_candidate(f.backbone, &planted, ADDR_SRC_BACKBONE_PRIVATE, PATH_CAP_BOTH));
+		}
+
+		f.mesh->bb_private.ever_proven = true;
+		assert(path_backbone_private_public_data_allowed(f.mesh, f.backbone));
+		path_backbone_private_note_meta_proven(f.mesh, f.backbone, &sa);
+		assert(!path_backbone_private_fill_meta(f.mesh, f.backbone));
+		path_backbone_udp_stop(f.mesh);
+		close_fixture(&f);
+	}
+
+	assert(meshlink_destroy(confbase));
+}
+
+static void test_backbone_private_disabled_candidate(void) {
+	sockaddr_t sa = v4_endpoint("10.30.1.9", 4000);
+	fixture_t f = private_fixture(&sa);
+	f.mesh->backbone_udp.node = f.backbone;
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(f.mesh->backbone_udp.cand.active);
+	uint64_t nonce = f.mesh->backbone_udp.cand.nonce;
+	path_probe_tap_t tap = {.swallow = true};
+	path_scheduler_set_tap(f.mesh, &tap);
+	/* Bypass lifecycle cleanup to exercise every late-entry guard. */
+	f.mesh->backbone_path_policy = MESHLINK_BACKBONE_PATH_DISABLE_PRIVATE;
+	fire_candidate_timer(&f);
+	assert(!f.mesh->backbone_udp.cand.active && !tap.count);
+	path_backbone_udp_observe_reply(f.mesh, f.backbone, &sa, nonce, NULL);
+	assert(!f.mesh->backbone_udp.confirmed && !f.mesh->bb_private.ever_proven);
+	f.mesh->backbone_udp.endpoint = sa;
+	f.mesh->backbone_udp.source = ADDR_SRC_BACKBONE_PRIVATE;
+	f.mesh->backbone_udp.liveness_nonce = nonce;
+	path_backbone_udp_observe_reply(f.mesh, f.backbone, &sa, nonce, NULL);
+	assert(!f.mesh->backbone_udp.confirmed);
+	connection_t *standby = private_standby(&f, &sa);
+	assert(!upgrade_cutover_begin(f.mesh, f.backbone, f.meta, standby));
+	free_connection(standby);
+	path_backbone_udp_stop(f.mesh);
+	close_fixture(&f);
+}
+
+static void test_backbone_private_cache_provenance(void) {
+	sockaddr_t sa = v4_endpoint("10.30.1.9", 4000);
+	fixture_t f = private_fixture(&sa);
+	local_iface_addr_t iface = {.ifindex = 1, .flags = IFF_UP, .prefix_len = 24};
+	iface.address = v4_endpoint("10.30.1.2", 0);
+	assert(local_network_set_snapshot(f.mesh, &iface, 1));
+	/* Refresh the voucher into the new network epoch. */
+	f.mesh->bb_private.network_epoch = f.mesh->lan_network_epoch;
+	assert(local_network_on_link(f.mesh, &sa));
+	connection_t *standby = private_standby(&f, &sa);
+	standby->status.active = false;
+	standby->status.spare = false;
+	upgrade_hold_standby(f.mesh, standby, f.backbone, "4000", DEV_CLASS_BACKBONE);
+	assert(f.backbone->recent_source[0] == ADDR_SRC_BACKBONE_PRIVATE);
+	/* Graph observations must not erase the feature's provenance. */
+	node_add_recent_address_cap(f.mesh, f.backbone, &sa, ADDR_SRC_EDGE_DIRECT, PATH_CAP_BOTH);
+	assert(f.backbone->recent_source[0] == ADDR_SRC_BACKBONE_PRIVATE);
+	free_edge(standby->edge);
+	standby->edge = NULL;
+	free_connection(standby);
+	f.meta->address = sa;
+	f.meta->status.private_carrier = true;
+	path_reclassify_active_meta(f.mesh, f.backbone);
+	assert(f.backbone->recent_source[0] == ADDR_SRC_BACKBONE_PRIVATE);
+	meshlink_set_backbone_path_policy(f.mesh, MESHLINK_BACKBONE_PATH_DISABLE_PRIVATE);
+	assert(!path_is_meta_candidate(f.backbone, &sa, f.backbone->recent_source[0], PATH_CAP_BOTH));
+	assert(path_sanitize_recent(f.mesh, f.backbone));
+	assert(!f.backbone->recent[0].sa.sa_family);
+	/* Independent LAN/application evidence survives both learning orders. */
+	address_source_t independent[] = {ADDR_SRC_AUTH_DIRECT, ADDR_SRC_DISCOVERY, ADDR_SRC_HINT};
+	for(unsigned i = 0; i < sizeof independent / sizeof independent[0]; i++) {
+		memset(f.backbone->recent, 0, sizeof f.backbone->recent);
+		memset(f.backbone->recent_source, 0, sizeof f.backbone->recent_source);
+		node_add_recent_address_cap(f.mesh, f.backbone, &sa, ADDR_SRC_BACKBONE_PRIVATE, PATH_CAP_BOTH);
+		node_add_recent_address_cap(f.mesh, f.backbone, &sa, independent[i], PATH_CAP_BOTH);
+		assert(f.backbone->recent_source[0] == independent[i]);
+		assert(path_is_meta_candidate(f.backbone, &sa, f.backbone->recent_source[0], PATH_CAP_BOTH));
+		node_add_recent_address_cap(f.mesh, f.backbone, &sa, ADDR_SRC_BACKBONE_PRIVATE, PATH_CAP_BOTH);
+		assert(f.backbone->recent_source[0] == independent[i]);
+	}
+	f.meta->status.private_carrier = false;
+	close_fixture(&f);
+
+	f = private_fixture(&sa);
+	f.mesh->backbone_udp.node = f.backbone;
+	path_backbone_private_tick(f.mesh, f.backbone);
+	assert(f.mesh->backbone_udp.cand.active && f.mesh->backbone_udp.cand.timer.cb);
+	f.mesh->bb_private.publish_revision = 17;
+	f.mesh->bb_private.publish_hash = 12345;
+	meshlink_set_backbone_path_policy(f.mesh, MESHLINK_BACKBONE_PATH_DISABLE_PRIVATE);
+	assert(!f.mesh->backbone_udp.cand.active && !f.mesh->backbone_udp.cand.nonce);
+	assert(!f.mesh->backbone_udp.cand.timer.cb);
+	assert(!f.mesh->bb_private.count && !f.mesh->bb_private.query_id);
+	assert(f.mesh->bb_private.publish_revision == 17 && f.mesh->bb_private.publish_hash == 12345);
+	path_backbone_udp_stop(f.mesh);
+	close_fixture(&f);
+}
+
+static void test_backbone_private_lifecycle(void) {
+	const char *confbase = "peer-control-private-lifecycle";
+	assert(MESHLINK_BACKBONE_PATH_PREFER_PRIVATE == 0);
+	assert(MESHLINK_BACKBONE_PATH_ONLY_PRIVATE == 1);
+	assert(MESHLINK_BACKBONE_PATH_DISABLE_PRIVATE == 2);
+	assert(meshlink_destroy(confbase));
+	meshlink_handle_t *mesh = meshlink_open(confbase, "cam", "peer-control", DEV_CLASS_STATIONARY);
+	assert(mesh && mesh->backbone_path_policy == MESHLINK_BACKBONE_PATH_DISABLE_PRIVATE);
+	meshlink_set_backbone_path_policy(NULL, MESHLINK_BACKBONE_PATH_PREFER_PRIVATE);
+	assert(meshlink_errno == MESHLINK_EINVAL);
+	meshlink_set_backbone_path_policy(mesh, (meshlink_backbone_path_policy_t)-1);
+	assert(meshlink_errno == MESHLINK_EINVAL && mesh->backbone_path_policy == MESHLINK_BACKBONE_PATH_DISABLE_PRIVATE);
+	meshlink_enable_discovery(mesh, false);
+	assert(meshlink_start(mesh));
+	meshlink_errno = MESHLINK_OK;
+	meshlink_set_backbone_path_policy(mesh, MESHLINK_BACKBONE_PATH_DISABLE_PRIVATE);
+	assert(meshlink_errno == MESHLINK_OK);
+	meshlink_set_backbone_path_policy(mesh, MESHLINK_BACKBONE_PATH_PREFER_PRIVATE);
+	assert(meshlink_errno == MESHLINK_ENOTSUP && mesh->backbone_path_policy == MESHLINK_BACKBONE_PATH_DISABLE_PRIVATE);
+	meshlink_set_backbone_path_policy(mesh, MESHLINK_BACKBONE_PATH_ONLY_PRIVATE);
+	assert(meshlink_errno == MESHLINK_ENOTSUP && mesh->backbone_path_policy == MESHLINK_BACKBONE_PATH_DISABLE_PRIVATE);
+	meshlink_stop(mesh);
+	meshlink_set_backbone_path_policy(mesh, MESHLINK_BACKBONE_PATH_PREFER_PRIVATE);
+	assert(meshlink_start(mesh));
+	meshlink_set_backbone_path_policy(mesh, MESHLINK_BACKBONE_PATH_ONLY_PRIVATE);
+	assert(mesh->backbone_path_policy == MESHLINK_BACKBONE_PATH_ONLY_PRIVATE);
+	meshlink_set_backbone_path_policy(mesh, MESHLINK_BACKBONE_PATH_PREFER_PRIVATE);
+	assert(mesh->backbone_path_policy == MESHLINK_BACKBONE_PATH_PREFER_PRIVATE);
+	meshlink_set_backbone_path_policy(mesh, MESHLINK_BACKBONE_PATH_DISABLE_PRIVATE);
+	assert(meshlink_errno == MESHLINK_ENOTSUP && mesh->backbone_path_policy == MESHLINK_BACKBONE_PATH_PREFER_PRIVATE);
+	meshlink_stop(mesh);
+	/* Startup/shutdown windows use the lifecycle flag, not loop.running. */
+	mesh->threadstarted = true;
+	assert(!mesh->loop.running);
+	meshlink_set_backbone_path_policy(mesh, MESHLINK_BACKBONE_PATH_DISABLE_PRIVATE);
+	assert(meshlink_errno == MESHLINK_ENOTSUP && mesh->backbone_path_policy == MESHLINK_BACKBONE_PATH_PREFER_PRIVATE);
+	mesh->threadstarted = false;
+	mesh->bb_private.query_id = 123;
+	mesh->bb_private.query_hold = true;
+	mesh->bb_private.next_query_at.tv_sec = 300;
+	mesh->bb_private.ever_proven = true;
+	mesh->bb_private.publish_revision = 17;
+	mesh->bb_private.publish_hash = 12345;
+	meshlink_set_backbone_path_policy(mesh, MESHLINK_BACKBONE_PATH_DISABLE_PRIVATE);
+	assert(!mesh->bb_private.query_id && !mesh->bb_private.query_hold && !mesh->bb_private.ever_proven);
+	assert(!mesh->bb_private.next_query_at.tv_sec && !mesh->backbone_udp.cand.nonce);
+	assert(mesh->bb_private.publish_revision == 17 && mesh->bb_private.publish_hash == 12345);
+	assert(meshlink_start(mesh));
+	meshlink_stop(mesh);
+	meshlink_set_backbone_path_policy(mesh, MESHLINK_BACKBONE_PATH_PREFER_PRIVATE);
+	meshlink_close(mesh);
+	mesh = meshlink_open(confbase, "cam", "peer-control", DEV_CLASS_STATIONARY);
+	assert(mesh && mesh->backbone_path_policy == MESHLINK_BACKBONE_PATH_DISABLE_PRIVATE);
+	meshlink_close(mesh);
+	assert(meshlink_destroy(confbase));
+}
+
 int main(void) {
+	test_backbone_private_default();
+	test_backbone_private_disabled_candidate();
+	test_backbone_private_lifecycle();
+	test_backbone_private_cache_provenance();
 	const char *regression = getenv("MESHLINK_PRIVATE_QUERY_REGRESSION");
 	if(regression) {
 		fprintf(stderr, "private query regression %s\n", regression);

@@ -1812,6 +1812,7 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 
 	meshlink_handle_t *mesh = xzalloc(sizeof(meshlink_handle_t));
 	connection_policy_init(mesh);
+	mesh->backbone_path_policy = MESHLINK_BACKBONE_PATH_DISABLE_PRIVATE;
 
 	if(params->confbase) {
 		mesh->confbase = xstrdup(params->confbase);
@@ -1869,6 +1870,10 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 	pthread_cond_init(&mesh->adns_cond, NULL);
 
 	mesh->threadstarted = false;
+	mesh->thread_in_loop = false;
+	mesh->thread_failed = false;
+	mesh->thread_join_claimed = false;
+	mesh->thread_stop_pending = 0;
 	event_loop_init(&mesh->loop);
 	mesh->loop.data = mesh;
 	path_scheduler_init(mesh);
@@ -2031,6 +2036,18 @@ meshlink_submesh_t *meshlink_submesh_open(meshlink_handle_t *mesh, const char *s
 	return s;
 }
 
+/* Wake meshlink_start under the mutex. A signal before the wait is not lost:
+   start waits on thread_failed / thread_in_loop, not on the signal itself. */
+static void meshlink_signal_thread_failed(meshlink_handle_t *mesh) {
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	mesh->thread_failed = true;
+	pthread_cond_broadcast(&mesh->cond);
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
 static void *meshlink_main_loop(void *arg) {
 	meshlink_handle_t *mesh = arg;
 
@@ -2038,12 +2055,12 @@ static void *meshlink_main_loop(void *arg) {
 #ifdef HAVE_SETNS
 
 		if(setns(mesh->netns, CLONE_NEWNET) != 0) {
-			pthread_cond_signal(&mesh->cond);
+			meshlink_signal_thread_failed(mesh);
 			return NULL;
 		}
 
 #else
-		pthread_cond_signal(&mesh->cond);
+		meshlink_signal_thread_failed(mesh);
 		return NULL;
 #endif // HAVE_SETNS
 	}
@@ -2070,6 +2087,9 @@ static void *meshlink_main_loop(void *arg) {
 	}
 
 	logger(mesh, MESHLINK_DEBUG, "Starting main_loop...\n");
+	/* Discovery is registered above, still under the mutex. Publish that before
+	   releasing the starter so enable_discovery cannot io_add the same sockets. */
+	mesh->thread_in_loop = true;
 	pthread_cond_broadcast(&mesh->cond);
 	main_loop(mesh);
 	logger(mesh, MESHLINK_DEBUG, "main_loop returned.\n");
@@ -2116,10 +2136,45 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 	assert(mesh->self->ecdsa);
 	assert(!memcmp((uint8_t *)mesh->self->ecdsa + 64, (uint8_t *)mesh->private_key + 64, 32));
 
-	if(mesh->threadstarted) {
+	/* Join ownership ends before every overlapping stop has done its cleanup.
+	   Keep new workers out until those callers have all finished. */
+	if(mesh->thread_stop_pending) {
+		pthread_mutex_unlock(&mesh->mutex);
+		return false;
+	}
+
+	/* A failed start joins with the mutex dropped. Do not pthread_create over
+	   that pthread_t, and do not report success until the worker is in the loop.
+	   If we observed an in-flight start or stop, do not relaunch when it ends:
+	   meshlink_stop must leave the mesh stopped. */
+	bool saw_inflight = false;
+
+	while(mesh->thread_join_claimed) {
+		saw_inflight = true;
+		pthread_cond_wait(&mesh->cond, &mesh->mutex);
+	}
+
+	if(mesh->threadstarted && !(mesh->thread_in_loop && mesh->loop.running)) {
+		saw_inflight = true;
+
+		while(mesh->threadstarted && !mesh->thread_in_loop && !mesh->thread_failed) {
+			pthread_cond_wait(&mesh->cond, &mesh->mutex);
+		}
+
+		while(mesh->thread_join_claimed) {
+			pthread_cond_wait(&mesh->cond, &mesh->mutex);
+		}
+	}
+
+	if(mesh->threadstarted && mesh->thread_in_loop && mesh->loop.running && !mesh->thread_stop_pending) {
 		logger(mesh, MESHLINK_DEBUG, "thread was already running\n");
 		pthread_mutex_unlock(&mesh->mutex);
 		return true;
+	}
+
+	if(mesh->threadstarted || mesh->thread_join_claimed || mesh->thread_stop_pending || saw_inflight) {
+		pthread_mutex_unlock(&mesh->mutex);
+		return false;
 	}
 
 	if(mesh->listen_socket[0].tcp.fd < 0) {
@@ -2177,12 +2232,62 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 		memset(&mesh->thread, 0, sizeof(mesh)->thread);
 		meshlink_errno = MESHLINK_EINTERNAL;
 		event_loop_stop(&mesh->loop);
+		exit_adns(mesh);
+		exit_outgoings(mesh);
 		pthread_mutex_unlock(&mesh->mutex);
 		return false;
 	}
 
-	pthread_cond_wait(&mesh->cond, &mesh->mutex);
+	/* threadstarted is visible across the wait so the startup window rejects
+	   enable/disable. thread_in_loop is the commit: the worker registered
+	   discovery and is entering the loop. A concurrent stop can join first. */
 	mesh->threadstarted = true;
+	mesh->thread_in_loop = false;
+	mesh->thread_failed = false;
+
+	while(!mesh->thread_in_loop && !mesh->thread_failed && mesh->threadstarted) {
+		pthread_cond_wait(&mesh->cond, &mesh->mutex);
+	}
+
+	if(mesh->thread_failed || !mesh->threadstarted || !mesh->loop.running) {
+		if(mesh->threadstarted && !mesh->thread_join_claimed) {
+			bool failed = mesh->thread_failed;
+			pthread_t thread = mesh->thread;
+
+			/* Claim stays set across the unlocked join so another start cannot
+			   pthread_create over this pthread_t. threadstarted drops only so
+			   waiters do not treat the mesh as up. */
+			mesh->thread_join_claimed = true;
+			mesh->threadstarted = false;
+			mesh->thread_in_loop = false;
+			mesh->thread_failed = false;
+			pthread_mutex_unlock(&mesh->mutex);
+
+			if(pthread_join(thread, NULL) != 0) {
+				abort();
+			}
+
+			if(pthread_mutex_lock(&mesh->mutex) != 0) {
+				abort();
+			}
+
+			event_loop_stop(&mesh->loop);
+			exit_adns(mesh);
+			exit_outgoings(mesh);
+			mesh->thread_join_claimed = false;
+			pthread_cond_broadcast(&mesh->cond);
+			pthread_mutex_unlock(&mesh->mutex);
+
+			if(failed) {
+				meshlink_errno = MESHLINK_ENETWORK;
+			}
+
+			return false;
+		}
+
+		pthread_mutex_unlock(&mesh->mutex);
+		return false;
+	}
 
 	// Ensure we are considered reachable
 	graph(mesh);
@@ -2204,6 +2309,7 @@ void meshlink_stop(meshlink_handle_t *mesh) {
 	}
 
 	// Shut down the main thread
+	mesh->thread_stop_pending++;
 	event_loop_stop(&mesh->loop);
 
 	// Send ourselves a UDP packet to kick the event loop
@@ -2229,11 +2335,15 @@ void meshlink_stop(meshlink_handle_t *mesh) {
 		}
 	}
 
-	if(mesh->threadstarted) {
-		// Wait for the main thread to finish
+	if(mesh->threadstarted && !mesh->thread_join_claimed) {
+		/* Claim the join before dropping the lock so start cannot join too.
+		   Copy pthread_t under the lock; the failure path must not overwrite it. */
+		pthread_t thread = mesh->thread;
+
+		mesh->thread_join_claimed = true;
 		pthread_mutex_unlock(&mesh->mutex);
 
-		if(pthread_join(mesh->thread, NULL) != 0) {
+		if(pthread_join(thread, NULL) != 0) {
 			abort();
 		}
 
@@ -2242,6 +2352,14 @@ void meshlink_stop(meshlink_handle_t *mesh) {
 		}
 
 		mesh->threadstarted = false;
+		mesh->thread_in_loop = false;
+		mesh->thread_failed = false;
+		mesh->thread_join_claimed = false;
+		pthread_cond_broadcast(&mesh->cond);
+	} else if(mesh->thread_join_claimed) {
+		while(mesh->thread_join_claimed) {
+			pthread_cond_wait(&mesh->cond, &mesh->mutex);
+		}
 	}
 
 	// Close all metaconnections
@@ -2255,6 +2373,7 @@ void meshlink_stop(meshlink_handle_t *mesh) {
 	}
 
 	exit_adns(mesh);
+	path_backbone_private_reset_member(mesh);
 
 	if(mesh->nodes) {
 		for splay_each(node_t, n, mesh->nodes) {
@@ -2281,6 +2400,8 @@ void meshlink_stop(meshlink_handle_t *mesh) {
 		}
 	}
 
+	assert(mesh->thread_stop_pending);
+	mesh->thread_stop_pending--;
 	pthread_mutex_unlock(&mesh->mutex);
 }
 
@@ -5753,18 +5874,30 @@ void meshlink_set_scheduling_granularity(struct meshlink_handle *mesh, long gran
 void meshlink_set_backbone_path_policy(struct meshlink_handle *mesh, meshlink_backbone_path_policy_t policy) {
 	logger(mesh, MESHLINK_DEBUG, "meshlink_set_backbone_path_policy(%d)", (int)policy);
 
-	if(!mesh) {
-		meshlink_errno = EINVAL;
-		return;
-	}
-
-	if(policy != MESHLINK_BACKBONE_PATH_PREFER_PRIVATE && policy != MESHLINK_BACKBONE_PATH_PRIVATE_ONLY) {
-		meshlink_errno = EINVAL;
+	if(!mesh || (policy != MESHLINK_BACKBONE_PATH_PREFER_PRIVATE
+	                && policy != MESHLINK_BACKBONE_PATH_ONLY_PRIVATE
+	                && policy != MESHLINK_BACKBONE_PATH_DISABLE_PRIVATE)) {
+		meshlink_errno = MESHLINK_EINVAL;
 		return;
 	}
 
 	if(pthread_mutex_lock(&mesh->mutex) != 0) {
 		abort();
+	}
+
+	/* True only when crossing between disable and an enabled policy.
+	   Switches between the two enabled policies stay live. */
+	bool boundary = (policy == MESHLINK_BACKBONE_PATH_DISABLE_PRIVATE)
+	                != (mesh->backbone_path_policy == MESHLINK_BACKBONE_PATH_DISABLE_PRIVATE);
+
+	if(boundary && mesh->threadstarted) {
+		meshlink_errno = MESHLINK_ENOTSUP;
+		pthread_mutex_unlock(&mesh->mutex);
+		return;
+	}
+
+	if(boundary) {
+		path_backbone_private_reset_member(mesh);
 	}
 
 	mesh->backbone_path_policy = policy;

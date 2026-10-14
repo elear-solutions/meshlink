@@ -67,7 +67,8 @@ NMNs and VSNs remain on dedicated BBNMs with independent placement and scaling.
 They may be on different workers and subnets within the same VPC; co-location
 and multicast discovery are not prerequisites.
 
-A VSN joins normally through the canonical/NLB endpoint. Meshlink then queries
+A VSN explicitly opts in before starting and joins normally through the canonical/NLB
+endpoint. Meshlink then queries
 its authenticated backbone for that backbone's current private listening
 endpoints, validates them and promotes successful private carriers for both
 META control traffic and clusterprotocol channel traffic. The SDK/application
@@ -194,7 +195,7 @@ from the public punch exchange, although scheduler ownership, bounded retries,
 nonce validation and freshness conventions should be reused where appropriate.
 Do not repurpose the public address-only `ANS_KEY` hint as private evidence.
 
-After backbone META authentication, a supporting member automatically requests
+After backbone META authentication, an opted-in supporting member automatically requests
 the private endpoint set even if public UDP already works. The reply must come
 from the expected unique backbone on the current authenticated connection.
 Forwarded graph messages or another member's assertion cannot grant this
@@ -274,10 +275,25 @@ from the old instance cannot roll back the endpoint set or commit a stale path.
 Canonical/public traffic is allowed during initial bootstrap and recovery.
 This does not promise zero public traffic during defrag, or hitless channel and
 subscription continuity across an NMN process restart. Use existing session and
-application recovery semantics for that case. Settle whether prolonged private
-failure permits public steady-state fallback or reports unavailable under an
-opt-in private-only policy; automatic discovery does not itself settle that
-availability/cost trade-off.
+application recovery semantics for that case. New persistent and ephemeral handles
+use `MESHLINK_BACKBONE_PATH_DISABLE_PRIVATE = 2`: no member-side private endpoint
+queries, late advertisements, feature-owned probes or promotion. This leaves ordinary
+LAN discovery, explicit canonical private endpoints, public punching and relay intact.
+NMN request handling, private-listener publication and CHANGED remain independent of
+its own member policy; leave the NMN at default when the VSN opts in.
+
+`MESHLINK_BACKBONE_PATH_PREFER_PRIVATE = 0` enables discovery and public fallback.
+`MESHLINK_BACKBONE_PATH_ONLY_PRIVATE = 1` enables discovery and allows public
+bootstrap, then restricts public data after private proof in the backbone session.
+The policy is runtime-only and must be reapplied on a reopened handle. Enable/disable
+transitions require stop/configure/start; started transitions fail with
+`MESHLINK_ENOTSUP` without changing policy, same-value calls are no-ops, and live
+switches between enabled modes remain supported. Invalid arguments use
+`MESHLINK_EINVAL`. Stop and stopped boundary transitions clear member queries,
+validation and candidate scheduler work; member reset preserves publisher identity
+and unrelated path configuration. This opt-in change does not change the existing wire exchange.
+Implementation and local regression evidence are separate from deployment/field
+acceptance; a passing fixture does not establish field private reachability.
 
 Expected edits: local-network inventory owner, `discovery.c/.h`,
 `meshlink_internal.h`, lifecycle/hint paths in `meshlink.c`, shared predicates

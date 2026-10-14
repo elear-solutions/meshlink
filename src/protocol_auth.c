@@ -699,7 +699,8 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 	if(!c->status.via_canonical
 	                && !path_meta_is_canonical(n, c)
 	                && !path_address_matches_canonical(n, &c->address)) {
-		node_add_recent_address_cap(mesh, n, &c->address, ADDR_SRC_AUTH_DIRECT, PATH_CAP_BOTH);
+		address_source_t source = address_source_from_auth(c->status.bb_private_probe, c->status.private_carrier);
+		node_add_recent_address_cap(mesh, n, &c->address, source, PATH_CAP_BOTH);
 	}
 
 	/* Put it in the graph and notify everyone */

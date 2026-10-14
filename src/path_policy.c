@@ -306,6 +306,10 @@ bool path_address_is_loopback(const sockaddr_t *sa) {
 /* RFC1918/ULA/link-local speculative destinations must be on-link unless the
    backbone exchange vouches for them or the application hinted the address. */
 static bool path_private_destination_eligible(const node_t *n, const sockaddr_t *sa, address_source_t src) {
+	if(src == ADDR_SRC_BACKBONE_PRIVATE) {
+		return n && n->mesh && path_backbone_private_vouches(n->mesh, n, sa);
+	}
+
 	if(!n || !n->mesh || !path_address_is_local(sa) || path_address_is_loopback(sa)) {
 		return true;
 	}
@@ -816,7 +820,8 @@ void path_reclassify_active_meta(meshlink_handle_t *mesh, node_t *n) {
 	}
 
 	if(!path_canonical_unresolved(n) && !path_meta_is_canonical(n, c)) {
-		path_learn_address_cap(mesh, n, &c->address, ADDR_SRC_AUTH_DIRECT, PATH_CAP_BOTH);
+		address_source_t source = address_source_from_auth(c->status.bb_private_probe, c->status.private_carrier);
+		path_learn_address_cap(mesh, n, &c->address, source, PATH_CAP_BOTH);
 	}
 }
 
@@ -857,9 +862,14 @@ void path_migrate_legacy_caps(node_t *n) {
 	}
 }
 
+static bool source_is_independent_direct(address_source_t src) {
+	return src == ADDR_SRC_AUTH_DIRECT || src == ADDR_SRC_DISCOVERY || src == ADDR_SRC_HINT;
+}
+
 static int source_trust(address_source_t src) {
 	switch(src) {
 	case ADDR_SRC_AUTH_DIRECT:
+	case ADDR_SRC_BACKBONE_PRIVATE:
 		return SOURCE_TRUST_AUTH_DIRECT;
 
 	case ADDR_SRC_UDP_REFLEXIVE:
@@ -885,6 +895,24 @@ static int source_trust(address_source_t src) {
 	}
 }
 
+/* Independent auth, LAN, or hint replaces backbone-private. Private does not
+   replace those. Otherwise the stored source wins on a trust tie. */
+static bool independent_replaces_private(address_source_t stored, address_source_t incoming) {
+	return stored == ADDR_SRC_BACKBONE_PRIVATE && source_is_independent_direct(incoming);
+}
+
+static bool recent_prefers_stored_source(address_source_t stored, address_source_t incoming) {
+	if(incoming == ADDR_SRC_BACKBONE_PRIVATE && source_is_independent_direct(stored)) {
+		return true;
+	}
+
+	if(independent_replaces_private(stored, incoming)) {
+		return false;
+	}
+
+	return source_trust(stored) >= source_trust(incoming);
+}
+
 static int recent_count(const node_t *n) {
 	int i;
 
@@ -908,7 +936,9 @@ static void recent_store_front(node_t *n, int i, const sockaddr_t *sa, address_s
 	path_cap_t keep_cap = cap;
 
 	if(i >= 0) {
-		if(source_trust(n->recent_source[i]) >= source_trust(src)) {
+		/* Keep independent LAN/application authority in either learning order.
+		   Graph/unknown cannot launder feature-owned provenance. */
+		if(recent_prefers_stored_source(n->recent_source[i], src)) {
 			keep = n->recent_source[i];
 		}
 
@@ -971,7 +1001,8 @@ bool path_learn_address_cap_ex(meshlink_handle_t *mesh, node_t *n, const sockadd
 		if(!sockaddrcmp(&n->recent[i], sa)) {
 			path_cap_t merged = (path_cap_t)(n->recent_cap[i] | cap);
 
-			upgraded = source_trust(src) > source_trust(n->recent_source[i]) || merged != n->recent_cap[i];
+			upgraded = source_trust(src) > source_trust(n->recent_source[i]) || merged != n->recent_cap[i]
+			           || independent_replaces_private(n->recent_source[i], src);
 
 			if(i == 0 && !upgraded) {
 				if((merged & PATH_CAP_UDP) && path_address_is_local(sa)) {
@@ -1132,9 +1163,14 @@ bool path_sanitize_recent(meshlink_handle_t *mesh, node_t *n) {
 	memset(kept_cap, 0, sizeof kept_cap);
 
 	for(int i = 0; i < MAX_RECENT && n->recent[i].sa.sa_family; i++) {
-		if(n->recent_source[i] == ADDR_SRC_BACKBONE_PRIVATE) {
-			n->recent_source[i] = ADDR_SRC_UNKNOWN;
+		/* Feature-owned endpoints must not become ordinary LAN hints when
+		   their runtime authority is gone. A live vouched address stays;
+		   canonical resolution also calls this path. */
+		if(n->recent_source[i] == ADDR_SRC_BACKBONE_PRIVATE
+		                && mesh
+		                && !path_backbone_private_vouches(mesh, n, &n->recent[i])) {
 			changed = true;
+			continue;
 		}
 
 		if(path_address_matches_canonical(n, &n->recent[i]) || n->recent_source[i] == ADDR_SRC_CANONICAL
@@ -5088,7 +5124,7 @@ static bool path_route_is_backbone_private(const meshlink_handle_t *mesh, const 
 	return r->kind == DATA_ROUTE_DIRECT_LOCAL_META && path_backbone_private_fill_meta(mesh, n);
 }
 
-/* PRIVATE_ONLY gates every recorded backbone route, not only fresh ranking. */
+/* ONLY_PRIVATE gates every recorded backbone route, not only fresh ranking. */
 static bool path_backbone_route_permitted(const meshlink_handle_t *mesh, const node_t *n, const data_route_t *r) {
 	if(!connection_policy_is_backbone(mesh, n) || path_backbone_private_public_data_allowed(mesh, n)) {
 		return true;

@@ -737,10 +737,16 @@ public:
 		meshlink_set_storage_policy(handle, policy);
 	}
 
-	/// Prefer a proven private backbone path, or refuse public data after one was proven.
-	/** The default is MESHLINK_BACKBONE_PATH_PREFER_PRIVATE. This is not stored.
+	/// Configure member-side authenticated backbone private-endpoint discovery.
+	/** The default is MESHLINK_BACKBONE_PATH_DISABLE_PRIVATE. This is not stored.
+	 *  PREFER_PRIVATE keeps public fallback; ONLY_PRIVATE restricts public data after
+	 *  private proof, allowing public bootstrap. Publication and LAN discovery remain
+	 *  independent. Enable/disable transitions require stop/configure/start and set
+	 *  meshlink_errno to MESHLINK_ENOTSUP while started. Same-value calls are no-ops;
+	 *  the two enabled policies may be switched live. Invalid arguments set
+	 *  meshlink_errno to MESHLINK_EINVAL.
 	 *
-	 *  @param policy  Private-path preference for the backbone link.
+	 *  @param policy  Private-path policy: prefer, only-private, or disable.
 	 */
 	void set_backbone_path_policy(meshlink_backbone_path_policy_t policy) {
 		meshlink_set_backbone_path_policy(handle, policy);

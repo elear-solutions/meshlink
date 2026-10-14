@@ -1242,6 +1242,14 @@ bool discovery_start(meshlink_handle_t *mesh) {
 	logger(mesh, MESHLINK_DEBUG, "discovery_start called\n");
 
 	assert(mesh);
+
+	/* The starter publishes threadstarted before the worker enters the loop,
+	   so enable_discovery and the worker can both arrive here. A second
+	   io_add on a live socket asserts. */
+	if(mesh->discovery.sockets[0].cb || mesh->discovery.sockets[1].cb || mesh->discovery.pfroute_io.cb) {
+		return true;
+	}
+
 	mesh->discovery.lan_query_hold = false;
 
 	// Set up multicast sockets for mDNS
