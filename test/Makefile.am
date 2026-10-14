@@ -322,6 +322,13 @@ relay_hop_LDADD = $(top_builddir)/src/.libs/libmeshlink.a
 relay_hop_LDFLAGS = $(AM_LDFLAGS) -Wl,--wrap=sendto
 
 if LINUX
+TESTS += lifecycle-start-stop
+check_PROGRAMS += lifecycle-start-stop
+
+lifecycle_start_stop_SOURCES = lifecycle-start-stop.c
+lifecycle_start_stop_LDADD = $(top_builddir)/src/.libs/libmeshlink.a
+lifecycle_start_stop_LDFLAGS = $(AM_LDFLAGS) -Wl,--wrap=setns -Wl,--wrap=pthread_cond_wait -Wl,--wrap=pthread_join
+
 TESTS += event-signal
 check_PROGRAMS += event-signal
 

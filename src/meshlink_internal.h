@@ -246,6 +246,7 @@ struct meshlink_handle {
 	bool thread_in_loop;       /* worker passed discovery registration and broadcast */
 	bool thread_failed;        /* worker exited before entering the loop */
 	bool thread_join_claimed;  /* exactly one of start/stop joins the worker */
+	unsigned thread_stop_pending; /* stop callers still owe cleanup, including join waiters */
 
 	// mDNS discovery
 	struct {

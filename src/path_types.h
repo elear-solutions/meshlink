@@ -27,7 +27,7 @@ typedef enum address_source_t {
 	ADDR_SRC_CANONICAL,         /* canonical / NLB endpoint (never stored in recent[]) */
 	ADDR_SRC_INDIRECT,          /* forwarded or OPTION_INDIRECT */
 	ADDR_SRC_UDP_REFLEXIVE,     /* ANS_KEY / inbound remap / NAT-mapped UDP confirm */
-	ADDR_SRC_BACKBONE_PRIVATE   /* runtime-only; sanitized to UNKNOWN on load */
+	ADDR_SRC_BACKBONE_PRIVATE   /* runtime-only; drop when no live private voucher remains */
 } address_source_t;
 
 /* Which transports may consume a recent[] slot. Independent of provenance. */

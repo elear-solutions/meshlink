@@ -1873,6 +1873,7 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 	mesh->thread_in_loop = false;
 	mesh->thread_failed = false;
 	mesh->thread_join_claimed = false;
+	mesh->thread_stop_pending = 0;
 	event_loop_init(&mesh->loop);
 	mesh->loop.data = mesh;
 	path_scheduler_init(mesh);
@@ -2135,6 +2136,13 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 	assert(mesh->self->ecdsa);
 	assert(!memcmp((uint8_t *)mesh->self->ecdsa + 64, (uint8_t *)mesh->private_key + 64, 32));
 
+	/* Join ownership ends before every overlapping stop has done its cleanup.
+	   Keep new workers out until those callers have all finished. */
+	if(mesh->thread_stop_pending) {
+		pthread_mutex_unlock(&mesh->mutex);
+		return false;
+	}
+
 	/* A failed start joins with the mutex dropped. Do not pthread_create over
 	   that pthread_t, and do not report success until the worker is in the loop.
 	   If we observed an in-flight start or stop, do not relaunch when it ends:
@@ -2158,13 +2166,13 @@ bool meshlink_start(meshlink_handle_t *mesh) {
 		}
 	}
 
-	if(mesh->threadstarted && mesh->thread_in_loop && mesh->loop.running) {
+	if(mesh->threadstarted && mesh->thread_in_loop && mesh->loop.running && !mesh->thread_stop_pending) {
 		logger(mesh, MESHLINK_DEBUG, "thread was already running\n");
 		pthread_mutex_unlock(&mesh->mutex);
 		return true;
 	}
 
-	if(mesh->threadstarted || mesh->thread_join_claimed || saw_inflight) {
+	if(mesh->threadstarted || mesh->thread_join_claimed || mesh->thread_stop_pending || saw_inflight) {
 		pthread_mutex_unlock(&mesh->mutex);
 		return false;
 	}
@@ -2301,6 +2309,7 @@ void meshlink_stop(meshlink_handle_t *mesh) {
 	}
 
 	// Shut down the main thread
+	mesh->thread_stop_pending++;
 	event_loop_stop(&mesh->loop);
 
 	// Send ourselves a UDP packet to kick the event loop
@@ -2391,6 +2400,8 @@ void meshlink_stop(meshlink_handle_t *mesh) {
 		}
 	}
 
+	assert(mesh->thread_stop_pending);
+	mesh->thread_stop_pending--;
 	pthread_mutex_unlock(&mesh->mutex);
 }
 
