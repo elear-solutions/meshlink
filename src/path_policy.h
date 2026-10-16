@@ -300,7 +300,6 @@ void path_reset_canonical_resolve(struct node_t *n);
 void path_request_canonical_resolve(struct meshlink_handle *mesh, struct node_t *n);
 void path_reclassify_active_meta(struct meshlink_handle *mesh, struct node_t *n);
 void path_migrate_legacy_caps(struct node_t *n);
-void path_persist_node(struct meshlink_handle *mesh, struct node_t *n);
 
 /* Remember sa with provenance and transport cap. Canonical-equivalent addresses are dropped. INDIRECT is never stored at the front.
    The return value is true when the address was stored or moved to the front, including an unchanged LRU move.

@@ -234,7 +234,11 @@ struct addrinfo *adns_blocking_request(meshlink_handle_t *mesh, char *host, char
 		abort();
 	}
 
-	pthread_cond_timedwait(&info->cond, &info->mutex, &deadline);
+	while(!info->done) {
+		if(pthread_cond_timedwait(&info->cond, &info->mutex, &deadline)) {
+			break;
+		}
+	}
 
 	struct addrinfo *result = NULL;
 	bool cleanup = info->done;

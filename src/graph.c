@@ -51,6 +51,7 @@
 #include "meshlink_internal.h"
 #include "netutl.h"
 #include "node.h"
+#include "node_storage.h"
 #include "path_liveness.h"
 #include "path_plpmtu.h"
 #include "path_policy.h"
@@ -203,23 +204,19 @@ static void check_reachability(meshlink_handle_t *mesh) {
 
 		if(n->status.visited != n->status.reachable) {
 			n->status.reachable = !n->status.reachable;
-			n->status.dirty = true;
+			if(n->status.blacklisted) {
+				node_storage_mark(n, NODE_STORAGE_EDGE);
+			}
 
 			if(!n->status.blacklisted) {
 				if(n->status.reachable) {
 					logger(mesh, MESHLINK_DEBUG, "Node %s became reachable", n->name);
-					bool first_time_reachable = !n->last_reachable;
-					n->last_reachable = time(NULL);
-
-					if(first_time_reachable) {
-						if(!node_write_config(mesh, n, false)) {
-							logger(mesh, MESHLINK_WARNING, "Could not write host config file for node %s!\n", n->name);
-
-						}
+					if(!node_storage_note_edge(mesh, n, true, time(NULL))) {
+						logger(mesh, MESHLINK_WARNING, "Could not write host config file for node %s!\n", n->name);
 					}
 				} else {
 					logger(mesh, MESHLINK_DEBUG, "Node %s became unreachable", n->name);
-					n->last_unreachable = time(NULL);
+					(void)node_storage_note_edge(mesh, n, false, time(NULL));
 					n->relay_budget = 0;
 					n->status.forced_relay = false;
 				}

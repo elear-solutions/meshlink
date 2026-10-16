@@ -24,6 +24,7 @@
 #include "net_upgrade.h"
 #include "netutl.h"
 #include "node.h"
+#include "node_storage.h"
 #include "connection_policy.h"
 #include "path_liveness.h"
 #include "path_plpmtu.h"
@@ -787,16 +788,6 @@ static void path_note_canonical_resolve_failed(meshlink_handle_t *mesh, node_t *
 	}
 }
 
-void path_persist_node(meshlink_handle_t *mesh, node_t *n) {
-	if(!mesh || !n || !n->status.dirty) {
-		return;
-	}
-
-	if(!node_write_config(mesh, n, false)) {
-		logger(mesh, MESHLINK_DEBUG, "Could not persist path policy state for %s", n->name);
-	}
-}
-
 void path_reclassify_active_meta(meshlink_handle_t *mesh, node_t *n) {
 	connection_t *c;
 
@@ -832,7 +823,6 @@ static void path_on_canonical_resolved(meshlink_handle_t *mesh, node_t *n) {
 
 	path_sanitize_recent(mesh, n);
 	path_reclassify_active_meta(mesh, n);
-	path_persist_node(mesh, n);
 	try_upgrade_probe(mesh, n);
 }
 
@@ -965,7 +955,7 @@ static void recent_store_front(node_t *n, int i, const sockaddr_t *sa, address_s
 	path_copy_sockaddr(&n->recent[0], sa);
 	n->recent_source[0] = keep;
 	n->recent_cap[0] = keep_cap;
-	n->status.dirty = true;
+	node_storage_mark(n, NODE_STORAGE_ENDPOINTS);
 }
 
 static void learn_set_material(bool *material, bool value) {
@@ -1077,7 +1067,7 @@ bool path_learn_address_fallback_cap(meshlink_handle_t *mesh, node_t *n, const s
 			}
 
 			if(changed) {
-				n->status.dirty = true;
+				node_storage_mark(n, NODE_STORAGE_ENDPOINTS);
 			}
 
 			return changed;
@@ -1091,7 +1081,7 @@ bool path_learn_address_fallback_cap(meshlink_handle_t *mesh, node_t *n, const s
 	path_copy_sockaddr(&n->recent[i], sa);
 	n->recent_source[i] = src;
 	n->recent_cap[i] = cap;
-	n->status.dirty = true;
+	node_storage_mark(n, NODE_STORAGE_ENDPOINTS);
 	path_log_candidate(mesh, n, sa, src, cap, "fallback");
 	return true;
 }
@@ -1113,10 +1103,13 @@ void path_clear_recent(node_t *n) {
 		return;
 	}
 
+	bool changed = n->recent[0].sa.sa_family != 0;
 	memset(n->recent, 0, sizeof n->recent);
 	memset(n->recent_source, 0, sizeof n->recent_source);
 	memset(n->recent_cap, 0, sizeof n->recent_cap);
-	n->status.dirty = true;
+	if(changed) {
+		node_storage_mark(n, NODE_STORAGE_ENDPOINTS);
+	}
 	/* Catta is not a recent[] slot. Callers that used to lose it here
 	   still do, but the wipe lives next to the other address clears. */
 	path_clear_catta_address(n);
@@ -1190,7 +1183,7 @@ bool path_sanitize_recent(meshlink_handle_t *mesh, node_t *n) {
 		memcpy(n->recent, kept, sizeof kept);
 		memcpy(n->recent_source, kept_src, sizeof kept_src);
 		memcpy(n->recent_cap, kept_cap, sizeof kept_cap);
-		n->status.dirty = true;
+		node_storage_mark(n, NODE_STORAGE_ENDPOINTS);
 	}
 
 	return changed;
@@ -3389,7 +3382,8 @@ void path_channel_release(meshlink_handle_t *mesh, node_t *peer) {
 
 	peer->peer_udp.channel_count--;
 
-	if(peer->peer_udp.channel_count) {
+	/* UTCP closes channels while freeing nodes, after self may be gone. */
+	if(peer->peer_udp.channel_count || peer->status.destroyed) {
 		return;
 	}
 

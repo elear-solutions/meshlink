@@ -32,6 +32,7 @@
 #include "net_upgrade.h"
 #include "netutl.h"
 #include "node.h"
+#include "node_storage.h"
 #include "packmsg.h"
 #include "path_policy.h"
 #include "connection_policy.h"
@@ -569,8 +570,10 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		}
 
 		c->node = n;
-		n->devclass = devclass;
-		n->status.dirty = true;
+		if(n->devclass != (dev_class_t)devclass) {
+			n->devclass = devclass;
+			node_storage_mark(n, NODE_STORAGE_CONFIG);
+		}
 		n->status.tiny = c->flags & PROTOCOL_TINY;
 
 		if(!connection_policy_may_accept_incoming(mesh, c, devclass)
@@ -595,8 +598,10 @@ bool ack_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		c->node = n;
 	}
 
-	n->devclass = devclass;
-	n->status.dirty = true;
+	if(n->devclass != (dev_class_t)devclass) {
+		n->devclass = devclass;
+		node_storage_mark(n, NODE_STORAGE_CONFIG);
+	}
 	n->status.tiny = c->flags & PROTOCOL_TINY;
 
 	/* Conflict before replace: refuse must not tear down the existing META. */

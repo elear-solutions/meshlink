@@ -24,6 +24,7 @@
 #include "logger.h"
 #include "meshlink_internal.h"
 #include "meta.h"
+#include "net.h"
 #include "net_upgrade.h"
 #include "protocol.h"
 #include "utils.h"
@@ -201,6 +202,7 @@ static bool receive_request_dispatch(meshlink_handle_t *mesh, connection_t *c, c
 		   the lesser name's next PING arrives first and pushes it again. */
 		if(c->status.active) {
 			c->last_ping_time = mesh->loop.now.tv_sec;
+			node_note_seen(mesh, c->node);
 
 			if(mesh->self && c->node && mesh_self_name_is_greater(mesh->self->name, c->node->name)) {
 				c->last_ping_time++;

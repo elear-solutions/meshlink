@@ -13,12 +13,20 @@
 
 static struct sync_flag peer_reachable;
 static struct sync_flag peer_unreachable;
+static struct sync_flag peer_graph_down;
 
 static void nut_status_cb(meshlink_handle_t *mesh, meshlink_node_t *node, bool reachable) {
 	(void)mesh;
 
 	if(!strcmp(node->name, "peer")) {
 		set_sync_flag(reachable ? &peer_reachable : &peer_unreachable, true);
+	}
+}
+
+static void graph_status_cb(meshlink_handle_t *mesh, meshlink_node_t *node, bool reachable) {
+	(void)mesh;
+	if(!reachable && !strcmp(node->name, "peer")) {
+		set_sync_flag(&peer_graph_down, true);
 	}
 }
 
@@ -38,12 +46,14 @@ int main(void) {
 
 	init_sync_flag(&peer_reachable);
 	init_sync_flag(&peer_unreachable);
+	init_sync_flag(&peer_graph_down);
 
 	// Set up relay, peer and NUT
 	peer_config_t *peers = setup_relay_peer_nut("metaconn");
 
 	// Wait for peer to connect to NUT
 	devtool_set_meta_status_cb(peers[2].mesh, nut_status_cb);
+	meshlink_set_node_status_cb(peers[2].mesh, graph_status_cb);
 
 	for(int i = 0; i < 3; i++) {
 		assert(meshlink_start(peers[i].mesh));
@@ -53,12 +63,25 @@ int main(void) {
 	plant_lan_pair(&peers[1], &peers[2]);
 	assert(wait_sync_flag(&peer_reachable, 20));
 
+	meshlink_node_t *peer = meshlink_get_node(peers[2].mesh, "peer");
+	time_t peer_last_reachable, peer_last_unreachable;
+	assert(peer);
+	assert(meshlink_get_node_reachability(peers[2].mesh, peer, &peer_last_reachable, &peer_last_unreachable));
+	assert(peer_last_reachable != 0);
+
 	// Test case #1: re-connection to peer after disconnection when connected to the relay node
 
 	// Stop the peer and wait for it to become unreachable
 	reset_sync_flag(&peer_unreachable);
+	reset_sync_flag(&peer_graph_down);
 	meshlink_stop(peers[1].mesh);
-	assert(wait_sync_flag(&peer_unreachable, 20));
+	// META can close before the relay graph drops its final edge.
+	assert(wait_sync_flag(&peer_graph_down, 20));
+
+	time_t last_reachable, last_unreachable;
+	assert(!meshlink_get_node_reachability(peers[2].mesh, peer, &last_reachable, &last_unreachable));
+	assert(last_unreachable != 0);
+	assert(last_reachable == peer_last_reachable);
 
 	// Restart the peer and wait for it to become reachable
 	reset_sync_flag(&peer_reachable);

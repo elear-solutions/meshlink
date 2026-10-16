@@ -68,6 +68,8 @@ libmeshlink_la_SOURCES = \
 	net_upgrade.c net_upgrade.h net_upgrade_internal.h net_upgrade_cover.c \
 	netutl.c netutl.h \
 	node.c node.h \
+	node_storage.c node_storage.h \
+	storage_writer.c storage_writer.h \
 	path_policy.c path_policy.h \
 	path_policy_devtool.c path_policy_devtool.h \
 	path_scheduler.c path_scheduler.h \

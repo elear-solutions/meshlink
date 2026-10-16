@@ -29,6 +29,7 @@
 #include "net.h"
 #include "netutl.h"
 #include "node.h"
+#include "node_storage.h"
 #include "connection_policy.h"
 #include "discovery.h"
 #include "protocol.h"
@@ -146,7 +147,7 @@ bool add_edge_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 
 	if(!from) {
 		from = new_node();
-		from->status.dirty = true;
+		node_storage_mark(from, NODE_STORAGE_CONFIG);
 		from->status.blacklisted = mesh->default_blacklist;
 		from->name = xstrdup(from_name);
 		from->devclass = from_devclass;
@@ -176,7 +177,7 @@ bool add_edge_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 
 	if(!to) {
 		to = new_node();
-		to->status.dirty = true;
+		node_storage_mark(to, NODE_STORAGE_CONFIG);
 		to->status.blacklisted = mesh->default_blacklist;
 		to->name = xstrdup(to_name);
 		to->devclass = to_devclass;

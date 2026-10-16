@@ -19,6 +19,7 @@
 #include "net.h"
 #include "netutl.h"
 #include "node.h"
+#include "node_storage.h"
 #include "net_upgrade.h"
 #include "path_plpmtu.h"
 #include "path_policy.h"
@@ -391,6 +392,7 @@ static bool cover_canonical(meshlink_handle_t *mesh) {
 static bool cover_learn_sanitize(meshlink_handle_t *mesh) {
 	node_t n;
 	memset(&n, 0, sizeof n);
+	node_storage_init(&n);
 	n.name = scratch("cover");
 	n.canonical_address = scratch("198.51.100.1 9");
 	path_refresh_canonical_endpoint(&n);
@@ -451,7 +453,8 @@ static bool cover_learn_sanitize(meshlink_handle_t *mesh) {
 	path_clear_recent(NULL);
 	path_clear_recent(&n);
 	CHECK(!n.recent[0].sa.sa_family);
-	CHECK(n.status.dirty);
+	CHECK(node_storage_generation(&n, true));
+	node_storage_free(&n);
 	return true;
 }
 
@@ -1801,6 +1804,15 @@ static bool cover_demand(meshlink_handle_t *mesh) {
 
 	path_channel_release(mesh, &dummy);
 	CHECK(!dummy.peer_udp.channel_count);
+
+	/* Destruction releases accounting without starting idle grace or paths. */
+	memset(&dummy.peer_udp, 0, sizeof dummy.peer_udp);
+	dummy.peer_udp.channel_count = 1;
+	dummy.status.destroyed = true;
+	path_channel_release(mesh, &dummy);
+	CHECK(!dummy.peer_udp.channel_count);
+	CHECK(!dummy.peer_udp.idle_until.tv_sec);
+	dummy.status.destroyed = false;
 
 	/* Reclassify after acquire: release still decrements, and does not leave
 	   grace that could reactivate if the class becomes eligible again. */

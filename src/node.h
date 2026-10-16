@@ -43,7 +43,6 @@ typedef struct node_status_t {
 	uint16_t blacklisted: 1;            /* 1 if the node is blacklist so we never want to speak with him anymore */
 	uint16_t destroyed: 1;              /* 1 if the node is being destroyed, deallocate channels when any callback is triggered */
 	uint16_t duplicate: 1;              /* 1 if the node is duplicate, ie. multiple nodes using the same Name are online */
-	uint16_t dirty: 1;                  /* 1 if the configuration of the node is dirty and needs to be written out */
 	uint16_t want_udp: 1;               /* 1 if we want working UDP because we have data to send */
 	uint16_t tiny: 1;                   /* 1 if this is a tiny node */
 	uint16_t in_req_sptps: 1;           /* 1 while processing dest META REQ_SPTPS */
@@ -177,6 +176,7 @@ typedef struct node_t {
 
 	// Private member variables
 	node_status_t status;
+	struct node_storage_state *storage; /* Local durable projections; never exported. */
 	struct connection_t *relay_budget_connection; /* Runtime reporting connection identity. */
 	uint16_t relay_budget;                  /* Accepted type-8 vpn budget; raises channel MSS on UDP relay */
 	dev_class_t devclass;

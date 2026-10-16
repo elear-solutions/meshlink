@@ -29,6 +29,7 @@
 #include "net_upgrade_internal.h"
 #include "netutl.h"
 #include "node.h"
+#include "node_storage.h"
 #include "path_policy.h"
 #include "list.h"
 #include "meta.h"
@@ -60,6 +61,7 @@ static bool cover_bail(meshlink_handle_t *mesh, node_t *n, connection_t *old, co
 	timeout_del(&mesh->loop, &neu->drain_ev);
 	free_connection(old);
 	free_connection(neu);
+	node_storage_free(n);
 	return false;
 }
 
@@ -91,6 +93,13 @@ bool upgrade_cutover_cover_unit(meshlink_handle_t *mesh) {
 	char name[] = "cutover-unit";
 	n.name = name;
 	n.mesh = mesh;
+	/* This fixture represents an already-established peer. Keep replayed
+	   requests from creating a synthetic host record in the caller's store. */
+	n.last_reachable = time(NULL);
+	if(n.last_reachable == (time_t)-1 || n.last_reachable <= 0) {
+		return false;
+	}
+	node_storage_init(&n);
 	old = new_connection();
 	neu = new_connection();
 	old->socket = -1;
@@ -616,6 +625,7 @@ bool upgrade_cutover_cover_unit(meshlink_handle_t *mesh) {
 
 	free_connection(old);
 	free_connection(neu);
+	node_storage_free(&n);
 	return true;
 }
 

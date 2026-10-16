@@ -111,9 +111,13 @@ int main(void) {
 	meshlink_stop(mesh);
 	meshlink_close(mesh);
 
-	// Check that messing with the config directory will create a new instance.
+	// Missing authoritative configuration must preserve the existing identity.
 
 	assert(unlink("basic_conf/current/meshlink.conf") == 0);
+	assert(!meshlink_open("basic_conf", "bar", "basic", DEV_CLASS_BACKBONE));
+	assert(meshlink_errno == MESHLINK_ESTORAGE);
+	assert(!access("basic_conf/current/hosts/foo", F_OK));
+	assert(meshlink_destroy("basic_conf"));
 	mesh = meshlink_open("basic_conf", "bar", "basic", DEV_CLASS_BACKBONE);
 	assert(mesh);
 	assert(!meshlink_get_node(mesh, "foo"));
@@ -124,12 +128,13 @@ int main(void) {
 	meshlink_close(mesh);
 
 	assert(rename("basic_conf/current", "basic_conf/new") == 0);
-	mesh = meshlink_open("basic_conf", "baz", "basic", DEV_CLASS_BACKBONE);
+	assert(!meshlink_open("basic_conf", "baz", "basic", DEV_CLASS_BACKBONE));
+	assert(meshlink_errno == MESHLINK_ESTORAGE);
+	mesh = meshlink_open("basic_conf", NULL, "basic", DEV_CLASS_BACKBONE);
 	assert(mesh);
-	assert(!meshlink_get_node(mesh, "bar"));
 	self = meshlink_get_self(mesh);
 	assert(self);
-	assert(!strcmp(self->name, "baz"));
+	assert(!strcmp(self->name, "bar"));
 	assert(access("basic_conf/new", X_OK) == -1 && errno == ENOENT);
 	meshlink_close(mesh);
 

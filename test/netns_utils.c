@@ -103,7 +103,7 @@ static void create_peers(peer_config_t *peers, int npeers, const char *prefix) {
 
 		peers[i].mesh = meshlink_open_ex(params);
 		assert(peers[i].mesh);
-		free(params);
+		meshlink_open_params_free(params);
 		free(conf_path);
 
 		meshlink_enable_discovery(peers[i].mesh, false);
@@ -121,6 +121,7 @@ static void setup_lan_topology(peer_config_t *peers, int npeers) {
 		                peers[0].netns_name, peers[0].netns_name));
 		assert(command);
 		assert(system(command) == 0);
+		free(command);
 	}
 
 	// Add an interface to each peer that is connected to the bridge

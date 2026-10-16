@@ -237,6 +237,12 @@ struct meshlink_handle {
 	char *external_address_url;
 	struct list_t *invitation_addresses;
 	meshlink_storage_policy_t storage_policy;
+	struct node_storage_owner *storage;
+	bool storage_unavailable; /* No current namespace after failed activation rollback. */
+	bool main_config_pending; /* Explicit main write failed and needs an identical-call retry. */
+	bool canonical_update_pending; /* Self update awaiting durable success and advertisement. */
+	void (*storage_activate_probe)(int); /* Internal deterministic activation fault seam. */
+	bool storage_error; /* Startup authoritative decoding failed (also across netns setup). */
 	const char *conf_write_subdir;    /* NULL means "current"; join commit writes "new" */
 
 	// Thread management

@@ -828,6 +828,8 @@ struct meshlink_node **meshlink_get_all_nodes_by_submesh(struct meshlink_handle 
 
 /// Get the list of all nodes by time they were last reachable.
 /** This function returns a list with handles for all the nodes whose last known reachability time overlaps with the given time range.
+ *  The window starts at the last observation and ends at the last unreachable time, or the current time while reachable.
+ *  Later peer observations move the window start forward, so earlier parts of a continuous session may no longer overlap.
  *  If the range includes 0, it will count nodes that were never online.
  *  If start is bigger than end, the result will be inverted.
  *
@@ -917,13 +919,15 @@ bool meshlink_get_node_blacklisted(struct meshlink_handle *mesh, struct meshlink
 struct meshlink_submesh *meshlink_get_node_submesh(struct meshlink_handle *mesh, struct meshlink_node *node) __attribute__((__warn_unused_result__));
 
 /// Get a node's reachability status.
-/** This function returns the current reachability of a given node, and the times of the last state changes.
- *  If a given state change never happened, the time returned will be 0.
+/** This function returns the current reachability, last observation time, and last unreachable time of a given node.
+ *  Peer observations include handled META requests and continued graph reachability, refreshed at 60-second resolution.
+ *  The self node retains its last became-reachable time.
+ *  If a node has never been observed or never became unreachable, the corresponding time returned will be 0.
  *
  *  \memberof meshlink_node
  *  @param mesh              A handle which represents an instance of MeshLink.
  *  @param node              A pointer to a struct meshlink_node describing the node.
- *  @param last_reachable    A pointer to a time_t variable that will be filled in with the last time the node became reachable.
+ *  @param last_reachable    A pointer to a time_t variable that will be filled in with the last observation time of the node.
  *                           Pass NULL to not have anything written.
  *  @param last_unreachable  A pointer to a time_t variable that will be filled in with the last time the node became unreachable.
  *                           Pass NULL to not have anything written.

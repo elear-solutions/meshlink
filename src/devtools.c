@@ -28,6 +28,7 @@
 #include "net.h"
 #include "net_upgrade.h"
 #include "node.h"
+#include "node_storage.h"
 #include "connection_policy.h"
 #include "discovery.h"
 #include "path_liveness.h"
@@ -1244,8 +1245,13 @@ void devtool_set_node_devclass(meshlink_handle_t *mesh, meshlink_node_t *node, i
 	}
 
 	node_t *n = (node_t *)node;
-	n->devclass = (dev_class_t)devclass;
-	n->status.dirty = true;
+	if(n->devclass != (dev_class_t)devclass) {
+		n->devclass = (dev_class_t)devclass;
+		node_storage_mark(n, NODE_STORAGE_CONFIG);
+		if(n == mesh->self) {
+			node_storage_profile_changed(mesh);
+		}
+	}
 	connection_policy_on_devclass(mesh, n);
 	pthread_mutex_unlock(&mesh->mutex);
 }
@@ -1554,6 +1560,11 @@ bool devtool_restart_local_discovery(meshlink_handle_t *mesh, meshlink_node_t *n
 	path_note_udp_demoted_reason(mesh, n, "devtool local discovery");
 	path_local_discovery_start(mesh, n);
 	active = n->local_discovery.active;
+
+	if(active) {
+		path_local_discovery_tick(mesh, n);
+	}
+
 	pthread_mutex_unlock(&mesh->mutex);
 	return active;
 }
@@ -1677,11 +1688,6 @@ bool devtool_plant_recent_address(meshlink_handle_t *mesh, meshlink_node_t *node
 	}
 
 	path_plant_recent(n, &sa);
-
-	if(!node_write_config(mesh, n, false)) {
-		pthread_mutex_unlock(&mesh->mutex);
-		return false;
-	}
 
 	pthread_mutex_unlock(&mesh->mutex);
 	return true;
