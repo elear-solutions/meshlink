@@ -387,6 +387,9 @@ static void checkpoint_reset(meshlink_handle_t *mesh, node_t *n, time_t wall_now
 
 bool node_storage_read(meshlink_handle_t *mesh, node_t *n) {
 	owner_init(mesh);
+	/* The local host record is read before setup_network() on open and restart.
+	   It can restore a submesh, so make the registry available first. */
+	init_submeshes(mesh);
 	config_t config = {0};
 	if(!config_read(mesh, "current", n->name, &config, mesh->config_key)) {
 		mesh->storage_error = true;
