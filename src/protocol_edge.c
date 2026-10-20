@@ -156,6 +156,7 @@ bool add_edge_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 
 		if(0 != strcmp(from_submesh_name, CORE_MESH)) {
 			if(!(from->submesh = lookup_or_create_submesh(mesh, from_submesh_name))) {
+				free_node(from);
 				return false;
 			}
 		}
@@ -186,8 +187,8 @@ bool add_edge_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 
 		if(0 != strcmp(to_submesh_name, CORE_MESH)) {
 			if(!(to->submesh = lookup_or_create_submesh(mesh, to_submesh_name))) {
+				free_node(to);
 				return false;
-
 			}
 		}
 

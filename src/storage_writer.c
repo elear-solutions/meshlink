@@ -11,9 +11,10 @@
 /* Bounded asynchronous persistence shared by all Meshlink handles. */
 
 #include "system.h"
-#include "storage_writer.h"
 
 #include <pthread.h>
+
+#include "storage_writer.h"
 
 typedef struct storage_writer_job {
 	struct storage_writer_job *next;

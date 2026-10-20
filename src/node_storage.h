@@ -12,9 +12,7 @@
 */
 
 #include <stdbool.h>
-#include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <time.h>
 
 #include "conf.h"
@@ -52,7 +50,7 @@ bool node_storage_retry_config(struct meshlink_handle *mesh, struct node_t *n, b
 bool node_storage_wire_encode(struct meshlink_handle *mesh, const struct node_t *n, config_t *config);
 void node_storage_tick(struct meshlink_handle *mesh, time_t wall_now);
 void node_storage_note_seen(struct meshlink_handle *mesh, struct node_t *n, time_t wall_now);
-/* Valid down edges retain their sampled time; observations never move back.
+/* Down edges keep the later sample; observations never move back.
  * First positive history is committed natively, subject to storage policy. */
 bool node_storage_note_edge(struct meshlink_handle *mesh, struct node_t *n, bool reachable, time_t wall_now);
 /* Flush cancels obsolete queued work and commits current full-storage state.

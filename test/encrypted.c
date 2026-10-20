@@ -122,6 +122,11 @@ static void test_activation(void) {
 	assert(config_destroy(activation_base, "old"));
 	assert(config_destroy(activation_base, "new"));
 	assert(!rmdir(activation_base));
+
+	config_active_t untouched = CONFIG_ACTIVE_NONE;
+	meshlink_handle_t missing = {.confbase = (char *)"encrypted_activation_missing"};
+	assert(!config_activate(&missing, &untouched, NULL));
+	assert(untouched == CONFIG_ACTIVE_UNTOUCHED);
 }
 
 static void test_optional_cache_directory(void) {

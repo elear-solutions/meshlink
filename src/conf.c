@@ -514,7 +514,8 @@ bool config_activate(meshlink_handle_t *mesh, config_active_t *active, void (*pr
 	assert(mesh);
 	assert(mesh->confbase);
 	assert(active);
-	*active = CONFIG_ACTIVE_NONE;
+	/* Distinguish "activation never started" from an unrestorable namespace. */
+	*active = CONFIG_ACTIVE_UNTOUCHED;
 	char path[PATH_MAX];
 	struct stat st;
 	snprintf(path, sizeof(path), "%s" SLASH "current", mesh->confbase);
@@ -574,6 +575,7 @@ bool config_activate(meshlink_handle_t *mesh, config_active_t *active, void (*pr
 	if(*active == CONFIG_ACTIVE_NEW && probe) {
 		probe(-3);
 	}
+
 	if(*active == CONFIG_ACTIVE_NEW && rename_subdir(mesh, "current", "new")) {
 		*active = CONFIG_ACTIVE_NONE;
 		changed = true;
@@ -1083,7 +1085,7 @@ bool config_read(meshlink_handle_t *mesh, const char *conf_subdir, const char *n
 	char path[PATH_MAX];
 	make_host_path(mesh, conf_subdir, name, path, sizeof(path));
 
-	FILE *f = fopen(path, "r");
+	FILE *f = fopen(path, "rb");
 
 	if(!f) {
 		logger(mesh, MESHLINK_ERROR, "Failed to open `%s': %s", path, strerror(errno));
@@ -1250,7 +1252,7 @@ bool main_config_read(meshlink_handle_t *mesh, const char *conf_subdir, config_t
 	char path[PATH_MAX];
 	make_main_path(mesh, conf_subdir, path, sizeof(path));
 
-	FILE *f = fopen(path, "r");
+	FILE *f = fopen(path, "rb");
 
 	if(!f) {
 		logger(mesh, MESHLINK_ERROR, "Failed to open `%s': %s", path, strerror(errno));
@@ -1314,7 +1316,7 @@ bool backbone_config_read(meshlink_handle_t *mesh, const char *conf_subdir, conf
 	char path[PATH_MAX];
 	make_backbone_path(mesh, conf_subdir, path, sizeof(path));
 
-	FILE *f = fopen(path, "r");
+	FILE *f = fopen(path, "rb");
 
 	if(!f) {
 		logger(mesh, MESHLINK_ERROR, "Failed to open `%s': %s", path, strerror(errno));

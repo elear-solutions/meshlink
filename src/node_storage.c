@@ -81,9 +81,11 @@ static void replace_config(config_t *dest, const config_t *src) {
 }
 
 void node_storage_init(node_t *n) {
+
 	if(n->storage) {
 		return;
 	}
+
 	n->storage = xzalloc(sizeof(*n->storage));
 	/* The identifier is local to this record lifetime, including name/key reuse. */
 	do {
@@ -168,7 +170,7 @@ static char *get_c_string(packmsg_input_t *in) {
 	return value;
 }
 
-static bool core_decode(meshlink_handle_t *mesh, node_t *n, const config_t *config) {
+static bool core_decode(meshlink_handle_t *mesh, node_t *n, const config_t *config, bool create_submesh) {
 	packmsg_input_t in = {config->buf, config->len};
 	uint32_t fields = packmsg_get_array(&in);
 	uint32_t version = packmsg_get_uint32(&in);
@@ -194,12 +196,17 @@ static bool core_decode(meshlink_handle_t *mesh, node_t *n, const config_t *conf
 		free(canonical);
 		return false;
 	}
-	submesh_t *sub = !strcmp(submesh, CORE_MESH) ? NULL : lookup_or_create_submesh(mesh, submesh);
-	if(strcmp(submesh, CORE_MESH) && !sub) {
-		free(name);
-		free(submesh);
-		free(canonical);
-		return false;
+	submesh_t *sub = NULL;
+
+	if(strcmp(submesh, CORE_MESH)) {
+		sub = create_submesh ? lookup_or_create_submesh(mesh, submesh) : lookup_submesh(mesh, submesh);
+
+		if(create_submesh && !sub) {
+			free(name);
+			free(submesh);
+			free(canonical);
+			return false;
+		}
 	}
 	node_storage_init(n);
 	memcpy(n->storage->incarnation, incarnation, 16);
@@ -333,8 +340,10 @@ static bool cache_decode(const meshlink_handle_t *mesh, node_t *n, const config_
 		e->keepalive_ms = packmsg_get_uint32(&in);
 		e->updated_at = packmsg_get_int64(&in);
 		e->net_fp = packmsg_get_uint32(&in);
+		time_t decoded_now = time(NULL);
 		valid &= e->family && e->size >= MINMTU && e->size <= MTU
-		         && (!e->largest_failed || (e->largest_failed > e->size && e->largest_failed <= MTU)) && e->updated_at >= 0;
+		         && (!e->largest_failed || (e->largest_failed > e->size && e->largest_failed <= MTU)) && e->updated_at >= 0
+		         && (decoded_now == (time_t)-1 || e->updated_at <= decoded_now);
 	}
 	if(!valid || !packmsg_done(&in)) {
 		return false;
@@ -396,7 +405,7 @@ bool node_storage_read(meshlink_handle_t *mesh, node_t *n) {
 		meshlink_errno = MESHLINK_ESTORAGE;
 		return false;
 	}
-	bool result = core_decode(mesh, n, &config);
+	bool result = core_decode(mesh, n, &config, true);
 	config_free(&config);
 	if(!result) {
 		mesh->storage_error = true;
@@ -483,7 +492,7 @@ static void writer_signal(event_loop_t *loop, void *data) {
 	meshlink_handle_t *mesh = data;
 	storage_writer_collect(mesh->storage->writer, writer_complete, mesh);
 	/* Queue pressure can clear without another five-second timer. */
-	node_storage_tick(mesh, time(NULL));
+	node_storage_tick(mesh, wall_now(mesh));
 }
 
 static void owner_init(meshlink_handle_t *mesh) {
@@ -557,7 +566,6 @@ static void record_failed(meshlink_handle_t *mesh, struct storage_record *r) {
 		timeout_add(&mesh->loop, &mesh->storage->retry, writer_signal, mesh, &(struct timespec) {delay[i], 0});
 	}
 	mesh->storage->stats.errors++;
-	call_error_cb(mesh, MESHLINK_ESTORAGE);
 }
 
 static void writer_complete(const storage_writer_completion_t *completion, void *data) {
@@ -588,6 +596,11 @@ static void writer_complete(const storage_writer_completion_t *completion, void 
 		return;
 	}
 	if(completion->success) {
+		/* A newer failed commit stays uncertain until that generation is rewritten. */
+		if(r->uncertain && completion->generation < r->generation) {
+			return;
+		}
+
 		acknowledge(mesh, n, cache, completion->generation, &config);
 	} else {
 		r->submitted = 0;
@@ -727,7 +740,7 @@ bool node_storage_note_edge(meshlink_handle_t *mesh, node_t *n, bool reachable, 
 			if(now > previous) {
 				n->last_reachable = now;
 			}
-		} else {
+		} else if(now > n->last_unreachable) {
 			n->last_unreachable = now;
 		}
 	}
@@ -918,7 +931,7 @@ bool node_storage_read_trust(meshlink_handle_t *mesh, node_t *n) {
 	config_t config = {0};
 	node_t *stored = new_node();
 	stored->name = xstrdup(n->name);
-	bool ok = config_read(mesh, "current", n->name, &config, mesh->config_key) && core_decode(mesh, stored, &config) && ecdsa_active(stored->ecdsa);
+	bool ok = config_read(mesh, "current", n->name, &config, mesh->config_key) && core_decode(mesh, stored, &config, false) && ecdsa_active(stored->ecdsa);
 	if(ok) {
 		n->ecdsa = stored->ecdsa;
 		stored->ecdsa = NULL;

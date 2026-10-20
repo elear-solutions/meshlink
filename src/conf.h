@@ -65,6 +65,7 @@ typedef enum config_active_t {
 	CONFIG_ACTIVE_NONE,
 	CONFIG_ACTIVE_OLD,
 	CONFIG_ACTIVE_NEW,
+	CONFIG_ACTIVE_UNTOUCHED, /* current/ was never renamed */
 } config_active_t;
 
 /* Activate staged new/ after the caller has frozen and drained persistence and

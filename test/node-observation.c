@@ -171,7 +171,7 @@ static void test_edge_clocks(void) {
 		assert(node_storage_note_edge(mesh, n, false, (time_t)-1));
 		assert(n->last_unreachable == wall + 2);
 		assert(node_storage_note_edge(mesh, n, false, wall - 1));
-		assert(n->last_unreachable == wall - 1); // Valid down-edge sample semantics.
+		assert(n->last_unreachable == wall + 2); // A later down edge is not erased by an earlier sample.
 		n->status.reachable = false;
 	}
 	assert(node_storage_flush(mesh));
@@ -234,8 +234,79 @@ static void test_deployment_schedule(void) {
 	assert(meshlink_destroy(base));
 }
 
+static bool listed(meshlink_node_t **nodes, size_t nmemb, const char *name) {
+	for(size_t i = 0; i < nmemb; i++) {
+		if(nodes[i] && !strcmp(((node_t *)nodes[i])->name, name)) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static void test_offline_query_window(void) {
+	const char *base = "observation_query_conf";
+	assert(meshlink_destroy(base));
+	meshlink_handle_t *mesh = meshlink_open(base, "owner", "observation", DEV_CLASS_PORTABLE);
+	assert(mesh);
+	time_t wall = 1700000000;
+	node_t *n = observed_peer(mesh, "peer", wall);
+	n->status.reachable = false;
+	n->last_reachable = wall + 1;
+	n->last_unreachable = wall - 1;
+	size_t nmemb = 0;
+	meshlink_node_t **nodes = meshlink_get_all_nodes_by_last_reachable(mesh, wall, wall + 10, NULL, &nmemb);
+	assert(!listed(nodes, nmemb, "peer"));
+	free(nodes);
+
+	n->status.reachable = true;
+	time_t now = time(NULL);
+	nmemb = 0;
+	nodes = meshlink_get_all_nodes_by_last_reachable(mesh, now - 5, now + 5, NULL, &nmemb);
+	assert(listed(nodes, nmemb, "peer"));
+	free(nodes);
+	meshlink_close(mesh);
+	assert(meshlink_destroy(base));
+}
+
+static unsigned storage_errors;
+
+static void count_storage_error(meshlink_handle_t *mesh, meshlink_errno_t err) {
+	(void)mesh;
+
+	if(err == MESHLINK_ESTORAGE) {
+		storage_errors++;
+	}
+}
+
+static void test_stop_flush_reports(void) {
+	const char *base = "observation_stop_flush";
+	assert(meshlink_destroy(base));
+	meshlink_handle_t *mesh = meshlink_open(base, "owner", "observation", DEV_CLASS_PORTABLE);
+	assert(mesh);
+	meshlink_set_error_cb(mesh, count_storage_error);
+	node_t *n = observed_peer(mesh, "peer", 1700000000);
+	storage_errors = 0;
+	config_fault_inject(CONFIG_FAULT_DIR_SYNC, 1);
+	n->last_reachable += 120;
+	node_storage_mark(n, NODE_STORAGE_OBSERVATION);
+	mesh->loop.now.tv_sec += 10;
+	node_storage_tick(mesh, n->last_reachable);
+	node_storage_wait(mesh);
+	assert(!storage_errors);
+	config_fault_inject(CONFIG_FAULT_NONE, 0);
+	config_fault_inject(CONFIG_FAULT_DIR_SYNC, 1);
+	meshlink_stop(mesh);
+	assert(storage_errors == 1);
+	config_fault_inject(CONFIG_FAULT_NONE, 0);
+	meshlink_close(mesh);
+	assert(meshlink_destroy(base));
+}
+
 void test_node_observation(void) {
 	test_checkpoint();
 	test_edge_clocks();
 	test_deployment_schedule();
+	test_offline_query_window();
+	test_stop_flush_reports();
 }

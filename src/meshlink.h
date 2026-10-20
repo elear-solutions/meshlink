@@ -841,11 +841,11 @@ struct meshlink_node **meshlink_get_all_nodes_by_submesh(struct meshlink_handle 
  *                      The application can supply an array it allocated itself with malloc, or the return value from the previous call to this function (which is the preferred way).
  *                      The application is allowed to call free() on the array whenever it wishes.
  *                      The pointers in the array are valid until meshlink_close() is called.
- *  @param nmemb        A pointer to a variable holding the number of nodes that were reachable within the period given by @a start and @a end.
+ *  @param nmemb        A pointer to a variable holding the number of nodes whose observation window overlaps the period given by @a start and @a end.
  *                      In case the @a nodes argument is not NULL, MeshLink might call realloc() on the array to change its size.
  *                      The contents of this variable will be changed to reflect the new size of the array.
  *
- *  @return             A pointer to an array containing pointers to all known nodes that were reachable within the period given by @a start and @a end.
+ *  @return             A pointer to an array containing pointers to all known nodes whose observation window overlaps the period given by @a start and @a end.
  *                      If the @a nodes argument was not NULL, then the return value can either be the same value or a different value.
  *                      If it is a new value, the old value of @a nodes should not be used anymore.
  *                      If the new value is NULL, then the old array will have been freed by MeshLink.

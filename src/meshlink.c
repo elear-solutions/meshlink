@@ -1032,7 +1032,7 @@ static bool commit_join_invitation(join_state_t *state, invitation_contents_t *i
 			mesh->storage_unavailable = true;
 			goto rollback;
 		}
-		if(active == CONFIG_ACTIVE_OLD) {
+		if(active != CONFIG_ACTIVE_NEW) {
 			goto rollback;
 		}
 		swapped = true;
@@ -1389,11 +1389,15 @@ static bool meshlink_setup(meshlink_handle_t *mesh) {
 	if(!write_main_config_files(mesh)) {
 		logger(mesh, MESHLINK_ERROR, "Could not write main config files into %s/current: %s\n", mesh->confbase, strerror(errno));
 		meshlink_errno = MESHLINK_ESTORAGE;
+		free_node(mesh->self);
+		mesh->self = NULL;
 		return false;
 	}
 
 	/* Ensure the configuration directory metadata is on disk */
 	if(!config_sync(mesh, "current")) {
+		free_node(mesh->self);
+		mesh->self = NULL;
 		return false;
 	}
 
@@ -1605,10 +1609,12 @@ bool meshlink_open_params_set_lock_filename(meshlink_open_params_t *params, cons
 
 bool meshlink_encrypted_key_rotate(meshlink_handle_t *mesh, const void *new_key, size_t new_keylen) {
 	logger(NULL, MESHLINK_DEBUG, "meshlink_encrypted_key_rotate(%p, %zu)", new_key, new_keylen);
+
 	if(!mesh || !mesh->confbase || !new_key || !new_keylen) {
 		meshlink_errno = MESHLINK_EINVAL;
 		return false;
 	}
+
 	if(pthread_mutex_lock(&mesh->mutex) != 0) {
 		abort();
 	}
@@ -2398,8 +2404,15 @@ void meshlink_stop(meshlink_handle_t *mesh) {
 	}
 
 	// A clean stop durably checkpoints every permitted pending projection.
+	// The mesh thread has already exited so the unreachable graph can be
+	// flushed here; report that failure on this caller instead of only logging it.
 	if(!node_storage_flush(mesh)) {
 		logger(mesh, MESHLINK_WARNING, "Could not flush pending node records at stop");
+		meshlink_errno = MESHLINK_ESTORAGE;
+
+		if(mesh->error_cb) {
+			mesh->error_cb(mesh, MESHLINK_ESTORAGE);
+		}
 	}
 
 	assert(mesh->thread_stop_pending);
@@ -3035,7 +3048,8 @@ static bool search_node_by_last_reachable(const node_t *node, const void *condit
 	time_t start = node->last_reachable;
 	time_t end = node->last_unreachable;
 
-	if(end < start) {
+	/* An offline record keeps its stored down edge. Only a live node extends to now. */
+	if(node->status.reachable) {
 		end = time(NULL);
 
 		if(end < start) {

@@ -16,6 +16,7 @@
 #include "netutl.h"
 #include "packmsg.h"
 #include "path_plpmtu.h"
+#include "submesh.h"
 
 typedef struct cached_values {
 	sockaddr_t recent[MAX_RECENT];
@@ -493,6 +494,58 @@ static void test_missing_cache_directory(const char *exported) {
 	assert(meshlink_destroy(conf));
 }
 
+static void test_future_cache_stamp(void) {
+	const char *conf = "node_storage_future_cache";
+	assert(meshlink_destroy(conf));
+	meshlink_handle_t *mesh = meshlink_open(conf, "owner", "node-storage", DEV_CLASS_PORTABLE);
+	assert(mesh);
+	node_t *n = new_node();
+	n->name = strdup("peer");
+	assert(n->name);
+	node_add(mesh, n);
+	assert(node_storage_write(mesh, n, false));
+	n->mtu_cache[0] = (path_mtu_cache_entry_t) {
+		.family = AF_INET, .addr = {203, 0, 113, 9}, .size = 1280, .updated_at = time(NULL) + 86400,
+	};
+	node_storage_mark(n, NODE_STORAGE_PATH_HISTORY);
+	assert(node_storage_flush(mesh));
+	meshlink_close(mesh);
+	mesh = meshlink_open(conf, "owner", "node-storage", DEV_CLASS_PORTABLE);
+	assert(mesh);
+	n = (node_t *)meshlink_get_node(mesh, "peer");
+	assert(n && !n->mtu_cache[0].family);
+	meshlink_close(mesh);
+	assert(meshlink_destroy(conf));
+}
+
+static void test_trust_read_skips_submesh(void) {
+	const char *conf = "node_storage_trust_submesh";
+	assert(meshlink_destroy(conf));
+	meshlink_handle_t *mesh = meshlink_open(conf, "owner", "node-storage", DEV_CLASS_PORTABLE);
+	assert(mesh);
+	node_t *n = new_node();
+	n->name = strdup("peer");
+	assert(n->name);
+	node_add(mesh, n);
+	char ghost[] = "ghost";
+	submesh_t detached = {.name = ghost};
+	n->submesh = &detached;
+	n->ecdsa = ecdsa_set_public_key(ecdsa_get_public_key(mesh->private_key));
+	assert(node_storage_write(mesh, n, true));
+	n->submesh = NULL;
+	unsigned before = mesh->submeshes->count;
+	node_t *probe = new_node();
+	probe->name = strdup("peer");
+	assert(probe->name);
+	assert(node_storage_read_trust(mesh, probe));
+	assert(mesh->submeshes->count == before);
+	assert(!lookup_submesh(mesh, "ghost"));
+	assert(ecdsa_active(probe->ecdsa));
+	free_node(probe);
+	meshlink_close(mesh);
+	assert(meshlink_destroy(conf));
+}
+
 static void test_wire_history(meshlink_handle_t *mesh, meshlink_handle_t *remote) {
 	remote->self->mtu_cache[0] = (path_mtu_cache_entry_t) {.family = AF_INET, .addr = {203, 0, 113, 90}, .size = 1280, .updated_at = 1700000000};
 	config_t wire = {0};
@@ -668,6 +721,8 @@ void test_node_storage(void) {
 	config_fault_inject(CONFIG_FAULT_NONE, 0);
 	test_parent_path_classification(exported);
 	test_missing_cache_directory(exported);
+	test_future_cache_stamp();
+	test_trust_read_skips_submesh();
 	free(exported);
 	config_free(&cache);
 	config_free(&core);

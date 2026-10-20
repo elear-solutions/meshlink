@@ -1107,9 +1107,11 @@ void path_clear_recent(node_t *n) {
 	memset(n->recent, 0, sizeof n->recent);
 	memset(n->recent_source, 0, sizeof n->recent_source);
 	memset(n->recent_cap, 0, sizeof n->recent_cap);
+
 	if(changed) {
 		node_storage_mark(n, NODE_STORAGE_ENDPOINTS);
 	}
+
 	/* Catta is not a recent[] slot. Callers that used to lose it here
 	   still do, but the wipe lives next to the other address clears. */
 	path_clear_catta_address(n);
