@@ -829,6 +829,7 @@ struct meshlink_node **meshlink_get_all_nodes_by_submesh(struct meshlink_handle 
 /// Get the list of all nodes by time they were last reachable.
 /** This function returns a list with handles for all the nodes whose last known reachability time overlaps with the given time range.
  *  The window starts at the last observation and ends at the last unreachable time, or the current time while reachable.
+ *  When the last observation is later than the last unreachable time, the window is that observation.
  *  Later peer observations move the window start forward, so earlier parts of a continuous session may no longer overlap.
  *  If the range includes 0, it will count nodes that were never online.
  *  If start is bigger than end, the result will be inverted.

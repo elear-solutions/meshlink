@@ -256,6 +256,10 @@ static void test_offline_query_window(void) {
 	n->last_unreachable = wall - 1;
 	size_t nmemb = 0;
 	meshlink_node_t **nodes = meshlink_get_all_nodes_by_last_reachable(mesh, wall, wall + 10, NULL, &nmemb);
+	assert(listed(nodes, nmemb, "peer"));
+	free(nodes);
+	nmemb = 0;
+	nodes = meshlink_get_all_nodes_by_last_reachable(mesh, wall + 2, wall + 10, NULL, &nmemb);
 	assert(!listed(nodes, nmemb, "peer"));
 	free(nodes);
 
@@ -297,7 +301,8 @@ static void test_stop_flush_reports(void) {
 	config_fault_inject(CONFIG_FAULT_NONE, 0);
 	config_fault_inject(CONFIG_FAULT_DIR_SYNC, 1);
 	meshlink_stop(mesh);
-	assert(storage_errors == 1);
+	assert(!storage_errors);
+	assert(meshlink_errno == MESHLINK_ESTORAGE);
 	config_fault_inject(CONFIG_FAULT_NONE, 0);
 	meshlink_close(mesh);
 	assert(meshlink_destroy(base));

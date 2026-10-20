@@ -2404,15 +2404,11 @@ void meshlink_stop(meshlink_handle_t *mesh) {
 	}
 
 	// A clean stop durably checkpoints every permitted pending projection.
-	// The mesh thread has already exited so the unreachable graph can be
-	// flushed here; report that failure on this caller instead of only logging it.
+	// The mesh thread has already exited, so the unreachable graph is flushed
+	// here. The error callback stays on that thread; the caller reads meshlink_errno.
 	if(!node_storage_flush(mesh)) {
 		logger(mesh, MESHLINK_WARNING, "Could not flush pending node records at stop");
 		meshlink_errno = MESHLINK_ESTORAGE;
-
-		if(mesh->error_cb) {
-			mesh->error_cb(mesh, MESHLINK_ESTORAGE);
-		}
 	}
 
 	assert(mesh->thread_stop_pending);
@@ -3048,13 +3044,17 @@ static bool search_node_by_last_reachable(const node_t *node, const void *condit
 	time_t start = node->last_reachable;
 	time_t end = node->last_unreachable;
 
-	/* An offline record keeps its stored down edge. Only a live node extends to now. */
+	/* A live node extends to now. An offline record keeps its stored down edge.
+	   A newer up edge is the whole window: reachable is not stored, so a reload
+	   must not stretch that observation forward to the current time. */
 	if(node->status.reachable) {
 		end = time(NULL);
 
 		if(end < start) {
 			start = end;
 		}
+	} else if(end < start) {
+		end = start;
 	}
 
 	if(range->end >= range->start) {
