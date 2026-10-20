@@ -933,12 +933,26 @@ bool config_write_file(meshlink_handle_t *mesh, FILE *f, const config_t *config,
 	return true;
 }
 
+/* Host, main, and cache paths are built with SLASH. On MinGW that is '\\'. */
+static const char *path_separator(const char *path) {
+	const char *separator = strrchr(path, '/');
+#ifdef HAVE_MINGW
+	const char *backslash = strrchr(path, '\\');
+
+	if(backslash && (!separator || backslash > separator)) {
+		separator = backslash;
+	}
+#endif
+
+	return separator;
+}
+
 /* Optional cache directories may disappear independently of authoritative
  * storage. Recreate only that directory, never a retired storage epoch. */
 static bool create_cache_parent(const char *path, bool *cache_path) {
 	*cache_path = false;
 	char *parent = xstrdup(path);
-	char *filename = strrchr(parent, '/');
+	char *filename = (char *)path_separator(parent);
 	bool success = false;
 
 	if(!filename) {
@@ -946,14 +960,15 @@ static bool create_cache_parent(const char *path, bool *cache_path) {
 	}
 
 	*filename = 0;
-	char *cache = strrchr(parent, '/');
+	char *cache = (char *)path_separator(parent);
 
 	if(!cache || strcmp(cache + 1, "path-cache")) {
 		goto done;
 	}
 
+	char saved = *cache;
 	*cache = 0;
-	const char *epoch = strrchr(parent, '/');
+	const char *epoch = path_separator(parent);
 	epoch = epoch ? epoch + 1 : parent;
 
 	if(strcmp(epoch, "current") && strcmp(epoch, "new")) {
@@ -972,7 +987,7 @@ static bool create_cache_parent(const char *path, bool *cache_path) {
 		goto done;
 	}
 
-	*cache = '/';
+	*cache = saved;
 
 	bool created = !mkdir(parent, 0700);
 
@@ -1002,8 +1017,8 @@ bool config_write_path(const char *path, const config_t *config, const void *key
 	}
 
 	char *temporary = xmalloc(strlen(path) + 6);
-	const char *basename = strrchr(path, '/');
-	basename = basename ? basename + 1 : path;
+	const char *separator = path_separator(path);
+	const char *basename = separator ? separator + 1 : path;
 	size_t prefix = basename - path;
 	memcpy(temporary, path, prefix);
 	snprintf(temporary + prefix, strlen(basename) + 6, ".%s.tmp", basename);
