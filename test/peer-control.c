@@ -16,8 +16,13 @@
 #include "meta.h"
 #include "path_policy.h"
 #include "protocol.h"
+#include "sptps.h"
+#include "ecdsagen.h"
+#include "utils.h"
 #include <assert.h>
 #include <net/if.h>
+#include <pthread.h>
+#include <unistd.h>
 
 typedef struct {
 	meshlink_handle_t *mesh;
@@ -1505,7 +1510,434 @@ static void test_backbone_private_lifecycle(void) {
 	assert(meshlink_destroy(confbase));
 }
 
+/* SPTPS sequence budget. Two in-memory endpoints exchange records through
+   explicit queues so tests can drop, hold and reorder records and seed the
+   counters near the per-key limits without sending billions of records. */
+
+#define SPTPS_TEST_QUEUE 64
+
+typedef struct {
+	uint8_t type;
+	size_t len;
+	char data[256];
+} sptps_test_record_t;
+
+typedef struct {
+	sptps_t s;
+	sptps_test_record_t out[SPTPS_TEST_QUEUE];
+	unsigned head, tail;
+	unsigned app_records;
+	unsigned handshakes;
+	char last_app[64];
+	uint16_t last_app_len;
+} sptps_end_t;
+
+static const char sptps_test_label[] = "sptps-seqno-test";
+
+static bool sptps_end_send(void *handle, uint8_t type, const void *data, size_t len) {
+	sptps_end_t *e = handle;
+	assert(e->tail - e->head < SPTPS_TEST_QUEUE);
+	assert(len <= sizeof e->out[0].data);
+	sptps_test_record_t *r = &e->out[e->tail++ % SPTPS_TEST_QUEUE];
+	r->type = type;
+	r->len = len;
+	memcpy(r->data, data, len);
+	return true;
+}
+
+static bool sptps_end_receive(void *handle, uint8_t type, const void *data, uint16_t len) {
+	sptps_end_t *e = handle;
+
+	if(type == SPTPS_HANDSHAKE) {
+		e->handshakes++;
+		return true;
+	}
+
+	assert(len <= sizeof e->last_app);
+	e->app_records++;
+	memcpy(e->last_app, data, len);
+	e->last_app_len = len;
+	return true;
+}
+
+static unsigned sptps_end_take(sptps_end_t *e, sptps_test_record_t *recs, unsigned max) {
+	unsigned n = 0;
+
+	while(e->head != e->tail) {
+		assert(n < max);
+		recs[n++] = e->out[e->head++ % SPTPS_TEST_QUEUE];
+	}
+
+	return n;
+}
+
+static bool sptps_end_feed(sptps_end_t *to, const sptps_test_record_t *r) {
+	return sptps_receive_data(&to->s, r->data, r->len);
+}
+
+/* Deliver everything queued, in order, until both sides are quiet. Stream
+   records from one side are concatenated into a single read, so an ACK and
+   the first new-key record can arrive in the same buffer. */
+static void sptps_pump(sptps_end_t *a, sptps_end_t *b) {
+	sptps_test_record_t recs[SPTPS_TEST_QUEUE];
+
+	for(unsigned round = 0; round < 16; round++) {
+		bool moved = false;
+		sptps_end_t *ends[2][2] = {{a, b}, {b, a}};
+
+		for(unsigned i = 0; i < 2; i++) {
+			unsigned n = sptps_end_take(ends[i][0], recs, SPTPS_TEST_QUEUE);
+
+			if(!n) {
+				continue;
+			}
+
+			moved = true;
+
+			if(ends[i][1]->s.datagram) {
+				for(unsigned j = 0; j < n; j++) {
+					assert(sptps_end_feed(ends[i][1], &recs[j]));
+				}
+			} else {
+				char stream[SPTPS_TEST_QUEUE * sizeof recs[0].data];
+				size_t len = 0;
+
+				for(unsigned j = 0; j < n; j++) {
+					memcpy(stream + len, recs[j].data, recs[j].len);
+					len += recs[j].len;
+				}
+
+				assert(sptps_receive_data(&ends[i][1]->s, stream, len));
+			}
+		}
+
+		if(!moved) {
+			return;
+		}
+	}
+
+	abort();
+}
+
+static void sptps_pair_start(sptps_end_t *a, sptps_end_t *b, bool datagram, ecdsa_t **keys) {
+	memset(a, 0, sizeof *a);
+	memset(b, 0, sizeof *b);
+	keys[0] = ecdsa_generate();
+	keys[1] = ecdsa_generate();
+	assert(keys[0] && keys[1]);
+	assert(sptps_start(&a->s, a, true, datagram, keys[0], keys[1], sptps_test_label, sizeof sptps_test_label, sptps_end_send, sptps_end_receive));
+	assert(sptps_start(&b->s, b, false, datagram, keys[1], keys[0], sptps_test_label, sizeof sptps_test_label, sptps_end_send, sptps_end_receive));
+	sptps_pump(a, b);
+	assert(a->s.instate && a->s.outstate && b->s.instate && b->s.outstate);
+	assert(a->handshakes == 1 && b->handshakes == 1);
+	/* The first key starts each direction at sequence zero. */
+	assert(!a->s.outseqno && !a->s.inseqno && !b->s.outseqno && !b->s.inseqno);
+}
+
+static void sptps_pair_stop(sptps_end_t *a, sptps_end_t *b, ecdsa_t **keys) {
+	assert(sptps_stop(&a->s));
+	assert(sptps_stop(&b->s));
+	ecdsa_free(keys[0]);
+	ecdsa_free(keys[1]);
+}
+
+static bool sptps_end_send_app(sptps_end_t *e, const char *text) {
+	return sptps_send_record(&e->s, 0, text, (uint16_t)strlen(text));
+}
+
+static bool sptps_end_got(const sptps_end_t *e, const char *text) {
+	return e->last_app_len == strlen(text) && !memcmp(e->last_app, text, e->last_app_len);
+}
+
+/* Seed both directions as if the session had been running for a long time.
+   Stream sequence numbers are implicit, so each sender and its receiver must
+   agree exactly. */
+static void sptps_seed(sptps_end_t *a, sptps_end_t *b, uint32_t a_to_b, uint32_t b_to_a) {
+	a->s.outseqno = b->s.inseqno = a_to_b;
+	b->s.outseqno = a->s.inseqno = b_to_a;
+}
+
+/* A renewal resets each direction's counter at its own key switch: the ACK is
+   the last old-key record and the first new-key record is zero. */
+static void test_sptps_renewal_resets_sequence(bool datagram) {
+	fprintf(stderr, "sptps renewal resets sequence (%s)\n", datagram ? "datagram" : "stream");
+	sptps_end_t a, b;
+	ecdsa_t *keys[2];
+	sptps_pair_start(&a, &b, datagram, keys);
+
+	assert(sptps_end_send_app(&a, "one") && sptps_end_send_app(&b, "two"));
+	sptps_pump(&a, &b);
+	assert(b.app_records == 1 && sptps_end_got(&b, "one"));
+	assert(a.app_records == 1 && sptps_end_got(&a, "two"));
+	assert(a.s.outseqno == 1 && b.s.inseqno == 1);
+	assert(!sptps_renewal_due(&a.s) && !sptps_exhausted(&a.s));
+
+	/* Long-running session: A has used more than half its budget. */
+	sptps_seed(&a, &b, SPTPS_SEQNO_RENEW + 7, 11);
+	assert(sptps_renewal_due(&a.s) && sptps_renewal_due(&b.s));
+	assert(!sptps_exhausted(&a.s) && !sptps_exhausted(&b.s));
+	assert(sptps_end_send_app(&a, "late"));
+	sptps_pump(&a, &b);
+	assert(b.app_records == 2 && sptps_end_got(&b, "late"));
+
+	assert(sptps_force_kex(&a.s));
+	/* A second request while the exchange is in flight is coalesced. */
+	assert(sptps_force_kex(&a.s));
+	sptps_pump(&a, &b);
+	assert(a.handshakes == 2 && b.handshakes == 2);
+	assert(!a.s.outseqno && !a.s.inseqno && !b.s.outseqno && !b.s.inseqno);
+	assert(!sptps_renewal_due(&a.s) && !sptps_renewal_due(&b.s));
+
+	assert(sptps_end_send_app(&a, "fresh") && sptps_end_send_app(&b, "back"));
+	sptps_pump(&a, &b);
+	assert(b.app_records == 3 && sptps_end_got(&b, "fresh"));
+	assert(a.app_records == 2 && sptps_end_got(&a, "back"));
+	assert(a.s.outseqno == 1 && b.s.inseqno == 1);
+
+	/* Repeated renewals keep working and keep resetting. */
+	for(unsigned i = 0; i < 3; i++) {
+		assert(sptps_force_kex(i % 2 ? &b.s : &a.s));
+		sptps_pump(&a, &b);
+		assert(!a.s.outseqno && !b.s.outseqno && !a.s.inseqno && !b.s.inseqno);
+		assert(sptps_end_send_app(&a, "again"));
+		sptps_pump(&a, &b);
+		assert(sptps_end_got(&b, "again"));
+	}
+
+	sptps_pair_stop(&a, &b, keys);
+}
+
+/* Application records stop at the limit, so the nonce cannot wrap. Handshake
+   records may still use the space above it, so a renewal can recover the
+   session, and the first new-key record is accepted exactly once. */
+static void test_sptps_send_limit(bool datagram) {
+	fprintf(stderr, "sptps send limit (%s)\n", datagram ? "datagram" : "stream");
+	sptps_end_t a, b;
+	ecdsa_t *keys[2];
+	sptps_test_record_t recs[SPTPS_TEST_QUEUE];
+	sptps_pair_start(&a, &b, datagram, keys);
+
+	sptps_seed(&a, &b, SPTPS_SEQNO_LIMIT - 2, 0);
+	assert(sptps_end_send_app(&a, "before"));
+	sptps_pump(&a, &b);
+	assert(sptps_end_got(&b, "before"));
+
+	assert(sptps_end_send_app(&a, "boundary"));
+
+	if(datagram) {
+		/* Lose the last record the old key may carry. */
+		assert(sptps_end_take(&a, recs, SPTPS_TEST_QUEUE) == 1);
+	} else {
+		sptps_pump(&a, &b);
+		assert(sptps_end_got(&b, "boundary"));
+	}
+
+	assert(a.s.outseqno == SPTPS_SEQNO_LIMIT);
+	assert(sptps_exhausted(&a.s));
+	/* Refused before encryption: nothing queued, counter unchanged. */
+	assert(!sptps_end_send_app(&a, "refused"));
+	assert(!sptps_send_record_raw(&a.s, 0, "x", 1));
+	assert(a.head == a.tail && a.s.outseqno == SPTPS_SEQNO_LIMIT);
+
+	unsigned received = b.app_records;
+	assert(sptps_force_kex(&a.s));
+	sptps_pump(&a, &b);
+	assert(a.handshakes == 2 && b.handshakes == 2);
+	assert(!sptps_exhausted(&a.s) && !a.s.outseqno && !b.s.inseqno);
+
+	assert(sptps_end_send_app(&a, "first"));
+	assert(sptps_end_take(&a, recs, SPTPS_TEST_QUEUE) == 1);
+	assert(sptps_end_feed(&b, &recs[0]));
+	assert(b.app_records == received + 1 && sptps_end_got(&b, "first"));
+
+	if(datagram) {
+		/* Sequence zero under the new key replays like any other record. */
+		assert(!sptps_end_feed(&b, &recs[0]));
+		assert(b.app_records == received + 1);
+	}
+
+	sptps_pair_stop(&a, &b, keys);
+}
+
+/* Encrypt a datagram record by hand with an arbitrary sequence number, as a
+   peer that ignored its budget would. */
+static sptps_test_record_t sptps_forge_datagram(sptps_end_t *from, uint32_t seqno, const char *text) {
+	sptps_test_record_t r = {0};
+	size_t len = strlen(text);
+	uint32_t netseqno = htonl(seqno);
+	memcpy(r.data, &netseqno, 4);
+	r.data[4] = 0;
+	memcpy(r.data + 5, text, len);
+	chacha_poly1305_encrypt(from->s.outcipher, seqno, r.data + 4, len + 1, r.data + 4, NULL);
+	r.len = len + SPTPS_DATAGRAM_OVERHEAD;
+	return r;
+}
+
+/* The receiver enforces the same budget and keeps an overflow-free replay
+   window at the top of the permitted space. */
+static void test_sptps_receive_limit(void) {
+	fprintf(stderr, "sptps receive limit\n");
+	sptps_end_t a, b;
+	ecdsa_t *keys[2];
+	sptps_test_record_t recs[SPTPS_TEST_QUEUE];
+	sptps_pair_start(&a, &b, true, keys);
+
+	/* Reordering and replay just below the limit. */
+	sptps_seed(&a, &b, SPTPS_SEQNO_LIMIT - 300, 0);
+	assert(sptps_end_send_app(&a, "r1") && sptps_end_send_app(&a, "r2") && sptps_end_send_app(&a, "r3"));
+	assert(sptps_end_take(&a, recs, SPTPS_TEST_QUEUE) == 3);
+	assert(sptps_end_feed(&b, &recs[2]) && sptps_end_feed(&b, &recs[0]) && sptps_end_feed(&b, &recs[1]));
+	assert(b.app_records == 3);
+	assert(!sptps_end_feed(&b, &recs[1]) && !sptps_end_feed(&b, &recs[2]));
+	assert(b.app_records == 3);
+
+	/* An authenticated application record at or beyond the limit is refused
+	   without moving the receive window. */
+	uint32_t inseqno = b.s.inseqno;
+	sptps_test_record_t over = sptps_forge_datagram(&a, SPTPS_SEQNO_LIMIT, "over");
+	assert(!sptps_end_feed(&b, &over));
+	sptps_test_record_t top = sptps_forge_datagram(&a, SPTPS_SEQNO_MAX, "top");
+	assert(!sptps_verify_datagram(&b.s, top.data, top.len));
+	assert(!sptps_end_feed(&b, &top));
+	assert(b.app_records == 3 && b.s.inseqno == inseqno);
+
+	/* The last permitted sequence number is accepted once, then counts as a
+	   replay; the receive side is then exhausted and needs a renewal. */
+	sptps_test_record_t last = sptps_forge_datagram(&a, SPTPS_SEQNO_LIMIT - 1, "last");
+	assert(sptps_end_feed(&b, &last) && b.app_records == 4);
+	assert(!sptps_end_feed(&b, &last) && b.app_records == 4);
+	assert(sptps_exhausted(&b.s));
+
+	sptps_pair_stop(&a, &b, keys);
+}
+
+/* Records that cross a key switch out of order fail authentication, as they
+   did before; the reset itself never lets a record through twice. */
+static void test_sptps_switch_reordering(void) {
+	fprintf(stderr, "sptps switch reordering\n");
+	sptps_end_t a, b;
+	ecdsa_t *keys[2];
+	sptps_test_record_t old[4], recs[SPTPS_TEST_QUEUE];
+	sptps_pair_start(&a, &b, true, keys);
+
+	/* Late old-key record. */
+	assert(sptps_end_send_app(&a, "old"));
+	assert(sptps_end_take(&a, old, 4) == 1);
+	assert(sptps_force_kex(&a.s));
+	sptps_pump(&a, &b);
+	assert(!sptps_end_feed(&b, &old[0]));
+	assert(sptps_end_send_app(&a, "new"));
+	sptps_pump(&a, &b);
+	assert(b.app_records == 1 && sptps_end_got(&b, "new"));
+
+	/* Early new-key record: A has switched, B has not seen A's ACK yet. */
+	unsigned base = b.app_records;
+	assert(sptps_force_kex(&a.s));
+	assert(sptps_end_take(&a, recs, SPTPS_TEST_QUEUE) == 1);        /* A: KEX */
+	assert(sptps_end_feed(&b, &recs[0]));
+	assert(sptps_end_take(&b, recs, SPTPS_TEST_QUEUE) == 2);        /* B: KEX, SIG */
+	assert(sptps_end_feed(&a, &recs[0]) && sptps_end_feed(&a, &recs[1]));
+	assert(!a.s.outseqno);                                           /* A switched */
+	assert(sptps_end_send_app(&a, "early"));
+	assert(sptps_end_take(&a, recs, SPTPS_TEST_QUEUE) == 3);        /* A: SIG, ACK, early */
+	sptps_test_record_t early = recs[2];
+	assert(!sptps_end_feed(&b, &early));                             /* old receive key */
+	assert(sptps_end_feed(&b, &recs[0]) && sptps_end_feed(&b, &recs[1]));
+	sptps_pump(&a, &b);
+	assert(b.app_records == base);
+	assert(sptps_end_send_app(&a, "next"));
+	sptps_pump(&a, &b);
+	assert(b.app_records == base + 1 && sptps_end_got(&b, "next"));
+	/* Within the window, the early record can still be accepted, once. */
+	assert(sptps_end_feed(&b, &early) && sptps_end_got(&b, "early"));
+	assert(!sptps_end_feed(&b, &early));
+	assert(b.app_records == base + 2);
+
+	sptps_pair_stop(&a, &b, keys);
+}
+
+/* A real node session renews as soon as half the budget is used, without
+   waiting for the hourly timer, and keeps delivering afterwards. */
+static struct sync_flag renewal_received;
+
+static void renewal_receive_cb(meshlink_handle_t *mesh, meshlink_node_t *source, const void *data, size_t len) {
+	(void)mesh;
+	(void)source;
+
+	if(len == 5 && !memcmp(data, "hello", 5)) {
+		set_sync_flag(&renewal_received, true);
+	}
+}
+
+static void renewal_send_and_wait(meshlink_handle_t *a, meshlink_handle_t *b) {
+	reset_sync_flag(&renewal_received);
+
+	for(int i = 0; i < 20 && !check_sync_flag(&renewal_received); i++) {
+		assert(meshlink_send(a, meshlink_get_node(a, "b"), "hello", 5));
+		wait_sync_flag(&renewal_received, 1);
+	}
+
+	assert(check_sync_flag(&renewal_received));
+	(void)b;
+}
+
+static void test_sptps_threshold_renewal(void) {
+	fprintf(stderr, "sptps threshold renewal\n");
+	meshlink_handle_t *a, *b;
+	open_meshlink_pair(&a, &b, "peer_control_renewal");
+	init_sync_flag(&renewal_received);
+	meshlink_set_receive_cb(b, renewal_receive_cb);
+	start_meshlink_pair(a, b);
+	renewal_send_and_wait(a, b);
+
+	node_t *n = (node_t *)meshlink_get_node(a, "b");
+	assert(n);
+	assert(pthread_mutex_lock(&a->mutex) == 0);
+	assert(n->status.validkey);
+	/* Only the hourly timer would renew this key on the old code: its last
+	   renewal is recent. */
+	assert(n->last_req_key + 3600 > a->loop.now.tv_sec);
+	n->sptps.outseqno = SPTPS_SEQNO_RENEW;
+	uint32_t restarts = n->sptps_restart_count;
+	pthread_mutex_unlock(&a->mutex);
+
+	renewal_send_and_wait(a, b);
+
+	/* The periodic handler runs every few seconds; only a renewal brings the
+	   counter back below the threshold. */
+	bool renewed = false;
+
+	for(int i = 0; i < 300 && !renewed; i++) {
+		assert(pthread_mutex_lock(&a->mutex) == 0);
+		renewed = n->status.validkey && n->sptps.outseqno < SPTPS_SEQNO_RENEW;
+		pthread_mutex_unlock(&a->mutex);
+
+		if(!renewed) {
+			usleep(100000);
+		}
+	}
+
+	assert(renewed);
+	assert(pthread_mutex_lock(&a->mutex) == 0);
+	/* Renewed in place, not restarted. */
+	assert(n->sptps_restart_count == restarts);
+	pthread_mutex_unlock(&a->mutex);
+
+	renewal_send_and_wait(a, b);
+	close_meshlink_pair(a, b);
+	assert(meshlink_destroy("peer_control_renewal_conf.1"));
+	assert(meshlink_destroy("peer_control_renewal_conf.2"));
+}
+
 int main(void) {
+	fprintf(stderr, "sptps sequence budget\n");
+	test_sptps_renewal_resets_sequence(true);
+	test_sptps_renewal_resets_sequence(false);
+	test_sptps_send_limit(true);
+	test_sptps_send_limit(false);
+	test_sptps_receive_limit();
+	test_sptps_switch_reordering();
+	test_sptps_threshold_renewal();
 	test_backbone_private_default();
 	test_backbone_private_disabled_candidate();
 	test_backbone_private_lifecycle();

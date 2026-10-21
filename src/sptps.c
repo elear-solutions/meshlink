@@ -93,9 +93,33 @@ static void warning(sptps_t *s, const char *format, ...) {
 	va_end(ap);
 }
 
+// Refuse to allocate a sequence number the current key may not use. The
+// sequence number is the AEAD nonce, so it must never repeat under one key.
+// Application records stop at SPTPS_SEQNO_LIMIT; handshake records may use the
+// space above it so a renewal in flight can complete and reset the counter.
+static bool seqno_allowed(uint32_t seqno, uint8_t type) {
+	if(seqno >= SPTPS_SEQNO_MAX) {
+		return false;
+	}
+
+	return type >= SPTPS_HANDSHAKE || seqno < SPTPS_SEQNO_LIMIT;
+}
+
+bool sptps_renewal_due(const sptps_t *s) {
+	return s->outstate && s->instate && (s->outseqno >= SPTPS_SEQNO_RENEW || s->inseqno >= SPTPS_SEQNO_RENEW);
+}
+
+bool sptps_exhausted(const sptps_t *s) {
+	return s->outstate && (s->outseqno >= SPTPS_SEQNO_LIMIT || s->inseqno >= SPTPS_SEQNO_LIMIT);
+}
+
 // Send a record (datagram version, accepts all record types, handles encryption and authentication).
 static bool send_record_priv_datagram(sptps_t *s, uint8_t type, const void *data, uint16_t len) {
 	char buffer[len + SPTPS_DATAGRAM_OVERHEAD];
+
+	if(!seqno_allowed(s->outseqno, type)) {
+		return error(s, EIO, "Send sequence budget exhausted for the current key");
+	}
 
 	// Create header with sequence number, length and record type
 	uint32_t seqno = s->outseqno++;
@@ -121,6 +145,10 @@ static bool send_record_priv(sptps_t *s, uint8_t type, const void *data, uint16_
 	}
 
 	char buffer[len + SPTPS_OVERHEAD];
+
+	if(!seqno_allowed(s->outseqno, type)) {
+		return error(s, EIO, "Send sequence budget exhausted for the current key");
+	}
 
 	// Create header with sequence number, length and record type
 	uint32_t seqno = s->outseqno++;
@@ -292,6 +320,15 @@ static bool receive_ack(sptps_t *s, const char *data, uint16_t len) {
 	s->key = NULL;
 	s->instate = true;
 
+	// The new receive key starts a fresh sequence space: the peer reset its
+	// send counter when it switched to this key, right after sending the ACK.
+	s->inseqno = 0;
+	s->received = 0;
+
+	if(s->late) {
+		memset(s->late, 0, s->replaywin);
+	}
+
 	return true;
 }
 
@@ -378,6 +415,11 @@ static bool receive_sig(sptps_t *s, const char *data, uint16_t len) {
 			return error(s, EINVAL, "Failed to set key");
 		}
 	}
+
+	// The ACK above was the last record under the old key. The new send key
+	// starts at sequence zero; the peer resets its receive side when it
+	// processes that ACK.
+	s->outseqno = 0;
 
 	return true;
 }
@@ -471,7 +513,11 @@ bool sptps_verify_datagram(sptps_t *s, const void *data, size_t len) {
 	uint32_t seqno;
 	memcpy(&seqno, data, 4);
 	seqno = ntohl(seqno);
-	// TODO: check whether seqno makes sense, to avoid CPU intensive decrypt
+
+	// Never valid under any key (see SPTPS_SEQNO_MAX); skip the decrypt.
+	if(seqno >= SPTPS_SEQNO_MAX) {
+		return error(s, EIO, "Datagram sequence number out of range");
+	}
 
 	return chacha_poly1305_verify(s->incipher, seqno, (const char *)data + 4, len - 4);
 }
@@ -526,21 +572,30 @@ static bool sptps_receive_datagram_plain(sptps_t *s, const void *vdata, size_t l
 		return error(s, EIO, "Failed to decrypt and verify packet");
 	}
 
+	// Authenticated, but outside what the sender may use under this key.
+	// Reject before touching the replay state.
+	if(!seqno_allowed(seqno, (uint8_t)s->decrypted_buffer[0])) {
+		return error(s, EIO, "Received sequence number %u beyond the key's budget", seqno);
+	}
+
 	// Replay protection using a sliding window of configurable size.
 	// s->inseqno is expected sequence number
 	// seqno is received sequence number
 	// s->late[] is a circular buffer, a 1 bit means a packet has not been received yet
 	// The circular buffer contains bits for sequence numbers from s->inseqno - s->replaywin * 8 to (but excluding) s->inseqno.
+	// Comparisons use differences, never inseqno + window, so they cannot overflow.
 	if(s->replaywin) {
+		uint32_t window = s->replaywin * 8;
+
 		if(seqno != s->inseqno) {
-			if(seqno >= s->inseqno + s->replaywin * 8) {
+			if(seqno > s->inseqno && seqno - s->inseqno >= window) {
 				// TODO: Prevent packets that jump far ahead of the queue from causing many others to be dropped.
-				warning(s, "Lost %d packets\n", seqno - s->inseqno);
+				warning(s, "Lost %u packets\n", seqno - s->inseqno);
 				// Mark all packets in the replay window as being late.
 				memset(s->late, 255, s->replaywin);
 			} else if(seqno < s->inseqno) {
 				// If the sequence number is farther in the past than the bitmap goes, or if the packet was already received, drop it.
-				if((s->inseqno >= s->replaywin * 8 && seqno < s->inseqno - s->replaywin * 8) || !(s->late[(seqno / 8) % s->replaywin] & (1 << seqno % 8))) {
+				if(s->inseqno - seqno > window || !(s->late[(seqno / 8) % s->replaywin] & (1 << seqno % 8))) {
 					return error(s, EIO, "Received late or replayed packet, seqno %d, last received %d\n", seqno, s->inseqno);
 				}
 			} else {
@@ -722,7 +777,12 @@ bool sptps_receive_data(sptps_t *s, const void *data, size_t len) {
 			return true;
 		}
 
-		// Update sequence number.
+		// Update sequence number. Stream sequence numbers are implicit, so a
+		// counter that reached the end of the space means the peer kept
+		// sending past it; that can never be valid.
+		if(s->inseqno >= SPTPS_SEQNO_MAX) {
+			return error(s, EIO, "Receive sequence space exhausted for the current key");
+		}
 
 		uint32_t seqno = s->inseqno++;
 
@@ -737,6 +797,10 @@ bool sptps_receive_data(sptps_t *s, const void *data, size_t len) {
 		s->inbuf[s->reclen + 3UL] = 0;
 
 		uint8_t type = s->inbuf[2];
+
+		if(!seqno_allowed(seqno, type)) {
+			return error(s, EIO, "Received sequence number %u beyond the key's budget", seqno);
+		}
 
 		if(type < SPTPS_HANDSHAKE) {
 			if(!s->instate) {
