@@ -28,6 +28,7 @@
 #include "net.h"
 #include "netutl.h"
 #include "node.h"
+#include "node_storage.h"
 #include "packmsg.h"
 #include "path_plpmtu.h"
 #include "path_policy.h"
@@ -47,6 +48,10 @@ static void unpack_recent_sources(packmsg_input_t *in, node_t *n, uint32_t count
 	}
 
 	nsrc = packmsg_get_array(in);
+	if(nsrc > MAX_RECENT || nsrc > count) {
+		packmsg_input_invalidate(in);
+		return;
+	}
 
 	for(i = 0; i < nsrc; i++) {
 		uint8_t src = packmsg_get_uint8(in);
@@ -67,6 +72,10 @@ static void unpack_recent_caps(packmsg_input_t *in, node_t *n, uint32_t count, u
 	}
 
 	ncap = packmsg_get_array(in);
+	if(ncap > MAX_RECENT || ncap > count) {
+		packmsg_input_invalidate(in);
+		return;
+	}
 
 	for(i = 0; i < ncap; i++) {
 		uint8_t cap = packmsg_get_uint8(in);
@@ -81,133 +90,16 @@ static void unpack_recent_caps(packmsg_input_t *in, node_t *n, uint32_t count, u
 	}
 }
 
-/// Helper function to start parsing a host config file
-static bool node_get_config(meshlink_handle_t *mesh, node_t *n, config_t *config, packmsg_input_t *in) {
-	if(!config_read(mesh, "current", n->name, config, mesh->config_key)) {
-		return false;
-	}
-
-	in->ptr = config->buf;
-	in->len = config->len;
-
-	uint32_t version = packmsg_get_uint32(in);
-
-	if(version != MESHLINK_CONFIG_VERSION) {
-		logger(mesh, MESHLINK_ERROR, "Invalid config file for node %s", n->name);
-		config_free(config);
-		return false;
-	}
-
-	const char *name;
-	uint32_t len = packmsg_get_str_raw(in, &name);
-
-	if(len != strlen(n->name) || !name || strncmp(name, n->name, len)) {
-		logger(mesh, MESHLINK_ERROR, "Invalid config file for node %s", n->name);
-		config_free(config);
-		return false;
-	}
-
-	return true;
-}
-
-/// Read the public key from a host config file. Used whenever we need to start an SPTPS session.
+/// Lazy trust lookup deliberately does not restore endpoints or observation history.
 bool node_read_public_key(meshlink_handle_t *mesh, node_t *n) {
 	if(ecdsa_active(n->ecdsa)) {
 		return true;
 	}
-
-	config_t config;
-	packmsg_input_t in;
-
-	if(!node_get_config(mesh, n, &config, &in)) {
-		return false;
-	}
-
-	packmsg_skip_element(&in); /* submesh */
-	packmsg_get_int32(&in); /* devclass */
-	packmsg_get_bool(&in); /* blacklisted */
-
-	const void *key;
-	uint32_t len = packmsg_get_bin_raw(&in, &key);
-
-	if(len != 32) {
-		config_free(&config);
-		return false;
-	}
-
-	n->ecdsa = ecdsa_set_public_key(key);
-
-	// While we are at it, read known address information
-	if(!n->canonical_address) {
-		n->canonical_address = packmsg_get_str_dup(&in);
-
-		if(!*n->canonical_address) {
-			free(n->canonical_address);
-			n->canonical_address = NULL;
-		}
-	} else {
-		packmsg_skip_element(&in);
-	}
-
-	// Append any known addresses in the config file to the list we currently have
-	uint32_t known_count = 0;
-
-	for(uint32_t i = 0; i < MAX_RECENT; i++) {
-		if(n->recent[i].sa.sa_family) {
-			known_count++;
-		}
-	}
-
-	uint32_t count = packmsg_get_array(&in);
-
-	for(uint32_t i = 0; i < count; i++) {
-		if(i < MAX_RECENT - known_count) {
-			n->recent[i + known_count] = packmsg_get_sockaddr(&in);
-		} else {
-			packmsg_skip_element(&in);
-		}
-	}
-
-	time_t last_reachable = packmsg_get_int64(&in);
-	time_t last_unreachable = packmsg_get_int64(&in);
-
-	if(!n->last_reachable) {
-		n->last_reachable = last_reachable;
-	}
-
-	if(!n->last_unreachable) {
-		n->last_unreachable = last_unreachable;
-	}
-
-	/* Optional provenance and capability arrays after the original host-config tail. */
-	unpack_recent_sources(&in, n, count, known_count, MAX_RECENT - known_count);
-	unpack_recent_caps(&in, n, count, known_count, MAX_RECENT - known_count);
-	{
-		node_t discard;
-
-		memset(&discard, 0, sizeof discard);
-
-		if(mesh->storage_policy == MESHLINK_STORAGE_DISABLED || mesh->storage_policy == MESHLINK_STORAGE_KEYS_ONLY) {
-			path_mtu_cache_unpack(&discard, &in);
-		} else {
-			path_mtu_cache_unpack(n, &in);
-		}
-	}
-
-	path_refresh_canonical_endpoint(n);
-	path_sanitize_recent(mesh, n);
-	path_migrate_legacy_caps(n);
-
-	config_free(&config);
-	return true;
+	return node_storage_read_trust(mesh, n);
 }
 
 /// Fill in node details from a config blob.
 bool node_read_from_config(meshlink_handle_t *mesh, node_t *n, const config_t *config) {
-	if(n->canonical_address) {
-		return true;
-	}
-
 	packmsg_input_t in = {config->buf, config->len};
 	uint32_t version = packmsg_get_uint32(&in);
 
@@ -233,6 +125,9 @@ bool node_read_from_config(meshlink_handle_t *mesh, node_t *n, const config_t *c
 	}
 
 	char *submesh_name = packmsg_get_str_dup(&in);
+	if(!submesh_name) {
+		return false;
+	}
 
 	if(!strcmp(submesh_name, CORE_MESH)) {
 		free(submesh_name);
@@ -261,7 +156,11 @@ bool node_read_from_config(meshlink_handle_t *mesh, node_t *n, const config_t *c
 		}
 	}
 
+	free(n->canonical_address);
 	n->canonical_address = packmsg_get_str_dup(&in);
+	if(!n->canonical_address) {
+		return false;
+	}
 
 	if(!*n->canonical_address) {
 		free(n->canonical_address);
@@ -269,6 +168,9 @@ bool node_read_from_config(meshlink_handle_t *mesh, node_t *n, const config_t *c
 	}
 
 	uint32_t count = packmsg_get_array(&in);
+	if(count > MAX_RECENT) {
+		return false;
+	}
 
 	for(uint32_t i = 0; i < count; i++) {
 		if(i < MAX_RECENT) {
@@ -283,17 +185,8 @@ bool node_read_from_config(meshlink_handle_t *mesh, node_t *n, const config_t *c
 
 	unpack_recent_sources(&in, n, count, 0, MAX_RECENT);
 	unpack_recent_caps(&in, n, count, 0, MAX_RECENT);
-	{
-		node_t discard;
-
-		memset(&discard, 0, sizeof discard);
-
-		if(mesh->storage_policy == MESHLINK_STORAGE_DISABLED || mesh->storage_policy == MESHLINK_STORAGE_KEYS_ONLY) {
-			path_mtu_cache_unpack(&discard, &in);
-		} else {
-			path_mtu_cache_unpack(n, &in);
-		}
-	}
+	/* Performance history is local-only. Any additional trailer is rejected
+	   by packmsg_done(), for both invitation and import callers. */
 
 	path_refresh_canonical_endpoint(n);
 	path_sanitize_recent(mesh, n);
@@ -303,110 +196,16 @@ bool node_read_from_config(meshlink_handle_t *mesh, node_t *n, const config_t *c
 }
 
 bool node_write_config(meshlink_handle_t *mesh, node_t *n, bool new_key) {
-	if(!mesh->confbase) {
-		return true;
-	}
-
-	switch(mesh->storage_policy) {
-	case MESHLINK_STORAGE_KEYS_ONLY:
-		if(!new_key) {
-			return true;
-		}
-
-		break;
-
-	case MESHLINK_STORAGE_DISABLED:
-		return true;
-
-	default:
-		break;
-	}
-
-	uint8_t buf[8192];
-	packmsg_output_t out = {buf, sizeof(buf)};
-
-	packmsg_add_uint32(&out, MESHLINK_CONFIG_VERSION);
-	packmsg_add_str(&out, n->name);
-	packmsg_add_str(&out, n->submesh ? n->submesh->name : CORE_MESH);
-	packmsg_add_int32(&out, n->devclass);
-	packmsg_add_bool(&out, n->status.blacklisted);
-
-	if(ecdsa_active(n->ecdsa)) {
-		packmsg_add_bin(&out, ecdsa_get_public_key(n->ecdsa), 32);
-	} else {
-		packmsg_add_bin(&out, "", 0);
-	}
-
-	packmsg_add_str(&out, n->canonical_address ? n->canonical_address : "");
-
-	uint32_t count = 0;
-
-	for(uint32_t i = 0; i < MAX_RECENT; i++) {
-		if(n->recent[i].sa.sa_family) {
-			count++;
-		} else {
-			break;
-		}
-	}
-
-	packmsg_add_array(&out, count);
-
-	for(uint32_t i = 0; i < count; i++) {
-		packmsg_add_sockaddr(&out, &n->recent[i]);
-	}
-
-	packmsg_add_int64(&out, n->last_reachable);
-	packmsg_add_int64(&out, n->last_unreachable);
-
-	packmsg_add_array(&out, count);
-
-	for(uint32_t i = 0; i < count; i++) {
-		packmsg_add_uint8(&out, (uint8_t)n->recent_source[i]);
-	}
-
-	packmsg_add_array(&out, count);
-
-	for(uint32_t i = 0; i < count; i++) {
-		packmsg_add_uint8(&out, n->recent_cap[i]);
-	}
-
-	/* Optional trailer. KEYS_ONLY and self stay memory-only. Old files omit it. */
-	if(n != mesh->self && mesh->storage_policy != MESHLINK_STORAGE_KEYS_ONLY) {
-		path_mtu_cache_pack(n, &out);
-	} else {
-		packmsg_add_array(&out, 0);
-	}
-
-	if(!packmsg_output_ok(&out)) {
-		meshlink_errno = MESHLINK_EINTERNAL;
-		return false;
-	}
-
-	config_t config = {buf, packmsg_output_size(&out, buf)};
-
-	if(!config_write(mesh, mesh_conf_write_subdir(mesh), n->name, &config, mesh->config_key)) {
-		call_error_cb(mesh, MESHLINK_ESTORAGE);
-		return false;
-	}
-
-	n->status.dirty = false;
-	return true;
+	return node_storage_write(mesh, n, new_key);
 }
 
 static bool load_node(meshlink_handle_t *mesh, const char *name, void *priv) {
 	(void)priv;
 
 	if(!check_id(name)) {
-		// Check if this is a temporary file, if so remove it
-		const char *suffix = strstr(name, ".tmp");
-
-		if(suffix && !suffix[4]) {
-			char filename[PATH_MAX];
-			snprintf(filename, sizeof(filename), "%s" SLASH "current" SLASH "hosts", mesh->confbase);
-			unlink(filename);
-		}
-
-		return true;
+		logger(mesh, MESHLINK_ERROR, "Invalid authoritative host filename %s", name);
+		mesh->storage_error = true;
+		return false;
 	}
 
 	node_t *n = lookup_node(mesh, name);
@@ -418,25 +217,10 @@ static bool load_node(meshlink_handle_t *mesh, const char *name, void *priv) {
 	n = new_node();
 	n->name = xstrdup(name);
 
-	config_t config;
-	packmsg_input_t in;
-
-	if(!node_get_config(mesh, n, &config, &in)) {
+	if(!node_storage_read(mesh, n)) {
+		logger(mesh, MESHLINK_ERROR, "Invalid authoritative host record for %s", n->name);
 		free_node(n);
 		return false;
-	}
-
-	if(!node_read_from_config(mesh, n, &config)) {
-		logger(mesh, MESHLINK_ERROR, "Invalid config file for node %s", n->name);
-		config_free(&config);
-		free_node(n);
-		return false;
-	}
-
-	config_free(&config);
-
-	if(n->status.dirty && !node_write_config(mesh, n, false)) {
-		logger(mesh, MESHLINK_DEBUG, "Could not rewrite sanitized config for %s", n->name);
 	}
 
 	node_add(mesh, n);
@@ -727,7 +511,9 @@ static bool setup_myself(meshlink_handle_t *mesh) {
 	node_add(mesh, mesh->self);
 
 	if(!config_scan_all(mesh, "current", "hosts", load_node, NULL)) {
-		logger(mesh, MESHLINK_WARNING, "Could not scan all host config files");
+		logger(mesh, MESHLINK_ERROR, "Could not scan all host config files");
+		mesh->storage_error = true;
+		return false;
 	}
 
 	/* Open sockets */

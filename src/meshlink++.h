@@ -432,11 +432,13 @@ public:
 	}
 
 	/// Get a node's reachability status.
-	/** This function returns the current reachability of a given node, and the times of the last state changes.
-	 *  If a given state change never happened, the time returned will be 0.
+	/** This function returns the current reachability, last observation time, and last unreachable time of a given node.
+	 *  Peer observations include handled META requests and continued graph reachability, refreshed at 60-second resolution.
+	 *  The self node retains its last became-reachable time.
+	 *  If a node has never been observed or never became unreachable, the corresponding time returned will be 0.
 	 *
 	 *  @param node              A pointer to a meshlink::node describing the node.
-	 *  @param last_reachable    A pointer to a time_t variable that will be filled in with the last time the node became reachable.
+	 *  @param last_reachable    A pointer to a time_t variable that will be filled in with the last observation time of the node.
 	 *  @param last_unreachable  A pointer to a time_t variable that will be filled in with the last time the node became unreachable.
 	 *
 	 *  @return                  This function returns true if the node is currently reachable, false otherwise.

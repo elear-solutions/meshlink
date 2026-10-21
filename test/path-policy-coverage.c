@@ -278,7 +278,7 @@ static void test_persist_hint_and_nlb(void) {
 
 	assert(meshlink_destroy("path_policy_persist_a"));
 	assert(meshlink_destroy("path_policy_persist_b"));
-	meshlink_handle_t *a = meshlink_open("path_policy_persist_a", "a", "path-policy", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *a = meshlink_open("path_policy_persist_a", "a", "path-policy", DEV_CLASS_PORTABLE);
 	meshlink_handle_t *b = meshlink_open("path_policy_persist_b", "b", "path-policy", DEV_CLASS_BACKBONE);
 	assert(a && b);
 	meshlink_enable_discovery(a, false);
@@ -310,7 +310,7 @@ static void test_persist_hint_and_nlb(void) {
 	devtool_free_node_status(&st);
 
 	meshlink_close(a);
-	a = meshlink_open("path_policy_persist_a", "a", "path-policy", DEV_CLASS_BACKBONE);
+	a = meshlink_open("path_policy_persist_a", "a", "path-policy", DEV_CLASS_PORTABLE);
 	assert(a);
 	meshlink_enable_discovery(a, false);
 	node_b = meshlink_get_node(a, "b");
@@ -338,7 +338,7 @@ static void test_persist_hint_and_nlb(void) {
 	assert(inet_pton(AF_INET, "198.51.100.20", &hybrid.sin_addr) == 1);
 	assert(devtool_plant_recent_address(a, node_b, (struct sockaddr *)&hybrid));
 	meshlink_close(a);
-	a = meshlink_open("path_policy_persist_a", "a", "path-policy", DEV_CLASS_BACKBONE);
+	a = meshlink_open("path_policy_persist_a", "a", "path-policy", DEV_CLASS_PORTABLE);
 	assert(a);
 	meshlink_enable_discovery(a, false);
 	node_b = meshlink_get_node(a, "b");

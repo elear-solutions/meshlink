@@ -173,14 +173,15 @@ static bool udp_working(meshlink_handle_t *mesh, const char *peer) {
 	return working;
 }
 
-/* Peers on one bridge. The key-ready recheck arms a ladder that sends before
-   any other path can answer. A forced restart may lose that race to the punch
-   probes the demotion schedules, so after it only the new ladder is asserted. */
+/* Peers on one bridge. Key-ready arms a ladder, but a direct punch can confirm
+   UDP before its timer fires. The controlled restart attempts discovery while
+   holding the mesh lock, before inbound punch replies can cancel the ladder. */
 static bool lan_still_discovers(void) {
 	peer_config_t *peers = setup_relay_peer_nut("ldeliglan");
 	meshlink_node_t *nut;
 	devtool_node_status_t st;
 	uint32_t runs_before;
+	uint32_t sends_before;
 
 	meshlink_set_channel_accept_cb(peers[2].mesh, accept_cb);
 
@@ -195,18 +196,22 @@ static bool lan_still_discovers(void) {
 	discovery_counts(peers[1].mesh, "nut", &st);
 	log_counts("lan peer->nut first", &st);
 	assert(st.local_discovery_runs >= 1);
-	assert(st.local_discovery_broadcasts + st.local_discovery_unicasts >= 1);
 	assert(st.local_discovery_broadcasts <= st.local_discovery_runs * DISCOVERY_BROADCAST_TRIES);
 	assert(!reason_is(&st, "no valid key"));
 	runs_before = st.local_discovery_runs;
+	sends_before = st.local_discovery_broadcasts + st.local_discovery_unicasts;
 	devtool_free_node_status(&st);
 
+	/* Startup probes may have spent the shared budget. This controlled carrier
+	   check needs tokens for both the demotion's punch and the discovery tick. */
+	devtool_set_probe_budget(peers[1].mesh, 30, 30, 2);
 	assert(devtool_restart_local_discovery(peers[1].mesh, nut));
 	assert_after(udp_working(peers[1].mesh, "nut"), 20);
 
 	discovery_counts(peers[1].mesh, "nut", &st);
 	log_counts("lan peer->nut restarted", &st);
 	assert(st.local_discovery_runs > runs_before);
+	assert(st.local_discovery_broadcasts + st.local_discovery_unicasts > sends_before);
 	assert(st.local_discovery_broadcasts <= st.local_discovery_runs * DISCOVERY_BROADCAST_TRIES);
 	devtool_free_node_status(&st);
 

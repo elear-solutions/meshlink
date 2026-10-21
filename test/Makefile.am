@@ -209,7 +209,7 @@ echo_fork_SOURCES = echo-fork.c utils.c utils.h
 echo_fork_LDADD = $(top_builddir)/src/libmeshlink.la
 
 encrypted_SOURCES = encrypted.c utils.c utils.h
-encrypted_LDADD = $(top_builddir)/src/libmeshlink.la
+encrypted_LDADD = $(top_builddir)/src/.libs/libmeshlink.a
 
 ephemeral_SOURCES = ephemeral.c utils.c utils.h
 ephemeral_LDADD = $(top_builddir)/src/libmeshlink.la
@@ -218,7 +218,8 @@ get_all_nodes_SOURCES = get-all-nodes.c utils.c utils.h
 get_all_nodes_LDADD = $(top_builddir)/src/libmeshlink.la
 
 import_export_SOURCES = import-export.c utils.c utils.h
-import_export_LDADD = $(top_builddir)/src/libmeshlink.la
+# Internal observation checks use the static library, preserving the public symbol set.
+import_export_LDADD = $(top_builddir)/src/.libs/libmeshlink.a
 
 invite_join_SOURCES = invite-join.c utils.c utils.h
 invite_join_LDADD = $(top_builddir)/src/libmeshlink.la
@@ -277,8 +278,8 @@ req_external_port_LDADD = $(top_builddir)/src/libmeshlink.la
 sign_verify_SOURCES = sign-verify.c utils.c utils.h
 sign_verify_LDADD = $(top_builddir)/src/libmeshlink.la
 
-storage_policy_SOURCES = storage-policy.c utils.c utils.h
-storage_policy_LDADD = $(top_builddir)/src/libmeshlink.la
+storage_policy_SOURCES = storage-policy.c node-storage.c node-storage-lifecycle.c node-observation.c node-storage-tests.h utils.c utils.h
+storage_policy_LDADD = $(top_builddir)/src/.libs/libmeshlink.a
 
 simultaneous_connect_SOURCES = simultaneous-connect.c utils.c utils.h
 simultaneous_connect_LDADD = $(top_builddir)/src/libmeshlink.la

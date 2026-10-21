@@ -255,6 +255,16 @@ int main(void) {
 	assert(meshlink_join(mesh5, five_url));
 	assert(meshlink_join(mesh6, six_url));
 
+	/* Reopening a joined node restores its own submesh before network setup. */
+	meshlink_close(mesh4);
+	mesh4 = meshlink_open("invite_join_conf.4", "four", "invite-join", DEV_CLASS_STATIONARY);
+	assert(mesh4);
+	meshlink_submesh_t *reopened_submesh = meshlink_get_node_submesh(mesh4, meshlink_get_self(mesh4));
+	assert(reopened_submesh && !strcmp(reopened_submesh->name, "submesh1"));
+	assert(meshlink_set_port(mesh4, 0));
+	reopened_submesh = meshlink_get_node_submesh(mesh4, meshlink_get_self(mesh4));
+	assert(reopened_submesh && !strcmp(reopened_submesh->name, "submesh1"));
+
 	free(four_url);
 	free(five_url);
 	free(six_url);

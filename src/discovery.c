@@ -538,7 +538,7 @@ static void mdns_io_handler(event_loop_t *loop, void *data, int flags) {
 }
 
 static void iface_up(meshlink_handle_t *mesh, int index) {
-	int *p = bsearch(&index, mesh->discovery.ifaces, mesh->discovery.iface_count, sizeof(*p), iface_compare);
+	int *p = mesh->discovery.iface_count ? bsearch(&index, mesh->discovery.ifaces, mesh->discovery.iface_count, sizeof(*p), iface_compare) : NULL;
 
 	if(p) {
 		return;
@@ -576,7 +576,7 @@ static void iface_up(meshlink_handle_t *mesh, int index) {
 }
 
 static void iface_down(meshlink_handle_t *mesh, int index) {
-	int *p = bsearch(&index, mesh->discovery.ifaces, mesh->discovery.iface_count, sizeof(*p), iface_compare);
+	int *p = mesh->discovery.iface_count ? bsearch(&index, mesh->discovery.ifaces, mesh->discovery.iface_count, sizeof(*p), iface_compare) : NULL;
 
 	if(!p) {
 		return;
@@ -623,7 +623,7 @@ static void addr_add(meshlink_handle_t *mesh, const discovery_address_t *addr) {
 		return;
 	}
 
-	discovery_address_t *p = bsearch(addr, mesh->discovery.addresses, mesh->discovery.address_count, sizeof(*p), address_compare);
+	discovery_address_t *p = mesh->discovery.address_count ? bsearch(addr, mesh->discovery.addresses, mesh->discovery.address_count, sizeof(*p), address_compare) : NULL;
 
 	if(p) {
 		if(addr->prefix_len) {
@@ -637,7 +637,7 @@ static void addr_add(meshlink_handle_t *mesh, const discovery_address_t *addr) {
 		return;
 	}
 
-	bool up = bsearch(&addr->index, mesh->discovery.ifaces, mesh->discovery.iface_count, sizeof(int), iface_compare);
+	bool up = mesh->discovery.iface_count && bsearch(&addr->index, mesh->discovery.ifaces, mesh->discovery.iface_count, sizeof(int), iface_compare);
 
 	mesh->discovery.addresses = xrealloc(mesh->discovery.addresses, ++mesh->discovery.address_count * sizeof(*p));
 	mesh->discovery.addresses[mesh->discovery.address_count - 1] = *addr;
@@ -651,7 +651,7 @@ static void addr_add(meshlink_handle_t *mesh, const discovery_address_t *addr) {
 }
 
 static void addr_del(meshlink_handle_t *mesh, const discovery_address_t *addr) {
-	discovery_address_t *p = bsearch(addr, mesh->discovery.addresses, mesh->discovery.address_count, sizeof(*p), address_compare);
+	discovery_address_t *p = mesh->discovery.address_count ? bsearch(addr, mesh->discovery.addresses, mesh->discovery.address_count, sizeof(*p), address_compare) : NULL;
 
 	if(!p) {
 		return;

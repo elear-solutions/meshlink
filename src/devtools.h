@@ -603,8 +603,10 @@ bool devtool_choose_udp_address_advance(struct meshlink_handle *mesh, struct mes
  */
 void devtool_set_udp_confirmed(struct meshlink_handle *mesh, struct meshlink_node *node, bool confirmed);
 
-/// Demote a confirmed UDP path and start a fresh local-discovery ladder.
-/** Returns true when the ladder armed; false when the plan refused it
+/// Demote a confirmed UDP path and attempt the first local-discovery tick.
+/** Starts a fresh ladder and ticks it under the mesh mutex, before inbound
+ *  traffic can confirm another path. Normal probe admission still applies.
+ *  Returns true when the ladder armed; false when the plan refused it
  *  (see local_discovery_skip_reason). Requires mesh->mutex not held.
  */
 bool devtool_restart_local_discovery(struct meshlink_handle *mesh, struct meshlink_node *node);

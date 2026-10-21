@@ -197,6 +197,9 @@ static void *adns_blocking_handler(void *data) {
 	pthread_mutex_unlock(&info->mutex);
 
 	if(cleanup) {
+		freeaddrinfo(info->ai);
+		pthread_mutex_destroy(&info->mutex);
+		pthread_cond_destroy(&info->cond);
 		free(info->host);
 		free(info->serv);
 		free(info);
@@ -222,6 +225,8 @@ struct addrinfo *adns_blocking_request(meshlink_handle_t *mesh, char *host, char
 	pthread_t thread;
 
 	if(pthread_create(&thread, NULL, adns_blocking_handler, info)) {
+		pthread_mutex_destroy(&info->mutex);
+		pthread_cond_destroy(&info->cond);
 		free(info->host);
 		free(info->serv);
 		free(info);
@@ -234,7 +239,11 @@ struct addrinfo *adns_blocking_request(meshlink_handle_t *mesh, char *host, char
 		abort();
 	}
 
-	pthread_cond_timedwait(&info->cond, &info->mutex, &deadline);
+	while(!info->done) {
+		if(pthread_cond_timedwait(&info->cond, &info->mutex, &deadline)) {
+			break;
+		}
+	}
 
 	struct addrinfo *result = NULL;
 	bool cleanup = info->done;
@@ -249,6 +258,8 @@ struct addrinfo *adns_blocking_request(meshlink_handle_t *mesh, char *host, char
 	pthread_mutex_unlock(&info->mutex);
 
 	if(cleanup) {
+		pthread_mutex_destroy(&info->mutex);
+		pthread_cond_destroy(&info->cond);
 		free(info->host);
 		free(info->serv);
 		free(info);

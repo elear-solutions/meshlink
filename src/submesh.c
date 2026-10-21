@@ -40,8 +40,9 @@ static void free_submesh(submesh_t *s) {
 }
 
 void init_submeshes(meshlink_handle_t *mesh) {
-	assert(!mesh->submeshes);
-	mesh->submeshes = list_alloc((list_action_t)free_submesh);
+	if(!mesh->submeshes) {
+		mesh->submeshes = list_alloc((list_action_t)free_submesh);
+	}
 }
 
 void exit_submeshes(meshlink_handle_t *mesh) {

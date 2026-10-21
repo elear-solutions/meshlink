@@ -122,7 +122,7 @@ static void test_caps_survive_export_import(void) {
 	char *exported = meshlink_export(a);
 	assert(exported);
 
-	meshlink_handle_t *b = meshlink_open("transport_recent_exp_conf.2", "b", "transport-recent-exp", DEV_CLASS_BACKBONE);
+	meshlink_handle_t *b = meshlink_open("transport_recent_exp_conf.2", "b", "transport-recent-exp", DEV_CLASS_PORTABLE);
 	assert(b);
 	assert(meshlink_import(b, exported));
 	free(exported);
@@ -144,10 +144,12 @@ static void test_caps_survive_export_import(void) {
 	assert(found);
 	devtool_free_node_status(&st);
 
-	meshlink_close(a);
-	a = meshlink_open("transport_recent_exp_conf.1", "a", "transport-recent-exp", DEV_CLASS_BACKBONE);
-	assert(a);
-	devtool_get_node_status(a, meshlink_get_self(a), &st);
+	meshlink_close(b);
+	b = meshlink_open("transport_recent_exp_conf.2", "b", "transport-recent-exp", DEV_CLASS_PORTABLE);
+	assert(b);
+	node_a = meshlink_get_node(b, "a");
+	assert(node_a);
+	devtool_get_node_status(b, node_a, &st);
 	found = false;
 
 	for(size_t i = 0; i < st.recent_count; i++) {

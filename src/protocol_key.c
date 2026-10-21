@@ -27,6 +27,7 @@
 #include "net_upgrade.h"
 #include "netutl.h"
 #include "node.h"
+#include "node_storage.h"
 #include "path_policy.h"
 #include "path_scheduler.h"
 #include "prf.h"
@@ -520,7 +521,7 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 				}
 
 				logger(mesh, MESHLINK_INFO, "Learned ECDSA public key from %s", from->name);
-				from->status.dirty = true;
+				node_storage_mark(from, NODE_STORAGE_KEY_POLICY);
 				from->last_connect_try = 0;
 
 				for list_each(outgoing_t, outgoing, mesh->outgoings) {
@@ -561,7 +562,7 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 		}
 
 		logger(mesh, MESHLINK_INFO, "Learned ECDSA public key from %s", from->name);
-		from->status.dirty = true;
+		node_storage_mark(from, NODE_STORAGE_KEY_POLICY);
 		from->last_connect_try = 0;
 
 		for list_each(outgoing_t, outgoing, mesh->outgoings) {
@@ -702,11 +703,9 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 			return true;
 		}
 
-		from->status.dirty = true;
+		node_storage_mark(from, NODE_STORAGE_CONFIG);
 
-		if(path_sanitize_recent(mesh, from)) {
-			path_persist_node(mesh, from);
-		}
+		path_sanitize_recent(mesh, from);
 
 		path_request_canonical_resolve(mesh, from);
 		path_reclassify_active_meta(mesh, from);

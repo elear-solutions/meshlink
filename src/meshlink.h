@@ -828,6 +828,9 @@ struct meshlink_node **meshlink_get_all_nodes_by_submesh(struct meshlink_handle 
 
 /// Get the list of all nodes by time they were last reachable.
 /** This function returns a list with handles for all the nodes whose last known reachability time overlaps with the given time range.
+ *  The window starts at the last observation and ends at the last unreachable time, or the current time while reachable.
+ *  When the last observation is later than the last unreachable time, the window is that observation.
+ *  Later peer observations move the window start forward, so earlier parts of a continuous session may no longer overlap.
  *  If the range includes 0, it will count nodes that were never online.
  *  If start is bigger than end, the result will be inverted.
  *
@@ -839,11 +842,11 @@ struct meshlink_node **meshlink_get_all_nodes_by_submesh(struct meshlink_handle 
  *                      The application can supply an array it allocated itself with malloc, or the return value from the previous call to this function (which is the preferred way).
  *                      The application is allowed to call free() on the array whenever it wishes.
  *                      The pointers in the array are valid until meshlink_close() is called.
- *  @param nmemb        A pointer to a variable holding the number of nodes that were reachable within the period given by @a start and @a end.
+ *  @param nmemb        A pointer to a variable holding the number of nodes whose observation window overlaps the period given by @a start and @a end.
  *                      In case the @a nodes argument is not NULL, MeshLink might call realloc() on the array to change its size.
  *                      The contents of this variable will be changed to reflect the new size of the array.
  *
- *  @return             A pointer to an array containing pointers to all known nodes that were reachable within the period given by @a start and @a end.
+ *  @return             A pointer to an array containing pointers to all known nodes whose observation window overlaps the period given by @a start and @a end.
  *                      If the @a nodes argument was not NULL, then the return value can either be the same value or a different value.
  *                      If it is a new value, the old value of @a nodes should not be used anymore.
  *                      If the new value is NULL, then the old array will have been freed by MeshLink.
@@ -917,13 +920,15 @@ bool meshlink_get_node_blacklisted(struct meshlink_handle *mesh, struct meshlink
 struct meshlink_submesh *meshlink_get_node_submesh(struct meshlink_handle *mesh, struct meshlink_node *node) __attribute__((__warn_unused_result__));
 
 /// Get a node's reachability status.
-/** This function returns the current reachability of a given node, and the times of the last state changes.
- *  If a given state change never happened, the time returned will be 0.
+/** This function returns the current reachability, last observation time, and last unreachable time of a given node.
+ *  Peer observations include handled META requests and continued graph reachability, refreshed at 60-second resolution.
+ *  The self node retains its last became-reachable time.
+ *  If a node has never been observed or never became unreachable, the corresponding time returned will be 0.
  *
  *  \memberof meshlink_node
  *  @param mesh              A handle which represents an instance of MeshLink.
  *  @param node              A pointer to a struct meshlink_node describing the node.
- *  @param last_reachable    A pointer to a time_t variable that will be filled in with the last time the node became reachable.
+ *  @param last_reachable    A pointer to a time_t variable that will be filled in with the last observation time of the node.
  *                           Pass NULL to not have anything written.
  *  @param last_unreachable  A pointer to a time_t variable that will be filled in with the last time the node became unreachable.
  *                           Pass NULL to not have anything written.

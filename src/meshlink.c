@@ -31,6 +31,7 @@
 #include "net_upgrade.h"
 #include "netutl.h"
 #include "node.h"
+#include "node_storage.h"
 #include "path_liveness.h"
 #include "path_plpmtu.h"
 #include "path_policy.h"
@@ -746,10 +747,15 @@ int check_port(meshlink_handle_t *mesh) {
 }
 
 static bool write_main_config_files(meshlink_handle_t *mesh) {
+	if(mesh->storage_unavailable) {
+		meshlink_errno = MESHLINK_ESTORAGE;
+		return false;
+	}
 	if(!mesh->confbase) {
 		return true;
 	}
 
+	mesh->main_config_pending = true;
 	uint8_t buf[4096];
 
 	/* Write the main config file */
@@ -776,6 +782,7 @@ static bool write_main_config_files(meshlink_handle_t *mesh) {
 		return false;
 	}
 
+	mesh->main_config_pending = false;
 	return true;
 }
 
@@ -785,6 +792,7 @@ typedef struct {
 	char cookie[18 + 32];
 	char hash[18];
 	bool success;
+	meshlink_errno_t commit_error;
 	sptps_t sptps;
 	char *data;
 	size_t thedatalen;
@@ -953,13 +961,20 @@ static void seed_join_inviter_address(join_state_t *state, node_t *n) {
 
 static bool commit_join_invitation(join_state_t *state, invitation_contents_t *inv) {
 	meshlink_handle_t *mesh = state->mesh;
+	node_storage_barrier(mesh);
+	struct node_storage_state *old_storage = node_storage_begin_join(mesh->self);
+	time_t old_seen = mesh->self->last_reachable, old_unreachable = mesh->self->last_unreachable;
+	mesh->self->last_reachable = 0;
+	mesh->self->last_unreachable = 0;
 	char *old_name = mesh->name;
 	char *old_self_name = mesh->self->name;
 	dev_class_t old_devclass = mesh->self->devclass;
 	submesh_t *old_submesh = mesh->self->submesh;
 	char *old_backbone = mesh->backbone.name ? xstrdup(mesh->backbone.name) : NULL;
 	bool saved_bootstrap = mesh->allow_peer_bootstrap;
+	bool saved_main_pending = mesh->main_config_pending;
 	bool swapped = false;
+	bool durable = true;
 
 	mesh->name = inv->name;
 	inv->name = NULL;
@@ -1008,23 +1023,22 @@ static bool commit_join_invitation(join_state_t *state, invitation_contents_t *i
 	mesh->conf_write_subdir = NULL;
 
 	if(mesh->confbase) {
-		if(!config_destroy(mesh->confbase, "old") || !config_rename(mesh, "current", "old")) {
-			goto rollback;
-		}
-
-		if(!config_rename(mesh, "new", "current")) {
-			if(!config_rename(mesh, "old", "current")) {
-				logger(mesh, MESHLINK_ERROR, "Failed to restore current/ after a failed join commit\n");
-			}
-
-			goto rollback;
-		}
-
 		if(!config_destroy(mesh->confbase, "old")) {
-			logger(mesh, MESHLINK_ERROR, "Failed to remove leftover old/ after join\n");
+			goto rollback;
 		}
-
+		config_active_t active;
+		durable = config_activate(mesh, &active, mesh->storage_activate_probe);
+		if(active == CONFIG_ACTIVE_NONE) {
+			mesh->storage_unavailable = true;
+			goto rollback;
+		}
+		if(active != CONFIG_ACTIVE_NEW) {
+			goto rollback;
+		}
 		swapped = true;
+		if(!config_destroy(mesh->confbase, "old")) {
+			durable = false;
+		}
 	}
 
 	free(old_name);
@@ -1036,12 +1050,20 @@ static bool commit_join_invitation(join_state_t *state, invitation_contents_t *i
 		inv->hosts[i] = NULL;
 	}
 
-	return true;
+	node_storage_end_join(mesh->self, old_storage, true);
+	if(!durable) {
+		meshlink_errno = MESHLINK_ESTORAGE;
+	}
+	return durable;
 
 rollback:
+	mesh->main_config_pending = saved_main_pending;
+	node_storage_end_join(mesh->self, old_storage, false);
+	mesh->self->last_reachable = old_seen;
+	mesh->self->last_unreachable = old_unreachable;
 	mesh->conf_write_subdir = NULL;
 
-	if(mesh->confbase && !swapped) {
+	if(mesh->confbase && !swapped && !mesh->storage_unavailable) {
 		if(!config_destroy(mesh->confbase, "new")) {
 			logger(mesh, MESHLINK_ERROR, "Failed to remove leftover new/ after a failed join\n");
 		}
@@ -1079,6 +1101,7 @@ static bool finalize_join(join_state_t *state, const void *buf, uint16_t len) {
 	invitation_contents_free(&inv);
 
 	if(!ok) {
+		state->commit_error = meshlink_errno;
 		return false;
 	}
 
@@ -1366,11 +1389,15 @@ static bool meshlink_setup(meshlink_handle_t *mesh) {
 	if(!write_main_config_files(mesh)) {
 		logger(mesh, MESHLINK_ERROR, "Could not write main config files into %s/current: %s\n", mesh->confbase, strerror(errno));
 		meshlink_errno = MESHLINK_ESTORAGE;
+		free_node(mesh->self);
+		mesh->self = NULL;
 		return false;
 	}
 
 	/* Ensure the configuration directory metadata is on disk */
 	if(!config_sync(mesh, "current")) {
+		free_node(mesh->self);
+		mesh->self = NULL;
 		return false;
 	}
 
@@ -1424,7 +1451,7 @@ static bool meshlink_read_config(meshlink_handle_t *mesh) {
 	mesh->self->devclass = mesh->devclass;
 	mesh->self->session_id = mesh->session_id;
 
-	if(!node_read_public_key(mesh, mesh->self)) {
+	if(!node_storage_read(mesh, mesh->self)) {
 		logger(NULL, MESHLINK_ERROR, "Could not read our host configuration file!");
 		meshlink_errno = MESHLINK_ESTORAGE;
 		free_node(mesh->self);
@@ -1583,8 +1610,7 @@ bool meshlink_open_params_set_lock_filename(meshlink_open_params_t *params, cons
 bool meshlink_encrypted_key_rotate(meshlink_handle_t *mesh, const void *new_key, size_t new_keylen) {
 	logger(NULL, MESHLINK_DEBUG, "meshlink_encrypted_key_rotate(%p, %zu)", new_key, new_keylen);
 
-	if(!mesh || !new_key || !new_keylen) {
-		logger(mesh, MESHLINK_ERROR, "Invalid arguments given!\n");
+	if(!mesh || !mesh->confbase || !new_key || !new_keylen) {
 		meshlink_errno = MESHLINK_EINVAL;
 		return false;
 	}
@@ -1593,65 +1619,46 @@ bool meshlink_encrypted_key_rotate(meshlink_handle_t *mesh, const void *new_key,
 		abort();
 	}
 
-	// Create hash for the new key
-	void *new_config_key;
+	bool success = false;
+	void *new_config_key = NULL;
+	node_storage_barrier(mesh);
+	if(!node_storage_flush(mesh)) {
+		goto done;
+	}
 	new_config_key = xmalloc(CHACHA_POLY1305_KEYLEN);
-
 	if(!prf(new_key, new_keylen, "MeshLink configuration key", 26, new_config_key, CHACHA_POLY1305_KEYLEN)) {
-		logger(mesh, MESHLINK_ERROR, "Error creating new configuration key!\n");
 		meshlink_errno = MESHLINK_EINTERNAL;
-		pthread_mutex_unlock(&mesh->mutex);
-		return false;
+		goto done;
 	}
-
-	// Copy contents of the "current" confbase sub-directory to "new" confbase sub-directory with the new key
-
-	if(!config_copy(mesh, "current", mesh->config_key, "new", new_config_key)) {
-		logger(mesh, MESHLINK_ERROR, "Could not set up configuration in %s/old: %s\n", mesh->confbase, strerror(errno));
+	if(!config_copy(mesh, "current", mesh->config_key, "new", new_config_key) || !config_destroy(mesh->confbase, "old")) {
 		meshlink_errno = MESHLINK_ESTORAGE;
-		pthread_mutex_unlock(&mesh->mutex);
-		return false;
+		goto done;
 	}
-
 	devtool_keyrotate_probe(1);
-
-	// Rename confbase/current/ to confbase/old
-
-	if(!config_rename(mesh, "current", "old")) {
-		logger(mesh, MESHLINK_ERROR, "Cannot rename %s/current to %s/old\n", mesh->confbase, mesh->confbase);
+	config_active_t active;
+	success = config_activate(mesh, &active, devtool_keyrotate_probe);
+	if(active == CONFIG_ACTIVE_NEW) {
+		/* Adopt the installed epoch before cleanup or any possible early exit.
+		   A failed rollback can leave new current/ active despite false return. */
+		free(mesh->config_key);
+		mesh->config_key = new_config_key;
+		new_config_key = NULL;
+		devtool_keyrotate_probe(4);
+		if(!config_destroy(mesh->confbase, "old")) {
+			success = false;
+		}
+	} else if(active == CONFIG_ACTIVE_NONE) {
+		/* Preserve old/new recovery trees and reject writes until reopen. */
+		mesh->storage_unavailable = true;
+	}
+	if(!success) {
 		meshlink_errno = MESHLINK_ESTORAGE;
-		pthread_mutex_unlock(&mesh->mutex);
-		return false;
 	}
 
-	devtool_keyrotate_probe(2);
-
-	// Rename confbase/new/ to confbase/current
-
-	if(!config_rename(mesh, "new", "current")) {
-		logger(mesh, MESHLINK_ERROR, "Cannot rename %s/new to %s/current\n", mesh->confbase, mesh->confbase);
-		meshlink_errno = MESHLINK_ESTORAGE;
-		pthread_mutex_unlock(&mesh->mutex);
-		return false;
-	}
-
-	devtool_keyrotate_probe(3);
-
-	// Cleanup the "old" confbase sub-directory
-
-	if(!config_destroy(mesh->confbase, "old")) {
-		pthread_mutex_unlock(&mesh->mutex);
-		return false;
-	}
-
-	// Change the mesh handle key with new key
-
-	free(mesh->config_key);
-	mesh->config_key = new_config_key;
-
+done:
+	free(new_config_key);
 	pthread_mutex_unlock(&mesh->mutex);
-
-	return true;
+	return success;
 }
 
 void meshlink_open_params_free(meshlink_open_params_t *params) {
@@ -1890,7 +1897,13 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 
 	bool new_configuration = false;
 
-	if(!meshlink_confbase_exists(mesh)) {
+	bool configuration_exists = false;
+	if(!config_recover(mesh, &configuration_exists)) {
+		meshlink_close(mesh);
+		meshlink_errno = MESHLINK_ESTORAGE;
+		return NULL;
+	}
+	if(!configuration_exists) {
 		if(!mesh->name) {
 			logger(NULL, MESHLINK_ERROR, "No configuration files found!\n");
 			meshlink_close(mesh);
@@ -1958,8 +1971,9 @@ meshlink_handle_t *meshlink_open_ex(const meshlink_open_params_t *params) {
 	}
 
 	if(!success) {
+		meshlink_errno_t error = mesh->storage_error ? MESHLINK_ESTORAGE : MESHLINK_ENETWORK;
 		meshlink_close(mesh);
-		meshlink_errno = MESHLINK_ENETWORK;
+		meshlink_errno = error;
 		return NULL;
 	}
 
@@ -2389,15 +2403,12 @@ void meshlink_stop(meshlink_handle_t *mesh) {
 		graph(mesh);
 	}
 
-	// Try to write out any changed node config files, ignore errors at this point.
-	if(mesh->nodes) {
-		for splay_each(node_t, n, mesh->nodes) {
-			if(n->status.dirty) {
-				if(!node_write_config(mesh, n, false)) {
-					// ignore
-				}
-			}
-		}
+	// A clean stop durably checkpoints every permitted pending projection.
+	// The mesh thread has already exited, so the unreachable graph is flushed
+	// here. The error callback stays on that thread; the caller reads meshlink_errno.
+	if(!node_storage_flush(mesh)) {
+		logger(mesh, MESHLINK_WARNING, "Could not flush pending node records at stop");
+		meshlink_errno = MESHLINK_ESTORAGE;
 	}
 
 	assert(mesh->thread_stop_pending);
@@ -2423,6 +2434,7 @@ void meshlink_close(meshlink_handle_t *mesh) {
 
 	// Close and free all resources used.
 
+	node_storage_close(mesh);
 	close_network_connections(mesh);
 
 	logger(mesh, MESHLINK_INFO, "Terminating");
@@ -3032,12 +3044,17 @@ static bool search_node_by_last_reachable(const node_t *node, const void *condit
 	time_t start = node->last_reachable;
 	time_t end = node->last_unreachable;
 
-	if(end < start) {
+	/* A live node extends to now. An offline record keeps its stored down edge.
+	   A newer up edge is the whole window: reachable is not stored, so a reload
+	   must not stretch that observation forward to the current time. */
+	if(node->status.reachable) {
 		end = time(NULL);
 
 		if(end < start) {
 			start = end;
 		}
+	} else if(end < start) {
+		end = start;
 	}
 
 	if(range->end >= range->start) {
@@ -3301,27 +3318,31 @@ bool meshlink_set_canonical_address(meshlink_handle_t *mesh, meshlink_node_t *no
 
 	node_t *n = (node_t *)node;
 
-	if(!path_assign_canonical_address(n, canonical_address)) {
-		pthread_mutex_unlock(&mesh->mutex);
-		return true;
+	bool changed = path_assign_canonical_address(n, canonical_address);
+	if(changed) {
+		path_sanitize_recent(mesh, n);
+		path_request_canonical_resolve(mesh, n);
+		path_reclassify_active_meta(mesh, n);
+		outgoing_on_canonical_reset(mesh, n);
+		if(n == mesh->self) {
+			mesh->canonical_update_pending = true;
+		}
 	}
 
-	path_sanitize_recent(mesh, n);
-	path_request_canonical_resolve(mesh, n);
-	path_reclassify_active_meta(mesh, n);
-	outgoing_on_canonical_reset(mesh, n);
-
-	if(!node_write_config(mesh, n, false)) {
+	if(!(changed ? node_write_config(mesh, n, false) : node_storage_retry_config(mesh, n, false))) {
 		pthread_mutex_unlock(&mesh->mutex);
 		return false;
 	}
 
-	if(n == mesh->self && mesh->threadstarted) {
+	if(n == mesh->self && mesh->canonical_update_pending && mesh->threadstarted) {
 		for splay_each(node_t, peer, mesh->nodes) {
 			if(peer != mesh->self && peer->nexthop && peer->nexthop->connection) {
 				send_canonical_address(mesh, peer);
 			}
 		}
+	}
+	if(n == mesh->self) {
+		mesh->canonical_update_pending = false;
 	}
 
 	pthread_mutex_unlock(&mesh->mutex);
@@ -3342,6 +3363,14 @@ bool meshlink_clear_canonical_address(meshlink_handle_t *mesh, meshlink_node_t *
 	}
 
 	node_t *n = (node_t *)node;
+	if(!n->canonical_address) {
+		bool result = node_storage_retry_config(mesh, n, false);
+		if(result && n == mesh->self) {
+			mesh->canonical_update_pending = false;
+		}
+		pthread_mutex_unlock(&mesh->mutex);
+		return result;
+	}
 	free(n->canonical_address);
 	n->canonical_address = NULL;
 	path_clear_canonical_endpoints(n);
@@ -3353,6 +3382,9 @@ bool meshlink_clear_canonical_address(meshlink_handle_t *mesh, meshlink_node_t *
 		return false;
 	}
 
+	if(n == mesh->self) {
+		mesh->canonical_update_pending = false;
+	}
 	pthread_mutex_unlock(&mesh->mutex);
 
 	return config_sync(mesh, "current");
@@ -3478,7 +3510,13 @@ bool meshlink_set_port(meshlink_handle_t *mesh, int port) {
 	}
 
 	if(mesh->myport && port == atoi(mesh->myport)) {
-		return true;
+		if(pthread_mutex_lock(&mesh->mutex) != 0) {
+			abort();
+		}
+		bool result = !mesh->main_config_pending || (write_main_config_files(mesh) && config_sync(mesh, "current"));
+		mesh->main_config_pending = !result;
+		pthread_mutex_unlock(&mesh->mutex);
+		return result;
 	}
 
 	if(!try_bind(mesh, port)) {
@@ -3504,6 +3542,11 @@ bool meshlink_set_port(meshlink_handle_t *mesh, int port) {
 		goto done;
 	}
 
+	node_storage_barrier(mesh);
+	if(!node_storage_flush(mesh)) {
+		meshlink_errno = MESHLINK_ESTORAGE;
+		goto done;
+	}
 	free(mesh->myport);
 	xasprintf(&mesh->myport, "%d", port);
 
@@ -3527,7 +3570,7 @@ bool meshlink_set_port(meshlink_handle_t *mesh, int port) {
 	mesh->self->session_id = mesh->session_id;
 	xasprintf(&mesh->myport, "%d", port);
 
-	if(!node_read_public_key(mesh, mesh->self)) {
+	if(!node_storage_read(mesh, mesh->self)) {
 		logger(NULL, MESHLINK_ERROR, "Could not read our host configuration file!");
 		meshlink_errno = MESHLINK_ESTORAGE;
 		free_node(mesh->self);
@@ -3554,9 +3597,8 @@ bool meshlink_set_port(meshlink_handle_t *mesh, int port) {
 	}
 
 	/* Write meshlink.conf with the updated port number */
-	write_main_config_files(mesh);
-
-	rval = config_sync(mesh, "current");
+	rval = write_main_config_files(mesh) && config_sync(mesh, "current");
+	mesh->main_config_pending = !rval;
 
 done:
 	// Clean up saved external IP address, it's now owned by mesh->self
@@ -3663,14 +3705,6 @@ char *meshlink_invite_ex(meshlink_handle_t *mesh, meshlink_submesh_t *submesh, c
 
 	path_sanitize_recent(mesh, mesh->self);
 
-	// If we changed our own host config file, write it out now
-	if(mesh->self->status.dirty) {
-		if(!node_write_config(mesh, mesh->self, false)) {
-			logger(mesh, MESHLINK_ERROR, "Could not write our own host config file!\n");
-			pthread_mutex_unlock(&mesh->mutex);
-			return NULL;
-		}
-	}
 
 	char hash[64];
 
@@ -3716,7 +3750,7 @@ char *meshlink_invite_ex(meshlink_handle_t *mesh, meshlink_submesh_t *submesh, c
 	memset(configs, 0, sizeof(configs));
 	int count = 0;
 
-	if(config_read(mesh, "current", mesh->self->name, &configs[count], mesh->config_key)) {
+	if(node_storage_wire_encode(mesh, mesh->self, &configs[count])) {
 		count++;
 	}
 
@@ -3762,6 +3796,11 @@ bool meshlink_join(meshlink_handle_t *mesh, const char *invitation) {
 
 	if(mesh->storage_policy == MESHLINK_STORAGE_DISABLED) {
 		meshlink_errno = MESHLINK_EINVAL;
+		return false;
+	}
+
+	if(mesh->storage_unavailable) {
+		meshlink_errno = MESHLINK_ESTORAGE;
 		return false;
 	}
 
@@ -3971,7 +4010,7 @@ bool meshlink_join(meshlink_handle_t *mesh, const char *invitation) {
 
 	// Feed rest of input buffer to SPTPS
 	if(!sptps_receive_data(&state.sptps, state.buffer, state.blen)) {
-		meshlink_errno = MESHLINK_EPEER;
+		meshlink_errno = state.commit_error ? state.commit_error : MESHLINK_EPEER;
 		goto exit;
 	}
 
@@ -3990,7 +4029,7 @@ bool meshlink_join(meshlink_handle_t *mesh, const char *invitation) {
 		}
 
 		if(!sptps_receive_data(&state.sptps, state.line, len)) {
-			meshlink_errno = MESHLINK_EPEER;
+			meshlink_errno = state.commit_error ? state.commit_error : MESHLINK_EPEER;
 			goto exit;
 		}
 	}
@@ -4038,76 +4077,25 @@ char *meshlink_export(meshlink_handle_t *mesh) {
 
 	// Create a config file on the fly.
 
-	uint8_t buf[4096];
-	packmsg_output_t out = {buf, sizeof(buf)};
-	packmsg_add_uint32(&out, MESHLINK_CONFIG_VERSION);
-	packmsg_add_str(&out, mesh->name);
-	packmsg_add_str(&out, CORE_MESH);
-
 	if(pthread_mutex_lock(&mesh->mutex) != 0) {
 		abort();
 	}
-
-	packmsg_add_int32(&out, mesh->self->devclass);
-	packmsg_add_bool(&out, mesh->self->status.blacklisted);
-	packmsg_add_bin(&out, ecdsa_get_public_key(mesh->private_key), 32);
-
-	if(mesh->self->canonical_address && !strchr(mesh->self->canonical_address, ' ')) {
-		char *canonical_address = NULL;
-		xasprintf(&canonical_address, "%s %s", mesh->self->canonical_address, mesh->myport);
-		packmsg_add_str(&out, canonical_address);
-		free(canonical_address);
-	} else {
-		packmsg_add_str(&out, mesh->self->canonical_address ? mesh->self->canonical_address : "");
-	}
-
-	uint32_t count = 0;
-
-	for(uint32_t i = 0; i < MAX_RECENT; i++) {
-		if(mesh->self->recent[i].sa.sa_family) {
-			count++;
-		} else {
-			break;
-		}
-	}
-
-	packmsg_add_array(&out, count);
-
-	for(uint32_t i = 0; i < count; i++) {
-		packmsg_add_sockaddr(&out, &mesh->self->recent[i]);
-	}
-
-	packmsg_add_int64(&out, 0);
-	packmsg_add_int64(&out, 0);
-
-	packmsg_add_array(&out, count);
-
-	for(uint32_t i = 0; i < count; i++) {
-		packmsg_add_uint8(&out, (uint8_t)mesh->self->recent_source[i]);
-	}
-
-	packmsg_add_array(&out, count);
-
-	for(uint32_t i = 0; i < count; i++) {
-		packmsg_add_uint8(&out, mesh->self->recent_cap[i]);
-	}
-
+	config_t config = {0};
+	bool encoded = node_storage_wire_encode(mesh, mesh->self, &config);
 	pthread_mutex_unlock(&mesh->mutex);
-
-	if(!packmsg_output_ok(&out)) {
-		logger(mesh, MESHLINK_ERROR, "Error creating export data\n");
-		meshlink_errno = MESHLINK_EINTERNAL;
+	if(!encoded) {
 		return NULL;
 	}
 
 	// Prepare a base64-encoded packmsg array containing our config file
 
-	uint32_t len = packmsg_output_size(&out, buf);
+	uint32_t len = config.len;
 	uint32_t len2 = ((len + 4) * 4) / 3 + 4;
 	uint8_t *buf2 = xmalloc(len2);
 	packmsg_output_t out2 = {buf2, len2};
 	packmsg_add_array(&out2, 1);
-	packmsg_add_bin(&out2, buf, packmsg_output_size(&out, buf));
+	packmsg_add_bin(&out2, config.buf, config.len);
+	config_free(&config);
 
 	if(!packmsg_output_ok(&out2)) {
 		logger(mesh, MESHLINK_ERROR, "Error creating export data\n");
@@ -4238,7 +4226,7 @@ static bool blacklist(meshlink_handle_t *mesh, node_t *n) {
 
 	if(n->status.blacklisted) {
 		logger(mesh, MESHLINK_DEBUG, "Node %s already blacklisted\n", n->name);
-		return true;
+		return node_storage_retry_config(mesh, n, true);
 	}
 
 	relay_hop_stop(mesh, n);
@@ -4277,7 +4265,7 @@ static bool blacklist(meshlink_handle_t *mesh, node_t *n) {
 	channel_refresh_carrier(mesh, n);
 
 	if(n->status.reachable) {
-		n->last_unreachable = time(NULL);
+		(void)node_storage_note_edge(mesh, n, false, time(NULL));
 	}
 
 	/* Graph updates will suppress status updates for blacklisted nodes, so we need to
@@ -4358,13 +4346,13 @@ static bool whitelist(meshlink_handle_t *mesh, node_t *n) {
 
 	if(!n->status.blacklisted) {
 		logger(mesh, MESHLINK_DEBUG, "Node %s was already whitelisted\n", n->name);
-		return true;
+		return node_storage_retry_config(mesh, n, true);
 	}
 
 	n->status.blacklisted = false;
 
 	if(n->status.reachable) {
-		n->last_reachable = time(NULL);
+		(void)node_storage_note_edge(mesh, n, true, time(NULL));
 		update_node_status(mesh, n);
 	}
 
@@ -4479,7 +4467,7 @@ bool meshlink_forget_node(meshlink_handle_t *mesh, meshlink_node_t *node) {
 	}
 
 	/* Delete the config file for this node */
-	if(!config_delete(mesh, "current", n->name)) {
+	if(!node_storage_forget(mesh, n)) {
 		pthread_mutex_unlock(&mesh->mutex);
 		return false;
 	}
@@ -4518,9 +4506,6 @@ void meshlink_hint_address(meshlink_handle_t *mesh, meshlink_node_t *node, const
 	if(learned) {
 		n->upgrade_recent_idx = 0;
 
-		if(!node_write_config(mesh, n, false)) {
-			logger(mesh, MESHLINK_DEBUG, "Could not update %s\n", n->name);
-		}
 	}
 
 	path_consider_promotion(mesh, n, PATH_PROMOTION_HINT);
@@ -5916,6 +5901,7 @@ void meshlink_set_storage_policy(struct meshlink_handle *mesh, meshlink_storage_
 		abort();
 	}
 
+	node_storage_policy_changed(mesh);
 	mesh->storage_policy = policy;
 	pthread_mutex_unlock(&mesh->mutex);
 }

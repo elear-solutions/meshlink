@@ -134,6 +134,9 @@ void outgoing_set_startup_ms(int ms);
 int outgoing_get_startup_ms(void);
 void close_network_connections(struct meshlink_handle *mesh);
 void main_loop(struct meshlink_handle *mesh);
+/* Refresh the persisted peer observation at most once per 60 seconds.
+   Caller holds the mesh mutex. Does not change reachability or retry timers. */
+void node_note_seen(struct meshlink_handle *mesh, struct node_t *n);
 void terminate_connection(struct meshlink_handle *mesh, struct connection_t *, bool);
 /* Ask the META I/O path to close c after the current stack unwinds. Does not free c. */
 void connection_defer_teardown(struct meshlink_handle *mesh, struct connection_t *c);

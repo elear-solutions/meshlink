@@ -21,6 +21,7 @@
 #include "net.h"
 #include "netutl.h"
 #include "node.h"
+#include "node_storage.h"
 #include "path_liveness.h"
 #include "path_plpmtu.h"
 #include "path_policy.h"
@@ -158,7 +159,7 @@ static void keepalive_apply_pending(meshlink_handle_t *mesh, node_t *n) {
 
 			n->keepalive.interval_ms = shrunk;
 			n->keepalive.expiries++;
-			n->status.dirty = true;
+			node_storage_mark(n, NODE_STORAGE_PATH_HISTORY);
 			path_plpmtu_remember_keepalive(mesh, n);
 			if(n != mesh->backbone_udp.node) {
 				arm_ms(mesh, &n->keepalive.timer, keepalive_timer, n, (int)shrunk);
@@ -480,7 +481,7 @@ static uint32_t keepalive_interval(meshlink_handle_t *mesh, node_t *n, uint32_t 
 		if(grown > interval) {
 			n->keepalive.interval_ms = grown;
 			interval = grown;
-			n->status.dirty = true;
+			node_storage_mark(n, NODE_STORAGE_PATH_HISTORY);
 			path_plpmtu_remember_keepalive(mesh, n);
 		}
 

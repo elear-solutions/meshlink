@@ -20,6 +20,7 @@
 #include "net.h"
 #include "netutl.h"
 #include "node.h"
+#include "node_storage.h"
 #include "packmsg.h"
 #include "path_liveness.h"
 #include "path_plpmtu.h"
@@ -201,7 +202,7 @@ static void cache_store(meshlink_handle_t *mesh, node_t *n) {
 	*e = neu;
 
 	if(material) {
-		n->status.dirty = true;
+		node_storage_mark(n, NODE_STORAGE_PATH_HISTORY);
 	}
 }
 
@@ -672,7 +673,7 @@ void path_plpmtu_forget(meshlink_handle_t *mesh, node_t *n) {
 
 	path_plpmtu_stop(mesh, n);
 	memset(n->mtu_cache, 0, sizeof n->mtu_cache);
-	n->status.dirty = true;
+	node_storage_mark(n, NODE_STORAGE_PATH_HISTORY);
 }
 
 void path_plpmtu_on_confirmed(meshlink_handle_t *mesh, node_t *n) {

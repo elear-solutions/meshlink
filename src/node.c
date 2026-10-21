@@ -26,6 +26,7 @@
 #include "net_upgrade.h"
 #include "netutl.h"
 #include "node.h"
+#include "node_storage.h"
 #include "connection_policy.h"
 #include "path_policy.h"
 #include "relay.h"
@@ -74,6 +75,7 @@ void exit_nodes(meshlink_handle_t *mesh) {
 node_t *new_node(void) {
 	node_t *n = xzalloc(sizeof(*n));
 
+	node_storage_init(n);
 	n->edge_tree = new_edge_tree();
 	n->devclass = DEV_CLASS_UNKNOWN;
 	/* Leave keepalive.interval_ms unset until the UDP role is known. */
@@ -213,6 +215,7 @@ void free_node(node_t *n) {
 	free(n->canonical_address);
 	free(n->external_ip_address);
 
+	node_storage_free(n);
 	free(n);
 }
 

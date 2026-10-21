@@ -559,6 +559,7 @@ static bool get_next_outgoing_address(meshlink_handle_t *mesh, outgoing_t *outgo
 		}
 
 		start = (outgoing->state == OUTGOING_START);
+		free_outgoing_addresses(outgoing);
 
 		if(outgoing->direct_tries >= OUTGOING_MAX_DIRECT_TRIES
 		                || !path_best_local_meta(outgoing->node, skip, &sa, &src)) {
@@ -586,6 +587,8 @@ static bool get_next_outgoing_address(meshlink_handle_t *mesh, outgoing_t *outgo
 	}
 
 	if(outgoing->state == OUTGOING_START) {
+		/* A restarted walk replaces the list without resetting its budget. */
+		free_outgoing_addresses(outgoing);
 		sockaddr_t sa;
 		address_source_t src = ADDR_SRC_UNKNOWN;
 		const sockaddr_t *skip = outgoing->skip_sa.sa.sa_family ? &outgoing->skip_sa : NULL;

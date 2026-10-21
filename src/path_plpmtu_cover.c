@@ -23,6 +23,7 @@
 #include "net.h"
 #include "netutl.h"
 #include "node.h"
+#include "node_storage.h"
 #include "packmsg.h"
 #include "path_liveness.h"
 #include "path_plpmtu.h"
@@ -247,7 +248,6 @@ static bool plpmtu_cover(meshlink_handle_t *mesh) {
 	n.plpmtu.path_net_fp = path_local_network_fp(mesh);
 	path_plpmtu_stop(mesh, &n);
 	n.status.udp_confirmed = true;
-	n.status.dirty = false;
 	path_plpmtu_on_confirmed(mesh, &n);
 	CHECK(n.plpmtu.state == PLPMTU_COMPLETE);
 	CHECK(n.plpmtu.size == 1419);
@@ -255,14 +255,15 @@ static bool plpmtu_cover(meshlink_handle_t *mesh) {
 	CHECK(n.plpmtu.cache_hits == 1);
 
 	/* Same bytes stored again are not a material change. */
-	n.status.dirty = false;
+	node_storage_init(&n);
+	uint64_t cache_generation = node_storage_generation(&n, true);
 	n.plpmtu.state = PLPMTU_COMPLETE;
 	n.plpmtu.size = 1419;
 	n.plpmtu.largest_failed = 1431;
 	n.plpmtu.path_ip = n.address;
 	n.plpmtu.path_ip.in.sin_port = 0;
 	path_plpmtu_stop(mesh, &n);
-	CHECK(!n.status.dirty);
+	CHECK(node_storage_generation(&n, true) == cache_generation);
 
 	slot = cache_slot(&n, 0xcb00710a);
 	CHECK(slot >= 0);
@@ -424,6 +425,7 @@ done:
 	stop_peer_path_activity(mesh, &n);
 	stop_peer_path_activity(mesh, &hop);
 	stop_peer_path_activity(mesh, &dest);
+	node_storage_free(&n);
 	return ok;
 }
 

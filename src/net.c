@@ -32,6 +32,7 @@
 #include "net_upgrade.h"
 #include "netutl.h"
 #include "node.h"
+#include "node_storage.h"
 #include "path_policy.h"
 #include "protocol.h"
 #include "relay.h"
@@ -231,6 +232,12 @@ void terminate_connection(meshlink_handle_t *mesh, connection_t *c, bool report)
 	connection_policy_on_connection_closed(mesh, peer, purpose);
 }
 
+/* Persist wall-clock observations, not the event loop's monotonic clock.
+   Reachability remains graph-based; only the host-file stamp is refreshed. */
+void node_note_seen(meshlink_handle_t *mesh, node_t *n) {
+	node_storage_note_seen(mesh, n, time(NULL));
+}
+
 /*
   Check if the other end is active.
   If we have sent packets, but didn't receive any,
@@ -351,13 +358,9 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 
 	upgrade_probe_sweep(mesh);
 
+	time_t wall_now = time(NULL);
+	node_storage_tick(mesh, wall_now);
 	for splay_each(node_t, n, mesh->nodes) {
-		if(n->status.dirty) {
-			if(!node_write_config(mesh, n, false)) {
-				logger(mesh, MESHLINK_DEBUG, "Could not update %s", n->name);
-			}
-		}
-
 		if(n->status.reachable && n->status.validkey && n->last_req_key + 3600 < mesh->loop.now.tv_sec) {
 			logger(mesh, MESHLINK_DEBUG, "SPTPS key renewal for node %s", n->name);
 			devtool_sptps_renewal_probe((meshlink_node_t *)n);
