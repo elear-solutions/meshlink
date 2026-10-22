@@ -117,6 +117,10 @@ bool sptps_exhausted(const sptps_t *s) {
 static bool send_record_priv_datagram(sptps_t *s, uint8_t type, const void *data, uint16_t len) {
 	char buffer[len + SPTPS_DATAGRAM_OVERHEAD];
 
+	if(s->failed) {
+		return error(s, EIO, "Session failed; it must be restarted");
+	}
+
 	if(!seqno_allowed(s->outseqno, type)) {
 		return error(s, EIO, "Send sequence budget exhausted for the current key");
 	}
@@ -646,12 +650,16 @@ static bool sptps_receive_datagram_plain(sptps_t *s, const void *vdata, size_t l
 			return error(s, EIO, "Application record received before handshake finished");
 		}
 
+		// The receiver refused this one record. The session itself is intact.
 		if(!s->receive_record(s->handle, type, s->decrypted_buffer + 1, len - SPTPS_DATAGRAM_OVERHEAD)) {
-			abort();
+			return error(s, EIO, "Record of type %d rejected by the receiver", type);
 		}
 	} else if(type == SPTPS_HANDSHAKE) {
+		// A key exchange on an established session failed part way. Its key
+		// state is no longer defined, so the owner must restart the session.
 		if(!receive_handshake(s, s->decrypted_buffer + 1, len - SPTPS_DATAGRAM_OVERHEAD)) {
-			abort();
+			s->failed = true;
+			return error(s, EIO, "Key exchange failed on an established session");
 		}
 	} else {
 		return error(s, EIO, "Invalid record type %d", type);
@@ -695,6 +703,10 @@ bool sptps_receive_relay_inner(sptps_t *s, const void *vdata, size_t len) {
 		return error(s, EIO, "Invalid session state zero");
 	}
 
+	if(s->failed) {
+		return error(s, EIO, "Session failed; it must be restarted");
+	}
+
 	if(!s->datagram) {
 		return error(s, EIO, "Relay inner requires a datagram session");
 	}
@@ -714,6 +726,10 @@ bool sptps_receive_relay_inner(sptps_t *s, const void *vdata, size_t len) {
 bool sptps_receive_data(sptps_t *s, const void *data, size_t len) {
 	if(!s->state) {
 		return error(s, EIO, "Invalid session state zero");
+	}
+
+	if(s->failed) {
+		return error(s, EIO, "Session failed; it must be restarted");
 	}
 
 	if(s->datagram) {
