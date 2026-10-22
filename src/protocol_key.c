@@ -369,6 +369,28 @@ void node_kex_watchdog(meshlink_handle_t *mesh) {
 	}
 }
 
+void node_kex_drop_session(meshlink_handle_t *mesh, node_t *n) {
+	node_set_validkey(mesh, n, false);
+	sptps_stop(&n->sptps);
+	n->status.waitingforkey = false;
+	n->last_req_key = -3600;
+}
+
+bool node_sptps_receive(meshlink_handle_t *mesh, node_t *n, const void *data, size_t len) {
+	if(sptps_receive_data(&n->sptps, data, len)) {
+		return true;
+	}
+
+	if(n->sptps.failed) {
+		int saved_errno = errno;
+		logger(mesh, MESHLINK_ERROR, "SPTPS key exchange with %s failed on an established session; restarting it", n->name);
+		node_kex_drop_session(mesh, n);
+		errno = saved_errno;
+	}
+
+	return false;
+}
+
 bool send_punch_endpoint_request(meshlink_handle_t *mesh, node_t *peer) {
 	node_t *backbone;
 
@@ -643,7 +665,7 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 			return true;
 		}
 
-		if(!sptps_receive_data(&from->sptps, buf, len)) {
+		if(!node_sptps_receive(mesh, from, buf, len)) {
 			logger(mesh, MESHLINK_ERROR, "Could not process SPTPS data from %s: %s", from->name, strerror(errno));
 			return true;
 		}
@@ -671,7 +693,7 @@ static bool req_key_ext_h(meshlink_handle_t *mesh, connection_t *c, const char *
 
 		from->status.in_req_sptps = true;
 
-		if(!sptps_receive_data(&from->sptps, buf, len)) {
+		if(!node_sptps_receive(mesh, from, buf, len)) {
 			logger(mesh, MESHLINK_ERROR, "Could not process SPTPS data from %s: %s", from->name, strerror(errno));
 		}
 
@@ -1107,7 +1129,7 @@ bool ans_key_h(meshlink_handle_t *mesh, connection_t *c, const char *request) {
 		char buf[strlen(key)];
 		int len = b64decode(key, buf, strlen(key));
 
-		if(!len || !sptps_receive_data(&from->sptps, buf, len)) {
+		if(!len || !node_sptps_receive(mesh, from, buf, len)) {
 			logger(mesh, MESHLINK_ERROR, "Error processing SPTPS data from %s", from->name);
 		}
 	}

@@ -161,5 +161,11 @@ void node_kex_mark_uncertain(struct meshlink_handle *mesh, struct node_t *n);
 void node_kex_on_session_change(struct meshlink_handle *mesh, struct node_t *n);
 void node_kex_consider(struct meshlink_handle *mesh, struct node_t *n);
 void node_kex_watchdog(struct meshlink_handle *mesh);
+/* Drop the node's SPTPS session after a failed renewal or key exchange. The
+   next send or received packet starts a fresh exchange through node_kex_ensure. */
+void node_kex_drop_session(struct meshlink_handle *mesh, struct node_t *n);
+/* Feed data to the node's SPTPS session. If a key exchange on the established
+   session failed, drop the session. Returns false if the data was not processed. */
+bool node_sptps_receive(struct meshlink_handle *mesh, struct node_t *n, const void *data, size_t len);
 
 #endif

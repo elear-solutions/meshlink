@@ -396,10 +396,7 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 			continue;
 		}
 
-		node_set_validkey(mesh, n, false);
-		sptps_stop(&n->sptps);
-		n->status.waitingforkey = false;
-		n->last_req_key = -3600;
+		node_kex_drop_session(mesh, n);
 	}
 
 	timeout_set(&mesh->loop, data, &(struct timespec) {

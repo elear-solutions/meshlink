@@ -18,6 +18,7 @@
 #include "protocol.h"
 #include "sptps.h"
 #include "ecdsagen.h"
+#include "../src/utils.h"
 #include "utils.h"
 #include <assert.h>
 #include <net/if.h>
@@ -1530,12 +1531,19 @@ typedef struct {
 	unsigned handshakes;
 	char last_app[64];
 	uint16_t last_app_len;
+	bool reject_app;   /* receiver refuses application records */
+	bool fail_send;    /* transport refuses to send */
 } sptps_end_t;
 
 static const char sptps_test_label[] = "sptps-seqno-test";
 
 static bool sptps_end_send(void *handle, uint8_t type, const void *data, size_t len) {
 	sptps_end_t *e = handle;
+
+	if(e->fail_send) {
+		return false;
+	}
+
 	assert(e->tail - e->head < SPTPS_TEST_QUEUE);
 	assert(len <= sizeof e->out[0].data);
 	sptps_test_record_t *r = &e->out[e->tail++ % SPTPS_TEST_QUEUE];
@@ -1551,6 +1559,10 @@ static bool sptps_end_receive(void *handle, uint8_t type, const void *data, uint
 	if(type == SPTPS_HANDSHAKE) {
 		e->handshakes++;
 		return true;
+	}
+
+	if(e->reject_app) {
+		return false;
 	}
 
 	assert(len <= sizeof e->last_app);
@@ -1759,18 +1771,22 @@ static void test_sptps_send_limit(bool datagram) {
 	sptps_pair_stop(&a, &b, keys);
 }
 
-/* Encrypt a datagram record by hand with an arbitrary sequence number, as a
-   peer that ignored its budget would. */
-static sptps_test_record_t sptps_forge_datagram(sptps_end_t *from, uint32_t seqno, const char *text) {
+/* Encrypt a datagram record by hand under a session's current send key, with
+   any sequence number and record type, as a misbehaving peer could. */
+static sptps_test_record_t sptps_forge_record(sptps_t *from, uint32_t seqno, uint8_t type, const void *data, size_t len) {
 	sptps_test_record_t r = {0};
-	size_t len = strlen(text);
+	assert(len + SPTPS_DATAGRAM_OVERHEAD <= sizeof r.data);
 	uint32_t netseqno = htonl(seqno);
 	memcpy(r.data, &netseqno, 4);
-	r.data[4] = 0;
-	memcpy(r.data + 5, text, len);
-	chacha_poly1305_encrypt(from->s.outcipher, seqno, r.data + 4, len + 1, r.data + 4, NULL);
+	r.data[4] = (char)type;
+	memcpy(r.data + 5, data, len);
+	chacha_poly1305_encrypt(from->outcipher, seqno, r.data + 4, len + 1, r.data + 4, NULL);
 	r.len = len + SPTPS_DATAGRAM_OVERHEAD;
 	return r;
+}
+
+static sptps_test_record_t sptps_forge_datagram(sptps_end_t *from, uint32_t seqno, const char *text) {
+	return sptps_forge_record(&from->s, seqno, 0, text, strlen(text));
 }
 
 /* The receiver enforces the same budget and keeps an overflow-free replay
@@ -1929,6 +1945,126 @@ static void test_sptps_threshold_renewal(void) {
 	assert(meshlink_destroy("peer_control_renewal_conf.2"));
 }
 
+/* An authenticated datagram the receiver refuses (an unknown or oversized
+   record) used to abort() the process. It is now dropped and the session
+   carries on. */
+static void test_sptps_datagram_record_rejected(void) {
+	fprintf(stderr, "sptps datagram record rejected\n");
+	sptps_end_t a, b;
+	ecdsa_t *keys[2];
+	sptps_pair_start(&a, &b, true, keys);
+
+	b.reject_app = true;
+	assert(sptps_end_send_app(&a, "refused"));
+	sptps_test_record_t recs[SPTPS_TEST_QUEUE];
+	assert(sptps_end_take(&a, recs, SPTPS_TEST_QUEUE) == 1);
+	assert(!sptps_end_feed(&b, &recs[0]));
+	assert(!b.s.failed && b.app_records == 0);
+
+	b.reject_app = false;
+	assert(sptps_end_send_app(&a, "accepted"));
+	sptps_pump(&a, &b);
+	assert(b.app_records == 1 && sptps_end_got(&b, "accepted"));
+	assert(!sptps_end_feed(&b, &recs[0]));   /* still a replay once seen */
+
+	/* Renewal still works on the same session. */
+	assert(sptps_force_kex(&a.s));
+	sptps_pump(&a, &b);
+	assert(a.handshakes == 2 && b.handshakes == 2);
+	sptps_pair_stop(&a, &b, keys);
+}
+
+/* A key exchange that fails on an established datagram session used to
+   abort(). It now latches the session as failed, which refuses further use
+   until the owner restarts it. */
+static void test_sptps_datagram_rekey_failure(void) {
+	fprintf(stderr, "sptps datagram rekey failure\n");
+	sptps_end_t a, b;
+	ecdsa_t *keys[2];
+	sptps_test_record_t recs[SPTPS_TEST_QUEUE];
+
+	/* Malformed handshake record: an empty KEX, authenticated under the
+	   current key. */
+	sptps_pair_start(&a, &b, true, keys);
+	sptps_test_record_t bad = sptps_forge_record(&a.s, a.s.outseqno++, SPTPS_HANDSHAKE, "", 0);
+	assert(!sptps_end_feed(&b, &bad));
+	assert(b.s.failed);
+	sptps_end_take(&b, recs, SPTPS_TEST_QUEUE);           /* b's own KEX */
+	assert(sptps_end_send_app(&a, "after"));
+	assert(sptps_end_take(&a, recs, SPTPS_TEST_QUEUE) == 1);
+	assert(!sptps_end_feed(&b, &recs[0]) && b.app_records == 0);
+	assert(!sptps_end_send_app(&b, "blocked") && b.head == b.tail);
+	sptps_pair_stop(&a, &b, keys);
+
+	/* The ACK cannot be sent: the transport is down when the peer's SIG
+	   arrives mid-renewal. */
+	sptps_pair_start(&a, &b, true, keys);
+	assert(sptps_force_kex(&a.s));
+	assert(sptps_end_take(&a, recs, SPTPS_TEST_QUEUE) == 1);        /* A: KEX */
+	assert(sptps_end_feed(&b, &recs[0]));
+	assert(sptps_end_take(&b, recs, SPTPS_TEST_QUEUE) == 2);        /* B: KEX, SIG */
+	assert(sptps_end_feed(&a, &recs[0]) && sptps_end_feed(&a, &recs[1]));
+	assert(sptps_end_take(&a, recs, SPTPS_TEST_QUEUE) == 2);        /* A: SIG, ACK */
+	b.fail_send = true;
+	assert(!sptps_end_feed(&b, &recs[0]));                           /* B cannot ACK */
+	assert(b.s.failed);
+	sptps_pair_stop(&a, &b, keys);
+
+	/* Unchanged: a bad record during the initial handshake fails without
+	   latching; the existing key-exchange retry restarts that handshake. */
+	memset(&a, 0, sizeof a);
+	memset(&b, 0, sizeof b);
+	keys[0] = ecdsa_generate();
+	keys[1] = ecdsa_generate();
+	assert(sptps_start(&a.s, &a, true, true, keys[0], keys[1], sptps_test_label, sizeof sptps_test_label, sptps_end_send, sptps_end_receive));
+	assert(sptps_start(&b.s, &b, false, true, keys[1], keys[0], sptps_test_label, sizeof sptps_test_label, sptps_end_send, sptps_end_receive));
+	sptps_test_record_t plain = {0};
+	uint32_t zero = 0;
+	memcpy(plain.data, &zero, 4);
+	plain.data[4] = (char)SPTPS_HANDSHAKE;
+	plain.len = 5 + 3;                                             /* KEX far too short */
+	assert(!sptps_end_feed(&b, &plain));
+	assert(!b.s.failed && !b.s.instate);
+	sptps_pair_stop(&a, &b, keys);
+}
+
+/* On a real node session, a failed renewal drops the session the same way
+   a failed periodic renewal does, and the next key exchange recovers it. */
+static void test_node_rekey_failure_recovers(void) {
+	fprintf(stderr, "node rekey failure recovers\n");
+	fixture_t a = fixture("a", "b"), b = fixture("b", "a");
+	assert(node_kex_ensure(a.mesh, a.peer));
+	assert(node_kex_ensure(b.mesh, b.peer));
+	finish_handshake(&a, &b);
+	assert(a.peer->sptps.instate && b.peer->sptps.outstate);
+
+	/* b sends a malformed renewal record, authenticated under its current key. */
+	sptps_test_record_t bad = sptps_forge_record(&b.peer->sptps, b.peer->sptps.outseqno++, SPTPS_HANDSHAKE, "", 0);
+	char encoded[sizeof bad.data * 4 / 3 + 5];
+	b64encode(bad.data, encoded, (int)bad.len);
+	char request[MAX_STRING_SIZE];
+	snprintf(request, sizeof request, "%d %s %s %d %s", REQ_KEY, "b", "a", REQ_SPTPS, encoded);
+	assert(req_key_h(a.mesh, a.meta, request));
+
+	/* Session dropped, process alive, exactly like a failed renewal. */
+	assert(!a.peer->status.validkey && !a.peer->sptps.state);
+	assert(!a.peer->status.waitingforkey && a.peer->last_req_key == -3600);
+	assert(!a.peer->status.in_req_sptps);
+
+	while(buffer_readline(&a.meta->outbuf)) {
+		/* drop the KEX a queued before the record failed */
+	}
+
+	/* Demand restarts the exchange through the normal owner. */
+	unsigned restarts = a.peer->sptps_restart_count;
+	assert(node_kex_ensure(a.mesh, a.peer));
+	assert(a.peer->sptps_restart_count == restarts + 1);
+	finish_handshake(&a, &b);
+	assert(a.peer->sptps.instate && b.peer->sptps.instate);
+	close_fixture(&a);
+	close_fixture(&b);
+}
+
 int main(void) {
 	fprintf(stderr, "sptps sequence budget\n");
 	test_sptps_renewal_resets_sequence(true);
@@ -1937,6 +2073,9 @@ int main(void) {
 	test_sptps_send_limit(false);
 	test_sptps_receive_limit();
 	test_sptps_switch_reordering();
+	test_sptps_datagram_record_rejected();
+	test_sptps_datagram_rekey_failure();
+	test_node_rekey_failure_recovers();
 	test_sptps_threshold_renewal();
 	test_backbone_private_default();
 	test_backbone_private_disabled_candidate();

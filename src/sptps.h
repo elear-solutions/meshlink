@@ -67,6 +67,9 @@ typedef struct sptps {
 	bool datagram;
 	bool instate;
 	bool outstate;
+	// Set when a key exchange on an established datagram session fails part
+	// way. The session must not be used again; its owner restarts it.
+	bool failed;
 
 	int state;
 
