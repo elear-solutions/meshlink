@@ -43,6 +43,21 @@
 #define SPTPS_OVERHEAD 19
 #define SPTPS_DATAGRAM_OVERHEAD 21
 
+// Per-key sequence budget. Each direction's sequence number restarts at zero
+// when that direction installs a new key, so the counters measure records
+// sent or received under the current key. The sequence number is the AEAD
+// nonce, so it must never wrap under one key.
+//
+// SPTPS_SEQNO_RENEW: ask for a key renewal once either counter reaches it.
+// SPTPS_SEQNO_LIMIT: application records at or above it are refused in both
+//   directions. Handshake records may continue past it so a renewal that is
+//   already in flight can still complete and reset the counters.
+// SPTPS_SEQNO_MAX:   no record of any type uses this sequence number or
+//   higher, so the counter cannot wrap.
+#define SPTPS_SEQNO_RENEW (UINT32_C(1) << 30)
+#define SPTPS_SEQNO_LIMIT (UINT32_C(1) << 31)
+#define SPTPS_SEQNO_MAX UINT32_MAX
+
 typedef bool (*send_data_t)(void *handle, uint8_t type, const void *data, size_t len);
 typedef bool (*receive_record_t)(void *handle, uint8_t type, const void *data, uint16_t len);
 
@@ -103,5 +118,10 @@ bool sptps_receive_data(sptps_t *s, const void *data, size_t len) __attribute__(
 bool sptps_receive_relay_inner(sptps_t *s, const void *data, size_t len) __attribute__((__warn_unused_result__));
 bool sptps_force_kex(sptps_t *s) __attribute__((__warn_unused_result__));
 bool sptps_verify_datagram(sptps_t *s, const void *data, size_t len) __attribute__((__warn_unused_result__));
+/* True once either direction has used SPTPS_SEQNO_RENEW records under its current key. */
+bool sptps_renewal_due(const sptps_t *s);
+/* True once either direction has reached SPTPS_SEQNO_LIMIT: the session can no
+   longer carry application records and must be renewed or restarted. */
+bool sptps_exhausted(const sptps_t *s);
 
 #endif

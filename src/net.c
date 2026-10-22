@@ -263,7 +263,15 @@ static void timeout_handler(event_loop_t *loop, void *data) {
 			pingtimeout = 1;
 		}
 
-		if(c->status.active && c->last_key_renewal + 3600 < mesh->loop.now.tv_sec) {
+		/* A key that used up its sequence budget cannot carry records any more. */
+		if(c->status.active && sptps_exhausted(&c->sptps)) {
+			logger(mesh, MESHLINK_ERROR, "SPTPS sequence budget exhausted for connection with %s", c->name);
+			terminate_connection(mesh, c, true);
+			continue;
+		}
+
+		/* Renew hourly, or sooner once either direction has used half its budget. */
+		if(c->status.active && (c->last_key_renewal + 3600 < mesh->loop.now.tv_sec || sptps_renewal_due(&c->sptps))) {
 			devtool_sptps_renewal_probe((meshlink_node_t *)c->node);
 
 			if(!sptps_force_kex(&c->sptps)) {
@@ -361,20 +369,37 @@ static void periodic_handler(event_loop_t *loop, void *data) {
 	time_t wall_now = time(NULL);
 	node_storage_tick(mesh, wall_now);
 	for splay_each(node_t, n, mesh->nodes) {
-		if(n->status.reachable && n->status.validkey && n->last_req_key + 3600 < mesh->loop.now.tv_sec) {
+		if(!n->status.validkey) {
+			continue;
+		}
+
+		/* A key that used up its sequence budget cannot carry records any
+		   more; drop the session so the next send starts a fresh exchange. */
+		bool exhausted = sptps_exhausted(&n->sptps);
+
+		if(exhausted) {
+			logger(mesh, MESHLINK_ERROR, "SPTPS sequence budget exhausted for node %s", n->name);
+		}
+
+		/* Renew hourly, or sooner once either direction has used half its budget. */
+		if(!exhausted && n->status.reachable && (n->last_req_key + 3600 < mesh->loop.now.tv_sec || sptps_renewal_due(&n->sptps))) {
 			logger(mesh, MESHLINK_DEBUG, "SPTPS key renewal for node %s", n->name);
 			devtool_sptps_renewal_probe((meshlink_node_t *)n);
 
-			if(!sptps_force_kex(&n->sptps)) {
-				logger(mesh, MESHLINK_ERROR, "SPTPS key renewal for node %s failed", n->name);
-				node_set_validkey(mesh, n, false);
-				sptps_stop(&n->sptps);
-				n->status.waitingforkey = false;
-				n->last_req_key = -3600;
-			} else {
+			if(sptps_force_kex(&n->sptps)) {
 				n->last_req_key = mesh->loop.now.tv_sec;
+				continue;
 			}
+
+			logger(mesh, MESHLINK_ERROR, "SPTPS key renewal for node %s failed", n->name);
+		} else if(!exhausted) {
+			continue;
 		}
+
+		node_set_validkey(mesh, n, false);
+		sptps_stop(&n->sptps);
+		n->status.waitingforkey = false;
+		n->last_req_key = -3600;
 	}
 
 	timeout_set(&mesh->loop, data, &(struct timespec) {
