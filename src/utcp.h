@@ -70,7 +70,11 @@ typedef ssize_t (*utcp_recv_t)(struct utcp_connection *connection, const void *d
 
 typedef void (*utcp_poll_t)(struct utcp_connection *connection, size_t len);
 
-struct utcp *utcp_init(utcp_accept_t accept, utcp_listen_t listen, utcp_send_t send, void *priv);
+/* Random source owned by whoever creates the utcp instance. Returns a value in [0, max), max > 0.
+   utcp uses it for ephemeral source ports and initial sequence numbers; it never calls rand(). */
+typedef uint32_t (*utcp_random_t)(struct utcp *utcp, uint32_t max);
+
+struct utcp *utcp_init(utcp_accept_t accept, utcp_listen_t listen, utcp_send_t send, utcp_random_t random, void *priv);
 void utcp_exit(struct utcp *utcp);
 
 struct utcp_connection *utcp_connect_ex(struct utcp *utcp, uint16_t port, utcp_recv_t recv, void *priv, uint32_t flags);

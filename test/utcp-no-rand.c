@@ -23,6 +23,13 @@ int __wrap_rand(void) {
 	return __real_rand();
 }
 
+static uint32_t on_random(struct utcp *utcp, uint32_t max) {
+	static uint32_t counter;
+
+	(void)utcp;
+	return counter++ % max;
+}
+
 static ssize_t on_send(struct utcp *utcp, const void *data, size_t len) {
 	(void)utcp;
 	(void)data;
@@ -30,7 +37,7 @@ static ssize_t on_send(struct utcp *utcp, const void *data, size_t len) {
 }
 
 int main(void) {
-	struct utcp *utcp = utcp_init(NULL, NULL, on_send, NULL);
+	struct utcp *utcp = utcp_init(NULL, NULL, on_send, on_random, NULL);
 	assert(utcp);
 
 	// Connections to the same destination get their ports and ISNs without rand().

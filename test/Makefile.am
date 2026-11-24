@@ -57,6 +57,7 @@ TESTS = \
 	path-stability \
 	transport-recent \
 	utcp-closed-syn \
+	utcp-random \
 	channels-session-restart \
 	channels-utcp-prng \
 	utcp-benchmark \
@@ -141,6 +142,7 @@ check_PROGRAMS = \
 	path-stability \
 	transport-recent \
 	utcp-closed-syn \
+	utcp-random \
 	channels-session-restart \
 	channels-utcp-prng
 
@@ -325,6 +327,9 @@ transport_recent_LDADD = $(top_builddir)/src/libmeshlink.la
 
 utcp_closed_syn_SOURCES = utcp-closed-syn.c
 utcp_closed_syn_LDADD = $(top_builddir)/src/.libs/libmeshlink.a
+
+utcp_random_SOURCES = utcp-random.c
+utcp_random_LDADD = $(top_builddir)/src/.libs/libmeshlink.a
 
 channels_session_restart_SOURCES = channels-session-restart.c utcp-peek.c utcp-peek.h utils.c utils.h
 channels_session_restart_LDADD = $(top_builddir)/src/.libs/libmeshlink.a

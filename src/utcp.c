@@ -635,10 +635,10 @@ static struct utcp_connection *allocate_connection(struct utcp *utcp, uint16_t s
 			return NULL;
 		}
 
-		src = rand() | 0x8000;
+		src = 0x8000 | utcp->random(utcp, 0x8000);
 
 		while(find_connection(utcp, src, dst)) {
-			src++;
+			src = (src + 1) | 0x8000;
 		}
 	}
 
@@ -684,7 +684,8 @@ static struct utcp_connection *allocate_connection(struct utcp *utcp, uint16_t s
 #ifdef UTCP_DEBUG
 	c->snd.iss = 0;
 #else
-	c->snd.iss = rand();
+	c->snd.iss = utcp->random(utcp, 0x10000) << 16;
+	c->snd.iss |= utcp->random(utcp, 0x10000);
 #endif
 	c->snd.una = c->snd.iss;
 	c->snd.nxt = c->snd.iss + 1;
@@ -2377,8 +2378,8 @@ bool utcp_is_active(struct utcp *utcp) {
 	return false;
 }
 
-struct utcp *utcp_init(utcp_accept_t accept, utcp_listen_t listen, utcp_send_t send, void *priv) {
-	if(!send) {
+struct utcp *utcp_init(utcp_accept_t accept, utcp_listen_t listen, utcp_send_t send, utcp_random_t random, void *priv) {
+	if(!send || !random) {
 		errno = EFAULT;
 		return NULL;
 	}
@@ -2405,6 +2406,7 @@ struct utcp *utcp_init(utcp_accept_t accept, utcp_listen_t listen, utcp_send_t s
 	utcp->accept = accept;
 	utcp->listen = listen;
 	utcp->send = send;
+	utcp->random = random;
 	utcp->priv = priv;
 	utcp->timeout = DEFAULT_USER_TIMEOUT; // sec
 
@@ -2548,6 +2550,12 @@ static ssize_t mtu_reentry_send(struct utcp *utcp, const void *data, size_t len)
 	return (ssize_t)len;
 }
 
+static uint32_t mtu_reentry_random(struct utcp *utcp, uint32_t max) {
+	(void)utcp;
+	(void)max;
+	return 0;
+}
+
 bool utcp_mtu_reentry_unit(void) {
 	struct utcp *utcp;
 	struct utcp_connection *c;
@@ -2556,7 +2564,7 @@ bool utcp_mtu_reentry_unit(void) {
 	bool ok;
 
 	mtu_reentry_sends = 0;
-	utcp = utcp_init(NULL, NULL, mtu_reentry_send, NULL);
+	utcp = utcp_init(NULL, NULL, mtu_reentry_send, mtu_reentry_random, NULL);
 
 	if(!utcp) {
 		return false;

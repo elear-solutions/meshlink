@@ -85,19 +85,19 @@ static void node_status_cb(meshlink_handle_t *mesh, meshlink_node_t *node, bool 
 	}
 }
 
-/* The first channel a process opens always gets the same port pair and ISN.
-   Everything that happens before is irrelevant. */
-static void make_first_channel_repeat(meshlink_handle_t *mesh) {
-	(void)mesh;
-	srand(7);
-}
-
 static meshlink_channel_t *open_channel(meshlink_handle_t *mesh, meshlink_node_t *b) {
 	reset_sync_flag(&a_open_flag);
 	a_open_len = 0;
 
-	make_first_channel_repeat(mesh);
+	/* The first channel of a fresh process always gets the same port pair and ISN. A restarted
+	   mesh's PRNG is seeded at open, so give it the same state, under the mutex so the mesh
+	   thread cannot draw in between. */
+	static const uint64_t first_channel_state[4] = {1, 2, 3, 4};
+
+	pthread_mutex_lock(&mesh->mutex);
+	memcpy(mesh->prng_state, first_channel_state, sizeof(mesh->prng_state));
 	meshlink_channel_t *channel = meshlink_channel_open(mesh, b, PORT, receive_cb, NULL, 0);
+	pthread_mutex_unlock(&mesh->mutex);
 	assert(channel);
 
 	meshlink_set_channel_poll_cb(mesh, channel, poll_cb);

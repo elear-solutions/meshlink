@@ -4856,8 +4856,13 @@ static void channel_mtu_applied(struct utcp *utcp) {
 
 /* Creates the node's UTCP and sizes it for the carrier that is live right now.
    Later route, PMTU, and relay-budget changes call channel_refresh_mtu(). */
+static uint32_t channel_random(struct utcp *utcp, uint32_t max) {
+	node_t *n = utcp->priv;
+	return prng(n->mesh, max);
+}
+
 static void channel_utcp_init(meshlink_handle_t *mesh, node_t *n) {
-	n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, n);
+	n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, channel_random, n);
 
 	if(!n->utcp) {
 		return;

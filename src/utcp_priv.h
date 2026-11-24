@@ -187,6 +187,7 @@ struct utcp {
 	utcp_listen_t listen;
 	utcp_retransmit_t retransmit;
 	utcp_send_t send;
+	utcp_random_t random;
 
 	// Packet buffer
 

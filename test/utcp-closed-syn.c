@@ -45,6 +45,8 @@ struct endpoint {
 	struct utcp_connection *accepted[MAX_ACCEPTED];
 	struct conn_stats accepted_stats[MAX_ACCEPTED];
 	unsigned naccepted;
+
+	unsigned draws;
 };
 
 static ssize_t on_recv(struct utcp_connection *c, const void *data, size_t len) {
@@ -100,9 +102,20 @@ static ssize_t on_send(struct utcp *utcp, const void *data, size_t len) {
 	return len;
 }
 
+/* Every endpoint draws the same sequence, as every fresh process does with an unseeded
+   generator: the same first port pair and ISN. That is what a relaunched peer looks like. */
+static uint32_t on_random(struct utcp *utcp, uint32_t max) {
+	static const uint32_t sequence[] = {0x0123, 0xaaaa, 0x5555};
+	struct endpoint *ep = utcp->priv;
+	uint32_t value = sequence[ep->draws++ % (sizeof(sequence) / sizeof(*sequence))];
+
+	assert(value < max);
+	return value;
+}
+
 static void endpoint_init(struct endpoint *ep, bool listening) {
 	memset(ep, 0, sizeof(*ep));
-	ep->utcp = utcp_init(listening ? on_accept : NULL, NULL, on_send, ep);
+	ep->utcp = utcp_init(listening ? on_accept : NULL, NULL, on_send, on_random, ep);
 	assert(ep->utcp);
 }
 
@@ -124,14 +137,7 @@ static void discard(struct endpoint *ep) {
 	ep->head = ep->tail;
 }
 
-/* The first port and ISN a process gets must be the same every time for these tests
-   to model a relaunched peer. */
-static void same_port_pair_every_time(void) {
-	srand(7);
-}
-
 static struct utcp_connection *open_connection(struct endpoint *ep, struct conn_stats *stats) {
-	same_port_pair_every_time();
 	struct utcp_connection *c = utcp_connect(ep->utcp, SERVER_PORT, on_recv, stats);
 	assert(c);
 	return c;
@@ -192,6 +198,8 @@ static struct utcp_connection *relaunch(struct scenario *s, struct endpoint *a2,
 	assert(c->src == s->a_conn->src);
 	assert(c->dst == s->a_conn->dst);
 	assert(c->snd.iss == s->a_conn->snd.iss);
+	assert(c->src == 0x8123);
+	assert(c->snd.iss == 0xaaaa5555);
 	assert(c->src == s->old->dst);
 
 	return c;
