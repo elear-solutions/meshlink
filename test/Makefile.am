@@ -56,6 +56,8 @@ TESTS = \
 	backbone-udp \
 	path-stability \
 	transport-recent \
+	utcp-closed-syn \
+	channels-session-restart \
 	utcp-benchmark \
 	utcp-benchmark-stream
 
@@ -136,7 +138,9 @@ check_PROGRAMS = \
 	connection-policy \
 	backbone-udp \
 	path-stability \
-	transport-recent
+	transport-recent \
+	utcp-closed-syn \
+	channels-session-restart
 
 if INSTALL_TESTS
 bin_PROGRAMS = $(check_PROGRAMS)
@@ -316,6 +320,12 @@ path_stability_LDADD = $(top_builddir)/src/libmeshlink.la
 
 transport_recent_SOURCES = transport-recent.c utils.c utils.h
 transport_recent_LDADD = $(top_builddir)/src/libmeshlink.la
+
+utcp_closed_syn_SOURCES = utcp-closed-syn.c
+utcp_closed_syn_LDADD = $(top_builddir)/src/.libs/libmeshlink.a
+
+channels_session_restart_SOURCES = channels-session-restart.c utcp-peek.c utcp-peek.h utils.c utils.h
+channels_session_restart_LDADD = $(top_builddir)/src/.libs/libmeshlink.a
 
 relay_hop_SOURCES = relay-hop.c relay-hop-support.c utils.c utils.h
 relay_hop_LDADD = $(top_builddir)/src/.libs/libmeshlink.a
