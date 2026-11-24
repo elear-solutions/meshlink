@@ -4854,10 +4854,17 @@ static void channel_mtu_applied(struct utcp *utcp) {
 	}
 }
 
+/* utcp's random source: the per-mesh PRNG, seeded at mesh open. utcp calls it from
+   utcp_connect*() and utcp_recv(), which run under mesh->mutex like every other prng() user. */
+static uint32_t channel_random(struct utcp *utcp, uint32_t max) {
+	node_t *n = utcp->priv;
+	return prng(n->mesh, max);
+}
+
 /* Creates the node's UTCP and sizes it for the carrier that is live right now.
    Later route, PMTU, and relay-budget changes call channel_refresh_mtu(). */
 static void channel_utcp_init(meshlink_handle_t *mesh, node_t *n) {
-	n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, n);
+	n->utcp = utcp_init(channel_accept, channel_pre_accept, channel_send, channel_random, n);
 
 	if(!n->utcp) {
 		return;

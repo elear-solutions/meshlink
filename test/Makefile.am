@@ -56,6 +56,10 @@ TESTS = \
 	backbone-udp \
 	path-stability \
 	transport-recent \
+	utcp-closed-syn \
+	utcp-random \
+	channels-session-restart \
+	channels-utcp-prng \
 	utcp-benchmark \
 	utcp-benchmark-stream
 
@@ -136,7 +140,11 @@ check_PROGRAMS = \
 	connection-policy \
 	backbone-udp \
 	path-stability \
-	transport-recent
+	transport-recent \
+	utcp-closed-syn \
+	utcp-random \
+	channels-session-restart \
+	channels-utcp-prng
 
 if INSTALL_TESTS
 bin_PROGRAMS = $(check_PROGRAMS)
@@ -317,6 +325,18 @@ path_stability_LDADD = $(top_builddir)/src/libmeshlink.la
 transport_recent_SOURCES = transport-recent.c utils.c utils.h
 transport_recent_LDADD = $(top_builddir)/src/libmeshlink.la
 
+utcp_closed_syn_SOURCES = utcp-closed-syn.c
+utcp_closed_syn_LDADD = $(top_builddir)/src/.libs/libmeshlink.a
+
+utcp_random_SOURCES = utcp-random.c
+utcp_random_LDADD = $(top_builddir)/src/.libs/libmeshlink.a
+
+channels_session_restart_SOURCES = channels-session-restart.c utcp-peek.c utcp-peek.h utils.c utils.h
+channels_session_restart_LDADD = $(top_builddir)/src/.libs/libmeshlink.a
+
+channels_utcp_prng_SOURCES = channels-utcp-prng.c utcp-peek.c utcp-peek.h utils.c utils.h
+channels_utcp_prng_LDADD = $(top_builddir)/src/.libs/libmeshlink.a
+
 relay_hop_SOURCES = relay-hop.c relay-hop-support.c utils.c utils.h
 relay_hop_LDADD = $(top_builddir)/src/.libs/libmeshlink.a
 
@@ -329,6 +349,14 @@ check_PROGRAMS += lifecycle-start-stop
 lifecycle_start_stop_SOURCES = lifecycle-start-stop.c
 lifecycle_start_stop_LDADD = $(top_builddir)/src/.libs/libmeshlink.a
 lifecycle_start_stop_LDFLAGS = $(AM_LDFLAGS) -Wl,--wrap=setns -Wl,--wrap=pthread_cond_wait -Wl,--wrap=pthread_join
+
+# utcp-no-rand wraps rand() at link time, which needs GNU ld.
+TESTS += utcp-no-rand
+check_PROGRAMS += utcp-no-rand
+
+utcp_no_rand_SOURCES = utcp-no-rand.c
+utcp_no_rand_LDADD = $(top_builddir)/src/.libs/libmeshlink.a
+utcp_no_rand_LDFLAGS = $(AM_LDFLAGS) -Wl,--wrap=rand
 
 TESTS += event-signal
 check_PROGRAMS += event-signal

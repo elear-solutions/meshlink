@@ -111,6 +111,10 @@ struct utcp_connection {
 	bool reapable;
 	bool do_poll;
 
+	// Replaced by a new connection for the same port pair: stays allocated for its
+	// owner, but is no longer found by incoming packets.
+	bool detached;
+
 	// Callbacks
 
 	utcp_recv_t recv;
@@ -183,6 +187,7 @@ struct utcp {
 	utcp_listen_t listen;
 	utcp_retransmit_t retransmit;
 	utcp_send_t send;
+	utcp_random_t random;
 
 	// Packet buffer
 

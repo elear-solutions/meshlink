@@ -560,7 +560,23 @@ static int compare(const void *va, const void *vb) {
 	}
 
 	c = (int)a->dst - (int)b->dst;
-	return c;
+
+	if(c) {
+		return c;
+	}
+
+	// A detached connection sorts after the live one for its port pair,
+	// so a lookup for the pair never finds it.
+
+	c = (int)a->detached - (int)b->detached;
+
+	if(c || !a->detached) {
+		return c;
+	}
+
+	// Several detached connections can share a port pair.
+
+	return (uintptr_t)a < (uintptr_t)b ? -1 : (uintptr_t)a > (uintptr_t)b;
 }
 
 static struct utcp_connection *find_connection(const struct utcp *utcp, uint16_t src, uint16_t dst) {
@@ -574,6 +590,20 @@ static struct utcp_connection *find_connection(const struct utcp *utcp, uint16_t
 	}, *keyp = &key;
 	struct utcp_connection **match = bsearch(&keyp, utcp->connections, utcp->nconnections, sizeof(*utcp->connections), compare);
 	return match ? *match : NULL;
+}
+
+/* Take a CLOSED or reapable connection out of the lookup table so that its port pair
+   can be used by a new connection. The connection stays allocated and valid for its
+   owner, never receives another packet, and is freed by utcp_timeout() once reapable. */
+static void detach_connection(struct utcp_connection *c) {
+	struct utcp *utcp = c->utcp;
+
+	if(c->state != CLOSED) {
+		set_state(c, CLOSED);
+	}
+
+	c->detached = true;
+	qsort(utcp->connections, utcp->nconnections, sizeof(*utcp->connections), compare);
 }
 
 static void free_connection(struct utcp_connection *c) {
@@ -605,10 +635,10 @@ static struct utcp_connection *allocate_connection(struct utcp *utcp, uint16_t s
 			return NULL;
 		}
 
-		src = rand() | 0x8000;
+		src = 0x8000 | utcp->random(utcp, 0x8000);
 
 		while(find_connection(utcp, src, dst)) {
-			src++;
+			src = (src + 1) | 0x8000;
 		}
 	}
 
@@ -654,7 +684,8 @@ static struct utcp_connection *allocate_connection(struct utcp *utcp, uint16_t s
 #ifdef UTCP_DEBUG
 	c->snd.iss = 0;
 #else
-	c->snd.iss = rand();
+	c->snd.iss = utcp->random(utcp, 0x10000) << 16;
+	c->snd.iss |= utcp->random(utcp, 0x10000);
 #endif
 	c->snd.una = c->snd.iss;
 	c->snd.nxt = c->snd.iss + 1;
@@ -1435,6 +1466,15 @@ ssize_t utcp_recv(struct utcp *utcp, const void *data, size_t len) {
 
 	bool has_data = len || (hdr.ctl & (SYN | FIN));
 
+	// A SYN never matches a CLOSED connection: its peer has started over with the same
+	// port pair. The old connection leaves the lookup table, and the SYN is handled as new.
+
+	if(c && utcp->accept && (hdr.ctl & SYN) && !(hdr.ctl & ACK) && (c->state == CLOSED || c->reapable)) {
+		debug(c, "new SYN replaces closed connection\n");
+		detach_connection(c);
+		c = NULL;
+	}
+
 	// Is it for a new connection?
 
 	if(!c) {
@@ -1518,8 +1558,7 @@ synack:
 
 	debug(c, "state %s\n", strstate[c->state]);
 
-	// In case this is for a CLOSED connection, ignore the packet.
-	// TODO: make it so incoming packets can never match a CLOSED connection.
+	// In case this is for a CLOSED connection, ignore the packet. A new SYN never gets here.
 
 	if(c->state == CLOSED) {
 		debug(c, "got packet for closed connection\n");
@@ -2339,8 +2378,8 @@ bool utcp_is_active(struct utcp *utcp) {
 	return false;
 }
 
-struct utcp *utcp_init(utcp_accept_t accept, utcp_listen_t listen, utcp_send_t send, void *priv) {
-	if(!send) {
+struct utcp *utcp_init(utcp_accept_t accept, utcp_listen_t listen, utcp_send_t send, utcp_random_t random, void *priv) {
+	if(!send || !random) {
 		errno = EFAULT;
 		return NULL;
 	}
@@ -2367,6 +2406,7 @@ struct utcp *utcp_init(utcp_accept_t accept, utcp_listen_t listen, utcp_send_t s
 	utcp->accept = accept;
 	utcp->listen = listen;
 	utcp->send = send;
+	utcp->random = random;
 	utcp->priv = priv;
 	utcp->timeout = DEFAULT_USER_TIMEOUT; // sec
 
@@ -2510,6 +2550,12 @@ static ssize_t mtu_reentry_send(struct utcp *utcp, const void *data, size_t len)
 	return (ssize_t)len;
 }
 
+static uint32_t mtu_reentry_random(struct utcp *utcp, uint32_t max) {
+	(void)utcp;
+	(void)max;
+	return 0;
+}
+
 bool utcp_mtu_reentry_unit(void) {
 	struct utcp *utcp;
 	struct utcp_connection *c;
@@ -2518,7 +2564,7 @@ bool utcp_mtu_reentry_unit(void) {
 	bool ok;
 
 	mtu_reentry_sends = 0;
-	utcp = utcp_init(NULL, NULL, mtu_reentry_send, NULL);
+	utcp = utcp_init(NULL, NULL, mtu_reentry_send, mtu_reentry_random, NULL);
 
 	if(!utcp) {
 		return false;

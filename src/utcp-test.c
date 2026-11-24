@@ -112,6 +112,12 @@ static void do_accept(struct utcp_connection *nc, uint16_t port) {
 	utcp_set_accept_cb(c->utcp, NULL, NULL);
 }
 
+/* utcp-test seeds the C library's generator itself, in main(). */
+static uint32_t do_random(struct utcp *utcp, uint32_t max) {
+	(void)utcp;
+	return rand() % max;
+}
+
 static ssize_t do_send(struct utcp *utcp, const void *data, size_t len) {
 	int s = *(int *)utcp->priv;
 	outpktno++;
@@ -285,7 +291,7 @@ int main(int argc, char *argv[]) {
 
 	freeaddrinfo(ai);
 
-	struct utcp *u = utcp_init(server ? do_accept : NULL, NULL, do_send, &s);
+	struct utcp *u = utcp_init(server ? do_accept : NULL, NULL, do_send, do_random, &s);
 
 	if(!u) {
 		debug("Could not initialize UTCP\n");
