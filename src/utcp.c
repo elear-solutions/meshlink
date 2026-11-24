@@ -560,7 +560,23 @@ static int compare(const void *va, const void *vb) {
 	}
 
 	c = (int)a->dst - (int)b->dst;
-	return c;
+
+	if(c) {
+		return c;
+	}
+
+	// A detached connection sorts after the live one for its port pair,
+	// so a lookup for the pair never finds it.
+
+	c = (int)a->detached - (int)b->detached;
+
+	if(c || !a->detached) {
+		return c;
+	}
+
+	// Several detached connections can share a port pair.
+
+	return (uintptr_t)a < (uintptr_t)b ? -1 : (uintptr_t)a > (uintptr_t)b;
 }
 
 static struct utcp_connection *find_connection(const struct utcp *utcp, uint16_t src, uint16_t dst) {
@@ -574,6 +590,20 @@ static struct utcp_connection *find_connection(const struct utcp *utcp, uint16_t
 	}, *keyp = &key;
 	struct utcp_connection **match = bsearch(&keyp, utcp->connections, utcp->nconnections, sizeof(*utcp->connections), compare);
 	return match ? *match : NULL;
+}
+
+/* Take a CLOSED or reapable connection out of the lookup table so that its port pair
+   can be used by a new connection. The connection stays allocated and valid for its
+   owner, never receives another packet, and is freed by utcp_timeout() once reapable. */
+static void detach_connection(struct utcp_connection *c) {
+	struct utcp *utcp = c->utcp;
+
+	if(c->state != CLOSED) {
+		set_state(c, CLOSED);
+	}
+
+	c->detached = true;
+	qsort(utcp->connections, utcp->nconnections, sizeof(*utcp->connections), compare);
 }
 
 static void free_connection(struct utcp_connection *c) {
@@ -1435,6 +1465,15 @@ ssize_t utcp_recv(struct utcp *utcp, const void *data, size_t len) {
 
 	bool has_data = len || (hdr.ctl & (SYN | FIN));
 
+	// A SYN never matches a CLOSED connection: its peer has started over with the same
+	// port pair. The old connection leaves the lookup table, and the SYN is handled as new.
+
+	if(c && utcp->accept && (hdr.ctl & SYN) && !(hdr.ctl & ACK) && (c->state == CLOSED || c->reapable)) {
+		debug(c, "new SYN replaces closed connection\n");
+		detach_connection(c);
+		c = NULL;
+	}
+
 	// Is it for a new connection?
 
 	if(!c) {
@@ -1518,8 +1557,7 @@ synack:
 
 	debug(c, "state %s\n", strstate[c->state]);
 
-	// In case this is for a CLOSED connection, ignore the packet.
-	// TODO: make it so incoming packets can never match a CLOSED connection.
+	// In case this is for a CLOSED connection, ignore the packet. A new SYN never gets here.
 
 	if(c->state == CLOSED) {
 		debug(c, "got packet for closed connection\n");
