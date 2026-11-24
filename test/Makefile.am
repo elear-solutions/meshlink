@@ -350,6 +350,7 @@ lifecycle_start_stop_SOURCES = lifecycle-start-stop.c
 lifecycle_start_stop_LDADD = $(top_builddir)/src/.libs/libmeshlink.a
 lifecycle_start_stop_LDFLAGS = $(AM_LDFLAGS) -Wl,--wrap=setns -Wl,--wrap=pthread_cond_wait -Wl,--wrap=pthread_join
 
+# utcp-no-rand wraps rand() at link time, which needs GNU ld.
 TESTS += utcp-no-rand
 check_PROGRAMS += utcp-no-rand
 

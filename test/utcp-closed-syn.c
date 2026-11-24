@@ -9,7 +9,6 @@
 
 #include "system.h"
 #include <assert.h>
-#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 

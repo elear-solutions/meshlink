@@ -8,9 +8,7 @@
 
 #include "system.h"
 #include <assert.h>
-#include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 #include "meshlink_internal.h"
 #include "utils.h"
@@ -111,13 +109,11 @@ static void send_all(meshlink_handle_t *mesh, meshlink_channel_t *channel, const
 	assert(meshlink_channel_send(mesh, channel, text, strlen(text)) == (ssize_t)strlen(text));
 }
 
+/* Waits up to 10 seconds for the receiver to have exactly text. */
 static void expect_data(struct receiver *r, const char *text) {
-	for(int i = 0; i < 100 && r->len < strlen(text); i++) {
+	for(int i = 0; i < 10 && r->len < strlen(text); i++) {
+		wait_sync_flag(&r->flag, 1);
 		reset_sync_flag(&r->flag);
-
-		if(r->len < strlen(text)) {
-			wait_sync_flag(&r->flag, 1);
-		}
 	}
 
 	assert(r->len == strlen(text));
@@ -160,6 +156,8 @@ int main(void) {
 	meshlink_close(a);
 
 	// a comes back as a new process: same configuration, new session, same first port pair.
+
+	// open_meshlink_pair() keeps a's configuration in "<prefix>_conf.1".
 
 	a = meshlink_open(PREFIX "_conf.1", "a", PREFIX, DEV_CLASS_BACKBONE);
 	assert(a);
