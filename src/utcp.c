@@ -30,6 +30,10 @@
 #undef poll
 #endif
 
+size_t utcp_get_connection_count(const struct utcp *utcp) {
+	return utcp ? (size_t)utcp->nconnections : 0;
+}
+
 static void utcp_set_mtu_apply(struct utcp *utcp, uint16_t mtu);
 static void utcp_flush_deferred_mtu(struct utcp *utcp);
 

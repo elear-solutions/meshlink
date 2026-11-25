@@ -1214,6 +1214,18 @@ public:
 		return meshlink_channel_get_mss(handle, channel);
 	};
 
+	/// Get the number of UTCP connections held for a node, in any state.
+	/** This is a diagnostic function. It counts connections that are CLOSED, closing, or reset
+	 *  but not yet closed by the application as well.
+	 *
+	 *  @param peer         A pointer to a node object.
+	 *
+	 *  @return             The number of UTCP connections held for the node, or (size_t)-1 on error.
+	 */
+	size_t get_node_utcp_connection_count(node *peer) {
+		return meshlink_get_node_utcp_connection_count(handle, peer);
+	}
+
 	/// Enable or disable zeroconf discovery of local peers
 	/** This controls whether zeroconf discovery using the Catta library will be
 	 *  enabled to search for peers on the local network. By default, it is enabled.

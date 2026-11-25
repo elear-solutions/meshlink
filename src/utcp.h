@@ -100,6 +100,8 @@ void utcp_set_user_timeout(struct utcp *utcp, int seconds);
 
 uint16_t utcp_get_mtu(struct utcp *utcp);
 uint16_t utcp_get_mss(struct utcp *utcp);
+/* Number of connections the instance still holds, in any state (including CLOSED and reapable ones). */
+size_t utcp_get_connection_count(const struct utcp *utcp);
 /* Meshlink callers hold mesh->mutex. Grow reallocs the packet buffer; shrink
    keeps it. A failed grow leaves the previous MTU. On increase, a reliable
    connection whose cwnd is below 2*mss is raised to that. On decrease, reliable

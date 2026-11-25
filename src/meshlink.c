@@ -5577,6 +5577,30 @@ size_t meshlink_channel_get_mss(meshlink_handle_t *mesh, meshlink_channel_t *cha
 	return mss;
 }
 
+size_t meshlink_get_node_utcp_connection_count(meshlink_handle_t *mesh, meshlink_node_t *node) {
+	if(!mesh || !node) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return (size_t) - 1;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	node_t *n = (node_t *)node;
+
+	if(n->mesh != mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		pthread_mutex_unlock(&mesh->mutex);
+		return (size_t) - 1;
+	}
+
+	size_t count = utcp_get_connection_count(n->utcp);
+
+	pthread_mutex_unlock(&mesh->mutex);
+	return count;
+}
+
 void meshlink_set_channel_timeout(meshlink_handle_t *mesh, meshlink_channel_t *channel, int timeout) {
 	logger(mesh, MESHLINK_DEBUG, "meshlink_set_channel_timeout(%p, %d)", (void *)channel, timeout);
 

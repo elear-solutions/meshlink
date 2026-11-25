@@ -1857,6 +1857,27 @@ size_t meshlink_channel_get_recvq(struct meshlink_handle *mesh, struct meshlink_
  */
 size_t meshlink_channel_get_mss(struct meshlink_handle *mesh, struct meshlink_channel *channel) __attribute__((__warn_unused_result__));
 
+/// Get the number of UTCP connections that MeshLink holds for a node.
+/** This is a diagnostic function, meant for tests and debugging.
+ *  It returns the number of connections in the node's UTCP instance in any state, including connections
+ *  that are CLOSED, closing, or reset but whose channel the application has not closed yet.
+ *  A channel stays counted until the application has called meshlink_channel_close() for it
+ *  and MeshLink has then released the connection. MeshLink releases it later from its own thread, not inside
+ *  meshlink_channel_close(), so the count can take a moment to drop after the channel was closed.
+ *  The count is therefore not the number of open channels.
+ *
+ *  This function takes MeshLink's mutex, so it can be called from any thread, including from MeshLink's callbacks,
+ *  because the mutex is recursive.
+ *
+ *  \memberof meshlink_node
+ *  @param mesh         A handle which represents an instance of MeshLink.
+ *  @param node         A pointer to a struct meshlink_node describing the node.
+ *
+ *  @return             The number of UTCP connections held for the node, 0 if there are none,
+ *                      or (size_t)-1 on error, in which case meshlink_errno is set.
+ */
+size_t meshlink_get_node_utcp_connection_count(struct meshlink_handle *mesh, struct meshlink_node *node) __attribute__((__warn_unused_result__));
+
 /// Set the connection timeout used for channels to the given node.
 /** This sets the timeout after which unresponsive channels will be reported as closed.
  *  The timeout is set for all current and future channels to the given node.

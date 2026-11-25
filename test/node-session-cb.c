@@ -33,6 +33,7 @@ static struct sync_flag up_flag;
 static struct sync_flag down_flag;
 static struct sync_flag accept_flag;
 static meshlink_handle_t *observer;
+static meshlink_channel_t *b_channel;
 
 static void add_event(enum event event) {
 	pthread_mutex_lock(&events_mutex);
@@ -126,6 +127,7 @@ static bool accept_cb(meshlink_handle_t *mesh, meshlink_channel_t *channel, uint
 	(void)data;
 	(void)len;
 
+	b_channel = channel;
 	meshlink_set_channel_receive_cb(mesh, channel, receive_cb);
 	set_sync_flag(&accept_flag, true);
 
@@ -191,6 +193,10 @@ int main(void) {
 
 	open_channel_to_b(a);
 
+	meshlink_node_t *a_node = meshlink_get_node(b, "a");
+	assert(a_node);
+	assert(meshlink_get_node_utcp_connection_count(b, a_node) == 1);
+
 	reset_sync_flag(&down_flag);
 	reset_sync_flag(&up_flag);
 	meshlink_close(a);
@@ -216,6 +222,32 @@ int main(void) {
 	assert(session >= 0);
 	assert(session < reset);
 	assert(reset < up);
+
+	// Test case #5: a channel that was reset by the session change is still counted until its owner closes it
+
+	assert(meshlink_get_node_utcp_connection_count(b, a_node) == 1);
+	meshlink_channel_close(b, b_channel);
+
+	/* MeshLink frees a closed connection from its timer, not synchronously, so wait for it. */
+	for(int i = 0; i < 100 && meshlink_get_node_utcp_connection_count(b, a_node) != 0; i++) {
+		usleep(100000);
+	}
+
+	assert(meshlink_get_node_utcp_connection_count(b, a_node) == 0);
+
+	// Test case #6: invalid arguments return an error
+
+	meshlink_errno = MESHLINK_OK;
+	assert(meshlink_get_node_utcp_connection_count(NULL, a_node) == (size_t) - 1);
+	assert(meshlink_errno == MESHLINK_EINVAL);
+
+	meshlink_errno = MESHLINK_OK;
+	assert(meshlink_get_node_utcp_connection_count(b, NULL) == (size_t) - 1);
+	assert(meshlink_errno == MESHLINK_EINVAL);
+
+	meshlink_errno = MESHLINK_OK;
+	assert(meshlink_get_node_utcp_connection_count(a, a_node) == (size_t) - 1);
+	assert(meshlink_errno == MESHLINK_EINVAL);
 
 	// Done.
 
