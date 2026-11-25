@@ -2623,6 +2623,22 @@ void meshlink_set_node_status_cb(meshlink_handle_t *mesh, meshlink_node_status_c
 	pthread_mutex_unlock(&mesh->mutex);
 }
 
+void meshlink_set_node_session_cb(meshlink_handle_t *mesh, meshlink_node_session_cb_t cb) {
+	logger(mesh, MESHLINK_DEBUG, "meshlink_set_node_session_cb(%p)", (void *)(intptr_t)cb);
+
+	if(!mesh) {
+		meshlink_errno = MESHLINK_EINVAL;
+		return;
+	}
+
+	if(pthread_mutex_lock(&mesh->mutex) != 0) {
+		abort();
+	}
+
+	mesh->node_session_cb = cb;
+	pthread_mutex_unlock(&mesh->mutex);
+}
+
 void meshlink_set_node_pmtu_cb(meshlink_handle_t *mesh, meshlink_node_pmtu_cb_t cb) {
 	logger(mesh, MESHLINK_DEBUG, "meshlink_set_node_pmtu_cb(%p)", (void *)(intptr_t)cb);
 

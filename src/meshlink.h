@@ -482,6 +482,32 @@ typedef void (*meshlink_node_status_cb_t)(struct meshlink_handle *mesh, struct m
  */
 void meshlink_set_node_status_cb(struct meshlink_handle *mesh, meshlink_node_status_cb_t cb);
 
+/// A callback reporting that another node has started a new session.
+/** @param mesh      A handle which represents an instance of MeshLink.
+ *  @param node      A pointer to a struct meshlink_node describing the node whose session was replaced.
+ *                   This pointer is valid until meshlink_close() is called.
+ */
+typedef void (*meshlink_node_session_cb_t)(struct meshlink_handle *mesh, struct meshlink_node *node);
+
+/// Set the node session callback.
+/** This function sets the callback that is called whenever another node, which was already known to have
+ *  a session, is seen with a different session, for example because it was restarted.
+ *  It is not called when a node's session is learned for the first time.
+ *  The callback is called before MeshLink resets the channels of that node, and before the node status
+ *  callback reports the node's new state.
+ *
+ *  The callback is run in MeshLink's own thread, with MeshLink's (recursive) mutex held.
+ *  It is therefore important that the callback uses apprioriate methods (queues, pipes, locking, etc.)
+ *  to hand the data over to the application's thread.
+ *  The callback must not block itself and must return as quickly as possible.
+ *
+ *  \memberof meshlink_handle
+ *  @param mesh      A handle which represents an instance of MeshLink.
+ *  @param cb        A pointer to the function which will be called when another node starts a new session.
+ *                   If a NULL pointer is given, the callback will be disabled.
+ */
+void meshlink_set_node_session_cb(struct meshlink_handle *mesh, meshlink_node_session_cb_t cb);
+
 /// A callback reporting node path MTU changes.
 /** Fired when the measured path MTU changes. Applications that cache
  *  `meshlink_channel_get_mss()` (for example an RTP packer) must read it
