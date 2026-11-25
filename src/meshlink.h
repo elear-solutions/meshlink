@@ -493,13 +493,17 @@ typedef void (*meshlink_node_session_cb_t)(struct meshlink_handle *mesh, struct 
 /** This function sets the callback that is called whenever another node, which was already known to have
  *  a session, is seen with a different session, for example because it was restarted.
  *  It is not called when a node's session is learned for the first time.
+ *  If a node starts several new sessions while it is unreachable, the callback is called once, when the node is seen again.
  *  The callback is called before MeshLink resets the channels of that node, and before the node status
  *  callback reports the node's new state.
  *
- *  The callback is run in MeshLink's own thread, with MeshLink's (recursive) mutex held.
- *  It is therefore important that the callback uses apprioriate methods (queues, pipes, locking, etc.)
+ *  The callback is run in MeshLink's own thread, with MeshLink's (recursive) mutex held,
+ *  while MeshLink is updating the reachability of all nodes.
+ *  It is therefore important that the callback uses appropriate methods (queues, pipes, locking, etc.)
  *  to hand the data over to the application's thread.
  *  The callback must not block itself and must return as quickly as possible.
+ *  Because the mutex is recursive, the callback may call other MeshLink functions, but it must not call
+ *  functions that remove nodes, such as meshlink_forget_node().
  *
  *  \memberof meshlink_handle
  *  @param mesh      A handle which represents an instance of MeshLink.
