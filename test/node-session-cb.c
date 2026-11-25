@@ -92,7 +92,7 @@ static void session_cb(meshlink_handle_t *mesh, meshlink_node_t *node) {
 	assert(meshlink_get_node(mesh, "a") == node);
 
 	/* The old session's channel is still there when the callback runs, and the diagnostic call is callback-safe. */
-	assert(meshlink_get_node_utcp_connection_count(mesh, node) == 1);
+	assert(meshlink_get_node_utcp_live_connection_count(mesh, node) == 1);
 
 	add_event(EVENT_SESSION);
 }
@@ -198,7 +198,7 @@ int main(void) {
 
 	meshlink_node_t *a_node = meshlink_get_node(b, "a");
 	assert(a_node);
-	assert(meshlink_get_node_utcp_connection_count(b, a_node) == 1);
+	assert(meshlink_get_node_utcp_live_connection_count(b, a_node) == 1);
 
 	reset_sync_flag(&down_flag);
 	reset_sync_flag(&up_flag);
@@ -226,31 +226,40 @@ int main(void) {
 	assert(session < reset);
 	assert(reset < up);
 
-	// Test case #5: a channel that was reset by the session change is still counted until its owner closes it
+	// Test case #5: a channel that was reset by the session change is CLOSED, so it is no longer live,
+	//               and aborting it by its owner keeps the count at 0 immediately
 
-	assert(meshlink_get_node_utcp_connection_count(b, a_node) == 1);
-	meshlink_channel_close(b, b_channel);
-
-	/* MeshLink frees a closed connection from its timer, not synchronously, so wait for it. */
-	for(int i = 0; i < 100 && meshlink_get_node_utcp_connection_count(b, a_node) != 0; i++) {
-		usleep(100000);
-	}
-
-	assert(meshlink_get_node_utcp_connection_count(b, a_node) == 0);
+	assert(meshlink_get_node_utcp_live_connection_count(b, a_node) == 0);
+	meshlink_channel_abort(b, b_channel);
+	assert(meshlink_get_node_utcp_live_connection_count(b, a_node) == 0);
 
 	// Test case #6: invalid arguments return an error
 
 	meshlink_errno = MESHLINK_OK;
-	assert(meshlink_get_node_utcp_connection_count(NULL, a_node) == (size_t) - 1);
+	assert(meshlink_get_node_utcp_live_connection_count(NULL, a_node) == (size_t) - 1);
 	assert(meshlink_errno == MESHLINK_EINVAL);
 
 	meshlink_errno = MESHLINK_OK;
-	assert(meshlink_get_node_utcp_connection_count(b, NULL) == (size_t) - 1);
+	assert(meshlink_get_node_utcp_live_connection_count(b, NULL) == (size_t) - 1);
 	assert(meshlink_errno == MESHLINK_EINVAL);
 
 	meshlink_errno = MESHLINK_OK;
-	assert(meshlink_get_node_utcp_connection_count(a, a_node) == (size_t) - 1);
+	assert(meshlink_get_node_utcp_live_connection_count(a, a_node) == (size_t) - 1);
 	assert(meshlink_errno == MESHLINK_EINVAL);
+
+	// Test case #7: a plain open channel is live, and is no longer counted as soon as it is aborted
+
+	open_channel_to_b(a);
+	assert(meshlink_get_node_utcp_live_connection_count(b, a_node) == 1);
+	meshlink_channel_abort(b, b_channel);
+	assert(meshlink_get_node_utcp_live_connection_count(b, a_node) == 0);
+
+	// Test case #8: a channel that is closed is no longer counted as soon as meshlink_channel_close() returns
+
+	open_channel_to_b(a);
+	assert(meshlink_get_node_utcp_live_connection_count(b, a_node) == 1);
+	meshlink_channel_close(b, b_channel);
+	assert(meshlink_get_node_utcp_live_connection_count(b, a_node) == 0);
 
 	// Done.
 

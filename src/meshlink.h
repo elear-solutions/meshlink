@@ -483,7 +483,11 @@ typedef void (*meshlink_node_status_cb_t)(struct meshlink_handle *mesh, struct m
 void meshlink_set_node_status_cb(struct meshlink_handle *mesh, meshlink_node_status_cb_t cb);
 
 /// A callback reporting that another node has started a new session.
-/** @param mesh      A handle which represents an instance of MeshLink.
+/** The callback is called in MeshLink's own thread, while MeshLink updates the reachability of the nodes (the graph update).
+ *  MeshLink's (recursive) mutex is held while it runs.
+ *  The callback must not block, and it must not call meshlink_forget_node().
+ *
+ *  @param mesh      A handle which represents an instance of MeshLink.
  *  @param node      A pointer to a struct meshlink_node describing the node whose session was replaced.
  *                   This pointer is valid until meshlink_close() is called.
  */
@@ -497,13 +501,13 @@ typedef void (*meshlink_node_session_cb_t)(struct meshlink_handle *mesh, struct 
  *  The callback is called before MeshLink resets the channels of that node, and before the node status
  *  callback reports the node's new state.
  *
- *  The callback is run in MeshLink's own thread, with MeshLink's (recursive) mutex held,
- *  while MeshLink is updating the reachability of all nodes.
+ *  Thread: the callback is run in MeshLink's own thread, while MeshLink updates the reachability of the nodes (the graph update).
+ *  Locking: MeshLink's (recursive) mutex is held while the callback runs, so the callback may call other MeshLink functions.
+ *  Blocking: the callback must not block itself and must return as quickly as possible.
+ *  Forbidden: the callback must not call meshlink_forget_node(), because that would remove a node from the
+ *  list MeshLink is walking.
  *  It is therefore important that the callback uses appropriate methods (queues, pipes, locking, etc.)
  *  to hand the data over to the application's thread.
- *  The callback must not block itself and must return as quickly as possible.
- *  Because the mutex is recursive, the callback may call other MeshLink functions, but it must not call
- *  functions that remove nodes, such as meshlink_forget_node().
  *
  *  \memberof meshlink_handle
  *  @param mesh      A handle which represents an instance of MeshLink.
@@ -1857,14 +1861,22 @@ size_t meshlink_channel_get_recvq(struct meshlink_handle *mesh, struct meshlink_
  */
 size_t meshlink_channel_get_mss(struct meshlink_handle *mesh, struct meshlink_channel *channel) __attribute__((__warn_unused_result__));
 
-/// Get the number of UTCP connections that MeshLink holds for a node.
+/// Get the number of live UTCP connections that MeshLink holds for a node.
 /** This is a diagnostic function, meant for tests and debugging.
- *  It returns the number of connections in the node's UTCP instance in any state, including connections
- *  that are CLOSED, closing, or reset but whose channel the application has not closed yet.
- *  A channel stays counted until the application has called meshlink_channel_close() for it
- *  and MeshLink has then released the connection. MeshLink releases it later from its own thread, not inside
- *  meshlink_channel_close(), so the count can take a moment to drop after the channel was closed.
- *  The count is therefore not the number of open channels.
+ *  It counts the connections of the node's UTCP instance that can still send or receive data for their port pair.
+ *  That is every connection that is not CLOSED, and that the application has not yet ended with
+ *  meshlink_channel_close() or meshlink_channel_abort().
+ *
+ *  The following are not counted:
+ *  - Connections that the application has ended with meshlink_channel_abort() or meshlink_channel_close().
+ *    They are no longer counted as soon as that function returns, even if a closed connection is still
+ *    shutting down inside MeshLink.
+ *  - Connections that are CLOSED: a channel that was reset by a peer, by a timeout, or because the node started
+ *    a new session is not counted from that moment on, even if the application has not called
+ *    meshlink_channel_close() or meshlink_channel_abort() for it yet.
+ *  - Connections that were replaced by a new connection for the same port pair.
+ *
+ *  This is therefore not the number of channel handles that the application still has to release.
  *
  *  This function takes MeshLink's mutex, so it can be called from any thread, including from MeshLink's callbacks,
  *  because the mutex is recursive.
@@ -1873,10 +1885,10 @@ size_t meshlink_channel_get_mss(struct meshlink_handle *mesh, struct meshlink_ch
  *  @param mesh         A handle which represents an instance of MeshLink.
  *  @param node         A pointer to a struct meshlink_node describing the node.
  *
- *  @return             The number of UTCP connections held for the node, 0 if there are none,
+ *  @return             The number of live UTCP connections held for the node, 0 if there are none,
  *                      or (size_t)-1 on error, in which case meshlink_errno is set.
  */
-size_t meshlink_get_node_utcp_connection_count(struct meshlink_handle *mesh, struct meshlink_node *node) __attribute__((__warn_unused_result__));
+size_t meshlink_get_node_utcp_live_connection_count(struct meshlink_handle *mesh, struct meshlink_node *node) __attribute__((__warn_unused_result__));
 
 /// Set the connection timeout used for channels to the given node.
 /** This sets the timeout after which unresponsive channels will be reported as closed.

@@ -1214,16 +1214,17 @@ public:
 		return meshlink_channel_get_mss(handle, channel);
 	};
 
-	/// Get the number of UTCP connections held for a node, in any state.
-	/** This is a diagnostic function. It counts connections that are CLOSED, closing, or reset
-	 *  but not yet closed by the application as well.
+	/// Get the number of live UTCP connections held for a node.
+	/** This is a diagnostic function. It counts the connections that can still send or receive:
+	 *  not CLOSED (for example reset by the peer or by a session change), not ended by channel_close() or
+	 *  channel_abort(), and not replaced by a newer connection. See meshlink_get_node_utcp_live_connection_count().
 	 *
 	 *  @param peer         A pointer to a node object.
 	 *
-	 *  @return             The number of UTCP connections held for the node, or (size_t)-1 on error.
+	 *  @return             The number of live UTCP connections held for the node, or (size_t)-1 on error.
 	 */
-	size_t get_node_utcp_connection_count(node *peer) {
-		return meshlink_get_node_utcp_connection_count(handle, peer);
+	size_t get_node_utcp_live_connection_count(node *peer) {
+		return meshlink_get_node_utcp_live_connection_count(handle, peer);
 	}
 
 	/// Enable or disable zeroconf discovery of local peers
