@@ -32,6 +32,7 @@ static int num_events;
 static struct sync_flag up_flag;
 static struct sync_flag down_flag;
 static struct sync_flag accept_flag;
+static meshlink_handle_t *observer;
 
 static void add_event(enum event event) {
 	pthread_mutex_lock(&events_mutex);
@@ -83,9 +84,12 @@ static int event_mark(void) {
 }
 
 static void session_cb(meshlink_handle_t *mesh, meshlink_node_t *node) {
-	(void)mesh;
-
+	assert(mesh == observer);
 	assert(!strcmp(node->name, "a"));
+
+	/* The callback runs with the recursive mesh mutex held, so calling back into MeshLink must not deadlock. */
+	assert(meshlink_get_node(mesh, "a") == node);
+
 	add_event(EVENT_SESSION);
 }
 
@@ -153,6 +157,7 @@ int main(void) {
 	meshlink_set_channel_listen_cb(b, listen_cb);
 	meshlink_set_channel_accept_cb(b, accept_cb);
 	meshlink_set_node_session_cb(b, session_cb);
+	observer = b;
 
 	// Test case #1: passing a NULL pointer for the mesh returns an error
 
