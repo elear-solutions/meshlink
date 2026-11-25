@@ -91,6 +91,9 @@ static void session_cb(meshlink_handle_t *mesh, meshlink_node_t *node) {
 	/* The callback runs with the recursive mesh mutex held, so calling back into MeshLink must not deadlock. */
 	assert(meshlink_get_node(mesh, "a") == node);
 
+	/* The old session's channel is still there when the callback runs, and the diagnostic call is callback-safe. */
+	assert(meshlink_get_node_utcp_connection_count(mesh, node) == 1);
+
 	add_event(EVENT_SESSION);
 }
 
