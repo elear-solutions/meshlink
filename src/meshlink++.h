@@ -56,6 +56,7 @@ typedef void (*connection_try_cb_t)(mesh *mesh, node *node);
  *  @param reachable  True if the node is reachable, false otherwise.
  */
 typedef void (*node_status_cb_t)(mesh *mesh, node *node, bool reachable);
+typedef void (*node_session_cb_t)(mesh *mesh, node *node);
 
 /// A callback reporting node path MTU changes.
 /** @param mesh       A handle which represents an instance of MeshLink.
@@ -248,6 +249,12 @@ public:
 		(void)reachable;
 	}
 
+	/// This functions is called whenever another node starts a new session.
+	virtual void node_session(node *peer) {
+		/* do nothing */
+		(void)peer;
+	}
+
 	/// This functions is called whenever another node's path MTU changes.
 	virtual void node_pmtu(node *peer, uint16_t pmtu) {
 		/* do nothing */
@@ -382,6 +389,7 @@ public:
 	bool start() {
 		meshlink_set_receive_cb(handle, &receive_trampoline);
 		meshlink_set_node_status_cb(handle, &node_status_trampoline);
+		meshlink_set_node_session_cb(handle, &node_session_trampoline);
 		meshlink_set_node_pmtu_cb(handle, &node_pmtu_trampoline);
 		meshlink_set_node_duplicate_cb(handle, &node_duplicate_trampoline);
 		meshlink_set_log_cb(handle, MESHLINK_DEBUG, &log_trampoline);
@@ -1206,6 +1214,19 @@ public:
 		return meshlink_channel_get_mss(handle, channel);
 	};
 
+	/// Get the number of live UTCP connections held for a node.
+	/** This is a diagnostic function. It counts the connections that can still send or receive:
+	 *  not CLOSED (for example reset by the peer or by a session change), not ended by channel_close() or
+	 *  channel_abort(), and not replaced by a newer connection. See meshlink_get_node_utcp_live_connection_count().
+	 *
+	 *  @param peer         A pointer to a node object.
+	 *
+	 *  @return             The number of live UTCP connections held for the node, or (size_t)-1 on error.
+	 */
+	size_t get_node_utcp_live_connection_count(node *peer) {
+		return meshlink_get_node_utcp_live_connection_count(handle, peer);
+	}
+
 	/// Enable or disable zeroconf discovery of local peers
 	/** This controls whether zeroconf discovery using the Catta library will be
 	 *  enabled to search for peers on the local network. By default, it is enabled.
@@ -1302,6 +1323,15 @@ private:
 
 		meshlink::mesh *that = static_cast<mesh *>(handle->priv);
 		that->node_status(static_cast<node *>(peer), reachable);
+	}
+
+	static void node_session_trampoline(meshlink_handle_t *handle, meshlink_node_t *peer) {
+		if(!(handle->priv)) {
+			return;
+		}
+
+		meshlink::mesh *that = static_cast<mesh *>(handle->priv);
+		that->node_session(static_cast<node *>(peer));
 	}
 
 	static void node_pmtu_trampoline(meshlink_handle_t *handle, meshlink_node_t *peer, uint16_t pmtu) {

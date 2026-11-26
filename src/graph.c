@@ -166,7 +166,15 @@ static void check_reachability(meshlink_handle_t *mesh) {
 		if(n->status.visited && n->prevedge && n->prevedge->reverse->session_id != n->session_id) {
 			logger(mesh, MESHLINK_DEBUG, "Node %s has a new session ID", n->name);
 
+			/* A session_id of 0 means we have not seen this node before; that is not a replaced session. */
+			bool session_replaced = n->session_id != 0;
+
 			n->session_id = n->prevedge->reverse->session_id;
+
+			if(session_replaced && mesh->node_session_cb) {
+				mesh->node_session_cb(mesh, (meshlink_node_t *)n);
+			}
+
 			path_backbone_private_on_session_change(mesh, n);
 			n->last_path_tier = PATH_TIER_NONE;
 			path_clear_udp_observation(n);

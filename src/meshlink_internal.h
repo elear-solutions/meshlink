@@ -186,6 +186,7 @@ struct meshlink_handle {
 
 	// Infrequently used callbacks
 	meshlink_node_status_cb_t node_status_cb;
+	meshlink_node_session_cb_t node_session_cb;
 	meshlink_node_status_cb_t meta_status_cb;
 	meshlink_node_pmtu_cb_t node_pmtu_cb;
 	meshlink_channel_listen_cb_t channel_listen_cb;

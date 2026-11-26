@@ -60,6 +60,7 @@ TESTS = \
 	utcp-random \
 	channels-session-restart \
 	channels-utcp-prng \
+	node-session-cb \
 	utcp-benchmark \
 	utcp-benchmark-stream
 
@@ -144,7 +145,8 @@ check_PROGRAMS = \
 	utcp-closed-syn \
 	utcp-random \
 	channels-session-restart \
-	channels-utcp-prng
+	channels-utcp-prng \
+	node-session-cb
 
 if INSTALL_TESTS
 bin_PROGRAMS = $(check_PROGRAMS)
@@ -336,6 +338,9 @@ channels_session_restart_LDADD = $(top_builddir)/src/.libs/libmeshlink.a
 
 channels_utcp_prng_SOURCES = channels-utcp-prng.c utcp-peek.c utcp-peek.h utils.c utils.h
 channels_utcp_prng_LDADD = $(top_builddir)/src/.libs/libmeshlink.a
+
+node_session_cb_SOURCES = node-session-cb.c utils.c utils.h
+node_session_cb_LDADD = $(top_builddir)/src/libmeshlink.la
 
 relay_hop_SOURCES = relay-hop.c relay-hop-support.c utils.c utils.h
 relay_hop_LDADD = $(top_builddir)/src/.libs/libmeshlink.a

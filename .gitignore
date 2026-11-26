@@ -59,6 +59,7 @@ test/Makefile.in
 
 # All test executables (compiled from source)
 test/api_set_node_status_cb
+test/node-session-cb
 test/basic
 test/basicpp
 test/blacklist

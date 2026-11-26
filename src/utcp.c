@@ -30,6 +30,24 @@
 #undef poll
 #endif
 
+size_t utcp_get_live_connection_count(const struct utcp *utcp) {
+	size_t count = 0;
+
+	if(!utcp) {
+		return 0;
+	}
+
+	for(int i = 0; i < utcp->nconnections; i++) {
+		const struct utcp_connection *c = utcp->connections[i];
+
+		if(c && c->state != CLOSED && !c->reapable && !c->detached) {
+			count++;
+		}
+	}
+
+	return count;
+}
+
 static void utcp_set_mtu_apply(struct utcp *utcp, uint16_t mtu);
 static void utcp_flush_deferred_mtu(struct utcp *utcp);
 
